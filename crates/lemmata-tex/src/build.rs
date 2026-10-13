@@ -1,0 +1,204 @@
+//! Runs latexmk for a project and parses the resulting log.
+
+use lemmata_log::Diagnostic;
+use lemmata_project::Project;
+use serde::Serialize;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant, SystemTime};
+use tokio::process::Command;
+use tokio::sync::oneshot;
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("latexmk was not found. Install TeX Live, or choose its folder in settings.")]
+    NoLatexmk,
+    #[error("could not start latexmk: {0}")]
+    Spawn(std::io::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    Success,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Outcome {
+    pub status: Status,
+    pub duration_ms: u64,
+    /// The PDF, if this build wrote one. A failed build in nonstop mode
+    /// often still produces a usable PDF.
+    pub pdf: Option<PathBuf>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+pub struct BuildOptions<'a> {
+    pub latexmk: &'a Path,
+    /// TeX bin folder, put first on PATH so latexmk finds the matching engine.
+    pub bin_dir: Option<&'a Path>,
+}
+
+/// The latexmk arguments for a project.
+pub fn latexmk_args(project: &Project) -> Vec<OsString> {
+    let c = &project.config;
+    let mut args: Vec<OsString> = vec![
+        c.engine.latexmk_flag().into(),
+        "-synctex=1".into(),
+        "-interaction=nonstopmode".into(),
+        "-file-line-error".into(),
+        // Keep going past errors (run biber, rerun for references) so the
+        // user still gets the most complete PDF possible, like Overleaf.
+        "-f".into(),
+        if c.shell_escape {
+            "-shell-escape"
+        } else {
+            "-no-shell-escape"
+        }
+        .into(),
+        format!("-outdir={}", c.outdir).into(),
+    ];
+    if c.bib == lemmata_project::Bib::Bibtex {
+        args.push("-bibtex".into());
+    }
+    args.push(project.main.as_os_str().to_owned());
+    args
+}
+
+/// Builds the project. Sending on `cancel` (or dropping the sender) stops the
+/// build and everything latexmk started.
+pub async fn build(
+    project: &Project,
+    opts: &BuildOptions<'_>,
+    cancel: oneshot::Receiver<()>,
+) -> Result<Outcome, Error> {
+    if !opts.latexmk.exists() {
+        return Err(Error::NoLatexmk);
+    }
+    let started = Instant::now();
+    let started_at = SystemTime::now();
+    let _ = std::fs::create_dir_all(project.outdir_abs());
+
+    let mut cmd = Command::new(opts.latexmk);
+    cmd.args(latexmk_args(project))
+        .current_dir(&project.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    if let Some(bin) = opts.bin_dir {
+        cmd.env("PATH", prepend_path(bin));
+    }
+    #[cfg(unix)]
+    cmd.process_group(0);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+
+    let mut child = cmd.spawn().map_err(Error::Spawn)?;
+    let pid = child.id();
+
+    let status = tokio::select! {
+        res = child.wait() => match res {
+            Ok(s) if s.success() => Status::Success,
+            _ => Status::Failed,
+        },
+        _ = cancel => {
+            kill_tree(pid);
+            let _ = child.wait().await;
+            Status::Cancelled
+        }
+    };
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+    if status == Status::Cancelled {
+        return Ok(Outcome {
+            status,
+            duration_ms,
+            pdf: None,
+            diagnostics: Vec::new(),
+        });
+    }
+
+    let pdf = project.pdf_path();
+    let fresh = std::fs::metadata(&pdf)
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t + Duration::from_secs(1) >= started_at);
+    let mut diagnostics = std::fs::read(project.log_path())
+        .map(|b| lemmata_log::parse(&String::from_utf8_lossy(&b)))
+        .unwrap_or_default();
+    // Files in the build folder (.bbl, .aux) aren't something the user can edit.
+    let outdir = project.config.outdir.trim_start_matches("./");
+    for d in &mut diagnostics {
+        if d.file
+            .as_deref()
+            .is_some_and(|f| f.trim_start_matches("./").starts_with(outdir))
+        {
+            d.file = None;
+            d.line = None;
+        }
+    }
+
+    Ok(Outcome {
+        status,
+        duration_ms,
+        pdf: fresh.then_some(pdf),
+        diagnostics,
+    })
+}
+
+fn prepend_path(dir: &Path) -> OsString {
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(paths).unwrap_or_default()
+}
+
+/// latexmk spawns the engine and biber as children; kill them all.
+fn kill_tree(pid: Option<u32>) {
+    let Some(pid) = pid else { return };
+    #[cfg(unix)]
+    {
+        // The child leads its own process group (process_group(0) above).
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &format!("-{pid}")])
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .status();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn args_respect_config() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        let args: Vec<String> = latexmk_args(&p)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"-pdf".to_string()));
+        assert!(args.contains(&"-no-shell-escape".to_string()));
+        assert_eq!(args.last().unwrap(), "main.tex");
+
+        p.config.engine = lemmata_project::Engine::Lualatex;
+        p.config.shell_escape = true;
+        let args: Vec<String> = latexmk_args(&p)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"-lualatex".to_string()));
+        assert!(args.contains(&"-shell-escape".to_string()));
+    }
+}

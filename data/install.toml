@@ -1,0 +1,56 @@
+# Install instructions shown during onboarding and on the website.
+# Keys under [platform.*] match lemmata_tex::os::Family.
+# Package names change between distro releases; check them when editing.
+
+[platform.arch]
+label = "Arch / CachyOS / Manjaro"
+recommended = "sudo pacman -S --needed texlive-basic texlive-latex texlive-latexrecommended texlive-latexextra texlive-fontsrecommended texlive-bibtexextra texlive-binextra texlive-mathscience biber"
+full = "sudo pacman -S --needed texlive texlive-lang biber"
+recommended_size = "≈1.2 GB"
+full_size = "≈5.6 GB"
+
+[platform.debian]
+label = "Debian / Ubuntu / Mint"
+recommended = "sudo apt install texlive-latex-extra texlive-fonts-recommended texlive-bibtex-extra texlive-science latexmk biber"
+full = "sudo apt install texlive-full"
+recommended_size = "≈1.1 GB"
+full_size = "≈7 GB"
+
+[platform.fedora]
+label = "Fedora"
+recommended = "sudo dnf install texlive-scheme-medium latexmk biber"
+full = "sudo dnf install texlive-scheme-full"
+recommended_size = "≈1 GB"
+full_size = "≈6 GB"
+
+[platform.suse]
+label = "openSUSE"
+recommended = "sudo zypper install texlive-scheme-medium texlive-latexmk biber"
+full = "sudo zypper install texlive-scheme-full"
+recommended_size = "≈1 GB"
+full_size = "≈6 GB"
+
+[platform.macos]
+label = "macOS"
+recommended = "brew install --cask mactex-no-gui"
+full = "brew install --cask mactex"
+recommended_size = "≈5 GB"
+full_size = "≈6 GB"
+link = "https://www.tug.org/mactex/"
+
+[platform.windows]
+label = "Windows"
+recommended = "winget install MiKTeX.MiKTeX"
+full = "winget install MiKTeX.MiKTeX"
+recommended_size = "≈200 MB, installs packages on demand"
+full_size = "≈200 MB, installs packages on demand"
+link = "https://tug.org/texlive/windows.html"
+note = "MiKTeX installs missing packages the first time a document needs them. TeX Live works too: download install-tl-windows.exe from the link."
+
+[platform.other]
+label = "Other Linux"
+recommended = "Install TeX Live from https://tug.org/texlive/quickinstall.html"
+full = "Install TeX Live from https://tug.org/texlive/quickinstall.html"
+recommended_size = ""
+full_size = ""
+link = "https://tug.org/texlive/quickinstall.html"

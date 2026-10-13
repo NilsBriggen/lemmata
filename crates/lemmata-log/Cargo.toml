@@ -1,0 +1,11 @@
+[package]
+name = "lemmata-log"
+description = "Parse TeX log files into structured diagnostics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+regex.workspace = true

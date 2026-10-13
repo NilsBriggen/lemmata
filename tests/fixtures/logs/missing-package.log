@@ -1,0 +1,27 @@
+This is pdfTeX, Version 3.141592653-2.6-1.40.27 (TeX Live 2025/Arch Linux) (preloaded format=pdflatex 2025.10.1)  13 OCT 2026 09:14
+entering extended mode
+ file:line:error style messages enabled.
+**main.tex
+(./main.tex
+LaTeX2e <2024-11-01> patch level 2
+(/usr/share/texmf-dist/tex/latex/base/article.cls
+Document Class: article 2024/06/29 v1.4n Standard LaTeX document class
+(/usr/share/texmf-dist/tex/latex/base/size10.clo))
+
+./main.tex:3: LaTeX Error: File `pgfplots.sty' not found.
+
+Type X to quit or <RETURN> to proceed,
+or enter new name. (Default extension: sty)
+
+Enter file name: 
+./main.tex:3: Emergency stop.
+<read *> 
+         
+l.3 \usepackage
+               {hyperref}^^M
+*** (cannot \read from terminal in nonstop modes)
+
+ 
+Here is how much of TeX's memory you used:
+ 25 strings out of 474222
+No pages of output.

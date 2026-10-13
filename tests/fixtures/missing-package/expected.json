@@ -1,0 +1,13 @@
+[
+  {
+    "file": "./main.tex",
+    "hint": "lemmata-does-not-exist.sty isn't installed. Install the TeX package that provides it.",
+    "kind": {
+      "name": "lemmata-does-not-exist.sty",
+      "type": "missing-file"
+    },
+    "line": 4,
+    "message": "File `lemmata-does-not-exist.sty' not found.",
+    "severity": "error"
+  }
+]

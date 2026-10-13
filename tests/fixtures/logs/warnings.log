@@ -1,0 +1,32 @@
+This is pdfTeX, Version 3.141592653-2.6-1.40.27 (TeX Live 2025/Arch Linux) (preloaded format=pdflatex 2025.10.1)  13 OCT 2026 09:20
+entering extended mode
+ file:line:error style messages enabled.
+**main.tex
+(./main.tex
+LaTeX2e <2024-11-01> patch level 2
+(/usr/share/texmf-dist/tex/latex/base/article.cls
+Document Class: article 2024/06/29 v1.4n Standard LaTeX document class
+(/usr/share/texmf-dist/tex/latex/base/size10.clo))
+(/usr/share/texmf-dist/tex/latex/hyperref/hyperref.sty)
+(./main.aux) (./chapters/method.tex
+
+LaTeX Warning: Citation `schulman2017' on page 1 undefined on input line 16.
+
+
+LaTeX Warning: Reference `fig:grid' on page 1 undefined on input line 18.
+
+
+Package hyperref Warning: Token not allowed in a PDF string (Unicode):
+(hyperref)                removing `math shift' on input line 19.
+
+Overfull \hbox (12.3456pt too wide) in paragraph at lines 20--21
+[]\OT1/cmr/m/n/10 A very long unbreakable word: Donaudampfschifffahrtsgesellsch
+aftskapitaen
+ []
+
+) [1{/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}] (./main.aux)
+
+LaTeX Warning: There were undefined references.
+
+ )
+Output written on main.pdf (1 page, 30211 bytes).

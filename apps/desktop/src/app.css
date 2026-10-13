@@ -1,0 +1,86 @@
+/* Tokens follow docs/pitch.html: cool paper neutrals, non-photo blue accent. */
+:root {
+  --paper: #f3f4f2;
+  --sheet: #ffffff;
+  --ink: #18212b;
+  --muted: #5b6672;
+  --rule: #d8dcdf;
+  --blue: #2f7fb8;
+  --blue-soft: #e3eff8;
+  --mark: #c4472f;
+  --warn: #a67812;
+  --ok: #2e7d55;
+  --chrome: #e7e9eb;
+  --chrome-2: #dde0e3;
+  --code-bg: #fbfbfa;
+  --pdf-ground: #d4d8dc;
+  --f-display: "Young Serif", Georgia, serif;
+  --f-body: "IBM Plex Sans", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #12171c;
+    --sheet: #1a2027;
+    --ink: #e4e8ec;
+    --muted: #97a3ae;
+    --rule: #2c343d;
+    --blue: #6fb3e3;
+    --blue-soft: #1d2f3f;
+    --mark: #e9765f;
+    --warn: #e0b04f;
+    --ok: #5fbf8a;
+    --chrome: #20272f;
+    --chrome-2: #29313a;
+    --code-bg: #161b21;
+    --pdf-ground: #0e1216;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font: 13px/1.45 var(--f-body);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+button {
+  font: 500 12px var(--f-body);
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  color: var(--ink);
+  padding: 5px 11px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--blue); }
+button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+button:disabled { opacity: 0.5; cursor: default; }
+button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+select {
+  font: 12px var(--f-body);
+  background: var(--sheet);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 4px 6px;
+}
+code, kbd { font-family: var(--f-mono); }
+.pill {
+  font: 500 11px var(--f-mono);
+  padding: 3px 9px;
+  border-radius: 99px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  white-space: nowrap;
+}
+.pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.pill.err { color: var(--mark); background: color-mix(in srgb, var(--mark) 14%, transparent); }
+.pill.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

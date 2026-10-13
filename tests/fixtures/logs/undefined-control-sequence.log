@@ -1,0 +1,22 @@
+This is pdfTeX, Version 3.141592653-2.6-1.40.27 (TeX Live 2025/Arch Linux) (preloaded format=pdflatex 2025.10.1)  13 OCT 2026 09:12
+entering extended mode
+ restricted \write18 enabled.
+ file:line:error style messages enabled.
+ %&-line parsing enabled.
+**main.tex
+(./main.tex
+LaTeX2e <2024-11-01> patch level 2
+(/usr/share/texmf-dist/tex/latex/base/article.cls
+Document Class: article 2024/06/29 v1.4n Standard LaTeX document class
+(/usr/share/texmf-dist/tex/latex/base/size10.clo
+File: size10.clo 2024/06/29 v1.4n Standard LaTeX file (size option)
+))
+(./main.aux) (./chapters/method.tex
+./chapters/method.tex:12: Undefined control sequence.
+l.12 The objective \maximise
+                             s the expected return
+The control sequence at the end of the top line
+of your error message was never \def'ed.
+
+) [1{/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}] (./main.aux) )
+Output written on main.pdf (1 page, 24512 bytes).

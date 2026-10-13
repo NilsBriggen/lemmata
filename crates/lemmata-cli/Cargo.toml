@@ -1,0 +1,20 @@
+[package]
+name = "lemmata-cli"
+description = "Command-line interface to the Lemmata build tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lemmata"
+path = "src/main.rs"
+
+[dependencies]
+lemmata-tex.workspace = true
+lemmata-log.workspace = true
+lemmata-project.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"

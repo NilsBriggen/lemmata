@@ -1,0 +1,24 @@
+[
+  {
+    "file": "./chapters/method.tex",
+    "hint": "No \\label with this name. A label added just now resolves on the next build.",
+    "kind": {
+      "key": "sec:missing",
+      "type": "undefined-reference"
+    },
+    "line": 7,
+    "message": "Reference `sec:missing' on page 1 undefined.",
+    "severity": "warning"
+  },
+  {
+    "file": "./chapters/method.tex",
+    "hint": "No entry with this key in your .bib files, or the bibliography hasn't been built yet.",
+    "kind": {
+      "key": "nobody2020",
+      "type": "undefined-citation"
+    },
+    "line": 7,
+    "message": "Citation 'nobody2020' on page 1 undefined.",
+    "severity": "warning"
+  }
+]
