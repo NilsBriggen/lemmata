@@ -22,9 +22,12 @@ describe("Lemmata", () => {
 
   it("rebuilds after an edit and lists problems", async () => {
     await $(".cm-content").click();
-    await browser.keys(["Control", "End"]);
+    // At the very top: text after \end{document} would be ignored by LaTeX.
+    await browser.keys(["Control", "Home"]);
     await browser.keys(["Control"]); // release
-    await browser.keys("\n\\undefinedcommandxyz\n");
+    await browser.keys("\\undefinedcommandxyz");
+    await browser.keys("Escape"); // close completion so Enter adds a line
+    await browser.keys("Enter");
     await $(".problems .row.error").waitForExist({ timeout: 60_000 });
     await expect($(".problems")).toHaveText(expect.stringContaining("Undefined control sequence"));
     await browser.keys(["Control", "z"]);
