@@ -1,6 +1,24 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.0.0-rc.1 (2026-10-13)
+
+### Added
+- Environment pairing, project-aware completion, folding, shortcuts
+- Formatting toolbar, insert figure/table/symbol dialogs, word count, shortcut sheet
+- Lazy rendering, text selection, search, links, outline, presentation mode
+- Draft mode, stop on first error, timeout, clear cache; package fixes and .blg diagnostics
+- File tree drag-to-move, viewer tabs, tab strip, whole-project restore, snapshot compare
+- Notification history, completion status, lemmata watch
+- Draft-mode indicator, focusable PDF pane; handoff update
+- Homework template; fix the PDF-click e2e point
+
+### Fixed
+- Wait for the completion list; click the PDF by event
+- Say so when a PDF click can't be resolved to source; e2e reports why
+
+### Documentation
+- 1.0 guide and readme; new fixtures and e2e cases
 ## 0.1.0-beta.2 (2026-10-13)
 
 ### Added
