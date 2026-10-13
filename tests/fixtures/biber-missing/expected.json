@@ -1,0 +1,23 @@
+[
+  {
+    "file": "./main.tex",
+    "hint": "The bibliography tool did not run, most often because a .bib file named in \\addbibresource{} or \\bibliography{} is missing from the project. Also check that biber (or bibtex) is installed.",
+    "kind": {
+      "key": "knuth1984",
+      "type": "undefined-citation"
+    },
+    "line": 5,
+    "message": "Citation 'knuth1984' on page 1 undefined.",
+    "severity": "warning"
+  },
+  {
+    "file": "./main.tex",
+    "hint": null,
+    "kind": {
+      "type": "other"
+    },
+    "line": 6,
+    "message": "Empty bibliography.",
+    "severity": "warning"
+  }
+]

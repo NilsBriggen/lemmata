@@ -2,7 +2,16 @@
 
 A local-first LaTeX editor: write on the left, see the PDF update on the right, double-click the PDF to jump to the source. Projects are plain folders on your disk, and documents build with the TeX Live (or MiKTeX) already on your computer.
 
-Status: beta. See the [user guide](docs/guide.md) for what it does, and [docs/PLAN.md](docs/PLAN.md) for how it's built.
+Status: 1.0. See the [user guide](docs/guide.md) for what it does, and [docs/PLAN.md](docs/PLAN.md) for how it's built.
+
+## Features
+
+- Overleaf-style layout: file tree, outline, editor and PDF side by side, with a formatting toolbar and an insert menu for figures, tables and symbols.
+- Environment pairing (`\begin{x}` and `\end{x}` stay in step), completion for commands, labels, citations, files and packages, folding, formatting shortcuts.
+- A PDF viewer with text selection, search, working links, outline and a presentation mode.
+- Plain-language errors with source excerpts and one-click fixes (add a missing `\usepackage`, install command for a missing package), including bibliography problems.
+- Fast (draft) mode, stop-at-first-error, auto-compile on or off, clear cache.
+- Snapshots of your project with compare and whole-project restore, spell checking, Zotero and DOI/arXiv references, Overleaf zip import, arXiv export.
 
 ## Requirements
 
@@ -31,8 +40,8 @@ cargo run -p lemmata-cli -- build tests/fixtures/article
 | `crates/lemmata-tex` | Finds TeX, picks install instructions, runs latexmk |
 | `crates/lemmata-log` | Turns TeX logs into diagnostics with plain-language hints |
 | `crates/lemmata-synctex` | PDF ↔ source jumps through the `synctex` CLI |
-| `crates/lemmata-project` | `lemmata.toml`, main-file detection, file tree |
-| `crates/lemmata-cli` | `lemmata build` and `lemmata doctor` |
+| `crates/lemmata-project` | `lemmata.toml`, main-file detection, file tree, outline, labels, word counts |
+| `crates/lemmata-cli` | `lemmata build`, `lemmata watch` and `lemmata doctor` |
 | `data/install.toml` | TeX install commands per OS and distro |
 | `packaging/` | AUR and Homebrew templates rendered on release |
 | `tests/fixtures` | Sample projects and real TeX logs |

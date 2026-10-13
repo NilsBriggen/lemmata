@@ -1,0 +1,52 @@
+[
+  {
+    "file": "./main.tex",
+    "fix": {
+      "command": null,
+      "explanation": "\\mathbb comes from the amssymb package.",
+      "package": "amssymb"
+    },
+    "hint": "A command isn't defined. Check its spelling, or load the package that provides it.",
+    "kind": {
+      "type": "undefined-control-sequence"
+    },
+    "line": 3,
+    "message": "Undefined control sequence.",
+    "severity": "error"
+  },
+  {
+    "file": "./main.tex",
+    "fix": {
+      "command": null,
+      "explanation": "The align environment comes from the amsmath package.",
+      "package": "amsmath"
+    },
+    "hint": "This environment doesn't exist. Check the spelling, or load the package that defines it.",
+    "kind": {
+      "type": "other"
+    },
+    "line": 4,
+    "message": "Environment align undefined.",
+    "severity": "error"
+  },
+  {
+    "file": "./main.tex",
+    "hint": null,
+    "kind": {
+      "type": "other"
+    },
+    "line": 5,
+    "message": "Misplaced alignment tab character &.",
+    "severity": "error"
+  },
+  {
+    "file": "./main.tex",
+    "hint": "\\begin and \\end don't match. Check that every environment is closed in the right order.",
+    "kind": {
+      "type": "other"
+    },
+    "line": 6,
+    "message": "\\begin{document} ended by \\end{align}.",
+    "severity": "error"
+  }
+]

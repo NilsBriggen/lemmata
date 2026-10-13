@@ -331,3 +331,7 @@ Decisions that changed during implementation, and why.
 | Opt-in crash reporting | "Report a problem" with a prefilled GitHub issue | No server needed; the user sees and edits everything before it's sent. |
 | ISBN lookup for references | DOI and arXiv only | arXiv papers have DataCite DOIs, so one doi.org lookup covers both; ISBN services need API keys. |
 
+| Environment completion from texlab alone | Own completion source plus a transaction filter that pairs `\begin`/`\end` (`apps/desktop/src/lib/editor/`) | texlab's snippet relies on a mirrored field that needs multiple selections, and gives no way to keep the two names in step afterwards. Our source also knows labels, citation keys, files and packages; anything else still goes to texlab. |
+| PDF.js `PDFViewer` | Own page layout with lazy rendering, a text layer, a link layer and search (`PdfView.svelte`) | Keeps the reading position across rebuilds and SyncTeX highlights, which the stock viewer's page management fights. Only pages near the viewport hold a canvas, so long documents stay light. |
+| Draft mode through `-draftmode` | `\PassOptionsToPackage{draft}{graphicx}` via latexmk's `-usepretex` | pdfTeX's draft mode writes no PDF at all; draft `graphicx` shows boxes and still builds a PDF. |
+| Snapshot labels stored in the commit message | Renames are git notes under `refs/notes/lemmata` | Snapshots are commits and never change; a note lets one be renamed without rewriting history. |

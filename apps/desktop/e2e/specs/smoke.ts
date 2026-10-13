@@ -1,5 +1,6 @@
 // Smoke test of the main loop: open a project, the PDF builds, an edit
-// rebuilds it, and a missing package shows its install command.
+// rebuilds it, a missing package shows its install command, typing an
+// environment completes its \end, and a click in the PDF finds the source.
 import { browser, $, expect } from "@wdio/globals";
 import path from "node:path";
 
@@ -41,5 +42,39 @@ describe("Lemmata", () => {
     // No PDF, so the logs open by themselves, like Overleaf.
     await $(".card.error").waitForExist({ timeout: 60_000 });
     await expect($(".card.error")).toHaveText(expect.stringContaining("lemmata-does-not-exist.sty"));
+  });
+
+  it("completes an environment together with its \\end", async () => {
+    await openProject(path.join(fixtures, "article"));
+    await $(".cm-content").click();
+    await browser.keys(["Control", "Home"]);
+    await browser.keys(["Control"]); // release
+    await browser.keys("\\begin{itemiz");
+    await $(".cm-tooltip-autocomplete").waitForExist({ timeout: 15_000 });
+    await browser.keys("Enter");
+    await expect($(".cm-content")).toHaveText(expect.stringContaining("\\end{itemize}"));
+    // Put the fixture back as it was (autosave writes it to disk).
+    for (let i = 0; i < 4; i++) {
+      if (!(await $(".cm-content").getText()).includes("itemize")) break;
+      await browser.keys(["Control", "z"]);
+      await browser.keys(["Control"]);
+    }
+    await browser.waitUntil(async () => (await $(".status").getText()).includes("Saved"), { timeout: 15_000 });
+  });
+
+  it("jumps from the PDF to the source", async () => {
+    await openProject(path.join(fixtures, "article"));
+    const page = $(".pages .page");
+    await $(".pages .page canvas").waitForExist({ timeout: 90_000 });
+    await $(".cm-content").click();
+    await browser.keys(["Control", "Home"]);
+    await browser.keys(["Control"]);
+    // The title block sits near the top centre of the first page.
+    const height = await page.getSize("height");
+    await page.doubleClick({ x: 0, y: -Math.round(height * 0.38) });
+    await browser.waitUntil(async () => /Line (?:[2-9]|\d\d)\b/.test(await $(".status").getText()), {
+      timeout: 15_000,
+      timeoutMsg: "the editor didn't move to the source line",
+    });
   });
 });

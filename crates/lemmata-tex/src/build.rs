@@ -196,7 +196,7 @@ pub async fn build(
     {
         for d in &mut diagnostics {
             if matches!(d.kind, lemmata_log::Kind::UndefinedCitation { .. }) {
-                d.hint = Some("The bibliography tool did not run. Check that your .bib file is listed in \\addbibresource{} or \\bibliography{}, and that biber (or bibtex) is installed.".into());
+                d.hint = Some("The bibliography tool did not run, most often because a .bib file named in \\addbibresource{} or \\bibliography{} is missing from the project. Also check that biber (or bibtex) is installed.".into());
             }
         }
     }
