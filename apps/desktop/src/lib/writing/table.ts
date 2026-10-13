@@ -51,3 +51,44 @@ export function figureSnippet(path: string): { text: string; cursor: number } {
   const rest = ["}", `  \\label{fig:${name}}`, "\\end{figure}"].join("\n");
   return { text: text + rest, cursor: text.length };
 }
+
+export interface FigureOptions { path: string; caption: string; label: string; width: number; placement: string }
+
+/** The slug used for a default label: letters, digits and dashes. */
+export function slug(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+export function figureBlock(o: FigureOptions): { text: string; cursor: number } {
+  const w = o.width >= 100 ? "\\linewidth" : `${(o.width / 100).toFixed(2).replace(/0$/, "")}\\linewidth`;
+  const lines = [
+    `\\begin{figure}${o.placement ? `[${o.placement}]` : ""}`,
+    "  \\centering",
+    `  \\includegraphics[width=${w}]{${o.path}}`,
+  ];
+  if (o.caption.trim()) lines.push(`  \\caption{${o.caption.trim()}}`);
+  const label = o.label.trim() || (o.caption.trim() ? slug(o.caption).slice(0, 30) : slug(o.path.replace(/^.*\//, "").replace(/\.[^.]+$/, "")));
+  if (label) lines.push(`  \\label{fig:${label.replace(/^fig:/, "")}}`);
+  lines.push("\\end{figure}");
+  const text = lines.join("\n");
+  return { text, cursor: text.length };
+}
+
+export interface TableOptions { rows: number; cols: number; header: boolean; booktabs: boolean; caption: string; label: string }
+
+export function tableBlock(o: TableOptions): string {
+  const cell = (r: number, c: number) => (o.header && r === 0 ? `Header ${c + 1}` : "");
+  const row = (r: number) => "    " + Array.from({ length: o.cols }, (_, c) => cell(r, c)).join(" & ") + " \\\\";
+  const [top, mid, bottom] = o.booktabs ? ["\\toprule", "\\midrule", "\\bottomrule"] : ["\\hline", "\\hline", "\\hline"];
+  const lines = ["\\begin{table}[htbp]", "  \\centering"];
+  if (o.caption.trim()) lines.push(`  \\caption{${o.caption.trim()}}`);
+  const label = o.label.trim() || (o.caption.trim() ? slug(o.caption).slice(0, 30) : "");
+  if (label) lines.push(`  \\label{tab:${label.replace(/^tab:/, "")}}`);
+  lines.push(`  \\begin{tabular}{${o.booktabs ? "l".repeat(o.cols) : "|" + "l|".repeat(o.cols)}}`, `    ${top}`);
+  for (let r = 0; r < o.rows; r++) {
+    lines.push(row(r));
+    if (r === 0 && o.header && o.rows > 1) lines.push(`    ${mid}`);
+  }
+  lines.push(`    ${bottom}`, "  \\end{tabular}", "\\end{table}");
+  return lines.join("\n");
+}

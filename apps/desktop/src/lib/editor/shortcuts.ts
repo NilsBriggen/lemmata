@@ -2,6 +2,7 @@
 import { EditorSelection, type StateCommand } from "@codemirror/state";
 import { keymap, type EditorView } from "@codemirror/view";
 import { toggleComment } from "@codemirror/commands";
+import { keysOf } from "../shortcuts";
 
 /** Wraps the selection in \cmd{…}, or unwraps it if already wrapped. */
 export function toggleWrap(cmd: string): StateCommand {
@@ -60,13 +61,13 @@ export interface ShortcutHooks {
 export function formattingKeymap(h: ShortcutHooks) {
   const run = (cmd: StateCommand) => (v: EditorView) => cmd({ state: v.state, dispatch: v.dispatch });
   return keymap.of([
-    { key: "Mod-b", run: run(toggleWrap("textbf")) },
-    { key: "Mod-i", run: run(toggleWrap("textit")) },
-    { key: "Mod-/", run: toggleComment },
-    { key: "Mod-]", run: run(shiftHeading(1)) },
-    { key: "Mod-[", run: run(shiftHeading(-1)) },
-    { key: "Mod-Shift-e", run: () => h.wrapInEnvironment() },
-    { key: "F8", run: () => h.nextProblem(1) },
-    { key: "Shift-F8", run: () => h.nextProblem(-1) },
+    { key: keysOf("bold"), run: run(toggleWrap("textbf")) },
+    { key: keysOf("italic"), run: run(toggleWrap("textit")) },
+    { key: keysOf("comment"), run: toggleComment },
+    { key: keysOf("heading-down"), run: run(shiftHeading(1)) },
+    { key: keysOf("heading-up"), run: run(shiftHeading(-1)) },
+    { key: keysOf("wrap-env"), run: () => h.wrapInEnvironment() },
+    { key: keysOf("next-problem"), run: () => h.nextProblem(1) },
+    { key: keysOf("prev-problem"), run: () => h.nextProblem(-1) },
   ]);
 }

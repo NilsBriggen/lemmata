@@ -2,7 +2,7 @@
   // CodeMirror 6 with one EditorState per open file, so each tab keeps its
   // own undo history and selection.
   import { onMount, onDestroy } from "svelte";
-  import { EditorState, Prec, type Extension } from "@codemirror/state";
+  import { EditorState, EditorSelection, Prec, type Extension } from "@codemirror/state";
   import {
     EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter,
     drawSelection, highlightSpecialChars, rectangularSelection, crosshairCursor,
@@ -10,13 +10,13 @@
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { StreamLanguage, HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput } from "@codemirror/language";
   import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-  import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from "@codemirror/autocomplete";
+  import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap, snippet } from "@codemirror/autocomplete";
   import { setDiagnostics, lintGutter, lintKeymap, nextDiagnostic, previousDiagnostic, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
   import { serverCompletionSource } from "@codemirror/lsp-client";
   import { environmentSync, closeEnvironment, unmatchedEnvironments } from "./editor/environments";
   import { latexCompletions, type Providers } from "./editor/completions";
   import { folding, foldKeymap } from "./editor/folding";
-  import { formattingKeymap } from "./editor/shortcuts";
+  import { formattingKeymap, toggleWrap } from "./editor/shortcuts";
   import { stex } from "@codemirror/legacy-modes/mode/stex";
   import { tags as t } from "@lezer/highlight";
   import type { Diagnostic } from "./api";
@@ -220,6 +220,71 @@
         }
       }),
     ];
+  }
+
+  /** Inserts a CodeMirror snippet (`${}` marks tab stops) at the selection. */
+  export function insertTemplate(template: string) {
+    if (!view) return;
+    const { from, to } = view.state.selection.main;
+    snippet(template)(view, null, from, to);
+    view.focus();
+  }
+
+  /** Plain text at the cursor, cursor after it. */
+  export function insertText(text: string) {
+    if (!view) return;
+    view.dispatch(view.state.replaceSelection(text));
+    view.focus();
+  }
+
+  /** Bold, italic and similar: wraps or unwraps the selection in \\cmd{…}. */
+  export function toggleCommand(cmd: string) {
+    if (!view) return;
+    toggleWrap(cmd)({ state: view.state, dispatch: view.dispatch });
+    view.focus();
+  }
+
+  /** Surrounds the selection with `open` and `close`, or removes them if already there. */
+  export function wrapWith(open: string, close: string) {
+    if (!view) return;
+    const st = view.state;
+    const tr = st.changeByRange((r) => {
+      const before = st.sliceDoc(Math.max(0, r.from - open.length), r.from);
+      const after = st.sliceDoc(r.to, r.to + close.length);
+      if (before === open && after === close) {
+        return {
+          changes: [{ from: r.from - open.length, to: r.from }, { from: r.to, to: r.to + close.length }],
+          range: EditorSelection.range(r.from - open.length, r.to - open.length),
+        };
+      }
+      return {
+        changes: [{ from: r.from, insert: open }, { from: r.to, insert: close }],
+        range: EditorSelection.range(r.from + open.length, r.to + open.length),
+      };
+    });
+    view.dispatch(st.update(tr, { userEvent: "input", scrollIntoView: true }));
+    view.focus();
+  }
+
+  /** A heading command on the current line, or a new one if the line is empty. */
+  export function heading(cmd: string) {
+    if (!view) return;
+    const line = view.state.doc.lineAt(view.state.selection.main.head);
+    const m = /^(\s*\\)(part|chapter|section|subsection|subsubsection|paragraph)(\*?[\[{])/.exec(line.text);
+    if (m) {
+      const from = line.from + m[1].length;
+      view.dispatch({ changes: { from, to: from + m[2].length, insert: cmd }, userEvent: "input" });
+      view.focus();
+    } else if (view.state.selection.main.empty) {
+      insertTemplate("\\" + cmd + "{${}}");
+    } else {
+      toggleCommand(cmd);
+    }
+  }
+
+  /** The selected text, for the figure/link dialogs. */
+  export function selectedText(): string {
+    return view ? view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to) : "";
   }
 
   /** Wraps the selection (or an empty line) in \begin{name} … \end{name}. */

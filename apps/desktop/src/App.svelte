@@ -19,6 +19,13 @@
   import HistoryPanel from "./lib/HistoryPanel.svelte";
   import Preferences from "./lib/Preferences.svelte";
   import CitePicker from "./lib/CitePicker.svelte";
+  import FigureDialog from "./lib/FigureDialog.svelte";
+  import TableDialog from "./lib/TableDialog.svelte";
+  import SymbolPalette from "./lib/SymbolPalette.svelte";
+  import WordCount from "./lib/WordCount.svelte";
+  import Shortcuts from "./lib/Shortcuts.svelte";
+  import EditorToolbar from "./lib/EditorToolbar.svelte";
+  import { display, keysOf, matches } from "./lib/shortcuts";
   import Palette, { type PaletteItem } from "./lib/Palette.svelte";
   import { ENVIRONMENTS } from "./lib/editor/data";
   import type { Providers } from "./lib/editor/completions";
@@ -60,6 +67,8 @@
   let settingsOpen = $state(false);
   let prefsOpen = $state(false);
   let citeOpen = $state(false);
+  let dialog = $state<null | "figure" | "table" | "symbols" | "words" | "shortcuts">(null);
+  const hint = (id: string) => display(keysOf(id));
   let selectionWords = $state(0);
   let palette = $state<null | "commands" | "files" | "environments">(null);
   let searchOpen = $state(false);
@@ -530,14 +539,20 @@
 
   const commandItems = $derived<PaletteItem[]>(
     [
-      { id: "recompile", label: "Recompile", detail: "Ctrl+Enter", run: () => saveAll(false).then(runBuild) },
-      { id: "open-file", label: "Open file…", detail: "Ctrl+P", run: () => (palette = "files") },
-      { id: "search", label: "Search in project", detail: "Ctrl+Shift+F", run: openSearch },
-      { id: "cite", label: "Insert citation", detail: "Ctrl+Shift+C", run: () => (citeOpen = true) },
-      { id: "snapshot", label: "Save a snapshot", detail: "Ctrl+Shift+S", run: () => (snapshotLabel = "") },
+      { id: "recompile", label: "Recompile", detail: hint("recompile"), run: () => saveAll(false).then(runBuild) },
+      { id: "open-file", label: "Open file…", detail: hint("quick-open"), run: () => (palette = "files") },
+      { id: "search", label: "Search in project", detail: hint("search"), run: openSearch },
+      { id: "cite", label: "Insert citation", detail: hint("cite"), run: () => (citeOpen = true) },
+      { id: "figure", label: "Insert figure…", run: () => (dialog = "figure") },
+      { id: "table", label: "Insert table…", run: () => (dialog = "table") },
+      { id: "symbols", label: "Insert symbol…", detail: hint("symbols"), run: () => (dialog = "symbols") },
+      { id: "wrap-env", label: "Wrap selection in an environment…", detail: hint("wrap-env"), run: () => (palette = "environments") },
+      { id: "words", label: "Word count", run: () => (dialog = "words") },
+      { id: "shortcuts", label: "Keyboard shortcuts", detail: hint("shortcuts"), run: () => (dialog = "shortcuts") },
+      { id: "snapshot", label: "Save a snapshot", detail: hint("snapshot"), run: () => (snapshotLabel = "") },
       { id: "history", label: "Show history", run: () => (historyOpen = true) },
-      { id: "sync", label: "Show this line in the PDF", detail: "Ctrl+J", run: () => active && syncForward(active, editor?.currentLine() ?? 1, 0) },
-      { id: "focus", label: focusMode ? "Leave focus mode" : "Focus mode", detail: "F11", run: () => (focusMode = !focusMode) },
+      { id: "sync", label: "Show this line in the PDF", detail: hint("sync"), run: () => active && syncForward(active, editor?.currentLine() ?? 1, 0) },
+      { id: "focus", label: focusMode ? "Leave focus mode" : "Focus mode", detail: hint("focus"), run: () => (focusMode = !focusMode) },
       { id: "new-file", label: "New file…", run: () => fileActions?.openMenu(null, 240, 120) },
       { id: "zotero-cite", label: "Cite from Zotero…", run: citeFromZotero },
       { id: "zotero-sync", label: "Sync zotero.bib from Zotero", run: () => syncZotero(true) },
@@ -682,32 +697,30 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    const mod = e.ctrlKey || e.metaKey;
-    if (e.key === "F11" && project) {
+    if (!project && !matches(e, "save")) return;
+    const hit = (id: string) => {
+      if (!matches(e, id)) return false;
       e.preventDefault();
-      focusMode = !focusMode;
-    } else if (mod && e.shiftKey && e.key.toLowerCase() === "p" && project) {
-      e.preventDefault();
-      palette = "commands";
-    } else if (mod && !e.shiftKey && e.key.toLowerCase() === "p" && project) {
-      e.preventDefault();
-      palette = "files";
-    } else if (mod && e.shiftKey && e.key.toLowerCase() === "f" && project) {
-      e.preventDefault();
-      openSearch();
-    } else if (mod && e.shiftKey && e.key.toLowerCase() === "c" && project && active) {
-      e.preventDefault();
-      citeOpen = true;
-    } else if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
-      e.preventDefault();
-      if (project) snapshotLabel = "";
-    } else if (mod && e.key === "s") {
-      e.preventDefault();
-      saveAll();
-    } else if (mod && e.key === "Enter") {
-      e.preventDefault();
-      saveAll(false).then(runBuild);
-    }
+      return true;
+    };
+    if (hit("focus")) focusMode = !focusMode;
+    else if (hit("palette")) palette = "commands";
+    else if (hit("quick-open")) palette = "files";
+    else if (hit("search")) openSearch();
+    else if (active && hit("cite")) citeOpen = true;
+    else if (active && hit("symbols")) dialog = "symbols";
+    else if (hit("shortcuts")) dialog = "shortcuts";
+    else if (hit("snapshot")) snapshotLabel = "";
+    else if (hit("save")) saveAll();
+    else if (hit("recompile")) saveAll(false).then(runBuild);
+    else if (active && hit("close-tab")) closeTab(active);
+    else if (hit("next-tab")) cycleTab(1);
+    else if (hit("prev-tab")) cycleTab(-1);
+  }
+
+  function cycleTab(dir: 1 | -1) {
+    if (tabs.length < 2 || !active) return;
+    openFile(tabs[(tabs.indexOf(active) + dir + tabs.length) % tabs.length]);
   }
 
   /** Returns a short message for the Preferences dialog. */
@@ -787,14 +800,16 @@
 
   const menuItems = $derived<MenuAction[]>([
     { label: "All projects", run: closeProject },
-    { label: "Command palette", hint: "Ctrl+Shift+P", run: () => (palette = "commands"), separator: true },
-    { label: "Open file…", hint: "Ctrl+P", run: () => (palette = "files") },
-    { label: "Search in project", hint: "Ctrl+Shift+F", run: openSearch },
-    { label: "Insert citation", hint: "Ctrl+Shift+C", run: () => (citeOpen = true) },
-    { label: "Save a snapshot", hint: "Ctrl+Shift+S", run: () => (snapshotLabel = "") },
+    { label: "Command palette", hint: hint("palette"), run: () => (palette = "commands"), separator: true },
+    { label: "Open file…", hint: hint("quick-open"), run: () => (palette = "files") },
+    { label: "Search in project", hint: hint("search"), run: openSearch },
+    { label: "Insert citation", hint: hint("cite"), run: () => (citeOpen = true) },
+    { label: "Word count", run: () => (dialog = "words") },
+    { label: "Save a snapshot", hint: hint("snapshot"), run: () => (snapshotLabel = "") },
     { label: "Export PDF…", run: exportPdf, separator: true },
     { label: "Export for arXiv…", run: exportArxiv },
     { label: "Preferences", run: () => (prefsOpen = true), separator: true },
+    { label: "Keyboard shortcuts", hint: hint("shortcuts"), run: () => (dialog = "shortcuts") },
     { label: "User guide", run: () => openUrl("https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md") },
     { label: "Report a problem…", run: startReport },
   ]);
@@ -926,6 +941,19 @@
             </div>
           {/each}
         </div>
+        <EditorToolbar
+          disabled={!active || !/\.(tex|sty|cls)$/.test(active)}
+          onBold={() => editor?.toggleCommand("textbf")}
+          onItalic={() => editor?.toggleCommand("textit")}
+          onHeading={(c) => editor?.heading(c)}
+          onMath={() => editor?.wrapWith("$", "$")}
+          onSymbols={() => (dialog = "symbols")}
+          onLink={() => editor?.insertTemplate("\\href{${https://}}{${}}")}
+          onFigure={() => (dialog = "figure")}
+          onTable={() => (dialog = "table")}
+          onCite={() => (citeOpen = true)}
+          onList={(ordered) => editor?.insertTemplate(`\\begin{${ordered ? "enumerate" : "itemize"}}\n\t\\item \${"{}"}\n\\end{${ordered ? "enumerate" : "itemize"}}`)}
+        />
         {#if openError}
           <div class="err-bar" role="alert">
             <span>{openError}</span>
@@ -1057,6 +1085,31 @@
       editor?.getView()?.focus();
     }}
   />
+{/if}
+
+{#if dialog === "figure" && project}
+  <FigureDialog
+    tree={project.tree}
+    onInsert={(snippet) => editor?.insertSnippet(snippet, "graphicx")}
+    onClose={() => ((dialog = null), editor?.getView()?.focus())}
+  />
+{:else if dialog === "table"}
+  <TableDialog
+    onInsert={(text, needs) => editor?.insertSnippet({ text, cursor: text.length }, needs)}
+    onClose={() => ((dialog = null), editor?.getView()?.focus())}
+  />
+{:else if dialog === "symbols"}
+  <SymbolPalette
+    onInsert={(tex, needs) => {
+      editor?.insertText(tex);
+      if (needs) needsPackage(needs);
+    }}
+    onClose={() => ((dialog = null), editor?.getView()?.focus())}
+  />
+{:else if dialog === "words"}
+  <WordCount onClose={() => (dialog = null)} />
+{:else if dialog === "shortcuts"}
+  <Shortcuts onClose={() => (dialog = null)} />
 {/if}
 
 {#if citeOpen}

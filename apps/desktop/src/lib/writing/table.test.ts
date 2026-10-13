@@ -26,3 +26,39 @@ describe("paste as table", () => {
     expect(f.text.slice(f.cursor - 9, f.cursor)).toBe("\\caption{");
   });
 });
+
+import { figureBlock, tableBlock, slug } from "./table";
+
+describe("insert dialogs", () => {
+  it("builds a figure with caption and a label from it", () => {
+    const f = figureBlock({ path: "figures/a b.png", caption: "Learning curves", label: "", width: 80, placement: "htbp" });
+    expect(f.text).toBe(
+      "\\begin{figure}[htbp]\n  \\centering\n  \\includegraphics[width=0.8\\linewidth]{figures/a b.png}\n  \\caption{Learning curves}\n  \\label{fig:learning-curves}\n\\end{figure}",
+    );
+    expect(f.cursor).toBe(f.text.length);
+  });
+  it("uses full width and keeps an explicit label", () => {
+    const f = figureBlock({ path: "x.png", caption: "", label: "fig:mine", width: 100, placement: "" });
+    expect(f.text).toContain("\\begin{figure}\n");
+    expect(f.text).toContain("width=\\linewidth");
+    expect(f.text).toContain("\\label{fig:mine}");
+    expect(f.text).not.toContain("\\caption");
+  });
+  it("builds a booktabs table", () => {
+    const t = tableBlock({ rows: 3, cols: 2, header: true, booktabs: true, caption: "Results", label: "", });
+    expect(t).toContain("\\begin{tabular}{ll}");
+    expect(t).toContain("Header 1 & Header 2 \\\\");
+    expect(t).toContain("\\midrule");
+    expect(t).toContain("\\label{tab:results}");
+    expect(t.match(/ & +\\\\/g)?.length).toBe(2);
+  });
+  it("builds a ruled table without booktabs", () => {
+    const t = tableBlock({ rows: 1, cols: 3, header: false, booktabs: false, caption: "", label: "" });
+    expect(t).toContain("{|l|l|l|}");
+    expect(t).toContain("\\hline");
+    expect(t).not.toContain("\\caption");
+  });
+  it("slugs", () => {
+    expect(slug("Hello, World!")).toBe("hello-world");
+  });
+});
