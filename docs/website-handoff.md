@@ -11,7 +11,7 @@ Lemmata is a free, open-source LaTeX editor for Linux, macOS and Windows. It giv
 - Audience: students and researchers who write in LaTeX and want to work offline or keep their files local.
 - Requirement: a TeX distribution (TeX Live, or MiKTeX on Windows). The app detects it and walks users through installing it, so the site should present this as a step, not a barrier.
 
-Only describe features listed in §1 of PLAN.md. Don't invent features, numbers, testimonials or user counts.
+Only describe features listed in §1 of PLAN.md and in [guide.md](guide.md). Don't invent features, numbers, testimonials or user counts. Good homepage highlights, in this order: live PDF with click-to-jump; errors explained in plain words with the exact install command for missing packages; citations by DOI, arXiv ID or Zotero; history you can't lose; works offline with your own files. Link the user guide from the footer: `https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md`.
 
 ## Pages
 

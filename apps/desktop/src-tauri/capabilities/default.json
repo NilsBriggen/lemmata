@@ -10,6 +10,17 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "store:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://github.com/NilsBriggen/lemmata/*"
+        },
+        {
+          "url": "https://lemmata.briggen.dev/*"
+        }
+      ]
+    }
   ]
 }

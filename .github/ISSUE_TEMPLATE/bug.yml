@@ -1,0 +1,25 @@
+name: Something doesn't work
+description: A bug, crash or wrong behaviour
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: system
+    attributes:
+      label: System
+      description: Lemmata version, operating system and TeX distribution. "Report a problem" in the command palette (Ctrl+Shift+P) fills this in.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Error message or log excerpt
+      description: If a build failed, paste the message from the Problems panel. Remove anything private.
+      render: text

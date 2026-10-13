@@ -2,11 +2,12 @@
 
 A local-first LaTeX editor: write on the left, see the PDF update on the right, double-click the PDF to jump to the source. Projects are plain folders on your disk, and documents build with the TeX Live (or MiKTeX) already on your computer.
 
-Status: early development (milestone M0). See [docs/PLAN.md](docs/PLAN.md) for the full plan.
+Status: beta. See the [user guide](docs/guide.md) for what it does, and [docs/PLAN.md](docs/PLAN.md) for how it's built.
 
 ## Requirements
 
-- A TeX distribution with `latexmk`, `pdflatex` and `synctex`. The app explains how to install one on first launch, or run `lemmata doctor`.
+- A TeX distribution with `latexmk` and `pdflatex` (plus `synctex` for jumping between PDF and source). The app explains how to install one on first launch, or run `lemmata doctor`.
+- Optional: `git` for history, and Zotero with Better BibTeX for Zotero citations.
 
 ## Developing
 

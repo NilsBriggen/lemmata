@@ -16,6 +16,7 @@ Lemmata is a GPL-3.0 desktop LaTeX editor that gives the Overleaf workflow on yo
 6. [Automatic release builds](#6-automatic-release-builds)
 7. [Testing](#7-testing)
 8. [Risks](#8-risks)
+9. [Changes from the first plan](#9-changes-from-the-first-plan)
 
 ---
 
@@ -25,14 +26,19 @@ Lemmata is a GPL-3.0 desktop LaTeX editor that gives the Overleaf workflow on yo
 
 | Area | Feature |
 |---|---|
-| Projects | Library of recent projects, templates (article, thesis, beamer, CV, letter), Overleaf `.zip` import, optional `lemmata.toml` |
-| Editing | File tree, tabs, document outline, LaTeX highlighting, completion and diagnostics via texlab, word count, spell check |
-| Building | Compile on save through latexmk, pdfLaTeX / XeLaTeX / LuaLaTeX per project, BibTeX and biber |
-| Preview | PDF.js viewer that keeps its position across rebuilds, SyncTeX in both directions |
-| Errors | Log parsed into plain-language messages with file, line and a suggested fix; missing-package prompts with the exact install command |
+| Projects | Library with PDF thumbnails, templates (article, thesis, slides, CV, letter), Overleaf `.zip` import, optional `lemmata.toml`, session restore |
+| Editing | File tree with create/rename/trash, tabs, outline with word counts, LaTeX highlighting, texlab completion/hover/definitions/rename, spell check (en, en-GB, de, de-CH, fr), Vim keys, focus mode |
+| Navigation | Command palette, quick open, project search and replace |
+| Building | Compile on save through latexmk, pdfLaTeX / XeLaTeX / LuaLaTeX per project, BibTeX and biber, `\include` in subfolders |
+| Preview | PDF.js viewer that keeps its position across rebuilds, SyncTeX in both directions, dark pages, math preview in the editor (KaTeX) |
+| Errors | Log parsed into plain-language messages with file, line and a suggested fix; missing-package prompts with the exact install command and an Open terminal button |
+| References | Citation picker, add by DOI or arXiv ID, Zotero via Better BibTeX |
+| Figures and tables | Drag-and-drop and pasted images into `figures/`, spreadsheet paste as booktabs tables, offers to add missing packages |
 | Setup | First-launch TeX Live / MiKTeX detection with per-OS install instructions |
-| History | Snapshots stored in git, history view, diff between snapshots |
+| History | Snapshots on a private git ref, history view, diff, restore |
+| Export | PDF, arXiv-ready zip from the files the build used |
 | Updates | Signed auto-update, stable and beta channels |
+| Support | "Report a problem" opens a prefilled GitHub issue the user reviews first |
 
 ### Not in v1
 
@@ -306,3 +312,22 @@ The weeks assume one developer working full time. The release pipeline skeleton 
 | Old TeX Live on Ubuntu LTS | Warn below 2022, link to the vanilla TeX Live installer |
 | Updater signing key lost or leaked | Offline backup; document key rotation, which needs a manual reinstall |
 | Malicious projects | `--shell-escape` off by default, never execute project-provided scripts |
+
+---
+
+## 9. Changes from the first plan
+
+Decisions that changed during implementation, and why.
+
+| Planned | Built | Why |
+|---|---|---|
+| History via gitoxide | The `git` CLI with a private index file (`crates/lemmata-history`) | Far less code; a separate `GIT_INDEX_FILE` and the private ref `refs/lemmata/snapshots` keep the user's HEAD, branches and staging area untouched. If git is missing, history explains how to get it. |
+| Spell check with nspell in a Web Worker | spellbook (Rust Hunspell) in `crates/lemmata-spell` | nspell rejected correct German compounds ("Übersetzung") and took 1.8 s to load French. spellbook handles compounding and loads every dictionary in under 10 ms. |
+| Swiss German dictionary package | German dictionary + ß→ss rule | The upstream de-CH package still contains ß forms. |
+| Word count via texcount | Own counter sharing rules with spell check (`crates/lemmata-project/src/prose.rs`) | Per-section counts line up with the outline; no dependency on texcount's output format. |
+| Outline from texlab document symbols | Own walk following `\input`/`\include` (`lemmata_project::outline`) | texlab returns symbols per file, so a main file made of `\input`s showed an empty outline. |
+| `synctex` required | Recommended | Minimal TeX Live installs (and GitHub's runners) lack it; building works without it. |
+| MathJax for math preview | KaTeX 0.18 | Smaller and faster; supports the preamble's macros. |
+| Opt-in crash reporting | "Report a problem" with a prefilled GitHub issue | No server needed; the user sees and edits everything before it's sent. |
+| ISBN lookup for references | DOI and arXiv only | arXiv papers have DataCite DOIs, so one doi.org lookup covers both; ISBN services need API keys. |
+

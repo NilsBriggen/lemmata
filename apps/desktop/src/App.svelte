@@ -17,6 +17,9 @@
   import FileActions from "./lib/FileActions.svelte";
   import { save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { loadSession, saveSession } from "./lib/session";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { getVersion } from "@tauri-apps/api/app";
+  import { errorSummary, issueUrl, systemSummary } from "./lib/report";
   import { listen } from "@tauri-apps/api/event";
   import { relaunch } from "@tauri-apps/plugin-process";
   import { loadSettings, settings } from "./lib/settings.svelte";
@@ -49,6 +52,7 @@
   let palette = $state<null | "commands" | "files">(null);
   let searchOpen = $state(false);
   let focusMode = $state(false);
+  let report = $state<{ system: string; log: string } | null>(null);
   let fileActions: FileActions | undefined = $state();
   /** A package a just-inserted snippet needs; offered once per package. */
   let packageOffer = $state<string | null>(null);
@@ -460,6 +464,8 @@
       { id: "export-arxiv", label: "Export for arXiv (.zip)…", run: exportArxiv },
       { id: "project-settings", label: "Project settings", run: () => (settingsOpen = true) },
       { id: "preferences", label: "Preferences", run: () => (prefsOpen = true) },
+      { id: "guide", label: "Open the user guide", run: () => openUrl("https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md") },
+      { id: "report", label: "Report a problem…", run: startReport },
       { id: "close", label: "Close project", run: closeProject },
     ].filter(() => project),
   );
@@ -509,6 +515,11 @@
     } catch (e) {
       showNotice(errorMessage(e));
     }
+  }
+
+  async function startReport() {
+    const version = await getVersion().catch(() => "?");
+    report = { system: systemSummary(version, tex), log: errorSummary(diagnostics) };
   }
 
   function openSearch() {
@@ -809,6 +820,26 @@
   {onTrashed}
 />
 
+{#if report}
+  <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && (report = null)}>
+    <div class="dialog" role="dialog" aria-labelledby="report-title">
+      <h2 id="report-title">Report a problem</h2>
+      <p>This opens a new issue on GitHub with the details below filled in. You can edit everything there before submitting. File paths are left out.</p>
+      <pre class="report">{report.system}{report.log ? `\n\n${report.log}` : ""}</pre>
+      <div class="actions">
+        <button onclick={() => (report = null)}>Cancel</button>
+        <button
+          class="primary"
+          onclick={() => {
+            openUrl(issueUrl(report!.system, report!.log)).catch((e) => showNotice(errorMessage(e)));
+            report = null;
+          }}>Open GitHub</button
+        >
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if palette}
   <Palette
     items={palette === "files" ? fileItems : commandItems}
@@ -942,6 +973,7 @@
   .dialog p { color: var(--muted); margin: 0 0 12px; }
   .dialog ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .dialog li button { width: 100%; text-align: left; font: 13px var(--f-mono); padding: 8px 12px; }
+  .report { background: var(--code-bg); border-radius: 5px; padding: 10px 12px; font: 12px var(--f-mono); white-space: pre-wrap; max-height: 240px; overflow: auto; margin: 0; }
   .toasts { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 20; display: flex; flex-direction: column; gap: 8px; }
   .toast {
     display: flex; gap: 10px; align-items: center; background: var(--sheet); border: 1px solid var(--rule);
