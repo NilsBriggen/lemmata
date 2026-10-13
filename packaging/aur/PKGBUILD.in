@@ -1,0 +1,25 @@
+# Maintainer: Nils Briggen
+# Rendered by .github/workflows/release.yml; edit the template, not the AUR copy.
+pkgname=lemmata-bin
+pkgver=$VERSION
+pkgrel=1
+pkgdesc="Local-first LaTeX editor with live PDF preview and SyncTeX"
+arch=('x86_64' 'aarch64')
+url="https://lemmata.briggen.dev"
+license=('GPL-3.0-only')
+depends=('webkit2gtk-4.1' 'gtk3' 'hicolor-icon-theme')
+optdepends=(
+  'texlive-basic: required to build documents (see the in-app setup for the full list)'
+  'texlive-binextra: latexmk'
+  'biber: biblatex bibliographies'
+)
+provides=('lemmata')
+conflicts=('lemmata')
+source_x86_64=("https://github.com/NilsBriggen/lemmata/releases/download/v${pkgver}/Lemmata_${pkgver}_linux_x86_64.deb")
+source_aarch64=("https://github.com/NilsBriggen/lemmata/releases/download/v${pkgver}/Lemmata_${pkgver}_linux_aarch64.deb")
+sha256sums_x86_64=('$SHA_X86_64')
+sha256sums_aarch64=('$SHA_AARCH64')
+
+package() {
+  bsdtar -xf data.tar.gz -C "${pkgdir}"
+}

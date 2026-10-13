@@ -1,0 +1,211 @@
+name: Release
+
+# Push a tag made by scripts/release.sh (vX.Y.Z or vX.Y.Z-beta.N).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux_x86_64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
+          - label: linux_aarch64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
+          - label: macos_universal
+            runner: macos-14
+            target: universal-apple-darwin
+            bundles: app,dmg
+          - label: windows_x86_64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+    runs-on: ${{ matrix.runner }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Empty until there is an Apple Developer account; Tauri then skips signing.
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag matches the app version
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [[ "v$version" != "$GITHUB_REF_NAME" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version. Use scripts/release.sh."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install Tauri system libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build
+        shell: bash
+        run: |
+          bundles='${{ matrix.bundles }}'
+          # WiX can't version an MSI with a pre-release suffix, so betas ship the NSIS installer only.
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then bundles=${bundles//,msi/}; fi
+          # Updater artifacts need the signing key; build without them until it's configured.
+          config='{}'
+          if [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then config='{"bundle":{"createUpdaterArtifacts":true}}'; fi
+          pnpm --filter lemmata-desktop tauri build --target ${{ matrix.target }} --bundles "$bundles" --config "$config"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.label }}
+          path: target/${{ matrix.target }}/release/bundle/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+      - id: meta
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then echo "prerelease=true"; else echo "prerelease=false"; fi >> "$GITHUB_OUTPUT"
+      - name: Rename assets, write checksums and updater manifest
+        run: python3 -I scripts/finalize-release.py artifacts dist "${{ steps.meta.outputs.version }}" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
+      - name: Release notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: notes.md
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          if [[ "${{ steps.meta.outputs.prerelease }}" == true ]]; then flags+=(--prerelease); else flags+=(--latest); fi
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Lemmata ${{ steps.meta.outputs.version }}" --notes-file notes.md "${flags[@]}"
+
+  aur:
+    needs: publish
+    if: needs.publish.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    env:
+      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Render PKGBUILD
+        if: env.AUR_SSH_KEY != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS.txt
+          export SHA_X86_64=$(grep "_linux_x86_64.deb$" SHA256SUMS.txt | cut -d' ' -f1)
+          export SHA_AARCH64=$(grep "_linux_aarch64.deb$" SHA256SUMS.txt | cut -d' ' -f1)
+          envsubst '$VERSION $SHA_X86_64 $SHA_AARCH64' < packaging/aur/PKGBUILD.in > PKGBUILD
+          cat PKGBUILD
+      - name: Push to the AUR
+        if: env.AUR_SSH_KEY != ''
+        uses: KSXGitHub/github-actions-deploy-aur@v4
+        with:
+          pkgname: lemmata-bin
+          pkgbuild: ./PKGBUILD
+          commit_username: Nils Briggen
+          commit_email: NilsBriggen@users.noreply.github.com
+          ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
+          commit_message: Update to ${{ needs.publish.outputs.version }}
+
+  homebrew:
+    needs: publish
+    if: needs.publish.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    env:
+      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Update the cask in NilsBriggen/homebrew-tap
+        if: env.TAP_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS.txt
+          export SHA_DMG=$(grep "_macos_universal.dmg$" SHA256SUMS.txt | cut -d' ' -f1)
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/NilsBriggen/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          envsubst '$VERSION $SHA_DMG' < packaging/homebrew/lemmata.rb.in > tap/Casks/lemmata.rb
+          cd tap
+          git config user.name "Nils Briggen"
+          git config user.email "NilsBriggen@users.noreply.github.com"
+          git add Casks/lemmata.rb
+          git commit -m "lemmata $VERSION"
+          git push
+
+  winget:
+    needs: publish
+    if: needs.publish.outputs.prerelease == 'false'
+    runs-on: windows-latest
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - name: Open a PR to microsoft/winget-pkgs
+        if: env.WINGET_TOKEN != ''
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: NilsBriggen.Lemmata
+          installers-regex: '_windows_x86_64-setup\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
+
+  website:
+    needs: publish
+    runs-on: ubuntu-latest
+    env:
+      WEBSITE_DISPATCH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+      WEBSITE_REPO: ${{ vars.WEBSITE_REPO }}
+    steps:
+      - name: Ask the website to rebuild
+        if: env.WEBSITE_DISPATCH_TOKEN != '' && env.WEBSITE_REPO != ''
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: gh api "repos/$WEBSITE_REPO/dispatches" -f event_type=release-published -f "client_payload[tag]=$GITHUB_REF_NAME"

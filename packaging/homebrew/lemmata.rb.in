@@ -1,0 +1,25 @@
+# Rendered by .github/workflows/release.yml into NilsBriggen/homebrew-tap.
+cask "lemmata" do
+  version "$VERSION"
+  sha256 "$SHA_DMG"
+
+  url "https://github.com/NilsBriggen/lemmata/releases/download/v#{version}/Lemmata_#{version}_macos_universal.dmg"
+  name "Lemmata"
+  desc "Local-first LaTeX editor with live PDF preview"
+  homepage "https://lemmata.briggen.dev"
+
+  depends_on macos: ">= :catalina"
+
+  app "Lemmata.app"
+
+  caveats <<~EOS
+    Lemmata builds documents with a TeX distribution. If you don't have one:
+      brew install --cask mactex-no-gui
+  EOS
+
+  zap trash: [
+    "~/Library/Application Support/dev.briggen.lemmata",
+    "~/Library/Caches/dev.briggen.lemmata",
+    "~/Library/WebKit/dev.briggen.lemmata",
+  ]
+end
