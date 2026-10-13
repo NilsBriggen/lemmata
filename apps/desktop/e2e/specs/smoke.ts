@@ -96,7 +96,10 @@ describe("Lemmata", () => {
       );
     });
     try {
-      await browser.waitUntil(async () => (await $(".tab.on .name").getText()).includes("method.tex"), { timeout: 15_000 });
+      await browser.waitUntil(
+        () => browser.execute(() => document.querySelector(".tab.on .name")?.textContent?.includes("method.tex") ?? false),
+        { timeout: 15_000 },
+      );
     } catch {
       const seen = await browser.execute(() => ({
         notice: document.querySelector(".t-text")?.textContent ?? null,
