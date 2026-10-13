@@ -7,6 +7,8 @@
   import { unifiedMergeView } from "@codemirror/merge";
   import X from "@lucide/svelte/icons/x";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
+  import Pencil from "@lucide/svelte/icons/pencil";
+  import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import { api, errorMessage, type HistoryStatus, type Snapshot } from "./api";
 
   interface Props {
@@ -15,14 +17,21 @@
     /** Current contents of a file, including unsaved edits. */
     currentText: (path: string) => Promise<string | null>;
     onRestored: (path: string) => void;
+    /** The whole project was put back; reload everything from disk. */
+    onRestoredAll: () => void;
     onClose: () => void;
   }
-  let { version, currentText, onRestored, onClose }: Props = $props();
+  let { version, currentText, onRestored, onRestoredAll, onClose }: Props = $props();
 
   let status = $state<HistoryStatus | null>(null);
   let snapshots = $state<Snapshot[]>([]);
   let openId = $state<string | null>(null);
-  let diffFor = $state<{ id: string; path: string } | null>(null);
+  let diffFor = $state<{ id: string; path: string; other: string | null } | null>(null);
+  /** Compare the open snapshot with another one instead of with the current files. */
+  let compareId = $state<string | null>(null);
+  let compared = $state<Snapshot["changes"]>([]);
+  let editing = $state<{ id: string; text: string } | null>(null);
+  let confirmAll = $state<string | null>(null);
   let error = $state<string | null>(null);
   let confirmRestore = $state(false);
   let diffHost = $state<HTMLDivElement>();
@@ -52,10 +61,17 @@
     }
   }
 
+  $effect(() => {
+    const [a, b] = [openId, compareId];
+    compared = [];
+    if (a && b) api.historyCompare(a, b).then((c) => a === openId && b === compareId && (compared = c)).catch((e) => (error = errorMessage(e)));
+  });
+
   async function showDiff(id: string, path: string) {
-    diffFor = { id, path };
+    const other = compareId;
+    diffFor = { id, path, other };
     confirmRestore = false;
-    const [then, now] = await Promise.all([api.historyFile(id, path), currentText(path)]);
+    const [then, now] = await Promise.all([api.historyFile(id, path), other ? api.historyFile(other, path) : currentText(path)]);
     diffView?.destroy();
     if (!diffHost) return;
     diffView = new EditorView({
@@ -85,6 +101,30 @@
       onRestored(diffFor.path);
       confirmRestore = false;
       diffFor = null;
+      await load();
+    } catch (e) {
+      error = errorMessage(e);
+    }
+  }
+
+  async function saveLabel() {
+    if (!editing) return;
+    const { id, text } = editing;
+    editing = null;
+    if (!text.trim()) return;
+    try {
+      await api.historyRelabel(id, text);
+      await load();
+    } catch (e) {
+      error = errorMessage(e);
+    }
+  }
+
+  async function restoreAll(id: string) {
+    try {
+      await api.historyRestoreAll(id);
+      confirmAll = null;
+      onRestoredAll();
       await load();
     } catch (e) {
       error = errorMessage(e);
@@ -125,7 +165,7 @@
         <button class="btn sm" onclick={() => (confirmRestore = true)}>Restore this version</button>
       {/if}
     </div>
-    <p class="legend">Red lines were in the snapshot, green lines are in the current version.</p>
+    <p class="legend">Red lines were in the snapshot, green lines are in {diffFor.other ? "the other snapshot" : "the current version"}.</p>
     <div class="diff" bind:this={diffHost}></div>
   {:else if snapshots.length === 0}
     <p class="intro">No snapshots yet. The first one is taken after your next save.</p>
@@ -133,13 +173,37 @@
     <ul>
       {#each snapshots as s (s.id)}
         <li>
-          <button class="snap" class:open={openId === s.id} onclick={() => (openId = openId === s.id ? null : s.id)}>
-            <span class="snap-label">{s.label}</span>
+          <button class="snap" class:open={openId === s.id} onclick={() => ((openId = openId === s.id ? null : s.id), (compareId = null), (confirmAll = null))}>
+            {#if editing?.id === s.id}
+              <!-- svelte-ignore a11y_autofocus -->
+              <input class="rename input" bind:value={editing.text} autofocus onclick={(e) => e.stopPropagation()} onkeydown={(e) => (e.stopPropagation(), e.key === "Enter" ? saveLabel() : e.key === "Escape" && (editing = null))} onblur={saveLabel} aria-label="Snapshot name" />
+            {:else}
+              <span class="snap-label">{s.label}</span>
+            {/if}
             <span class="time">{when(s.time)} · {s.changes.length} file{s.changes.length === 1 ? "" : "s"}</span>
           </button>
           {#if openId === s.id}
+            <div class="tools">
+              <button class="btn sm ghost" onclick={() => (editing = { id: s.id, text: s.label })}><Pencil size={13} /> Rename</button>
+              {#if confirmAll === s.id}
+                <span class="confirm">Replace all files? Your current work is saved as a snapshot first.</span>
+                <button class="btn sm" onclick={() => (confirmAll = null)}>Cancel</button>
+                <button class="btn sm primary" onclick={() => restoreAll(s.id)}>Restore</button>
+              {:else}
+                <button class="btn sm ghost" onclick={() => (confirmAll = s.id)}><RotateCcw size={13} /> Restore project</button>
+              {/if}
+              <label class="compare">
+                Compare with
+                <select class="input" bind:value={compareId}>
+                  <option value={null}>this snapshot's own changes</option>
+                  {#each snapshots.filter((o) => o.id !== s.id) as o (o.id)}
+                    <option value={o.id}>{o.label} · {when(o.time)}</option>
+                  {/each}
+                </select>
+              </label>
+            </div>
             <ul class="files">
-              {#each s.changes as c (c.path)}
+              {#each compareId ? compared : s.changes as c (c.path)}
                 <li>
                   <button onclick={() => showDiff(s.id, c.path)}>
                     <i class={c.status}>{c.status === "added" ? "A" : c.status === "deleted" ? "D" : "M"}</i>{c.path}
@@ -174,6 +238,11 @@
   i.added { color: var(--ok); }
   i.deleted { color: var(--error); }
   i.modified { color: var(--warn); }
+  .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .tools .confirm { font-size: 12px; color: var(--ink); }
+  .compare { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .compare .input { max-width: 220px; height: 26px; font-size: 12px; }
+  .rename { height: 24px; font-size: 13px; }
   .diffbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); }
   .diffbar > span { font: 12px var(--f-mono); color: var(--muted); }
   .confirm { color: var(--ink) !important; font-family: var(--f-body) !important; }

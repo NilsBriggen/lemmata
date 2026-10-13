@@ -22,6 +22,7 @@
     onNewFolder: () => void;
     onUpload: () => void;
     onSearch: () => void;
+    onMove: (path: string, folder: string) => void;
   }
   let p: Props = $props();
   let outlineOpen = $state(true);
@@ -39,8 +40,8 @@
       </div>
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="scroll" oncontextmenu={(e) => { e.preventDefault(); p.onContext(null, e.clientX, e.clientY); }}>
-      <Tree entries={p.tree} active={p.active} main={p.main} onOpen={p.onOpen} onContext={(entry, x, y) => p.onContext(entry, x, y)} />
+    <div class="scroll" data-drop="" oncontextmenu={(e) => { e.preventDefault(); p.onContext(null, e.clientX, e.clientY); }}>
+      <Tree entries={p.tree} active={p.active} main={p.main} onOpen={p.onOpen} onContext={(entry, x, y) => p.onContext(entry, x, y)} onMove={p.onMove} />
     </div>
   </section>
   <section class="outline" class:closed={!outlineOpen}>

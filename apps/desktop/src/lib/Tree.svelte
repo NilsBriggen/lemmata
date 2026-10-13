@@ -10,6 +10,7 @@
   import Settings from "@lucide/svelte/icons/settings";
   import File from "@lucide/svelte/icons/file";
   import type { Entry } from "./api";
+  import { dragState, parentOf, startDrag, wasDrag } from "./treeDrag.svelte";
 
   interface Props {
     entries: Entry[];
@@ -19,11 +20,16 @@
     onOpen: (path: string) => void;
     /** Right-click on an entry. */
     onContext?: (entry: Entry, x: number, y: number) => void;
+    /** An entry was dragged onto a folder ("" for the project root). */
+    onMove?: (path: string, folder: string) => void;
   }
-  let { entries, active, main, depth = 0, onOpen, onContext }: Props = $props();
+  let { entries, active, main, depth = 0, onOpen, onContext, onMove }: Props = $props();
   let collapsed = $state<Record<string, boolean>>({});
 
   const editable = (name: string) => /\.(tex|bib|sty|cls|txt|md|toml|bst|tikz|bbx|cbx)$/i.test(name);
+  /** Images and PDFs open in a read-only viewer tab. */
+  const viewable = (name: string) => /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(name);
+  const press = (ev: PointerEvent, e: Entry) => onMove && startDrag(ev, e, onMove);
   const kind = (name: string) =>
     /\.tex$/i.test(name) ? "tex"
     : /\.bib$/i.test(name) ? "bib"
@@ -44,23 +50,34 @@
   {#each entries as e (e.path)}
     <li role="treeitem" aria-selected={e.path === active} aria-expanded={e.is_dir ? !collapsed[e.path] : undefined}>
       {#if e.is_dir}
-        <button class="row" style:padding-left="{8 + depth * 14}px" onclick={() => (collapsed[e.path] = !collapsed[e.path])} oncontextmenu={(ev) => context(ev, e)}>
+        <button
+          class="row"
+          class:drop={dragState.active && dragState.target === e.path}
+          data-drop={e.path}
+          style:padding-left="{8 + depth * 14}px"
+          onclick={() => !wasDrag() && (collapsed[e.path] = !collapsed[e.path])}
+          onpointerdown={(ev) => press(ev, e)}
+          oncontextmenu={(ev) => context(ev, e)}
+        >
           <span class="caret" class:open={!collapsed[e.path]}><ChevronRight size={13} /></span>
           <span class="ico folder">{#if collapsed[e.path]}<Folder size={15} />{:else}<FolderOpen size={15} />{/if}</span>
           <span class="name">{e.name}</span>
         </button>
         {#if !collapsed[e.path]}
-          <Tree entries={e.children} {active} {main} depth={depth + 1} {onOpen} {onContext} />
+          <Tree entries={e.children} {active} {main} depth={depth + 1} {onOpen} {onContext} {onMove} />
         {/if}
       {:else}
         {@const k = kind(e.name)}
         <button
           class="row"
           class:on={e.path === active}
-          class:dim={!editable(e.name)}
+          class:dim={!editable(e.name) && !viewable(e.name)}
+          class:dragging={dragState.active && dragState.path === e.path}
+          data-drop={parentOf(e.path)}
           style:padding-left="{8 + depth * 14 + 15}px"
-          title={editable(e.name) ? e.path : `${e.path} (not a text file)`}
-          onclick={() => editable(e.name) && onOpen(e.path)}
+          title={editable(e.name) || viewable(e.name) ? e.path : `${e.path} (not a text file)`}
+          onclick={() => !wasDrag() && (editable(e.name) || viewable(e.name)) && onOpen(e.path)}
+          onpointerdown={(ev) => press(ev, e)}
           oncontextmenu={(ev) => context(ev, e)}
         >
           <span class="ico {k}">
@@ -74,6 +91,10 @@
   {/each}
 </ul>
 
+{#if depth === 0 && dragState.active}
+  <div class="ghost" style:left="{dragState.x + 12}px" style:top="{dragState.y + 8}px">{dragState.name}</div>
+{/if}
+
 <style>
   ul { list-style: none; margin: 0; padding: 0; }
   .row {
@@ -83,6 +104,9 @@
   }
   .row:hover { background: var(--chrome-hover); }
   .row.on { background: var(--chrome-active); color: #fff; box-shadow: inset 3px 0 var(--accent-on-dark); }
+  .row.drop { background: color-mix(in srgb, var(--accent-on-dark) 28%, transparent); box-shadow: inset 0 0 0 1px var(--accent-on-dark); }
+  .row.dragging { opacity: 0.5; }
+  .ghost { position: fixed; z-index: 60; pointer-events: none; padding: 3px 9px; border-radius: var(--r-sm); background: var(--chrome-3); color: var(--chrome-ink); border: 1px solid var(--chrome-border); font: 12.5px var(--f-body); box-shadow: var(--shadow); }
   .row.dim { color: var(--chrome-muted); cursor: default; }
   .row:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-on-dark); }
   .caret { display: inline-flex; color: var(--chrome-muted); transition: transform 0.12s var(--ease); }

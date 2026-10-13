@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 pub const SNAPSHOT_REF: &str = "refs/lemmata/snapshots";
+/// Renamed snapshots keep their new label as a git note under this ref.
+pub const NOTES_REF: &str = "refs/notes/lemmata";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -172,7 +174,8 @@ impl History {
         let log = self.run(&[
             "log",
             &format!("--max-count={limit}"),
-            "--format=%x1e%H%x1f%ct%x1f%s",
+            &format!("--notes={NOTES_REF}"),
+            "--format=%x1e%H%x1f%ct%x1f%s%x1f%N",
             "--name-status",
             "--no-renames",
             "--root",
@@ -183,34 +186,109 @@ impl History {
         Ok(log.split('\x1e').filter_map(parse_entry).collect())
     }
 
-    /// A file's contents in a snapshot, or `None` if it didn't exist then.
-    pub fn file_at(&self, id: &str, path: &str) -> Result<Option<String>> {
+    /// A file's bytes in a snapshot, or `None` if it didn't exist then.
+    fn bytes_at(&self, id: &str, path: &str) -> Result<Option<Vec<u8>>> {
         let prefix = self.run(&["rev-parse", "--show-prefix"])?;
         let spec = format!("{id}:{}{}", prefix.trim(), path);
         match self.cmd().args(["show", &spec]).output() {
-            Ok(o) if o.status.success() => {
-                Ok(Some(String::from_utf8_lossy(&o.stdout).into_owned()))
-            }
+            Ok(o) if o.status.success() => Ok(Some(o.stdout)),
             _ => Ok(None),
         }
+    }
+
+    /// A file's contents in a snapshot, or `None` if it didn't exist then.
+    pub fn file_at(&self, id: &str, path: &str) -> Result<Option<String>> {
+        Ok(self
+            .bytes_at(id, path)?
+            .map(|b| String::from_utf8_lossy(&b).into_owned()))
+    }
+
+    fn write_back(&self, id: &str, path: &str) -> Result<()> {
+        match self.bytes_at(id, path)? {
+            Some(bytes) => {
+                let dest = self.root.join(path);
+                if let Some(dir) = dest.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                std::fs::write(dest, bytes)?;
+            }
+            None => {
+                let _ = std::fs::remove_file(self.root.join(path));
+            }
+        }
+        Ok(())
     }
 
     /// Puts one file back as it was in a snapshot, after snapshotting the
     /// current state so the restore can be undone.
     pub fn restore_file(&self, id: &str, path: &str) -> Result<()> {
         self.snapshot("Before restoring a file")?;
-        match self.file_at(id, path)? {
-            Some(text) => {
-                let dest = self.root.join(path);
-                if let Some(dir) = dest.parent() {
-                    std::fs::create_dir_all(dir)?;
-                }
-                std::fs::write(dest, text)?;
-            }
-            None => {
-                let _ = std::fs::remove_file(self.root.join(path));
+        self.write_back(id, path)
+    }
+
+    /// Puts the whole project back as it was in a snapshot: files from the
+    /// snapshot are rewritten, files that didn't exist then are removed. The
+    /// current state is snapshotted first, so this can be undone.
+    pub fn restore_all(&self, id: &str) -> Result<usize> {
+        self.snapshot("Before restoring the project")?;
+        let wanted = self.paths(&["ls-tree", "-r", "-z", "--name-only", id, "--", "."])?;
+        let current = self.paths(&["ls-files", "-z", "--", "."])?;
+        let mut changed = 0;
+        for path in &wanted {
+            let now = std::fs::read(self.root.join(path)).ok();
+            if now != self.bytes_at(id, path)? {
+                self.write_back(id, path)?;
+                changed += 1;
             }
         }
+        for path in current.iter().filter(|p| !wanted.contains(p)) {
+            self.write_back(id, path)?;
+            changed += 1;
+        }
+        Ok(changed)
+    }
+
+    fn paths(&self, args: &[&str]) -> Result<Vec<String>> {
+        let out = self.run(args)?;
+        Ok(out
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .map(String::from)
+            .collect())
+    }
+
+    /// What changed going from snapshot `a` to snapshot `b`.
+    pub fn compare(&self, a: &str, b: &str) -> Result<Vec<Change>> {
+        let out = self.run(&[
+            "diff-tree",
+            "-r",
+            "--no-renames",
+            "--name-status",
+            a,
+            b,
+            "--",
+            ".",
+        ])?;
+        Ok(out
+            .lines()
+            .filter_map(|l| {
+                let (status, path) = l.split_once('\t')?;
+                Some(Change {
+                    status: match status {
+                        "A" => "added",
+                        "D" => "deleted",
+                        _ => "modified",
+                    },
+                    path: path.to_string(),
+                })
+            })
+            .collect())
+    }
+
+    /// Gives a snapshot a new label. Snapshots themselves never change; the
+    /// label is kept as a git note.
+    pub fn relabel(&self, id: &str, label: &str) -> Result<()> {
+        self.run(&["notes", "--ref", NOTES_REF, "add", "-f", "-m", label.trim(), id])?;
         Ok(())
     }
 }
@@ -230,7 +308,9 @@ fn parse_entry(entry: &str) -> Option<Snapshot> {
     let mut head = lines.next()?.split('\x1f');
     let id = head.next()?.to_string();
     let time = head.next()?.parse().ok()?;
-    let label = head.next().unwrap_or("").to_string();
+    let subject = head.next().unwrap_or("").to_string();
+    let note = head.next().unwrap_or("").trim().to_string();
+    let label = if note.is_empty() { subject } else { note };
     let changes = lines
         .filter_map(|l| {
             let (status, path) = l.split_once('\t')?;
@@ -372,5 +452,69 @@ mod tests {
             return;
         }
         assert!(matches!(History::open(d.path()), Err(Error::NotARepo(_))));
+    }
+
+    #[test]
+    fn restores_the_whole_project_and_keeps_a_way_back() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(root.join("main.tex"), "one").unwrap();
+        fs::write(root.join("keep.bin"), [0u8, 159, 146, 150]).unwrap();
+        let h = History::init(root).unwrap();
+        let first = h.snapshot("First").unwrap().unwrap();
+
+        fs::write(root.join("main.tex"), "two").unwrap();
+        fs::write(root.join("new.tex"), "extra").unwrap();
+        fs::remove_file(root.join("keep.bin")).unwrap();
+        let second = h.snapshot("Second").unwrap().unwrap();
+        // Unsnapshotted work in progress must survive too.
+        fs::write(root.join("main.tex"), "three").unwrap();
+
+        let changed = h.restore_all(&first).unwrap();
+        assert!(changed >= 3);
+        assert_eq!(fs::read_to_string(root.join("main.tex")).unwrap(), "one");
+        assert!(!root.join("new.tex").exists());
+        assert_eq!(fs::read(root.join("keep.bin")).unwrap(), [0u8, 159, 146, 150]);
+
+        // The state before restoring was saved, so the restore can be undone.
+        let labels: Vec<_> = h.list(10).unwrap().into_iter().map(|s| s.label).collect();
+        assert!(labels.contains(&"Before restoring the project".to_string()));
+        let saved = h.list(10).unwrap()[0].id.clone();
+        assert_eq!(h.file_at(&saved, "main.tex").unwrap().as_deref(), Some("three"));
+        h.restore_all(&second).unwrap();
+        assert_eq!(fs::read_to_string(root.join("main.tex")).unwrap(), "two");
+        assert!(root.join("new.tex").exists());
+    }
+
+    #[test]
+    fn compares_two_snapshots() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(root.join("a.tex"), "1").unwrap();
+        fs::write(root.join("b.tex"), "1").unwrap();
+        let h = History::init(root).unwrap();
+        let first = h.snapshot("First").unwrap().unwrap();
+        fs::write(root.join("a.tex"), "2").unwrap();
+        fs::remove_file(root.join("b.tex")).unwrap();
+        fs::write(root.join("c.tex"), "3").unwrap();
+        let second = h.snapshot("Second").unwrap().unwrap();
+        let mut got = h.compare(&first, &second).unwrap();
+        got.sort_by(|x, y| x.path.cmp(&y.path));
+        let got: Vec<_> = got.iter().map(|c| (c.status, c.path.as_str())).collect();
+        assert_eq!(
+            got,
+            [("modified", "a.tex"), ("deleted", "b.tex"), ("added", "c.tex")]
+        );
+    }
+
+    #[test]
+    fn relabels_a_snapshot() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(root.join("a.tex"), "1").unwrap();
+        let h = History::init(root).unwrap();
+        let id = h.snapshot("Automatic snapshot").unwrap().unwrap();
+        h.relabel(&id, "Sent to supervisor").unwrap();
+        assert_eq!(h.list(5).unwrap()[0].label, "Sent to supervisor");
     }
 }

@@ -6,11 +6,17 @@
   import Upload from "@lucide/svelte/icons/upload";
   import SquarePen from "@lucide/svelte/icons/square-pen";
   import Trash2 from "@lucide/svelte/icons/trash";
+  import Copy from "@lucide/svelte/icons/copy";
+  import Files from "@lucide/svelte/icons/files";
+  import FolderSearch from "@lucide/svelte/icons/folder-search";
+  import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { tick } from "svelte";
   import Modal from "./ui/Modal.svelte";
   import { api, errorMessage, type Entry } from "./api";
 
   interface Props {
+    /** The project folder, for "Show in file manager". */
+    root: string;
     /** Saves any unsaved edits before files move. */
     beforeChange: () => Promise<void>;
     onCreated: (path: string, dir: boolean) => void;
@@ -18,7 +24,7 @@
     onTrashed: (path: string) => void;
     onUpload: (folder: string) => void;
   }
-  let { beforeChange, onCreated, onRenamed, onTrashed, onUpload }: Props = $props();
+  let { root, beforeChange, onCreated, onRenamed, onTrashed, onUpload }: Props = $props();
 
   let menu = $state<{ entry: Entry | null; x: number; y: number } | null>(null);
   let menuEl = $state<HTMLDivElement>();
@@ -26,6 +32,7 @@
     | { kind: "new"; dir: boolean; folder: string; name: string }
     | { kind: "rename"; entry: Entry; name: string; refs: { file: string; line: number; text: string }[]; update: boolean }
     | { kind: "trash"; entry: Entry }
+    | { kind: "move"; entry: Entry; folder: string; refs: { file: string; line: number; text: string }[]; update: boolean }
     | null
   >(null);
   let error = $state<string | null>(null);
@@ -54,6 +61,52 @@
     dialog = { kind: "rename", entry, name: entry.name, refs, update: refs.length > 0 };
   }
 
+  /** Dragging an entry onto a folder asks first when other files point at it. */
+  export async function move(from: string, folder: string) {
+    error = null;
+    const name = from.split("/").pop()!;
+    const refs = await api.findReferences(from).catch(() => []);
+    const entry = { name, path: from, is_dir: false, children: [] } as Entry;
+    if (!refs.length) {
+      try {
+        await beforeChange();
+        const to = join(folder, name);
+        await api.renamePath(from, to, false);
+        onRenamed(from, to);
+      } catch (err) {
+        dialog = { kind: "move", entry, folder, refs, update: false };
+        error = errorMessage(err);
+      }
+      return;
+    }
+    dialog = { kind: "move", entry, folder, refs, update: true };
+  }
+
+  async function duplicate(entry: Entry) {
+    await beforeChange();
+    const dot = entry.name.lastIndexOf(".");
+    const [stem, ext] = !entry.is_dir && dot > 0 ? [entry.name.slice(0, dot), entry.name.slice(dot)] : [entry.name, ""];
+    const dir = parentOf(entry.path);
+    for (let i = 1; i < 50; i++) {
+      const copy = join(dir, `${stem} copy${i > 1 ? ` ${i}` : ""}${ext}`);
+      try {
+        await api.copyPath(entry.path, copy);
+        onCreated(copy, entry.is_dir);
+        return;
+      } catch (err) {
+        if (!errorMessage(err).includes("already exists")) {
+          error = errorMessage(err);
+          return;
+        }
+      }
+    }
+  }
+
+  const absolute = (rel: string) => {
+    const sep = root.includes("\\") ? "\\" : "/";
+    return `${root.replace(/[\\/]+$/, "")}${sep}${rel.split("/").join(sep)}`;
+  };
+
   function choose(action: () => void) {
     menu = null;
     error = null;
@@ -71,6 +124,10 @@
         const path = join(dialog.folder, dialog.dir || name.includes(".") ? name : `${name}.tex`);
         await api.createPath(path, dialog.dir);
         onCreated(path, dialog.dir);
+      } else if (dialog.kind === "move") {
+        const to = join(dialog.folder, dialog.entry.name);
+        await api.renamePath(dialog.entry.path, to, dialog.update);
+        onRenamed(dialog.entry.path, to);
       } else if (dialog.kind === "rename") {
         const to = join(parentOf(dialog.entry.path), dialog.name.trim());
         await api.renamePath(dialog.entry.path, to, dialog.update);
@@ -86,7 +143,7 @@
   }
 
   const title = $derived(
-    !dialog ? "" : dialog.kind === "new" ? (dialog.dir ? "New folder" : "New file") : dialog.kind === "rename" ? `Rename ${dialog.entry.name}` : `Move ${dialog.entry.name} to the trash?`,
+    !dialog ? "" : dialog.kind === "new" ? (dialog.dir ? "New folder" : "New file") : dialog.kind === "move" ? `Move ${dialog.entry.name}` : dialog.kind === "rename" ? `Rename ${dialog.entry.name}` : `Move ${dialog.entry.name} to the trash?`,
   );
 </script>
 
@@ -101,6 +158,9 @@
     {#if target}
       <hr />
       <button role="menuitem" onclick={() => choose(() => startRename(target))}><SquarePen size={15} /> Rename…</button>
+      <button role="menuitem" onclick={() => choose(() => duplicate(target))}><Files size={15} /> Duplicate</button>
+      <button role="menuitem" onclick={() => choose(() => navigator.clipboard?.writeText(target.path).catch(() => {}))}><Copy size={15} /> Copy path</button>
+      <button role="menuitem" onclick={() => choose(() => revealItemInDir(absolute(target.path)).catch(() => {}))}><FolderSearch size={15} /> Show in file manager</button>
       <button role="menuitem" class="danger" onclick={() => choose(() => (dialog = { kind: "trash", entry: target }))}><Trash2 size={15} /> Move to trash…</button>
     {/if}
   </div>
@@ -131,6 +191,17 @@
             {#each dialog.refs as r (r.file + r.line)}<li><code>{r.file}:{r.line}</code> {r.text}</li>{/each}
           </ul>
         {/if}
+      {:else if dialog.kind === "move"}
+        <p class="muted">Move <b>{dialog.entry.path}</b> to {dialog.folder || "the project folder"}.</p>
+        {#if dialog.refs.length}
+          <label class="check" for="fa-refs-mv">
+            <input id="fa-refs-mv" type="checkbox" bind:checked={dialog.update} />
+            Also update {dialog.refs.length} reference{dialog.refs.length === 1 ? "" : "s"} to it
+          </label>
+          <ul class="refs">
+            {#each dialog.refs as r (r.file + r.line)}<li><code>{r.file}:{r.line}</code> {r.text}</li>{/each}
+          </ul>
+        {/if}
       {:else}
         <p class="muted">You can restore it from your system's trash.</p>
       {/if}
@@ -139,7 +210,7 @@
     {#snippet footer()}
       <button class="btn" onclick={() => (dialog = null)}>Cancel</button>
       <button class="btn primary" class:danger-btn={dialog?.kind === "trash"} type="submit" form="file-action">
-        {dialog?.kind === "new" ? "Create" : dialog?.kind === "rename" ? "Rename" : "Move to trash"}
+        {dialog?.kind === "new" ? "Create" : dialog?.kind === "rename" ? "Rename" : dialog?.kind === "move" ? "Move" : "Move to trash"}
       </button>
     {/snippet}
   </Modal>

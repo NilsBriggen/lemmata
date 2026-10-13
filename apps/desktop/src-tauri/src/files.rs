@@ -184,6 +184,57 @@ pub fn create_path(state: State<AppState>, path: String, dir: bool) -> CmdResult
     }
 }
 
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let dest = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &dest)?;
+        } else {
+            std::fs::copy(entry.path(), dest)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies a file or folder inside the project.
+#[tauri::command]
+pub fn copy_path(state: State<AppState>, from: String, to: String) -> CmdResult<()> {
+    let p = project(&state)?;
+    let (src, dest) = (p.root.join(safe_rel(&from)?), p.root.join(safe_rel(&to)?));
+    if dest.exists() {
+        return Err(format!("{to} already exists."));
+    }
+    if src.is_dir() {
+        if dest.starts_with(&src) {
+            return Err("A folder can't be copied into itself.".into());
+        }
+        copy_dir(&src, &dest).map_err(err)
+    } else {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(err)?;
+        }
+        std::fs::copy(&src, &dest).map(|_| ()).map_err(err)
+    }
+}
+
+const MAX_BINARY: u64 = 64 * 1024 * 1024;
+
+/// A project file's bytes, for the image and PDF viewers.
+#[tauri::command]
+pub fn read_binary(state: State<AppState>, path: String) -> CmdResult<tauri::ipc::Response> {
+    let p = project(&state)?;
+    let full = p.root.join(safe_rel(&path)?);
+    let size = std::fs::metadata(&full).map_err(|e| format!("Could not open {path}: {e}"))?.len();
+    if size > MAX_BINARY {
+        return Err(format!("{path} is too large to preview."));
+    }
+    std::fs::read(&full)
+        .map(tauri::ipc::Response::new)
+        .map_err(|e| format!("Could not open {path}: {e}"))
+}
+
 /// Moves a file or folder to the system trash, so it can be recovered.
 #[tauri::command]
 pub fn trash_path(state: State<AppState>, path: String) -> CmdResult<()> {
@@ -414,5 +465,14 @@ mod tests {
         assert!(safe_rel("/etc/passwd").is_err());
         assert!(safe_rel("a/../../b").is_err());
         assert!(safe_rel("chapters/a.tex").is_ok());
+    }
+
+    #[test]
+    fn copies_folders_recursively() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("a/b")).unwrap();
+        std::fs::write(d.path().join("a/b/x.tex"), "x").unwrap();
+        copy_dir(&d.path().join("a"), &d.path().join("copy")).unwrap();
+        assert_eq!(std::fs::read_to_string(d.path().join("copy/b/x.tex")).unwrap(), "x");
     }
 }

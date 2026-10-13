@@ -65,3 +65,22 @@ pub fn history_file(state: State<AppState>, id: String, path: String) -> CmdResu
 pub fn history_restore(state: State<AppState>, id: String, path: String) -> CmdResult<()> {
     open(&state)?.restore_file(&id, &path).map_err(err)
 }
+
+#[tauri::command]
+pub fn history_restore_all(state: State<AppState>, id: String) -> CmdResult<usize> {
+    open(&state)?.restore_all(&id).map_err(err)
+}
+
+#[tauri::command]
+pub fn history_compare(
+    state: State<AppState>,
+    a: String,
+    b: String,
+) -> CmdResult<Vec<lemmata_history::Change>> {
+    open(&state)?.compare(&a, &b).map_err(err)
+}
+
+#[tauri::command]
+pub fn history_relabel(state: State<AppState>, id: String, label: String) -> CmdResult<()> {
+    open(&state)?.relabel(&id, &label).map_err(err)
+}

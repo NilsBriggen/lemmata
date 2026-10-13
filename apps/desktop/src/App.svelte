@@ -25,6 +25,8 @@
   import WordCount from "./lib/WordCount.svelte";
   import Shortcuts from "./lib/Shortcuts.svelte";
   import EditorToolbar from "./lib/EditorToolbar.svelte";
+  import TabStrip from "./lib/TabStrip.svelte";
+  import FileViewer from "./lib/FileViewer.svelte";
   import { display, keysOf, matches } from "./lib/shortcuts";
   import Palette, { type PaletteItem } from "./lib/Palette.svelte";
   import { ENVIRONMENTS } from "./lib/editor/data";
@@ -86,6 +88,7 @@
   /** Label input for a manual snapshot (Ctrl+Shift+S); null when closed. */
   let snapshotLabel = $state<string | null>(null);
   let lastSnapshot = Date.now();
+  let editedSinceSnapshot = false;
   const AUTO_SNAPSHOT_MS = 10 * 60 * 1000;
   let lastThumbnail = 0;
 
@@ -226,7 +229,15 @@
     }, 150);
   }
 
+  const isViewer = (p: string) => /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(p);
+  const viewerActive = $derived(!!active && isViewer(active));
+
   async function openFile(path: string) {
+    if (isViewer(path)) {
+      if (!tabs.includes(path)) tabs = [...tabs, path];
+      active = path;
+      return;
+    }
     let text = contents.get(path);
     if (text === undefined) {
       try {
@@ -273,7 +284,9 @@
       if (build) runBuild();
       if (path.endsWith(".tex")) refreshOutline();
       if (path === project?.main) setMathMacros(text);
-      if (Date.now() - lastSnapshot > AUTO_SNAPSHOT_MS) takeSnapshot("Automatic snapshot");
+      editedSinceSnapshot = true;
+      // The first save of a session takes a snapshot; later ones follow the timer.
+      if (lastSnapshot === 0) takeSnapshot("Automatic snapshot");
     } catch (e) {
       openError = errorMessage(e);
     }
@@ -429,7 +442,20 @@
   }
 
   async function dropFiles(paths: string[], x: number, y: number) {
-    if (!project || !active?.endsWith(".tex")) return;
+    if (!project) return;
+    // Dropped on a folder (or file) in the tree: add the files there.
+    const row = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-drop]");
+    if (row) {
+      try {
+        const added = await api.addFiles(paths, row.dataset.drop ?? "");
+        await refreshTree();
+        showNotice(`Added ${added.length} file${added.length === 1 ? "" : "s"}.`, { tone: "ok" });
+      } catch (e) {
+        showNotice(errorMessage(e));
+      }
+      return;
+    }
+    if (!active?.endsWith(".tex")) return;
     const pos = editor?.posAtPoint(x, y) ?? undefined;
     for (const p of paths) {
       try {
@@ -442,8 +468,29 @@
     refreshTree();
   }
 
+  /** After a whole-project restore: drop every cached file and reopen the tabs. */
+  async function onRestoredAll() {
+    const reopen = [...tabs];
+    const wasActive = active;
+    for (const p of reopen) {
+      contents.delete(p);
+      editor?.forget(p);
+      dirty[p] = false;
+    }
+    tabs = [];
+    active = null;
+    await refreshTree();
+    for (const p of reopen) {
+      if (allFiles(project?.tree ?? []).includes(p)) await openFile(p);
+    }
+    if (wasActive && tabs.includes(wasActive)) await openFile(wasActive);
+    refreshOutline();
+    runBuild();
+  }
+
   async function takeSnapshot(label: string) {
     lastSnapshot = Date.now();
+    editedSinceSnapshot = false;
     try {
       if (await api.historySnapshot(label)) historyVersion++;
     } catch {
@@ -809,6 +856,10 @@
         }
       })
       .catch(() => {});
+    // Snapshots on a timer while there are unsnapshotted edits.
+    setInterval(() => {
+      if (project && editedSinceSnapshot && Date.now() - lastSnapshot > AUTO_SNAPSHOT_MS) takeSnapshot("Automatic snapshot");
+    }, 60_000);
     listen<string[]>("files-changed", (e) => onFilesChanged(e.payload)).catch(() => {});
     await loadSettings();
     appliedEditor = "";
@@ -948,6 +999,7 @@
               onNewFolder={() => fileActions?.newItem(true)}
               onUpload={() => uploadFiles()}
               onSearch={openSearch}
+              onMove={(path, folder) => fileActions?.move(path, folder)}
             />
           {/if}
         </div>
@@ -962,17 +1014,8 @@
       {/if}
 
       <section class="code" class:hidden={!showEditor}>
-        <div class="tabs">
-          {#each tabs as t (t)}
-            <div class="tab" class:on={t === active}>
-              <button class="name" onclick={() => openFile(t)} title={t}>
-                {t.split("/").pop()}
-              </button>
-              <button class="x" class:dirty={dirty[t]} aria-label={dirty[t] ? `${t} has unsaved changes; close` : `Close ${t}`} onclick={() => closeTab(t)}>
-                <span class="dot"></span><X size={13} />
-              </button>
-            </div>
-          {/each}
+        <div class="tabstrip">
+          <TabStrip {tabs} {active} {dirty} onSelect={openFile} onClose={closeTab} onReorder={(next) => (tabs = next)} />
         </div>
         <EditorToolbar
           disabled={!active || !/\.(tex|sty|cls)$/.test(active)}
@@ -993,7 +1036,10 @@
             <button class="btn ghost icon sm" aria-label="Dismiss" onclick={() => (openError = null)}><X size={14} /></button>
           </div>
         {/if}
-        <div class="cm">
+        {#if viewerActive && active}
+          <div class="cm">{#key active}<FileViewer path={active} />{/key}</div>
+        {/if}
+        <div class="cm" class:hidden={viewerActive}>
           <Editor
             bind:this={editor}
             {onChange}
@@ -1054,7 +1100,7 @@
             />
           </div>
           {#if historyOpen}
-            <div class="fill"><HistoryPanel version={historyVersion} {currentText} {onRestored} onClose={() => (historyOpen = false)} /></div>
+            <div class="fill"><HistoryPanel version={historyVersion} {currentText} {onRestored} {onRestoredAll} onClose={() => (historyOpen = false)} /></div>
           {/if}
         </div>
       {/if}
@@ -1084,6 +1130,7 @@
 {/if}
 
 <FileActions
+  root={project?.root ?? ""}
   bind:this={fileActions}
   beforeChange={saveAll}
   onCreated={async (path, dir) => {
@@ -1227,21 +1274,6 @@
 
   .code { flex: 1; display: flex; flex-direction: column; min-width: 280px; background: var(--code-bg); }
   .code.hidden { display: none; }
-  .tabs { display: flex; height: 36px; background: var(--surface-2); border-bottom: 1px solid var(--border); overflow-x: auto; flex: none; scrollbar-width: none; }
-  .tab { display: flex; align-items: center; border-right: 1px solid var(--border); position: relative; max-width: 220px; }
-  .tab.on { background: var(--code-bg); }
-  .tab.on::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--code-bg); }
-  .tab.on::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); }
-  .tab button { border: none; background: none; }
-  .tab .name { font: 13px var(--f-body); color: var(--muted); padding: 0 4px 0 14px; height: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tab.on .name { color: var(--ink); }
-  .tab .x { width: 26px; height: 26px; margin-right: 4px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--faint); position: relative; }
-  .tab .x :global(svg) { opacity: 0; grid-area: 1 / 1; }
-  .tab .x .dot { grid-area: 1 / 1; width: 7px; height: 7px; border-radius: 50%; background: transparent; }
-  .tab .x.dirty .dot { background: var(--accent); }
-  .tab:hover .x :global(svg), .tab.on .x:not(.dirty) :global(svg), .tab .x:focus-visible :global(svg) { opacity: 1; }
-  .tab:hover .x .dot, .tab .x:focus-visible .dot { opacity: 0; }
-  .tab .x:hover { background: var(--surface-3); color: var(--ink); }
   .cm { flex: 1; min-height: 0; }
   .err-bar { display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 14px; background: var(--error-soft); color: var(--error); border-bottom: 1px solid var(--border); }
   .err-bar span { flex: 1; }
@@ -1261,7 +1293,8 @@
   .fill.hidden { visibility: hidden; }
 
   /* Focus mode: only the editor, as a centred column. */
-  .panes.focus .tabs { display: none; }
+  .panes.focus .tabstrip { display: none; }
+  .cm.hidden { display: none; }
   .panes.focus .code :global(.cm-content) { max-width: 88ch; margin: 0 auto; }
 
   .toasts { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 45; display: flex; flex-direction: column; gap: 8px; }
