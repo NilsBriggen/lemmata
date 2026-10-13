@@ -582,7 +582,7 @@
       await openFile(hit.path);
       editor?.gotoLine(hit.line);
     } catch (e) {
-      console.warn("synctex backward", e);
+      showNotice(`Couldn't jump to the source: ${errorMessage(e)}`);
     }
   }
 

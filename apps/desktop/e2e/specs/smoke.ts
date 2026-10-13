@@ -95,9 +95,15 @@ describe("Lemmata", () => {
         new MouseEvent("dblclick", { bubbles: true, clientX: r.left + r.width * 0.34, clientY: r.top + r.height * 0.36 }),
       );
     });
-    await browser.waitUntil(async () => (await $(".tab.on .name").getText()).includes("method.tex"), {
-      timeout: 15_000,
-      timeoutMsg: "the editor didn't open the source file",
-    });
+    try {
+      await browser.waitUntil(async () => (await $(".tab.on .name").getText()).includes("method.tex"), { timeout: 15_000 });
+    } catch {
+      const seen = await browser.execute(() => ({
+        notice: document.querySelector(".t-text")?.textContent ?? null,
+        tab: document.querySelector(".tab.on .name")?.textContent?.trim() ?? null,
+        status: document.querySelector(".status")?.textContent?.replace(/\s+/g, " ") ?? null,
+      }));
+      throw new Error(`the editor didn't open the source file: ${JSON.stringify(seen)}`);
+    }
   });
 });
