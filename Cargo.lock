@@ -2301,6 +2301,8 @@ dependencies = [
  "lemmata-log",
  "lemmata-project",
  "lemmata-tex",
+ "notify",
+ "notify-debouncer-mini",
  "serde_json",
  "tokio",
 ]

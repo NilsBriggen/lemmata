@@ -26,6 +26,8 @@
   import Shortcuts from "./lib/Shortcuts.svelte";
   import EditorToolbar from "./lib/EditorToolbar.svelte";
   import TabStrip from "./lib/TabStrip.svelte";
+  import DropMenu from "./lib/ui/DropMenu.svelte";
+  import Bell from "@lucide/svelte/icons/bell";
   import FileViewer from "./lib/FileViewer.svelte";
   import { display, keysOf, matches } from "./lib/shortcuts";
   import Palette, { type PaletteItem } from "./lib/Palette.svelte";
@@ -94,6 +96,7 @@
 
   let building = $state(false);
   let outcome = $state<Outcome | null>(null);
+  let lastCompiled = $state(0);
   let diagnostics = $state<Diagnostic[]>([]);
   /** Logs replace the PDF in the right pane, like Overleaf's logs view. */
   let logsOpen = $state(false);
@@ -104,6 +107,12 @@
   let cursor = $state<{ file: string; line: number }>({ file: "", line: 1 });
   let lsp: LanguageServer | null = null;
   let lspAvailable = $state(true);
+  let lspStarting = $state(false);
+  /** Recent notices, so a toast that disappeared can still be read. */
+  let notices = $state<{ text: string; time: number }[]>([]);
+  let noticesOpen = $state(false);
+  let bellBtn = $state<HTMLButtonElement>();
+  let seenNotices = $state(0);
   /** Mirrors spell.language, which isn't reactive by itself. */
   let spellLang = $state("off");
   let outlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -194,10 +203,12 @@
 
   async function startLsp(root: string) {
     lsp?.stop();
+    lspStarting = true;
     lsp = await startLanguageServer(root, async (rel) => {
       await openFile(rel);
       return editor?.getView() ?? null;
     });
+    lspStarting = false;
     lspAvailable = lsp !== null;
     editor?.setLanguageServer(lsp ? lsp.extensions : null);
   }
@@ -303,6 +314,7 @@
       const result = await api.build();
       if (seq !== buildSeq || result.status === "cancelled") return;
       outcome = result;
+      lastCompiled = Date.now();
       diagnostics = result.diagnostics;
       editor?.showDiagnostics(diagnostics);
       // Like Overleaf: a failed build with no PDF opens the logs.
@@ -344,6 +356,7 @@
   /** `extra` is either an action button or just a tone. */
   function showNotice(text: string, extra?: { label: string; run: () => void } | { tone: "ok" | "info" }) {
     clearTimeout(noticeTimer);
+    notices = [{ text, time: Date.now() }, ...notices].slice(0, 30);
     notice = extra && "label" in extra ? { text, action: extra } : { text, tone: extra?.tone };
     noticeTimer = setTimeout(() => (notice = null), 8000);
   }
@@ -1058,16 +1071,19 @@
           {#if selectionWords}<span title="Words in the selection">{selectionWords} selected</span>{/if}
           {#if active}<span>{dirty[active] ? "Unsaved" : "Saved"}</span>{/if}
           <span class="grow"></span>
-          {#if !lspAvailable}<span title="texlab wasn't found, so completion and hover are off">No completion</span>{/if}
+          {#if lspStarting}<span class="starting" title="The language server is starting"><span class="spin-dot"></span>Starting completion</span>{:else if !lspAvailable}<span title="texlab wasn't found, so completion and hover are off">No completion</span>{/if}
           {#if tex.detection.outdated}<span class="warn" title="Some packages may lack newer features">Old TeX Live</span>{/if}
           {#if spellLang !== "off"}<span title="Spell-check language">{spellLang}</span>{/if}
           {#if totalWords}<span title="Words in the document body, without commands, maths or comments">{words.format(totalWords)} words</span>{/if}
           <span>{project.config.engine === "pdflatex" ? "pdfLaTeX" : project.config.engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"}</span>
           {#if outcome && !building}
-            <span class={outcome.status === "success" ? "ok" : "bad"}>
+            <span class={outcome.status === "success" ? "ok" : "bad"} title={lastCompiled ? `Finished at ${new Date(lastCompiled).toLocaleTimeString()}` : undefined}>
               {outcome.status === "success" ? `Compiled in ${(outcome.duration_ms / 1000).toFixed(1)} s` : outcome.status === "timeout" ? "Stopped: took too long" : errors ? `${errors} error${errors === 1 ? "" : "s"}` : "Compile failed"}
             </span>
           {/if}
+          <button class="bell" bind:this={bellBtn} aria-label="Recent notifications" title="Recent notifications" onclick={() => ((noticesOpen = !noticesOpen), (seenNotices = notices.length))}>
+            <Bell size={13} />{#if notices.length > seenNotices}<span class="pip"></span>{/if}
+          </button>
         </footer>
       </section>
 
@@ -1106,6 +1122,18 @@
       {/if}
     </div>
   </div>
+{/if}
+
+{#if noticesOpen && bellBtn}
+  <DropMenu anchor={bellBtn} align="end" onClose={() => (noticesOpen = false)}>
+    <div class="notices">
+      {#each notices as n (n.time + n.text)}
+        <p><time>{new Date(n.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time> {n.text}</p>
+      {:else}
+        <p class="none">Nothing yet.</p>
+      {/each}
+    </div>
+  </DropMenu>
 {/if}
 
 {#if packageOffer || notice}
@@ -1295,6 +1323,15 @@
   /* Focus mode: only the editor, as a centred column. */
   .panes.focus .tabstrip { display: none; }
   .cm.hidden { display: none; }
+  .bell { position: relative; border: none; background: none; color: var(--muted); padding: 0 4px; display: inline-flex; align-items: center; }
+  .bell:hover { color: var(--ink); }
+  .bell .pip { position: absolute; top: -1px; right: 1px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .notices { max-width: 360px; max-height: 280px; overflow: auto; padding: 4px 10px; }
+  .notices p { margin: 6px 0; font-size: 12.5px; line-height: 1.4; }
+  .notices time { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .notices .none { color: var(--muted); }
+  .starting { display: inline-flex; align-items: center; gap: 6px; }
+  .spin-dot { width: 8px; height: 8px; border: 1.5px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
   .panes.focus .code :global(.cm-content) { max-width: 88ch; margin: 0 auto; }
 
   .toasts { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 45; display: flex; flex-direction: column; gap: 8px; }

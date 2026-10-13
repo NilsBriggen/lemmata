@@ -1,11 +1,11 @@
-//! `lemmata build | doctor`: the build tools without the GUI.
+//! `lemmata build | watch | doctor`: the build tools without the GUI.
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use lemmata_log::Severity;
 use lemmata_project::Project;
 use lemmata_tex::{BuildOptions, Status};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -29,6 +29,15 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Compile now, then again whenever a file in the project changes.
+    Watch {
+        /// Project folder.
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// Print diagnostics as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Check the TeX installation.
     Doctor,
 }
@@ -37,7 +46,14 @@ enum Cmd {
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Cmd::Doctor => doctor(),
-        Cmd::Build { dir, json } => build(dir, json).await,
+        Cmd::Build { dir, json } => {
+            let outcome = build(&dir, json).await?;
+            if outcome.status != Status::Success {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Cmd::Watch { dir, json } => watch(dir, json).await,
     }
 }
 
@@ -73,8 +89,58 @@ fn doctor() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn build(dir: PathBuf, json: bool) -> anyhow::Result<()> {
-    let project = Project::open(&dir).with_context(|| format!("opening {}", dir.display()))?;
+/// Keeps rebuilding while the project changes. Ctrl+C stops it.
+async fn watch(dir: PathBuf, json: bool) -> anyhow::Result<()> {
+    use notify::RecursiveMode;
+    use notify_debouncer_mini::new_debouncer;
+    use std::time::Duration;
+
+    let root = Project::open(&dir)
+        .with_context(|| format!("opening {}", dir.display()))?
+        .root;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut debouncer = new_debouncer(Duration::from_millis(400), move |res| {
+        let _ = tx.send(res);
+    })?;
+    debouncer.watcher().watch(&root, RecursiveMode::Recursive)?;
+
+    // A failing build isn't fatal here: the next edit may fix it.
+    let mut last_build = std::time::SystemTime::now();
+    build(&dir, json).await?;
+    eprintln!(
+        "Watching {} for changes. Press Ctrl+C to stop.",
+        root.display()
+    );
+    while let Some(res) = rx.recv().await {
+        let Ok(events) = res else { continue };
+        // Reading a file during a build also raises an event, so only files
+        // modified since the last build started count. Edits to hidden files
+        // (.git, .lemmata) and our own temp files don't count either.
+        let relevant = events.iter().any(|e| {
+            let modified = std::fs::metadata(&e.path)
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t > last_build);
+            modified
+                && e.path.strip_prefix(&root).is_ok_and(|rel| {
+                    // The folder itself (its timestamp moves when a build starts) isn't a change.
+                    rel.components().next().is_some()
+                        && !rel
+                            .components()
+                            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+                        && !rel.to_string_lossy().ends_with(".lemmata-tmp")
+                })
+        });
+        if relevant {
+            eprintln!("\nChange detected, rebuilding…");
+            last_build = std::time::SystemTime::now();
+            build(&dir, json).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn build(dir: &Path, json: bool) -> anyhow::Result<lemmata_tex::Outcome> {
+    let project = Project::open(dir).with_context(|| format!("opening {}", dir.display()))?;
     let det = lemmata_tex::detect(&[]);
     let Some(latexmk) = det.tool("latexmk") else {
         bail!("latexmk not found. Run `lemmata doctor` for install instructions.");
@@ -117,8 +183,5 @@ async fn build(dir: PathBuf, json: bool) -> anyhow::Result<()> {
             None => println!("no PDF written ({} ms)", outcome.duration_ms),
         }
     }
-    if outcome.status != Status::Success {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(outcome)
 }
