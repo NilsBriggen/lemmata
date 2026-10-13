@@ -75,14 +75,14 @@ describe("Lemmata", () => {
   it("jumps from the PDF to the source", async () => {
     await openProject(path.join(fixtures, "article"));
     await $(".pages .page canvas").waitForExist({ timeout: 90_000 });
-    // The first page's body text comes from chapters/method.tex. The point is
+    // On the first page, the text between 31% and 40% of the height comes from chapters/method.tex (checked with `synctex edit`). The point is
     // given as a share of the page, so the click works however the pane is sized.
     await browser.execute(() => {
       const page = document.querySelector(".pages .page") as HTMLElement;
       page.scrollIntoView({ block: "start" });
       const r = page.getBoundingClientRect();
       page.dispatchEvent(
-        new MouseEvent("dblclick", { bubbles: true, clientX: r.left + r.width * 0.3, clientY: r.top + r.height * 0.144 }),
+        new MouseEvent("dblclick", { bubbles: true, clientX: r.left + r.width * 0.34, clientY: r.top + r.height * 0.36 }),
       );
     });
     await browser.waitUntil(async () => (await $(".tab.on .name").getText()).includes("method.tex"), {

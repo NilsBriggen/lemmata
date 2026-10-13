@@ -1,0 +1,69 @@
+\documentclass[11pt]{article}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Fill in your details here; the rest of this block can stay as it is.
+\newcommand{\studentname}{Your Name}
+\newcommand{\course}{Course Name}
+\newcommand{\sheet}{Homework 1}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amsthm,amssymb,amsfonts}
+\usepackage{graphicx,booktabs,colortbl,float}
+\usepackage{xcolor}
+\usepackage{mdframed}
+\usepackage[shortlabels]{enumitem}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue, filecolor=magenta, urlcolor=blue}
+
+% Running header and page number
+\pagestyle{fancy}
+\setlength{\headheight}{14pt}
+\lhead{\studentname}
+\chead{\textbf{\sheet}}
+\rhead{\course}
+\cfoot{\thepage}
+
+% A shaded box for the task: \begin{problem}{1} ... \end{problem}
+% Use \begin{problem}[Exercise]{2a} for a different label.
+\newenvironment{problem}[2][Problem]
+    {\begin{mdframed}[backgroundcolor=gray!12, linecolor=gray!45, linewidth=0.5pt,
+        innertopmargin=8pt, innerbottommargin=8pt, skipabove=1.2\baselineskip, skipbelow=0.4\baselineskip]
+     \textbf{#1 #2}\par\smallskip\noindent}
+    {\end{mdframed}}
+
+% Your answer: \begin{solution} ... \end{solution}
+\newenvironment{solution}
+    {\par\noindent\textbf{Solution.}\ }
+    {\par\bigskip}
+
+% Short forms for common number sets
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\Z}{\mathbb{Z}}
+\newcommand{\Q}{\mathbb{Q}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\C}{\mathbb{C}}
+
+\begin{document}
+
+\begin{problem}{1}
+    Show that $\sqrt{2}$ is irrational.
+\end{problem}
+
+\begin{solution}
+    Suppose $\sqrt{2} = p/q$ with $p, q \in \Z$ and $\gcd(p, q) = 1$. Then $p^2 = 2q^2$,
+    so $p$ is even, say $p = 2k$. Then $2k^2 = q^2$, so $q$ is even too, which contradicts
+    $\gcd(p, q) = 1$. \qed
+\end{solution}
+
+\begin{problem}{2}
+
+\end{problem}
+
+\begin{solution}
+
+\end{solution}
+
+\end{document}

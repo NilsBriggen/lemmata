@@ -154,6 +154,7 @@ const handlers: Record<string, (a: Args) => unknown> = {
     { id: "slides", name: "Slides", description: "A Beamer presentation with the clean metropolis theme." },
     { id: "cv", name: "CV", description: "A clean one-page curriculum vitae." },
     { id: "letter", name: "Letter", description: "A formal letter with the KOMA-Script scrlttr2 class." },
+    { id: "homework", name: "Homework", description: "Exercise sheets: shaded problem boxes, solutions, and a header with your name and course." },
   ],
   create_project: (a) => `${a.parent}/${a.name}`,
   create_example: () => "/home/you/.local/share/dev.briggen.lemmata/example",

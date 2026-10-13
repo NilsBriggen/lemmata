@@ -8,7 +8,7 @@ Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't f
 
 ## Projects
 
-- **New project** starts from a template: article, thesis, slides, CV or letter.
+- **New project** starts from a template: article, thesis, slides, CV, letter or homework (exercise sheets with problem boxes and a name-and-course header).
 - **Open folder** works with any folder containing a `.tex` file with `\documentclass`. If there are several, Lemmata asks which one is the main document.
 - **Import Overleaf .zip** takes the zip from Overleaf's *Menu → Download → Source*.
 

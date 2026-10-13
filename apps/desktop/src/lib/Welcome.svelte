@@ -134,7 +134,7 @@
         <p class="lede">Pick up an existing project, or begin a new one.</p>
         <div class="starts">
           <button class="start" onclick={() => (dialog = "new")}>
-            <span class="ico"><Plus size={20} /></span><b>New project</b><span>From a template: article, thesis, slides, CV or letter.</span>
+            <span class="ico"><Plus size={20} /></span><b>New project</b><span>From a template: article, thesis, slides, CV, letter or homework.</span>
           </button>
           <button class="start" onclick={openFolder}>
             <span class="ico"><FolderOpen size={20} /></span><b>Open folder</b><span>Any folder with a .tex file.</span>
