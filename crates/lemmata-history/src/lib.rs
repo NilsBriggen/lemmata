@@ -288,7 +288,16 @@ impl History {
     /// Gives a snapshot a new label. Snapshots themselves never change; the
     /// label is kept as a git note.
     pub fn relabel(&self, id: &str, label: &str) -> Result<()> {
-        self.run(&["notes", "--ref", NOTES_REF, "add", "-f", "-m", label.trim(), id])?;
+        self.run(&[
+            "notes",
+            "--ref",
+            NOTES_REF,
+            "add",
+            "-f",
+            "-m",
+            label.trim(),
+            id,
+        ])?;
         Ok(())
     }
 }
@@ -474,13 +483,19 @@ mod tests {
         assert!(changed >= 3);
         assert_eq!(fs::read_to_string(root.join("main.tex")).unwrap(), "one");
         assert!(!root.join("new.tex").exists());
-        assert_eq!(fs::read(root.join("keep.bin")).unwrap(), [0u8, 159, 146, 150]);
+        assert_eq!(
+            fs::read(root.join("keep.bin")).unwrap(),
+            [0u8, 159, 146, 150]
+        );
 
         // The state before restoring was saved, so the restore can be undone.
         let labels: Vec<_> = h.list(10).unwrap().into_iter().map(|s| s.label).collect();
         assert!(labels.contains(&"Before restoring the project".to_string()));
         let saved = h.list(10).unwrap()[0].id.clone();
-        assert_eq!(h.file_at(&saved, "main.tex").unwrap().as_deref(), Some("three"));
+        assert_eq!(
+            h.file_at(&saved, "main.tex").unwrap().as_deref(),
+            Some("three")
+        );
         h.restore_all(&second).unwrap();
         assert_eq!(fs::read_to_string(root.join("main.tex")).unwrap(), "two");
         assert!(root.join("new.tex").exists());
@@ -503,7 +518,11 @@ mod tests {
         let got: Vec<_> = got.iter().map(|c| (c.status, c.path.as_str())).collect();
         assert_eq!(
             got,
-            [("modified", "a.tex"), ("deleted", "b.tex"), ("added", "c.tex")]
+            [
+                ("modified", "a.tex"),
+                ("deleted", "b.tex"),
+                ("added", "c.tex")
+            ]
         );
     }
 

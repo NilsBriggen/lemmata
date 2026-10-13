@@ -93,10 +93,28 @@ struct Counter {
     prose: prose::State,
 }
 
-const FLOATS: &[&str] = &["figure", "figure*", "table", "table*", "wrapfigure", "sidewaysfigure"];
+const FLOATS: &[&str] = &[
+    "figure",
+    "figure*",
+    "table",
+    "table*",
+    "wrapfigure",
+    "sidewaysfigure",
+];
 const DISPLAY: &[&str] = &[
-    "equation", "equation*", "align", "align*", "gather", "gather*", "multline", "multline*",
-    "eqnarray", "eqnarray*", "displaymath", "flalign", "flalign*",
+    "equation",
+    "equation*",
+    "align",
+    "align*",
+    "gather",
+    "gather*",
+    "multline",
+    "multline*",
+    "eqnarray",
+    "eqnarray*",
+    "displaymath",
+    "flalign",
+    "flalign*",
 ];
 
 impl Counter {
@@ -141,7 +159,12 @@ impl Counter {
     fn stats(&mut self, code: &str) {
         let c = &mut self.out;
         for h in [
-            "\\part", "\\chapter", "\\section", "\\subsection", "\\subsubsection", "\\paragraph",
+            "\\part",
+            "\\chapter",
+            "\\section",
+            "\\subsection",
+            "\\subsubsection",
+            "\\paragraph",
         ] {
             let mut rest = code;
             while let Some(p) = rest.find(h) {
@@ -160,7 +183,8 @@ impl Counter {
                 }
             }
         }
-        c.display_math += code.matches("\\[").count() as u32 + code.matches("$$").count() as u32 / 2;
+        c.display_math +=
+            code.matches("\\[").count() as u32 + code.matches("$$").count() as u32 / 2;
         c.inline_math += code.matches("\\(").count() as u32;
         let singles = code.replace("$$", "").replace("\\$", "");
         c.inline_math += singles.matches('$').count() as u32 / 2;
@@ -175,7 +199,10 @@ impl Counter {
                     None => break,
                 }
             }
-            if m.0 > 0 && code.as_bytes()[m.0 - 1] != b'\\' && !code[..m.0].ends_with(|ch: char| ch.is_ascii_alphabetic()) {
+            if m.0 > 0
+                && code.as_bytes()[m.0 - 1] != b'\\'
+                && !code[..m.0].ends_with(|ch: char| ch.is_ascii_alphabetic())
+            {
                 continue;
             }
             if let Some(keys) = braced(rest) {
@@ -190,7 +217,10 @@ fn includes(code: &str) -> Option<String> {
     let mut rest = code;
     while let Some(pos) = rest.find('\\') {
         rest = &rest[pos + 1..];
-        let name: String = rest.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphabetic())
+            .collect();
         let after = rest[name.len()..].trim_start_matches('*');
         if let Some(t) = include_target(&name, after) {
             return Some(t);

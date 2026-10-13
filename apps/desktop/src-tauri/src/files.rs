@@ -226,7 +226,9 @@ const MAX_BINARY: u64 = 64 * 1024 * 1024;
 pub fn read_binary(state: State<AppState>, path: String) -> CmdResult<tauri::ipc::Response> {
     let p = project(&state)?;
     let full = p.root.join(safe_rel(&path)?);
-    let size = std::fs::metadata(&full).map_err(|e| format!("Could not open {path}: {e}"))?.len();
+    let size = std::fs::metadata(&full)
+        .map_err(|e| format!("Could not open {path}: {e}"))?
+        .len();
     if size > MAX_BINARY {
         return Err(format!("{path} is too large to preview."));
     }
@@ -473,6 +475,9 @@ mod tests {
         std::fs::create_dir_all(d.path().join("a/b")).unwrap();
         std::fs::write(d.path().join("a/b/x.tex"), "x").unwrap();
         copy_dir(&d.path().join("a"), &d.path().join("copy")).unwrap();
-        assert_eq!(std::fs::read_to_string(d.path().join("copy/b/x.tex")).unwrap(), "x");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("copy/b/x.tex")).unwrap(),
+            "x"
+        );
     }
 }

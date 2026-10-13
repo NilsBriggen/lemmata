@@ -515,7 +515,6 @@ mod tests {
         );
     }
 
-
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
         fs::create_dir_all(p.parent().unwrap()).unwrap();

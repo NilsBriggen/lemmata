@@ -179,7 +179,9 @@ pub async fn build(
         .map(|b| lemmata_log::parse(&String::from_utf8_lossy(&b)))
         .unwrap_or_default();
     // The bibliography tool's own log explains what the main log can't.
-    let blg_path = project.outdir_abs().join(project.main.with_extension("blg"));
+    let blg_path = project
+        .outdir_abs()
+        .join(project.main.with_extension("blg"));
     let blg_fresh = std::fs::metadata(&blg_path)
         .and_then(|m| m.modified())
         .is_ok_and(|t| t + Duration::from_secs(1) >= started_at);

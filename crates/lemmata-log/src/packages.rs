@@ -219,7 +219,10 @@ pub fn for_command(name: &str) -> Option<&'static str> {
 
 /// The package that defines the environment `name`.
 pub fn for_environment(name: &str) -> Option<&'static str> {
-    ENVIRONMENTS.iter().find(|(e, _)| *e == name).map(|(_, p)| *p)
+    ENVIRONMENTS
+        .iter()
+        .find(|(e, _)| *e == name)
+        .map(|(_, p)| *p)
 }
 
 #[cfg(test)]
