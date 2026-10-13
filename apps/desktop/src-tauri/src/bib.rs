@@ -57,3 +57,87 @@ pub async fn bib_add_reference(
     lemmata_bib::append(&p.root.join(&file), &text).map_err(crate::err)?;
     Ok(Added { key, file })
 }
+
+#[tauri::command]
+pub async fn zotero_status() -> lemmata_bib::zotero::Status {
+    lemmata_bib::zotero::status().await
+}
+
+/// Opens Zotero's own citation picker; returns the chosen keys.
+#[tauri::command]
+pub async fn zotero_pick() -> CmdResult<Vec<String>> {
+    lemmata_bib::zotero::pick().await.map_err(crate::err)
+}
+
+#[derive(Serialize)]
+pub struct ZoteroSync {
+    /// Entries written to zotero.bib.
+    written: usize,
+    /// Cited keys neither in the project's other .bib files nor in Zotero.
+    missing: Vec<String>,
+    /// Whether the document already loads zotero.bib.
+    linked: bool,
+}
+
+pub const ZOTERO_BIB: &str = "zotero.bib";
+
+/// Writes zotero.bib with every key the document cites that isn't already
+/// in another .bib file of the project, exported from Zotero.
+#[tauri::command]
+pub async fn zotero_sync(state: State<'_, AppState>) -> CmdResult<ZoteroSync> {
+    let p = project(&state)?;
+    let files = lemmata_bib::bib_files(&p);
+    let others: Vec<String> = files
+        .iter()
+        .filter(|f| f.as_str() != ZOTERO_BIB)
+        .cloned()
+        .collect();
+    let known: std::collections::HashSet<String> = lemmata_bib::entries(&p.root, &others)
+        .into_iter()
+        .map(|e| e.key)
+        .collect();
+    let wanted: Vec<String> = lemmata_bib::cited_keys(&p)
+        .into_iter()
+        .filter(|k| !known.contains(k))
+        .collect();
+    let (text, missing) = if wanted.is_empty() {
+        (String::new(), Vec::new())
+    } else {
+        lemmata_bib::zotero::export(&wanted)
+            .await
+            .map_err(crate::err)?
+    };
+    let header = "% Exported from Zotero by Lemmata. Changes here are overwritten on the next sync;\n% edit the references in Zotero instead.\n\n";
+    std::fs::write(
+        p.root.join(ZOTERO_BIB),
+        format!("{header}{}", text.trim_start()),
+    )
+    .map_err(crate::err)?;
+    Ok(ZoteroSync {
+        written: wanted.len() - missing.len(),
+        missing,
+        linked: lemmata_bib::bib_files(&p).iter().any(|f| f == ZOTERO_BIB),
+    })
+}
+
+/// Adds `\addbibresource{zotero.bib}` (biblatex) or extends `\bibliography{}`.
+#[tauri::command]
+pub fn zotero_link(state: State<AppState>) -> CmdResult<()> {
+    let p = project(&state)?;
+    let main = p.main_abs();
+    let text = std::fs::read_to_string(&main).map_err(crate::err)?;
+    let new = if let Some(pos) = text.find("\\bibliography{") {
+        let close = text[pos..].find('}').ok_or("Unclosed \\bibliography{.")? + pos;
+        format!("{},zotero{}", &text[..close], &text[close..])
+    } else if let Some(pos) = text.find("\\addbibresource") {
+        let line_end = text[pos..].find('\n').map_or(text.len(), |e| pos + e);
+        format!(
+            "{}\n\\addbibresource{{{ZOTERO_BIB}}}{}",
+            &text[..line_end],
+            &text[line_end..]
+        )
+    } else {
+        return Err("The document has no bibliography yet. Add \\addbibresource{zotero.bib} (biblatex) or \\bibliography{zotero} yourself.".into());
+    };
+    std::fs::write(&main, new).map_err(crate::err)
+}

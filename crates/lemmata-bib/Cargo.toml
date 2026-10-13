@@ -11,7 +11,8 @@ lemmata-project.workspace = true
 serde.workspace = true
 regex.workspace = true
 biblatex = "0.12"
-reqwest = "0.13"
+reqwest = { version = "0.13", features = ["json"] }
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

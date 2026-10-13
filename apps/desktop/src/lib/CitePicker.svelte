@@ -8,8 +8,10 @@
     onInsert: (keys: string[]) => void;
     onClose: () => void;
     onBibChanged: (file: string) => void;
+    onZotero: () => void;
   }
-  let { onInsert, onClose, onBibChanged }: Props = $props();
+  let { onInsert, onClose, onBibChanged, onZotero }: Props = $props();
+  let zotero = $state<"ready" | "starting" | "unavailable">("unavailable");
 
   let entries = $state<BibEntry[]>([]);
   let files = $state<string[]>([]);
@@ -47,6 +49,7 @@
 
   onMount(() => {
     load();
+    api.zoteroStatus().then((z) => (zotero = z)).catch(() => {});
     searchEl?.focus();
   });
 
@@ -101,7 +104,14 @@
 
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onClose()}>
   <div class="dialog" role="dialog" aria-labelledby="cite-title">
-    <h2 id="cite-title">Insert citation</h2>
+    <div class="head">
+      <h2 id="cite-title">Insert citation</h2>
+      {#if zotero !== "unavailable"}
+        <button onclick={onZotero} disabled={zotero === "starting"} title="Opens Zotero's citation picker">
+          {zotero === "starting" ? "Zotero is starting…" : "Cite from Zotero…"}
+        </button>
+      {/if}
+    </div>
     <input
       id="cite-search"
       bind:this={searchEl}
@@ -159,6 +169,7 @@
     border-radius: 8px; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px;
   }
   h2 { font: 400 20px var(--f-display); margin: 0; }
+  .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   input:not([type="checkbox"]), select {
     font: 13px var(--f-body); color: var(--ink); background: var(--sheet); border: 1px solid var(--rule);
     border-radius: 5px; padding: 7px 10px;

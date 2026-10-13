@@ -154,6 +154,10 @@ export const api = {
     invoke<number>("rename_path", { from, to, updateReferences }),
   exportPdf: (dest: string) => invoke<void>("export_pdf", { dest }),
   exportArxiv: (dest: string, strip: boolean) => invoke<number>("export_arxiv", { dest, strip }),
+  zoteroStatus: () => invoke<"ready" | "starting" | "unavailable">("zotero_status"),
+  zoteroPick: () => invoke<string[]>("zotero_pick"),
+  zoteroSync: () => invoke<{ written: number; missing: string[]; linked: boolean }>("zotero_sync"),
+  zoteroLink: () => invoke<void>("zotero_link"),
   openInstallTerminal: (request: InstallRequest) => invoke<void>("open_install_terminal", { request }),
 };
 

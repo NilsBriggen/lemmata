@@ -454,6 +454,8 @@
       { id: "sync", label: "Show this line in the PDF", detail: "Ctrl+J", run: () => active && syncForward(active, editor?.currentLine() ?? 1, 0) },
       { id: "focus", label: focusMode ? "Leave focus mode" : "Focus mode", detail: "F11", run: () => (focusMode = !focusMode) },
       { id: "new-file", label: "New file…", run: () => fileActions?.openMenu(null, 240, 120) },
+      { id: "zotero-cite", label: "Cite from Zotero…", run: citeFromZotero },
+      { id: "zotero-sync", label: "Sync zotero.bib from Zotero", run: () => syncZotero(true) },
       { id: "export-pdf", label: "Export PDF…", run: exportPdf },
       { id: "export-arxiv", label: "Export for arXiv (.zip)…", run: exportArxiv },
       { id: "project-settings", label: "Project settings", run: () => (settingsOpen = true) },
@@ -461,6 +463,53 @@
       { id: "close", label: "Close project", run: closeProject },
     ].filter(() => project),
   );
+
+  async function citeFromZotero() {
+    citeOpen = false;
+    showNotice("Choose references in Zotero's picker…");
+    try {
+      const keys = await api.zoteroPick();
+      notice = null;
+      if (!keys.length) return;
+      editor?.insertCitation(keys);
+      await saveAll();
+      await syncZotero(false);
+    } catch (e) {
+      showNotice(errorMessage(e));
+    }
+  }
+
+  /** Writes zotero.bib for the cited keys; `report` shows a summary even when all went well. */
+  async function syncZotero(report = true) {
+    try {
+      const r = await api.zoteroSync();
+      contents.delete("zotero.bib");
+      editor?.forget("zotero.bib");
+      await refreshTree();
+      if (!r.linked) {
+        showNotice("Your document doesn't load zotero.bib yet.", {
+          label: "Add it",
+          run: async () => {
+            try {
+              await save(project!.main);
+              await api.zoteroLink();
+              await reloadFromDisk(project!.main);
+              runBuild();
+            } catch (e) {
+              showNotice(errorMessage(e));
+            }
+          },
+        });
+      } else if (r.missing.length) {
+        showNotice(`Not in Zotero: ${r.missing.join(", ")}.`);
+      } else if (report) {
+        showNotice(`zotero.bib has ${r.written} reference${r.written === 1 ? "" : "s"}.`);
+      }
+      runBuild();
+    } catch (e) {
+      showNotice(errorMessage(e));
+    }
+  }
 
   function openSearch() {
     focusMode = false;
@@ -782,6 +831,7 @@
       editor?.forget(file);
       if (tabs.includes(file)) openFile(file);
     }}
+    onZotero={citeFromZotero}
     onClose={() => {
       citeOpen = false;
       editor?.getView()?.focus();

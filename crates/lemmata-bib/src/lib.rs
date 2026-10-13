@@ -1,6 +1,8 @@
 //! The project's bibliography: which .bib files it uses, their entries for
 //! the citation picker, and adding a reference by DOI or arXiv ID.
 
+pub mod zotero;
+
 use biblatex::{Bibliography, ChunksExt};
 use regex::Regex;
 use serde::Serialize;
@@ -71,6 +73,35 @@ fn all_files(entries: &[lemmata_project::Entry], ext: &str) -> Vec<String> {
         }
     }
     out
+}
+
+static CITE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\\[A-Za-z]*cite[A-Za-z]*\*?(?:\[[^\]]*\]){0,2}\{([^}]*)\}").unwrap()
+});
+
+/// Every citation key the project's .tex files use, in first-use order.
+pub fn cited_keys(project: &lemmata_project::Project) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for rel in project_tex_files(project) {
+        let Ok(text) = std::fs::read_to_string(project.root.join(&rel)) else {
+            continue;
+        };
+        for line in text.lines() {
+            let code = line.split('%').next().unwrap_or("");
+            for c in CITE.captures_iter(code) {
+                for k in c[1]
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty() && *k != "*")
+                {
+                    if !keys.iter().any(|x| x == k) {
+                        keys.push(k.to_string());
+                    }
+                }
+            }
+        }
+    }
+    keys
 }
 
 /// Every entry in the given .bib files. Files that fail to parse are skipped.
@@ -349,5 +380,17 @@ mod tests {
             .unwrap();
         let (key, _) = prepare_entry(&bib, &[]).unwrap();
         assert!(key.starts_with("schulman2017"), "{key}");
+    }
+
+    #[test]
+    fn collects_cited_keys_in_order() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("main.tex"),
+            "\\documentclass{article}\nSee \\cite{a, b} and \\parencite[p.~2]{c}.\n% \\cite{hidden}\n\\textcite{a}\\nocite{*}\n",
+        )
+        .unwrap();
+        let p = lemmata_project::Project::open(d.path()).unwrap();
+        assert_eq!(cited_keys(&p), ["a", "b", "c"]);
     }
 }
