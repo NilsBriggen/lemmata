@@ -469,7 +469,7 @@
 
 <div class="pdf" class:dark-pages={settings.pdfDark}>
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div class="scroller" bind:this={scroller} onscroll={onScroll} onclick={handleClick} ondblclick={handleClick} onwheel={onWheel}>
+  <div class="scroller" tabindex="-1" bind:this={scroller} onscroll={onScroll} onclick={handleClick} ondblclick={handleClick} onwheel={onWheel}>
     <div class="pages" bind:this={pagesEl}></div>
     {#if highlight}
       {@const wrap = pagesEl.children[highlight.page - 1] as HTMLElement | undefined}
@@ -511,7 +511,7 @@
 
 <style>
   .pdf { display: flex; flex-direction: column; height: 100%; background: var(--pdf-ground); min-width: 0; }
-  .scroller { flex: 1; overflow: auto; position: relative; }
+  .scroller { flex: 1; overflow: auto; position: relative; outline: none; }
   .pages { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 18px 24px 40px; }
   .pages :global(.page) { position: relative; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 6px 18px -6px rgba(0, 0, 0, 0.25); flex: none; }
   .pages :global(.page canvas) { width: 100%; height: 100%; display: block; }

@@ -723,7 +723,13 @@
     if (!dest) return;
     try {
       await api.exportPdf(dest);
-      showNotice(`Saved ${dest.split(/[\\/]/).pop()}.`);
+      const name = dest.split(/[\\/]/).pop();
+      if (project.config.draft) {
+        showNotice(`Saved ${name}, but it was built in Fast (draft) mode, so figures are empty boxes.`, {
+          label: "Switch to Normal",
+          run: () => setBuildOption({ draft: false }),
+        });
+      } else showNotice(`Saved ${name}.`);
     } catch (e) {
       showNotice(errorMessage(e));
     }
@@ -1079,6 +1085,7 @@
           <span class="grow"></span>
           {#if lspStarting}<span class="starting" title="The language server is starting"><span class="spin-dot"></span>Starting completion</span>{:else if !lspAvailable}<span title="texlab wasn't found, so completion and hover are off">No completion</span>{/if}
           {#if tex.detection.outdated}<span class="warn" title="Some packages may lack newer features">Old TeX Live</span>{/if}
+          {#if project.config.draft}<span class="warn" title="Figures are drawn as boxes. Switch to Normal in the Recompile menu for the final PDF.">Draft mode</span>{/if}
           {#if spellLang !== "off"}<span title="Spell-check language">{spellLang}</span>{/if}
           {#if totalWords}<span title="Words in the document body, without commands, maths or comments">{words.format(totalWords)} words</span>{/if}
           <span>{project.config.engine === "pdflatex" ? "pdfLaTeX" : project.config.engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"}</span>
