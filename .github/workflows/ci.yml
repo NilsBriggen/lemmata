@@ -110,6 +110,9 @@ jobs:
             geometry
             enumitem
             mdframed
+            zref
+            needspace
+            etoolbox
             cleveref
             koma-script
             beamer
