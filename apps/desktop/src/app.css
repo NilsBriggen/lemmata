@@ -116,3 +116,18 @@ code, kbd { font-family: var(--f-mono); }
 .lm-spell-menu button:hover, .lm-spell-menu button:focus-visible { background: var(--blue-soft); outline: none; }
 .lm-spell-menu button.add { border-top: 1px solid var(--rule); border-radius: 0; margin-top: 4px; padding-top: 7px; color: var(--muted); }
 .lm-spell-menu .muted { color: var(--muted); padding: 5px 10px; font-size: 12px; }
+
+/* Math preview tooltip (src/lib/writing/math.ts). */
+.cm-tooltip.cm-math-preview,
+.cm-math-preview {
+  padding: 8px 12px;
+  background: var(--sheet);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  max-width: 70vw;
+  overflow-x: auto;
+  font-size: 1.1em;
+}
+.cm-math-preview.error { color: var(--mark); font: 12px var(--f-mono); }
+.cm-math-preview .katex-display { margin: 0; }

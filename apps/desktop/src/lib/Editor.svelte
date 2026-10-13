@@ -18,14 +18,22 @@
   import { spellcheck } from "./spell/extension";
   import { vim } from "@replit/codemirror-vim";
   import { settings } from "./settings.svelte";
+  import { mathPreview } from "./writing/math";
+  import { figureSnippet, tsvToTabular } from "./writing/table";
 
   interface Props {
     onChange: (path: string, text: string) => void;
     onSyncRequest: (path: string, line: number, column: number) => void;
     onCursor?: (path: string, line: number) => void;
     onAddWord?: (word: string) => void;
+    /** Saves a pasted image into the project; returns its path. */
+    onPasteImage?: (png: Uint8Array) => Promise<string | null>;
+    /** A snippet just inserted needs this package. */
+    onNeedsPackage?: (pkg: string) => void;
+    /** Shown after a paste was turned into a table, with a way back. */
+    onPastedTable?: (undo: () => void) => void;
   }
-  let { onChange, onSyncRequest, onCursor, onAddWord }: Props = $props();
+  let { onChange, onSyncRequest, onCursor, onAddWord, onPasteImage, onNeedsPackage, onPastedTable }: Props = $props();
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
@@ -58,6 +66,51 @@
     ".cm-panels": { backgroundColor: "var(--chrome)", color: "var(--ink)" },
   });
 
+  const pasteHandler = EditorView.domEventHandlers({
+    paste(e, v) {
+      const image = Array.from(e.clipboardData?.files ?? []).find((f) => f.type === "image/png");
+      if (image && onPasteImage) {
+        e.preventDefault();
+        image.arrayBuffer().then(async (buf) => {
+          const path = await onPasteImage(new Uint8Array(buf));
+          if (path) insertSnippet(figureSnippet(path), "graphicx");
+        });
+        return true;
+      }
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      const table = tsvToTabular(text);
+      if (!table) return false;
+      e.preventDefault();
+      const from = v.state.selection.main.from;
+      v.dispatch(v.state.replaceSelection(table));
+      onNeedsPackage?.("booktabs");
+      onPastedTable?.(() => {
+        if (v.state.sliceDoc(from, from + table.length) === table) {
+          v.dispatch({ changes: { from, to: from + table.length, insert: text } });
+        }
+      });
+      return true;
+    },
+  });
+
+  /** Inserts a snippet at the cursor (or `at`), placing the cursor inside it. */
+  export function insertSnippet(snippet: { text: string; cursor: number }, needs?: string, at?: number) {
+    if (!view) return;
+    const pos = at ?? view.state.selection.main.head;
+    const line = view.state.doc.lineAt(pos);
+    // Figures go on their own lines.
+    const prefix = line.text.slice(0, pos - line.from).trim() ? "\n" : "";
+    const insert = prefix + snippet.text + "\n";
+    view.dispatch({ changes: { from: pos, insert }, selection: { anchor: pos + prefix.length + snippet.cursor } });
+    view.focus();
+    if (needs) onNeedsPackage?.(needs);
+  }
+
+  /** Document position under a window point, for drops. */
+  export function posAtPoint(x: number, y: number): number | null {
+    return view?.posAtCoords({ x, y }) ?? null;
+  }
+
   function extensions(path: string): Extension[] {
     return [
       // Vim must come first so its keys take precedence.
@@ -77,7 +130,7 @@
       path.endsWith(".tex") || path.endsWith(".sty") || path.endsWith(".cls") ? StreamLanguage.define(stex) : [],
       syntaxHighlighting(texHighlight),
       lspFor && /\.(tex|bib|sty|cls)$/.test(path) ? lspFor(path) : [],
-      path.endsWith(".tex") ? spellcheck((w) => onAddWord?.(w)) : [],
+      path.endsWith(".tex") ? [spellcheck((w) => onAddWord?.(w)), mathPreview, pasteHandler] : [],
       theme,
       keymap.of([
         {
@@ -131,6 +184,25 @@
   /** Rebuilds every open file's editor setup, e.g. after the keymap changes. */
   export function refreshExtensions() {
     setLanguageServer(lspFor);
+  }
+
+  /** Inserts citation keys: into the braces when the cursor is inside a
+   *  \cite-like command, otherwise as a new \cite{...}. */
+  export function insertCitation(keys: string[]) {
+    if (!view || !keys.length) return;
+    const pos = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(pos);
+    const before = line.text.slice(0, pos - line.from);
+    const open = /\\\w*cite\w*\*?(?:\[[^\]]*\])*\{([^}]*)$/.exec(before);
+    let insert: string;
+    if (open) {
+      const inside = open[1];
+      insert = (inside === "" || inside.trimEnd().endsWith(",") ? "" : ",") + keys.join(",");
+    } else {
+      insert = `\\cite{${keys.join(",")}}`;
+    }
+    view.dispatch({ changes: { from: pos, insert }, selection: { anchor: pos + insert.length } });
+    view.focus();
   }
 
   export function getView(): EditorView | undefined {

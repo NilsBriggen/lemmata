@@ -1,0 +1,18 @@
+[package]
+name = "lemmata-bib"
+description = "Bibliography entries for citation search, and adding references by DOI or arXiv ID"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lemmata-project.workspace = true
+serde.workspace = true
+regex.workspace = true
+biblatex = "0.12"
+reqwest = "0.13"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

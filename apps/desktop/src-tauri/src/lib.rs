@@ -1,6 +1,8 @@
 //! Tauri commands the frontend calls. All file paths crossing the IPC
 //! boundary are relative to the open project's root.
 
+mod bib;
+mod figures;
 mod history;
 mod lsp;
 mod projects;
@@ -336,6 +338,47 @@ fn load_thumbnail(app: tauri::AppHandle, root: String) -> CmdResult<Response> {
     Ok(Response::new(bytes))
 }
 
+/// Adds `\usepackage{name}` to the main file's preamble, after the last
+/// \usepackage (or after \documentclass).
+#[tauri::command]
+fn add_package(state: State<AppState>, package: String) -> CmdResult<()> {
+    if !package
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("Not a package name.".into());
+    }
+    let main = state
+        .project
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|p| p.main_abs())
+        .ok_or("No project is open.")?;
+    let text = std::fs::read_to_string(&main).map_err(err)?;
+    let lines: Vec<&str> = text.lines().collect();
+    let begin = lines
+        .iter()
+        .position(|l| l.contains("\\begin{document}"))
+        .unwrap_or(lines.len());
+    let after = lines[..begin]
+        .iter()
+        .rposition(|l| l.trim_start().starts_with("\\usepackage"))
+        .or_else(|| {
+            lines[..begin]
+                .iter()
+                .position(|l| l.contains("\\documentclass"))
+        })
+        .ok_or("The main file has no \\documentclass.")?;
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    out.insert(after + 1, format!("\\usepackage{{{package}}}"));
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    std::fs::write(&main, joined).map_err(err)
+}
+
 #[tauri::command]
 fn outline(state: State<AppState>) -> CmdResult<lemmata_project::Outline> {
     let guard = state.project.lock().unwrap();
@@ -463,6 +506,12 @@ pub fn run() {
             spell::spell_add,
             updates::update_check,
             updates::update_install,
+            bib::bib_entries,
+            bib::bib_add_reference,
+            figures::import_figure,
+            figures::save_pasted_image,
+            figures::has_package,
+            add_package,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lemmata");

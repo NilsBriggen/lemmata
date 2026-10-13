@@ -82,6 +82,8 @@ pub struct Config {
     /// Words the spell checker should accept in this project.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub words: Vec<String>,
+    /// Where dropped and pasted images go.
+    pub figures_dir: String,
 }
 
 impl Default for Config {
@@ -94,6 +96,7 @@ impl Default for Config {
             outdir: ".lemmata/build".into(),
             spellcheck: None,
             words: Vec::new(),
+            figures_dir: "figures".into(),
         }
     }
 }

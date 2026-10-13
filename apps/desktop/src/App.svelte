@@ -11,9 +11,13 @@
   import ProjectSettings from "./lib/ProjectSettings.svelte";
   import HistoryPanel from "./lib/HistoryPanel.svelte";
   import Preferences from "./lib/Preferences.svelte";
+  import CitePicker from "./lib/CitePicker.svelte";
   import { listen } from "@tauri-apps/api/event";
   import { relaunch } from "@tauri-apps/plugin-process";
   import { loadSettings, settings } from "./lib/settings.svelte";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { setMathMacros } from "./lib/writing/math";
+  import { figureSnippet } from "./lib/writing/table";
   import { startLanguageServer, type LanguageServer } from "./lib/lsp";
   import { detectLanguage, spell } from "./lib/spell/service";
   import { forgetProject, recentProjects, rememberProject } from "./lib/recent";
@@ -36,6 +40,12 @@
   let choosingMain = $state(false);
   let settingsOpen = $state(false);
   let prefsOpen = $state(false);
+  let citeOpen = $state(false);
+  /** A package a just-inserted snippet needs; offered once per package. */
+  let packageOffer = $state<string | null>(null);
+  const offered = new Set<string>();
+  let notice = $state<{ text: string; action?: { label: string; run: () => void } } | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let update = $state<{ version: string; progress: number | null; error: string | null } | null>(null);
   let historyOpen = $state(false);
   let historyVersion = $state(0);
@@ -101,6 +111,7 @@
     await startLsp(project.root);
     await openFile(project.main);
     applySpellLanguage();
+    setMathMacros(contents.get(project.main) ?? "");
     refreshOutline();
     lastThumbnail = 0;
     lastSnapshot = 0; // the first save of a session takes a snapshot
@@ -192,6 +203,7 @@
       dirty[path] = false;
       runBuild();
       if (path.endsWith(".tex")) refreshOutline();
+      if (path === project?.main) setMathMacros(text);
       if (Date.now() - lastSnapshot > AUTO_SNAPSHOT_MS) takeSnapshot("Automatic snapshot");
     } catch (e) {
       openError = errorMessage(e);
@@ -224,6 +236,64 @@
     } finally {
       if (seq === buildSeq) building = false;
     }
+  }
+
+  function showNotice(text: string, action?: { label: string; run: () => void }) {
+    clearTimeout(noticeTimer);
+    notice = { text, action };
+    noticeTimer = setTimeout(() => (notice = null), 8000);
+  }
+
+  async function needsPackage(pkg: string) {
+    if (!project || offered.has(pkg)) return;
+    if (await api.hasPackage(pkg).catch(() => true)) return;
+    offered.add(pkg);
+    packageOffer = pkg;
+  }
+
+  async function addPackage(pkg: string) {
+    if (!project) return;
+    packageOffer = null;
+    await save(project.main);
+    try {
+      await api.addPackage(pkg);
+    } catch (e) {
+      openError = errorMessage(e);
+      return;
+    }
+    contents.delete(project.main);
+    editor?.forget(project.main);
+    if (active === project.main) await openFile(project.main);
+    runBuild();
+  }
+
+  async function refreshTree() {
+    if (project) project = await api.projectInfo();
+  }
+
+  async function pasteImage(png: Uint8Array) {
+    try {
+      const path = await api.savePastedImage(png);
+      refreshTree();
+      return path;
+    } catch (e) {
+      openError = errorMessage(e);
+      return null;
+    }
+  }
+
+  async function dropFiles(paths: string[], x: number, y: number) {
+    if (!project || !active?.endsWith(".tex")) return;
+    const pos = editor?.posAtPoint(x, y) ?? undefined;
+    for (const p of paths) {
+      try {
+        const rel = await api.importFigure(p);
+        editor?.insertSnippet(figureSnippet(rel), "graphicx", pos);
+      } catch (e) {
+        showNotice(errorMessage(e));
+      }
+    }
+    refreshTree();
   }
 
   async function takeSnapshot(label: string) {
@@ -325,7 +395,10 @@
 
   function onKey(e: KeyboardEvent) {
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
+    if (mod && e.shiftKey && e.key.toLowerCase() === "c" && project && active) {
+      e.preventDefault();
+      citeOpen = true;
+    } else if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
       e.preventDefault();
       if (project) snapshotLabel = "";
     } else if (mod && e.key === "s") {
@@ -378,6 +451,15 @@
   });
 
   onMount(async () => {
+    // Tauri delivers file drops with real paths (DOM drop events don't have them).
+    getCurrentWebview()
+      .onDragDropEvent((e) => {
+        if (e.payload.type === "drop") {
+          const scale = window.devicePixelRatio || 1;
+          dropFiles(e.payload.paths, e.payload.position.x / scale, e.payload.position.y / scale);
+        }
+      })
+      .catch(() => {});
     await loadSettings();
     appliedKeymap = settings.keymap;
     await recheck(settings.texDir ?? undefined);
@@ -448,7 +530,12 @@
             </div>
           {/each}
         </div>
-        <div class="cm"><Editor bind:this={editor} {onChange} onSyncRequest={syncForward} onCursor={(file, line) => (cursor = { file, line })} onAddWord={addWord} /></div>
+        <div class="cm"><Editor bind:this={editor} {onChange} onSyncRequest={syncForward} onCursor={(file, line) => (cursor = { file, line })}
+            onAddWord={addWord}
+            onPasteImage={pasteImage}
+            onNeedsPackage={needsPackage}
+            onPastedTable={(undo) => showNotice("Pasted as a table.", { label: "Paste as text instead", run: undo })}
+          /></div>
         {#if openError}<div class="err-bar">{openError} <button onclick={() => (openError = null)}>Dismiss</button></div>{/if}
       </section>
 
@@ -468,6 +555,43 @@
       </section>
     </div>
   </div>
+{/if}
+
+{#if packageOffer || notice}
+  <div class="toasts">
+    {#if packageOffer}
+      <div class="toast" role="status">
+        <span>This needs the <code>{packageOffer}</code> package, which your document doesn't load yet.</span>
+        <button onclick={() => (packageOffer = null)}>Not now</button>
+        <button class="primary" onclick={() => addPackage(packageOffer!)}>Add \usepackage{"{"}{packageOffer}{"}"}</button>
+      </div>
+    {/if}
+    {#if notice}
+      <div class="toast" role="status">
+        <span>{notice.text}</span>
+        {#if notice.action}<button onclick={() => { notice?.action?.run(); notice = null; }}>{notice.action.label}</button>{/if}
+        <button class="x" aria-label="Dismiss" onclick={() => (notice = null)}>×</button>
+      </div>
+    {/if}
+  </div>
+{/if}
+
+{#if citeOpen}
+  <CitePicker
+    onInsert={(keys) => {
+      citeOpen = false;
+      editor?.insertCitation(keys);
+    }}
+    onBibChanged={(file) => {
+      contents.delete(file);
+      editor?.forget(file);
+      if (tabs.includes(file)) openFile(file);
+    }}
+    onClose={() => {
+      citeOpen = false;
+      editor?.getView()?.focus();
+    }}
+  />
 {/if}
 
 {#if prefsOpen}
@@ -569,6 +693,12 @@
   .dialog p { color: var(--muted); margin: 0 0 12px; }
   .dialog ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .dialog li button { width: 100%; text-align: left; font: 13px var(--f-mono); padding: 8px 12px; }
+  .toasts { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 20; display: flex; flex-direction: column; gap: 8px; }
+  .toast {
+    display: flex; gap: 10px; align-items: center; background: var(--sheet); border: 1px solid var(--rule);
+    border-radius: 8px; padding: 9px 12px; box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.4); max-width: min(720px, 90vw);
+  }
+  .toast .x { border: none; background: none; padding: 0 4px; }
   .update {
     position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; gap: 10px; align-items: center;
     background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px;

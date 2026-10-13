@@ -97,6 +97,8 @@ export interface Snapshot {
   changes: { status: "added" | "modified" | "deleted"; path: string }[];
 }
 
+export interface BibEntry { key: string; kind: string; title: string; authors: string; year: string; file: string }
+
 export interface Template { id: string; name: string; description: string }
 
 export interface PdfBox { page: number; x: number; y: number; h: number; v: number; width: number; height: number }
@@ -133,6 +135,12 @@ export const api = {
   updateCheck: (channel: string) =>
     invoke<{ version: string; current: string; notes: string | null } | null>("update_check", { channel }),
   updateInstall: () => invoke<void>("update_install"),
+  bibEntries: () => invoke<{ files: string[]; entries: BibEntry[] }>("bib_entries"),
+  bibAddReference: (id: string, file: string) => invoke<{ key: string; file: string }>("bib_add_reference", { id, file }),
+  importFigure: (path: string) => invoke<string>("import_figure", { path }),
+  savePastedImage: (png: Uint8Array) => invoke<string>("save_pasted_image", png),
+  hasPackage: (pkg: string) => invoke<boolean>("has_package", { package: pkg }),
+  addPackage: (pkg: string) => invoke<void>("add_package", { package: pkg }),
   openInstallTerminal: (request: InstallRequest) => invoke<void>("open_install_terminal", { request }),
 };
 

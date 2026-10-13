@@ -17,6 +17,7 @@ lemmata-project = { path = "crates/lemmata-project" }
 lemmata-pkgmap = { path = "crates/lemmata-pkgmap" }
 lemmata-history = { path = "crates/lemmata-history" }
 lemmata-spell = { path = "crates/lemmata-spell" }
+lemmata-bib = { path = "crates/lemmata-bib" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
