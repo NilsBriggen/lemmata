@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.0.0 (2026-10-13)
+
+### Fixed
+- Autosave no longer looks like an outside change; deleted folders close quietly
 ## 1.0.0-rc.1 (2026-10-13)
 
 ### Added
