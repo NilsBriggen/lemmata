@@ -158,7 +158,7 @@ jobs:
           cat PKGBUILD
       - name: Push to the AUR
         if: env.AUR_SSH_KEY != ''
-        uses: KSXGitHub/github-actions-deploy-aur@v4
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
           pkgname: lemmata-bin
           pkgbuild: ./PKGBUILD
