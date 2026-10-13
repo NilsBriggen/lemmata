@@ -7,7 +7,7 @@ pkgdesc="Local-first LaTeX editor with live PDF preview and SyncTeX"
 arch=('x86_64' 'aarch64')
 url="https://lemmata.briggen.dev"
 license=('GPL-3.0-only')
-depends=('webkit2gtk-4.1' 'gtk3' 'hicolor-icon-theme')
+depends=('webkit2gtk-4.1' 'gtk3' 'hicolor-icon-theme' 'texlab')
 optdepends=(
   'texlive-basic: required to build documents (see the in-app setup for the full list)'
   'texlive-binextra: latexmk'
@@ -22,4 +22,6 @@ sha256sums_aarch64=('$SHA_AARCH64')
 
 package() {
   bsdtar -xf data.tar.gz -C "${pkgdir}"
+  # Use Arch's texlab package instead of the copy bundled in the .deb.
+  rm -f "${pkgdir}/usr/bin/texlab"
 }

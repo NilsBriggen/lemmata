@@ -74,6 +74,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      - name: Fetch texlab (bundled language server)
+        shell: bash
+        run: scripts/fetch-texlab.sh ${{ matrix.target }}
+
       - name: Build
         shell: bash
         run: |
@@ -81,8 +85,9 @@ jobs:
           # WiX can't version an MSI with a pre-release suffix, so betas ship the NSIS installer only.
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then bundles=${bundles//,msi/}; fi
           # Updater artifacts need the signing key; build without them until it's configured.
-          config='{}'
-          if [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then config='{"bundle":{"createUpdaterArtifacts":true}}'; fi
+          updater=false
+          if [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then updater=true; fi
+          config="{\"bundle\":{\"externalBin\":[\"binaries/texlab\"],\"createUpdaterArtifacts\":$updater}}"
           pnpm --filter lemmata-desktop tauri build --target ${{ matrix.target }} --bundles "$bundles" --config "$config"
 
       - uses: actions/upload-artifact@v7

@@ -1,6 +1,7 @@
 //! Tauri commands the frontend calls. All file paths crossing the IPC
 //! boundary are relative to the open project's root.
 
+mod lsp;
 mod terminal;
 
 use lemmata_project::{Config, Entry, Project};
@@ -23,6 +24,8 @@ struct AppState {
     project: Mutex<Option<Project>>,
     /// Sending on this cancels the build in progress.
     cancel_build: Mutex<Option<oneshot::Sender<()>>>,
+    lsp: tokio::sync::Mutex<Option<lsp::Server>>,
+    lsp_generation: std::sync::atomic::AtomicU64,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -251,6 +254,52 @@ fn synctex_backward(
     }))
 }
 
+#[tauri::command]
+fn outline(state: State<AppState>) -> CmdResult<Vec<lemmata_project::Heading>> {
+    let guard = state.project.lock().unwrap();
+    Ok(lemmata_project::outline(
+        guard.as_ref().ok_or("No project is open.")?,
+    ))
+}
+
+/// Starts (or restarts) texlab for the open project. Returns the server's
+/// generation, which tags every `lsp-message` event it sends.
+#[tauri::command]
+async fn lsp_start(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<u64> {
+    let root = state
+        .project
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|p| p.root.clone())
+        .ok_or("No project is open.")?;
+    let bin = state
+        .detection
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|d| d.bin_dir.clone());
+    let generation = state
+        .lsp_generation
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
+    let mut slot = state.lsp.lock().await;
+    if let Some(old) = slot.take() {
+        old.stop();
+    }
+    *slot = Some(lsp::start(app, &root, bin.as_deref(), generation).await?);
+    Ok(generation)
+}
+
+#[tauri::command]
+async fn lsp_send(state: State<'_, AppState>, generation: u64, body: String) -> CmdResult<()> {
+    let slot = state.lsp.lock().await;
+    match slot.as_ref() {
+        Some(server) if server.generation == generation => server.send(&body).await,
+        _ => Err("The language server was restarted.".into()),
+    }
+}
+
 /// What to install in a terminal. The command itself is always built here
 /// from Lemmata's own data, never taken from the webview.
 #[derive(serde::Deserialize)]
@@ -309,6 +358,9 @@ pub fn run() {
             synctex_forward,
             synctex_backward,
             open_install_terminal,
+            lsp_start,
+            lsp_send,
+            outline,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lemmata");

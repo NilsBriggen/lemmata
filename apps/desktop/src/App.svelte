@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, errorMessage, type Diagnostic, type Engine, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
+  import { api, errorMessage, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
   import Onboarding from "./lib/Onboarding.svelte";
   import Welcome from "./lib/Welcome.svelte";
   import Tree from "./lib/Tree.svelte";
   import Editor from "./lib/Editor.svelte";
   import PdfView from "./lib/PdfView.svelte";
   import Problems from "./lib/Problems.svelte";
+  import Outline from "./lib/Outline.svelte";
+  import { startLanguageServer, type LanguageServer } from "./lib/lsp";
   import { recentProjects, rememberProject } from "./lib/recent";
 
   /** Edits are saved this long after the last keystroke, which starts a build. */
@@ -30,6 +32,21 @@
   let showInfo = $state(false);
   let problemsOpen = $state(true);
   let buildSeq = 0;
+
+  let headings = $state<Heading[]>([]);
+  let cursor = $state<{ file: string; line: number }>({ file: "", line: 1 });
+  let lsp: LanguageServer | null = null;
+  let lspAvailable = $state(true);
+  let outlineTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Index of the heading the cursor is under, or -1. */
+  const currentHeading = $derived.by(() => {
+    let found = -1;
+    headings.forEach((h, i) => {
+      if (h.file === cursor.file && h.line <= cursor.line) found = i;
+    });
+    return found;
+  });
 
   let editor: Editor | undefined = $state();
   let pdf: PdfView | undefined = $state();
@@ -60,10 +77,34 @@
     dirty = {};
     diagnostics = [];
     outcome = null;
+    headings = [];
+    await startLsp(project.root);
     await openFile(project.main);
+    refreshOutline();
     // Show the existing PDF right away, then rebuild.
     api.readPdf().then((b) => pdf?.load(b)).catch(() => {});
     runBuild();
+  }
+
+  async function startLsp(root: string) {
+    lsp?.stop();
+    lsp = await startLanguageServer(root, async (rel) => {
+      await openFile(rel);
+      return editor?.getView() ?? null;
+    });
+    lspAvailable = lsp !== null;
+    editor?.setLanguageServer(lsp ? lsp.extensions : null);
+  }
+
+  function refreshOutline() {
+    clearTimeout(outlineTimer);
+    outlineTimer = setTimeout(async () => {
+      try {
+        headings = await api.outline();
+      } catch {
+        headings = [];
+      }
+    }, 150);
   }
 
   async function openFile(path: string) {
@@ -110,6 +151,7 @@
       await api.writeText(path, text);
       dirty[path] = false;
       runBuild();
+      if (path.endsWith(".tex")) refreshOutline();
     } catch (e) {
       openError = errorMessage(e);
     }
@@ -170,6 +212,14 @@
     runBuild();
   }
 
+  function closeProject() {
+    saveAll();
+    lsp?.stop();
+    lsp = null;
+    editor?.setLanguageServer(null);
+    project = null;
+  }
+
   function onKey(e: KeyboardEvent) {
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key === "s") {
@@ -215,15 +265,22 @@
           <option value="xelatex">XeLaTeX</option>
           <option value="lualatex">LuaLaTeX</option>
         </select>
-        <button onclick={() => (project = null)}>Close project</button>
+        {#if !lspAvailable}<span class="pill warn" title="texlab wasn't found, so completion and hover are off">no completion</span>{/if}
+        <button onclick={closeProject}>Close project</button>
         <button class="primary" onclick={() => saveAll().then(runBuild)} title="Ctrl+Enter">Recompile</button>
       </div>
     </header>
 
     <div class="panes">
       <nav class="side">
-        <div class="h">Project</div>
-        <Tree entries={project.tree} {active} main={project.main} onOpen={openFile} />
+        <div class="files">
+          <div class="h">Project</div>
+          <Tree entries={project.tree} {active} main={project.main} onOpen={openFile} />
+        </div>
+        <div class="outline">
+          <div class="h">Outline</div>
+          <Outline {headings} current={currentHeading} onJump={gotoProblem} />
+        </div>
       </nav>
 
       <section class="code">
@@ -235,7 +292,7 @@
             </div>
           {/each}
         </div>
-        <div class="cm"><Editor bind:this={editor} {onChange} onSyncRequest={syncForward} /></div>
+        <div class="cm"><Editor bind:this={editor} {onChange} onSyncRequest={syncForward} onCursor={(file, line) => (cursor = { file, line })} /></div>
         {#if openError}<div class="err-bar">{openError} <button onclick={() => (openError = null)}>Dismiss</button></div>{/if}
       </section>
 
@@ -265,7 +322,10 @@
   .crumbs { font: 12px var(--f-mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
   .panes { flex: 1; display: grid; grid-template-columns: 220px minmax(0, 1fr) minmax(0, 1fr); min-height: 0; }
-  .side { background: var(--chrome); border-right: 1px solid var(--rule); overflow: auto; padding-bottom: 12px; }
+  .side { background: var(--chrome); border-right: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; }
+  .files, .outline { overflow: auto; min-height: 0; }
+  .files { flex: 1 1 55%; padding-bottom: 8px; }
+  .outline { flex: 1 1 45%; border-top: 1px solid var(--rule); }
   .h { font: 500 10px var(--f-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); padding: 12px 14px 6px; }
   .code { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--rule); background: var(--code-bg); }
   .tabs { display: flex; background: var(--chrome); border-bottom: 1px solid var(--rule); overflow-x: auto; flex: none; }

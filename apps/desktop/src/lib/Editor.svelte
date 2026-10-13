@@ -19,13 +19,16 @@
   interface Props {
     onChange: (path: string, text: string) => void;
     onSyncRequest: (path: string, line: number, column: number) => void;
+    onCursor?: (path: string, line: number) => void;
   }
-  let { onChange, onSyncRequest }: Props = $props();
+  let { onChange, onSyncRequest, onCursor }: Props = $props();
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
   let currentPath: string | null = null;
   const states = new Map<string, EditorState>();
+  /** Language-server extensions per file, set once texlab is running. */
+  let lspFor: ((path: string) => Extension) | null = null;
 
   const texHighlight = HighlightStyle.define([
     { tag: [t.tagName, t.keyword], color: "var(--blue)" },
@@ -67,6 +70,7 @@
       EditorView.lineWrapping,
       path.endsWith(".tex") || path.endsWith(".sty") || path.endsWith(".cls") ? StreamLanguage.define(stex) : [],
       syntaxHighlighting(texHighlight),
+      lspFor && /\.(tex|bib|sty|cls)$/.test(path) ? lspFor(path) : [],
       theme,
       keymap.of([
         {
@@ -86,6 +90,9 @@
       ]),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) onChange(path, u.state.doc.toString());
+        if (u.selectionSet || u.docChanged) {
+          onCursor?.(path, u.state.doc.lineAt(u.state.selection.main.head).number);
+        }
       }),
     ];
   }
@@ -100,6 +107,26 @@
     currentPath = path;
     view.setState(state);
     view.focus();
+  }
+
+  /** Use a language server for files opened from now on; drops cached
+   *  states so every file picks it up. */
+  export function setLanguageServer(fn: ((path: string) => Extension) | null) {
+    lspFor = fn;
+    states.clear();
+    if (view && currentPath) {
+      const doc = view.state.doc.toString();
+      const sel = view.state.selection;
+      view.setState(EditorState.create({ doc, selection: sel, extensions: extensions(currentPath) }));
+    }
+  }
+
+  export function getView(): EditorView | undefined {
+    return view;
+  }
+
+  export function currentLine(): number {
+    return view ? view.state.doc.lineAt(view.state.selection.main.head).number : 1;
   }
 
   export function forget(path: string) {

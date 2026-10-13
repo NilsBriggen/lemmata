@@ -84,6 +84,8 @@ export interface ProjectInfo {
   tree: Entry[];
 }
 
+export interface Heading { level: number; title: string; file: string; line: number }
+
 export interface PdfBox { page: number; x: number; y: number; h: number; v: number; width: number; height: number }
 export interface SourceHit { path: string; line: number; inside_project: boolean }
 
@@ -100,6 +102,7 @@ export const api = {
     invoke<PdfBox[]>("synctex_forward", { path, line, column }),
   synctexBackward: (page: number, x: number, y: number) =>
     invoke<SourceHit | null>("synctex_backward", { page, x, y }),
+  outline: () => invoke<Heading[]>("outline"),
   openInstallTerminal: (request: InstallRequest) => invoke<void>("open_install_terminal", { request }),
 };
 

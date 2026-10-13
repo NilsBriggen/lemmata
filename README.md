@@ -10,7 +10,7 @@ Status: early development (milestone M0). See [docs/PLAN.md](docs/PLAN.md) for t
 
 ## Developing
 
-You need Rust (stable), Node 22+ and pnpm, plus the [Tauri system libraries](https://v2.tauri.app/start/prerequisites/) for your OS.
+You need Rust (stable), Node 22+ and pnpm, plus the [Tauri system libraries](https://v2.tauri.app/start/prerequisites/) for your OS. For completion and hover, have `texlab` on your PATH, or fetch the pinned build with `scripts/fetch-texlab.sh <target-triple>`; release builds bundle it.
 
 ```bash
 pnpm install
