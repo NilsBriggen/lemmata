@@ -8,11 +8,14 @@
   import { onDestroy, onMount } from "svelte";
   import * as pdfjs from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-  import type { PDFDocumentProxy } from "pdfjs-dist";
+  import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import type { PdfBox } from "./api";
   import { settings } from "./settings.svelte";
 
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+
+  export interface OutlineNode { title: string; dest: unknown; url: string | null; items: OutlineNode[] }
 
   interface Props {
     /** Called when the user double-clicks or Ctrl/Cmd-clicks a point. Coordinates are PDF points from the top-left. */
@@ -21,16 +24,50 @@
     currentPage?: number;
     /** Current scale in percent of the PDF's real size, for display. */
     percent?: number;
+    /** Search results: how many, and which one is current (1-based, 0 when none). */
+    matchCount?: number;
+    matchIndex?: number;
   }
-  let { onSourceClick, pageCount = $bindable(0), currentPage = $bindable(1), percent = $bindable(100) }: Props = $props();
+  let {
+    onSourceClick,
+    pageCount = $bindable(0),
+    currentPage = $bindable(1),
+    percent = $bindable(100),
+    matchCount = $bindable(0),
+    matchIndex = $bindable(0),
+  }: Props = $props();
+
+  interface Slot {
+    n: number;
+    page: PDFPageProxy;
+    wrap: HTMLDivElement;
+    /** Page size in PDF points. */
+    w: number;
+    h: number;
+    scale: number;
+    token: number;
+    task: RenderTask | null;
+    text: pdfjs.TextLayer | null;
+  }
+  interface Hit { page: number; rects: { x: number; y: number; w: number; h: number }[] }
 
   let scroller: HTMLDivElement;
   let pagesEl = $state<HTMLDivElement>()!;
   let doc: PDFDocumentProxy | null = null;
+  let slots: Slot[] = [];
+  /** Pages near the viewport; only these hold a canvas, text layer and links. */
+  const near = new Set<number>();
+  let io: IntersectionObserver | null = null;
   /** "width" and "page" fit the pane; a number is a fixed scale (1 = 100%). */
   let fit = $state<Fit>("width");
   let highlight = $state<{ page: number; left: number; top: number; width: number; height: number } | null>(null);
   let loadSeq = 0;
+  /** Bumped whenever page boxes move, so overlays recompute their positions. */
+  let layoutVersion = $state(0);
+  let nearPages = $state<number[]>([]);
+  let hits = $state<Hit[]>([]);
+  let searchSeq = 0;
+  const textCache = new Map<number, { full: string; starts: number[]; items: { str: string; transform: number[]; width: number; height: number }[] }>();
 
   /** CSS pixels per PDF point for each page at the current zoom. */
   const scales: number[] = [];
@@ -47,6 +84,29 @@
     return fit * PT;
   }
 
+  function observer() {
+    return (io ??= new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const n = Number((e.target as HTMLElement).dataset.page);
+          if (e.isIntersecting) {
+            near.add(n);
+            renderSlot(n);
+          } else {
+            near.delete(n);
+            releaseSlot(n);
+          }
+        }
+        nearPages = [...near];
+      },
+      { root: scroller, rootMargin: "100% 0px" },
+    ));
+  }
+
+  export function getDocument() {
+    return doc;
+  }
+
   export async function load(data: Uint8Array) {
     const seq = ++loadSeq;
     const next = await pdfjs.getDocument({ data }).promise;
@@ -56,52 +116,249 @@
     }
     const old = doc;
     doc = next;
+    textCache.clear();
     pageCount = next.numPages;
-    await renderAll(seq);
+    if (await layout(seq)) for (const n of near) renderSlot(n);
     old?.loadingTask.destroy();
     if (pendingScroll !== null) {
       scroller.scrollTop = pendingScroll * scroller.scrollHeight;
       pendingScroll = null;
     }
+    if (hits.length) lastQuery && search(lastQuery, false);
   }
 
-  async function renderAll(seq: number) {
-    if (!doc) return;
-    // Reuse page containers so scroll position survives the swap.
-    while (pagesEl.children.length > doc.numPages) pagesEl.lastElementChild!.remove();
-    // First size every page so the layout (and scroll position) is final,
-    // then render, starting with the page in view and working outwards.
-    const pages = [];
-    for (let n = 1; n <= doc.numPages; n++) {
-      const page = await doc.getPage(n);
-      if (seq !== loadSeq) return;
+  /** Sizes every page's box, so layout and scroll position are final before
+   *  anything is drawn. Boxes are reused across loads to keep the position. */
+  async function layout(seq: number): Promise<boolean> {
+    if (!doc) return false;
+    const d = doc;
+    const pages = await Promise.all(Array.from({ length: d.numPages }, (_, i) => d.getPage(i + 1)));
+    if (seq !== loadSeq) return false;
+    while (pagesEl.children.length > d.numPages) {
+      const last = pagesEl.lastElementChild as HTMLElement;
+      io?.unobserve(last);
+      near.delete(Number(last.dataset.page));
+      last.remove();
+    }
+    slots.length = 0;
+    pages.forEach((page, i) => {
+      const n = i + 1;
       const base = page.getViewport({ scale: 1 });
       const scale = scaleFor(base.width, base.height);
-      scales[n - 1] = scale;
+      scales[i] = scale;
       if (n === 1) percent = Math.round((scale / PT) * 100);
-
-      let wrap = pagesEl.children[n - 1] as HTMLDivElement | undefined;
+      let wrap = pagesEl.children[i] as HTMLDivElement | undefined;
       if (!wrap) {
         wrap = document.createElement("div");
         wrap.className = "page";
         wrap.dataset.page = String(n);
         pagesEl.appendChild(wrap);
+        observer().observe(wrap);
       }
       wrap.style.width = `${base.width * scale}px`;
       wrap.style.height = `${base.height * scale}px`;
-      pages.push({ n, page, scale, wrap });
+      slots.push({ n, page, wrap, w: base.width, h: base.height, scale, token: 0, task: null, text: null });
+      // Pages out of view keep nothing from the previous document.
+      if (!near.has(n)) clearLayers(wrap, true);
+    });
+    layoutVersion++;
+    return true;
+  }
+
+  function clearLayers(wrap: HTMLElement, canvasToo: boolean) {
+    wrap.querySelectorAll(".textLayer, .links").forEach((el) => el.remove());
+    if (canvasToo) wrap.querySelectorAll("canvas").forEach((c) => ((c.width = 0), c.remove()));
+  }
+
+  function releaseSlot(n: number) {
+    const slot = slots[n - 1];
+    if (!slot) return;
+    slot.token++;
+    slot.task?.cancel();
+    slot.text?.cancel();
+    slot.task = slot.text = null;
+    clearLayers(slot.wrap, true);
+  }
+
+  async function renderSlot(n: number) {
+    const slot = slots[n - 1];
+    if (!slot) return;
+    const token = ++slot.token;
+    slot.task?.cancel();
+    slot.text?.cancel();
+    const viewport = slot.page.getViewport({ scale: slot.scale * dpr() });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    const task = slot.page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport });
+    slot.task = task;
+    try {
+      await task.promise;
+    } catch (e) {
+      if (e instanceof pdfjs.RenderingCancelledException) return;
+      throw e;
     }
-    const order = [...pages].sort((a, b) => Math.abs(a.n - currentPage) - Math.abs(b.n - currentPage));
-    for (const { page, scale, wrap } of order) {
-      const viewport = page.getViewport({ scale: scale * dpr() });
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.floor(viewport.width);
-      canvas.height = Math.floor(viewport.height);
-      await page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport }).promise;
-      if (seq !== loadSeq) return;
-      wrap.querySelector("canvas")?.remove();
-      wrap.prepend(canvas);
+    if (token !== slot.token || slots[n - 1] !== slot) return;
+    slot.wrap.querySelectorAll("canvas").forEach((c) => c.remove());
+    slot.wrap.prepend(canvas);
+    await decorate(slot, token);
+  }
+
+  /** The selectable text layer and clickable links over a rendered page. */
+  async function decorate(slot: Slot, token: number) {
+    const { wrap, page } = slot;
+    const viewport = page.getViewport({ scale: slot.scale });
+    clearLayers(wrap, false);
+    wrap.style.setProperty("--scale-factor", String(slot.scale));
+    wrap.style.setProperty("--total-scale-factor", String(slot.scale));
+    wrap.style.setProperty("--user-unit", "1");
+
+    const textDiv = document.createElement("div");
+    textDiv.className = "textLayer";
+    wrap.append(textDiv);
+    const layer = new pdfjs.TextLayer({ textContentSource: page.streamTextContent(), container: textDiv, viewport });
+    slot.text = layer;
+    try {
+      await layer.render();
+    } catch {
+      return; // cancelled by a newer render
     }
+    if (token !== slot.token) return;
+
+    const annotations = await page.getAnnotations({ intent: "display" });
+    if (token !== slot.token) return;
+    const links = document.createElement("div");
+    links.className = "links";
+    for (const a of annotations) {
+      if (a.subtype !== "Link" || !(a.dest || a.url || a.unsafeUrl)) continue;
+      const [x1, y1] = viewport.convertToViewportPoint(a.rect[0], a.rect[1]);
+      const [x2, y2] = viewport.convertToViewportPoint(a.rect[2], a.rect[3]);
+      const el = document.createElement("a");
+      el.style.cssText = `left:${Math.min(x1, x2)}px;top:${Math.min(y1, y2)}px;width:${Math.abs(x2 - x1)}px;height:${Math.abs(y2 - y1)}px`;
+      const url: string | null = a.url ?? a.unsafeUrl ?? null;
+      if (url) el.title = url;
+      el.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (a.dest) goTo(a.dest);
+        else if (url && /^https?:\/\//i.test(url)) openUrl(url).catch(() => {});
+      };
+      links.append(el);
+    }
+    wrap.append(links);
+  }
+
+  /** Scrolls to a PDF destination: a name or an explicit [page, "XYZ", x, y, zoom]. */
+  export async function goTo(dest: unknown) {
+    if (!doc) return;
+    try {
+      const explicit = typeof dest === "string" ? await doc.getDestination(dest) : dest;
+      if (!Array.isArray(explicit)) return;
+      const ref = explicit[0];
+      const index = typeof ref === "object" && ref !== null ? await doc.getPageIndex(ref as never) : Number(ref);
+      const slot = slots[index];
+      if (!slot) return;
+      const kind = explicit[1]?.name;
+      const top = kind === "XYZ" ? explicit[3] : kind === "FitH" || kind === "FitBH" ? explicit[2] : null;
+      const y = typeof top === "number" ? (slot.h - top) * slot.scale : 0;
+      scroller.scrollTo({ top: slot.wrap.offsetTop + y - 16, behavior: "smooth" });
+    } catch {
+      /* a broken link does nothing */
+    }
+  }
+
+  export async function getOutline(): Promise<OutlineNode[]> {
+    const raw = (await doc?.getOutline()) ?? [];
+    const conv = (items: typeof raw): OutlineNode[] =>
+      items.map((i) => ({ title: i.title, dest: i.dest, url: i.url ?? null, items: conv(i.items as typeof raw) }));
+    return conv(raw);
+  }
+
+  // ---- Search -----------------------------------------------------------
+
+  let lastQuery = "";
+
+  async function pageText(n: number) {
+    let t = textCache.get(n);
+    if (t) return t;
+    const page = slots[n - 1]?.page ?? (await doc!.getPage(n));
+    const content = await page.getTextContent();
+    let full = "";
+    const starts: number[] = [];
+    const items: { str: string; transform: number[]; width: number; height: number }[] = [];
+    for (const it of content.items) {
+      if (!("str" in it)) continue;
+      starts.push(full.length);
+      items.push({ str: it.str, transform: it.transform, width: it.width, height: it.height });
+      full += it.str + (it.hasEOL ? " " : "");
+    }
+    t = { full, starts, items };
+    textCache.set(n, t);
+    return t;
+  }
+
+  /** Finds `query` on every page and highlights the matches. */
+  export async function search(query: string, jump = true) {
+    const seq = ++searchSeq;
+    lastQuery = query;
+    hits = [];
+    matchCount = 0;
+    matchIndex = 0;
+    const q = query.trim().toLowerCase();
+    if (!q || !doc) return;
+    const found: Hit[] = [];
+    for (let n = 1; n <= doc.numPages; n++) {
+      const t = await pageText(n);
+      if (seq !== searchSeq) return;
+      const hay = t.full.toLowerCase();
+      const vp = (slots[n - 1]?.page ?? (await doc.getPage(n))).getViewport({ scale: 1 });
+      for (let at = hay.indexOf(q); at !== -1; at = hay.indexOf(q, at + q.length)) {
+        const rects: Hit["rects"] = [];
+        for (let i = 0; i < t.items.length; i++) {
+          const s = t.starts[i];
+          const len = t.items[i].str.length;
+          if (!len || s + len <= at || s >= at + q.length) continue;
+          const a = (Math.max(at, s) - s) / len;
+          const b = (Math.min(at + q.length, s + len) - s) / len;
+          const it = t.items[i];
+          const [px, py] = vp.convertToViewportPoint(it.transform[4] + it.width * a, it.transform[5]);
+          const height = it.height || Math.abs(it.transform[3]);
+          rects.push({ x: px, y: py - height * 0.85, w: it.width * (b - a), h: height * 1.05 });
+        }
+        if (rects.length) found.push({ page: n, rects });
+      }
+      if (n % 10 === 0) await new Promise((r) => setTimeout(r));
+    }
+    if (seq !== searchSeq) return;
+    hits = found;
+    matchCount = found.length;
+    if (found.length && jump) {
+      const first = found.findIndex((h) => h.page >= currentPage);
+      step(first === -1 ? 0 : first);
+    }
+  }
+
+  function step(index: number) {
+    if (!hits.length) return;
+    matchIndex = ((index % hits.length) + hits.length) % hits.length;
+    const h = hits[matchIndex];
+    matchIndex = matchIndex + 1;
+    const slot = slots[h.page - 1];
+    if (!slot) return;
+    const y = h.rects[0].y * slot.scale;
+    scroller.scrollTo({ top: slot.wrap.offsetTop + y - scroller.clientHeight / 3, behavior: "smooth" });
+  }
+
+  export function searchStep(dir: 1 | -1) {
+    step(matchIndex - 1 + dir);
+  }
+
+  export function clearSearch() {
+    searchSeq++;
+    lastQuery = "";
+    hits = [];
+    matchCount = 0;
+    matchIndex = 0;
   }
 
   export function getPosition(): { fit: Fit; scroll: number } {
@@ -111,7 +368,7 @@
   /** Restores zoom and scroll; applied after the next PDF loads if none is shown yet. */
   export async function setPosition(pos: { fit: Fit; scroll: number }) {
     fit = pos.fit;
-    if (doc) await renderAll(loadSeq);
+    if (doc && (await layout(loadSeq))) for (const n of near) renderSlot(n);
     scroller.scrollTop = pos.scroll * scroller.scrollHeight;
     pendingScroll = doc ? null : pos.scroll;
   }
@@ -147,6 +404,7 @@
   function handleClick(e: MouseEvent) {
     const isSync = e.type === "dblclick" || e.ctrlKey || e.metaKey;
     if (!isSync) return;
+    window.getSelection()?.removeAllRanges();
     const wrap = (e.target as HTMLElement).closest(".page") as HTMLElement | null;
     if (!wrap) return;
     const n = Number(wrap.dataset.page);
@@ -169,7 +427,7 @@
   export async function setFit(next: Fit) {
     const ratio = scroller.scrollTop / Math.max(1, scroller.scrollHeight);
     fit = typeof next === "number" ? Math.min(4, Math.max(0.25, next)) : next;
-    await renderAll(loadSeq);
+    if (await layout(loadSeq)) for (const n of near) renderSlot(n);
     scroller.scrollTop = ratio * scroller.scrollHeight;
   }
 
@@ -203,7 +461,10 @@
     return () => ro.disconnect();
   });
 
-  onDestroy(() => doc?.loadingTask.destroy());
+  onDestroy(() => {
+    io?.disconnect();
+    doc?.loadingTask.destroy();
+  });
 </script>
 
 <div class="pdf" class:dark-pages={settings.pdfDark}>
@@ -222,6 +483,23 @@
         ></div>
       {/if}
     {/if}
+    {#each hits as h, i (i)}
+      {#if nearPages.includes(h.page)}
+        {@const wrap = (void layoutVersion, pagesEl.children[h.page - 1] as HTMLElement | undefined)}
+        {#if wrap}
+          {#each h.rects as r}
+            <div
+              class="hit"
+              class:current={i === matchIndex - 1}
+              style:left="{wrap.offsetLeft + r.x * scales[h.page - 1]}px"
+              style:top="{wrap.offsetTop + r.y * scales[h.page - 1]}px"
+              style:width="{r.w * scales[h.page - 1]}px"
+              style:height="{r.h * scales[h.page - 1]}px"
+            ></div>
+          {/each}
+        {/if}
+      {/if}
+    {/each}
     {#if !pageCount}
       <div class="empty">
         <p><b>Your PDF appears here</b> after the first compile.</p>
@@ -242,6 +520,17 @@
     :global(:root:not([data-theme="light"])) .dark-pages :global(.page canvas) { filter: invert(0.92) hue-rotate(180deg); }
   }
   :global(:root[data-theme="dark"]) .dark-pages :global(.page canvas) { filter: invert(0.92) hue-rotate(180deg); }
+  .pages :global(.textLayer) {
+    position: absolute; inset: 0; overflow: clip; line-height: 1; text-size-adjust: none; forced-color-adjust: none;
+    transform-origin: 0 0; z-index: 1; opacity: 1; user-select: text;
+  }
+  .pages :global(.textLayer :is(span, br)) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; }
+  .pages :global(.textLayer ::selection) { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .pages :global(.links) { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+  .pages :global(.links a) { position: absolute; pointer-events: auto; cursor: pointer; border-radius: 2px; }
+  .pages :global(.links a:hover) { background: color-mix(in srgb, var(--accent) 14%, transparent); outline: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); }
+  .hit { position: absolute; pointer-events: none; border-radius: 2px; background: color-mix(in srgb, #f2c230 42%, transparent); mix-blend-mode: multiply; }
+  .hit.current { background: color-mix(in srgb, #f08a24 55%, transparent); outline: 1.5px solid #f08a24; }
   .sync {
     position: absolute; pointer-events: none; border-radius: 3px;
     background: color-mix(in srgb, var(--accent) 22%, transparent);

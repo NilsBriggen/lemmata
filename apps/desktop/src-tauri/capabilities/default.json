@@ -19,6 +19,18 @@
         },
         {
           "url": "https://lemmata.briggen.dev/*"
+        },
+        {
+          "url": "https://*"
+        },
+        {
+          "url": "https://*/*"
+        },
+        {
+          "url": "http://*"
+        },
+        {
+          "url": "http://*/*"
         }
       ]
     },

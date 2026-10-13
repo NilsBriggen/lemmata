@@ -9,7 +9,14 @@
   import Download from "@lucide/svelte/icons/download";
   import Moon from "@lucide/svelte/icons/moon";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
-  import PdfView, { type Fit } from "./PdfView.svelte";
+  import Search from "@lucide/svelte/icons/search";
+  import ListTree from "@lucide/svelte/icons/list-tree";
+  import Presentation from "@lucide/svelte/icons/presentation";
+  import X from "@lucide/svelte/icons/x";
+  import ChevronUp from "@lucide/svelte/icons/chevron-up";
+  import PdfView, { type Fit, type OutlineNode } from "./PdfView.svelte";
+  import PdfOutline from "./PdfOutline.svelte";
+  import PresentationMode from "./Presentation.svelte";
   import Problems from "./Problems.svelte";
   import DropMenu from "./ui/DropMenu.svelte";
   import { settings, updateSettings } from "./settings.svelte";
@@ -34,11 +41,61 @@
   let zoomBtn = $state<HTMLButtonElement>();
   let zoomMenu = $state(false);
   let pageInput = $state("");
+  let searchOpen = $state(false);
+  let query = $state("");
+  let matchCount = $state(0);
+  let matchIndex = $state(0);
+  let searchInput = $state<HTMLInputElement>();
+  let outlineOpen = $state(false);
+  let outline = $state<OutlineNode[]>([]);
+  let presenting = $state(false);
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
   const errors = $derived(p.diagnostics.filter((d) => d.severity === "error").length);
   const warnings = $derived(p.diagnostics.filter((d) => d.severity === "warning").length);
 
-  export const load = (data: Uint8Array) => view?.load(data);
+  export const load = async (data: Uint8Array) => {
+    await view?.load(data);
+    if (outlineOpen) refreshOutline();
+  };
+
+  async function refreshOutline() {
+    outline = (await view?.getOutline()) ?? [];
+  }
+  async function toggleOutline() {
+    outlineOpen = !outlineOpen;
+    if (outlineOpen) await refreshOutline();
+  }
+
+  export function openSearch() {
+    p.onLogs(false);
+    searchOpen = true;
+    queueMicrotask(() => (searchInput?.focus(), searchInput?.select()));
+  }
+  function closeSearch() {
+    searchOpen = false;
+    query = "";
+    view?.clearSearch();
+  }
+  function onQuery() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => view?.search(query), 180);
+  }
+  function onSearchKey(e: KeyboardEvent) {
+    if (e.key === "Escape") closeSearch();
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      view?.searchStep(e.shiftKey ? -1 : 1);
+    }
+  }
+  /** Ctrl+F inside the PDF pane opens its search instead of the editor's. */
+  function onPaneKey(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      e.stopPropagation();
+      openSearch();
+    }
+  }
   export const showBoxes = (b: PdfBox[]) => {
     p.onLogs(false);
     view?.showBoxes(b);
@@ -83,22 +140,49 @@
         <button class="btn ghost icon sm" aria-label="Zoom in" onclick={() => view?.zoomBy(1.15)}><ZoomIn size={16} /></button>
       </div>
       <div class="group end">
+        <button class="btn ghost icon sm" class:on={searchOpen} aria-pressed={searchOpen} title="Search in the PDF (Ctrl+F)" aria-label="Search in the PDF" onclick={() => (searchOpen ? closeSearch() : openSearch())}><Search size={15} /></button>
+        <button class="btn ghost icon sm" class:on={outlineOpen} aria-pressed={outlineOpen} title="Document outline" aria-label="Document outline" onclick={toggleOutline}><ListTree size={15} /></button>
+        <button class="btn ghost icon sm" title="Present full screen" aria-label="Present full screen" onclick={() => (presenting = true)}><Presentation size={15} /></button>
         <button class="btn ghost icon sm" class:on={settings.pdfDark} aria-pressed={settings.pdfDark} title="Dark pages in dark mode" aria-label="Dark pages" onclick={() => updateSettings({ pdfDark: !settings.pdfDark })}><Moon size={15} /></button>
         <button class="btn ghost icon sm" title="Export PDF" aria-label="Export PDF" onclick={p.onExport}><Download size={15} /></button>
       </div>
     {/if}
   </div>
   <div class="progress" class:on={p.building} aria-hidden="true"></div>
+  {#if searchOpen && !p.logsOpen}
+    <div class="search" role="search">
+      <Search size={14} />
+      <input bind:this={searchInput} bind:value={query} oninput={onQuery} onkeydown={onSearchKey} placeholder="Search the PDF" aria-label="Search the PDF" />
+      <span class="count">{query.trim() ? (matchCount ? `${matchIndex} of ${matchCount}` : "No matches") : ""}</span>
+      <button class="btn ghost icon sm" aria-label="Previous match" disabled={!matchCount} onclick={() => view?.searchStep(-1)}><ChevronUp size={15} /></button>
+      <button class="btn ghost icon sm" aria-label="Next match" disabled={!matchCount} onclick={() => view?.searchStep(1)}><ChevronDown size={15} /></button>
+      <button class="btn ghost icon sm" aria-label="Close search" onclick={closeSearch}><X size={15} /></button>
+    </div>
+  {/if}
 
-  <div class="body">
-    <div class="pdf" class:hidden={p.logsOpen}>
-      <PdfView bind:this={view} bind:pageCount bind:currentPage bind:percent onSourceClick={p.onSourceClick} />
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="body" onkeydown={onPaneKey}>
+    {#if outlineOpen && !p.logsOpen}
+      <aside class="outline" aria-label="Document outline">
+        {#if outline.length}
+          <PdfOutline nodes={outline} onGo={(n) => (n.dest ? view?.goTo(n.dest) : null)} />
+        {:else}
+          <p>This PDF has no bookmarks. Load <code>hyperref</code> to get them from your sections.</p>
+        {/if}
+      </aside>
+    {/if}
+    <div class="pdf" class:hidden={p.logsOpen} class:with-outline={outlineOpen && !p.logsOpen}>
+      <PdfView bind:this={view} bind:pageCount bind:currentPage bind:percent bind:matchCount bind:matchIndex onSourceClick={p.onSourceClick} />
     </div>
     {#if p.logsOpen}
       <div class="pdf"><Problems diagnostics={p.diagnostics} buildId={p.buildId} onGoto={p.onGoto} /></div>
     {/if}
   </div>
 </section>
+
+{#if presenting && view?.getDocument()}
+  <PresentationMode doc={view.getDocument()!} start={currentPage} onClose={() => (presenting = false)} />
+{/if}
 
 {#if zoomMenu && zoomBtn}
   <DropMenu anchor={zoomBtn} onClose={() => (zoomMenu = false)}>
@@ -139,5 +223,12 @@
   @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
   .body { flex: 1; min-height: 0; position: relative; }
   .pdf { position: absolute; inset: 0; }
+  .pdf.with-outline { left: 220px; }
+  .outline { position: absolute; left: 0; top: 0; bottom: 0; width: 220px; overflow: auto; padding: 8px 6px; background: var(--surface); border-right: 1px solid var(--border); }
+  .outline p { color: var(--muted); font-size: 12px; margin: 6px; line-height: 1.5; }
+  .search { display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--surface); border-bottom: 1px solid var(--border); color: var(--muted); flex: none; }
+  .search input { flex: 1; min-width: 0; height: 26px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--ink); padding: 0 8px; font: 13px var(--f-body); }
+  .search input:focus { outline: none; border-color: var(--accent); }
+  .search .count { font-size: 12px; min-width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
   .pdf.hidden { visibility: hidden; }
 </style>
