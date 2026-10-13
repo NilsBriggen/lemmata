@@ -103,6 +103,16 @@ pub fn detect(extra: &[PathBuf]) -> Detection {
     let outdated =
         matches!(distribution, Distribution::TexLive { year: Some(y) } if y < MIN_TEXLIVE_YEAR);
 
+    // latexmk is a Perl script and MiKTeX does not ship Perl.
+    let mut tools = tools;
+    if cfg!(windows) && matches!(distribution, Distribution::Miktex { .. }) {
+        tools.push(Tool {
+            name: "perl".into(),
+            path: find_perl(),
+            required: false,
+        });
+    }
+
     Detection {
         bin_dir,
         distribution,
@@ -110,6 +120,23 @@ pub fn detect(extra: &[PathBuf]) -> Detection {
         tools,
         outdated,
     }
+}
+
+/// Perl on PATH, or where Strawberry Perl and Git for Windows put it (a
+/// fresh install isn't on the PATH of an app that was already running).
+pub fn find_perl() -> Option<PathBuf> {
+    if let Ok(p) = which::which("perl") {
+        return Some(p);
+    }
+    let mut dirs = vec![PathBuf::from(r"C:\Strawberry\perl\bin")];
+    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(pf) = std::env::var_os(var) {
+            dirs.push(PathBuf::from(pf).join(r"Git\usr\bin"));
+        }
+    }
+    dirs.into_iter()
+        .map(|d| d.join(format!("perl{}", std::env::consts::EXE_SUFFIX)))
+        .find(|p| p.is_file())
 }
 
 enum Source {

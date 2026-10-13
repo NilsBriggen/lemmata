@@ -5,6 +5,7 @@
 //! Lemmata always invokes latexmk. Logs without it still parse, but errors
 //! fall back to the file stack for their location.
 
+pub mod launcher;
 pub mod packages;
 
 use regex::Regex;
@@ -168,7 +169,23 @@ pub fn parse(log: &str) -> Vec<Diagnostic> {
         i += 1;
     }
 
+    for d in &mut out {
+        soften_shell_escape(d);
+    }
     dedupe(out)
+}
+
+/// MiKTeX (and TeX Live's epstopdf) mention shell escape on documents that
+/// merely load graphics. It only matters when an .eps image needs converting
+/// or a package such as minted asks for it, so it isn't a problem to fix.
+fn soften_shell_escape(d: &mut Diagnostic) {
+    if d.message.contains("Shell escape feature is not enabled") {
+        d.severity = Severity::Info;
+        d.hint = Some(
+            "Shell escape is off, which is the safe default. You only need it for packages that run programs (minted, svg) or to convert .eps images; turn it on in Project settings if a build asks for it."
+                .into(),
+        );
+    }
 }
 
 /// For an undefined command or environment we know a package for, suggest
@@ -500,6 +517,15 @@ fn dedupe(diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_shell_escape_remark_is_information_not_a_problem() {
+        let log = "Package epstopdf-base Warning: Shell escape feature is not enabled.\n\nmain.tex:3: Shell escape feature is not enabled.\n";
+        let d = parse(log);
+        assert!(!d.is_empty());
+        assert!(d.iter().all(|x| x.severity == Severity::Info), "{d:?}");
+        assert!(d[0].hint.as_deref().unwrap().contains("Project settings"));
+    }
+
     use super::*;
 
     const UNDEFINED: &str =

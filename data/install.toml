@@ -45,7 +45,7 @@ full = "winget install MiKTeX.MiKTeX"
 recommended_size = "≈200 MB, installs packages on demand"
 full_size = "≈200 MB, installs packages on demand"
 link = "https://tug.org/texlive/windows.html"
-note = "MiKTeX installs missing packages the first time a document needs them. TeX Live works too: download install-tl-windows.exe from the link."
+note = "MiKTeX installs missing packages the first time a document needs them. MiKTeX does not include Perl, which latexmk needs: after installing MiKTeX, also run winget install StrawberryPerl.StrawberryPerl, then restart Lemmata. TeX Live works too (it includes Perl): download install-tl-windows.exe from the link."
 
 [platform.other]
 label = "Other Linux"

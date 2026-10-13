@@ -150,6 +150,8 @@ async fn build(dir: &Path, json: bool) -> anyhow::Result<lemmata_tex::Outcome> {
         latexmk,
         bin_dir: det.bin_dir.as_deref(),
         installer: Some(det.installer(lemmata_tex::os::detect().family)),
+        miktex: matches!(det.distribution, lemmata_tex::Distribution::Miktex { .. }),
+        perl_dir: det.tool("perl").and_then(|p| p.parent()),
     };
     let outcome = lemmata_tex::build(&project, &opts, rx).await?;
 

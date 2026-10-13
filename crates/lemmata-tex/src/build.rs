@@ -44,10 +44,15 @@ pub struct BuildOptions<'a> {
     pub bin_dir: Option<&'a Path>,
     /// Used to suggest install commands for missing packages.
     pub installer: Option<lemmata_pkgmap::Installer<'a>>,
+    /// MiKTeX can't ask before installing a package without a window, so it
+    /// is told to install them unattended.
+    pub miktex: bool,
+    /// Folder holding `perl`, when it isn't on the PATH Lemmata started with.
+    pub perl_dir: Option<&'a Path>,
 }
 
 /// The latexmk arguments for a project.
-pub fn latexmk_args(project: &Project) -> Vec<OsString> {
+pub fn latexmk_args(project: &Project, miktex: bool) -> Vec<OsString> {
     let c = &project.config;
     let mut args: Vec<OsString> = vec![
         c.engine.latexmk_flag().into(),
@@ -73,6 +78,14 @@ pub fn latexmk_args(project: &Project) -> Vec<OsString> {
     if c.bib == lemmata_project::Bib::Bibtex {
         args.push("-bibtex".into());
     }
+    if miktex {
+        let (flag, bin) = match c.engine {
+            lemmata_project::Engine::Pdflatex => ("-pdflatex", "pdflatex"),
+            lemmata_project::Engine::Xelatex => ("-xelatex", "xelatex"),
+            lemmata_project::Engine::Lualatex => ("-lualatex", "lualatex"),
+        };
+        args.push(format!("{flag}={bin} --enable-installer %O %S").into());
+    }
     if c.draft {
         args.push("-usepretex=\\PassOptionsToPackage{draft}{graphicx}".into());
     }
@@ -94,15 +107,26 @@ pub async fn build(
     let started_at = SystemTime::now();
     prepare_outdir(project);
 
+    // latexmk's own output is the only explanation when it dies before TeX
+    // writes a log (no Perl, a MiKTeX prompt), so keep it in a file.
+    let output_path = project.outdir_abs().join("latexmk-output.txt");
+    let (out, err) =
+        match std::fs::File::create(&output_path).and_then(|f| f.try_clone().map(|g| (f, g))) {
+            Ok((f, g)) => (Stdio::from(f), Stdio::from(g)),
+            Err(_) => (Stdio::null(), Stdio::null()),
+        };
     let mut cmd = Command::new(opts.latexmk);
-    cmd.args(latexmk_args(project))
+    cmd.args(latexmk_args(project, opts.miktex))
         .current_dir(&project.root)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(out)
+        .stderr(err)
         .kill_on_drop(true);
-    if let Some(bin) = opts.bin_dir {
-        cmd.env("PATH", prepend_path(bin));
+    let mut path_dirs: Vec<&Path> = Vec::new();
+    path_dirs.extend(opts.bin_dir);
+    path_dirs.extend(opts.perl_dir);
+    if !path_dirs.is_empty() {
+        cmd.env("PATH", prepend_paths(&path_dirs));
     }
     #[cfg(unix)]
     cmd.process_group(0);
@@ -223,12 +247,33 @@ pub async fn build(
         }
     }
 
+    // Failed without a single error in the log: latexmk never got to TeX.
+    if status == Status::Failed
+        && !diagnostics
+            .iter()
+            .any(|d| d.severity == lemmata_log::Severity::Error)
+    {
+        let tail = std::fs::read(&output_path)
+            .map(|b| tail_of(&String::from_utf8_lossy(&b), 4000))
+            .unwrap_or_default();
+        diagnostics.insert(0, lemmata_log::launcher::launcher_failure(&tail));
+    }
+
     Ok(Outcome {
         status,
         duration_ms,
         pdf: fresh.then_some(pdf),
         diagnostics,
     })
+}
+
+/// The last `max` bytes of `text`, cut at a character boundary.
+fn tail_of(text: &str, max: usize) -> String {
+    let mut start = text.len().saturating_sub(max);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text[start..].to_string()
 }
 
 /// Deletes the build folder's contents (aux files, logs, synctex data) except
@@ -273,8 +318,8 @@ fn prepare_outdir(project: &Project) {
     );
 }
 
-fn prepend_path(dir: &Path) -> OsString {
-    let mut paths = vec![dir.to_path_buf()];
+fn prepend_paths(dirs: &[&Path]) -> OsString {
+    let mut paths: Vec<PathBuf> = dirs.iter().map(|d| d.to_path_buf()).collect();
     if let Some(existing) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&existing));
     }
@@ -319,7 +364,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
         let mut p = Project::open(d.path()).unwrap();
-        let args: Vec<String> = latexmk_args(&p)
+        let args: Vec<String> = latexmk_args(&p, false)
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -329,7 +374,7 @@ mod tests {
 
         p.config.engine = lemmata_project::Engine::Lualatex;
         p.config.shell_escape = true;
-        let args: Vec<String> = latexmk_args(&p)
+        let args: Vec<String> = latexmk_args(&p, false)
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -346,13 +391,62 @@ mod tests {
         let mut p = Project::open(d.path()).unwrap();
         p.config.draft = true;
         p.config.stop_on_error = true;
-        let args: Vec<String> = latexmk_args(&p)
+        let args: Vec<String> = latexmk_args(&p, false)
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert!(args.contains(&"-halt-on-error".to_string()));
         assert!(!args.contains(&"-f".to_string()));
         assert!(args.contains(&"-usepretex=\\PassOptionsToPackage{draft}{graphicx}".to_string()));
+    }
+
+    #[test]
+    fn miktex_installs_packages_unattended() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let args: Vec<String> = latexmk_args(&p, true)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"-pdflatex=pdflatex --enable-installer %O %S".to_string()));
+        assert_eq!(args.last().unwrap(), "main.tex");
+    }
+
+    #[test]
+    fn tail_cuts_on_a_character_boundary() {
+        assert_eq!(tail_of("abcdef", 3), "def");
+        assert_eq!(tail_of("aéé", 3), "é");
+        assert_eq!(tail_of("ab", 10), "ab");
+    }
+
+    /// latexmk exits 1 without ever writing a log: the build must say why.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_latexmk_that_never_reaches_tex_is_explained() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let fake = d.path().join("fake-latexmk");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\necho 'perl: command not found' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let (_tx, rx) = oneshot::channel();
+        let opts = BuildOptions {
+            latexmk: &fake,
+            bin_dir: None,
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let out = build(&p, &opts, rx).await.unwrap();
+        assert_eq!(out.status, Status::Failed);
+        assert_eq!(out.diagnostics.len(), 1);
+        assert!(out.diagnostics[0].message.contains("Perl"));
     }
 
     #[test]
