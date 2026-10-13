@@ -1,2 +1,9 @@
 packages:
   - apps/*
+
+# Dependency install scripts that may run. esbuild needs its own to fetch
+# its binary; the WebDriver downloaders aren't needed (tests use tauri-driver).
+allowBuilds:
+  esbuild: true
+  edgedriver: false
+  geckodriver: false
