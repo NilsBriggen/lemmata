@@ -1,0 +1,33 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[backend=biber,style=authoryear]{biblatex}
+\addbibresource{refs.bib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}
+
+\title{Title of the Paper}
+\author{Your Name}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+One paragraph that says what you did and what you found.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+Write here. Cite like this~\parencite{knuth1984}, and refer to \cref{sec:method}.
+
+\section{Method}\label{sec:method}
+\begin{equation}\label{eq:example}
+  e^{i\pi} + 1 = 0
+\end{equation}
+\Cref{eq:example} is numbered automatically.
+
+\printbibliography
+\end{document}

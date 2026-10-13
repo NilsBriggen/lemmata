@@ -2,6 +2,7 @@
 //! boundary are relative to the open project's root.
 
 mod lsp;
+mod projects;
 mod terminal;
 
 use lemmata_project::{Config, Entry, Project};
@@ -13,7 +14,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::ipc::Response;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 use tokio::sync::oneshot;
 
 #[derive(Default)]
@@ -254,6 +255,82 @@ fn synctex_backward(
     }))
 }
 
+fn templates_dir(app: &tauri::AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().resource_dir().map_err(err)?.join("templates"))
+}
+
+#[tauri::command]
+fn list_templates(app: tauri::AppHandle) -> CmdResult<Vec<projects::Template>> {
+    Ok(projects::list_templates(&templates_dir(&app)?))
+}
+
+#[tauri::command]
+fn create_project(
+    app: tauri::AppHandle,
+    template: String,
+    parent: String,
+    name: String,
+) -> CmdResult<PathBuf> {
+    projects::create_from_template(&templates_dir(&app)?, &template, Path::new(&parent), &name)
+}
+
+#[tauri::command]
+fn import_overleaf_zip(zip: String, parent: String, name: String) -> CmdResult<PathBuf> {
+    projects::import_zip(Path::new(&zip), Path::new(&parent), &name)
+}
+
+/// Undoes `encodeURIComponent` (header values must be ASCII).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(h) = s
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(h);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn thumbnail_path(app: &tauri::AppHandle, root: &str) -> CmdResult<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    root.hash(&mut h);
+    let dir = app.path().app_cache_dir().map_err(err)?.join("thumbnails");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    Ok(dir.join(format!("{:016x}.png", h.finish())))
+}
+
+/// Stores page 1 of a project's PDF, rendered by the frontend, for the library.
+#[tauri::command]
+fn save_thumbnail(app: tauri::AppHandle, request: tauri::ipc::Request) -> CmdResult<()> {
+    let root = request
+        .headers()
+        .get("x-project-root")
+        .and_then(|v| v.to_str().ok())
+        .map(percent_decode)
+        .ok_or("Missing project root.")?;
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected PNG bytes.".into());
+    };
+    std::fs::write(thumbnail_path(&app, &root)?, bytes).map_err(err)
+}
+
+#[tauri::command]
+fn load_thumbnail(app: tauri::AppHandle, root: String) -> CmdResult<Response> {
+    let bytes =
+        std::fs::read(thumbnail_path(&app, &root)?).map_err(|_| "No thumbnail yet.".to_string())?;
+    Ok(Response::new(bytes))
+}
+
 #[tauri::command]
 fn outline(state: State<AppState>) -> CmdResult<Vec<lemmata_project::Heading>> {
     let guard = state.project.lock().unwrap();
@@ -341,6 +418,7 @@ fn open_install_terminal(state: State<AppState>, request: InstallRequest) -> Cmd
     terminal::open_with_command(&command)
 }
 
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -361,7 +439,23 @@ pub fn run() {
             lsp_start,
             lsp_send,
             outline,
+            list_templates,
+            create_project,
+            import_overleaf_zip,
+            save_thumbnail,
+            load_thumbnail,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lemmata");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn decodes_encoded_paths() {
+        assert_eq!(
+            super::percent_decode("%2Fhome%2Fa%2FMa%C3%AEtrise%20x"),
+            "/home/a/Maîtrise x"
+        );
+    }
 }

@@ -86,6 +86,8 @@ export interface ProjectInfo {
 
 export interface Heading { level: number; title: string; file: string; line: number }
 
+export interface Template { id: string; name: string; description: string }
+
 export interface PdfBox { page: number; x: number; y: number; h: number; v: number; width: number; height: number }
 export interface SourceHit { path: string; line: number; inside_project: boolean }
 
@@ -103,6 +105,14 @@ export const api = {
   synctexBackward: (page: number, x: number, y: number) =>
     invoke<SourceHit | null>("synctex_backward", { page, x, y }),
   outline: () => invoke<Heading[]>("outline"),
+  listTemplates: () => invoke<Template[]>("list_templates"),
+  createProject: (template: string, parent: string, name: string) =>
+    invoke<string>("create_project", { template, parent, name }),
+  importOverleafZip: (zip: string, parent: string, name: string) =>
+    invoke<string>("import_overleaf_zip", { zip, parent, name }),
+  saveThumbnail: (root: string, png: Uint8Array) =>
+    invoke<void>("save_thumbnail", png, { headers: { "x-project-root": encodeURIComponent(root) } }),
+  loadThumbnail: async (root: string) => new Uint8Array(await invoke<ArrayBuffer>("load_thumbnail", { root })),
   openInstallTerminal: (request: InstallRequest) => invoke<void>("open_install_terminal", { request }),
 };
 

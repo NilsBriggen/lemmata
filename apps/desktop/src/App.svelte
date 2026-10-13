@@ -1,15 +1,16 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, errorMessage, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
+  import { api, errorMessage, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
   import Onboarding from "./lib/Onboarding.svelte";
-  import Welcome from "./lib/Welcome.svelte";
+  import Library from "./lib/Library.svelte";
   import Tree from "./lib/Tree.svelte";
   import Editor from "./lib/Editor.svelte";
   import PdfView from "./lib/PdfView.svelte";
   import Problems from "./lib/Problems.svelte";
   import Outline from "./lib/Outline.svelte";
+  import ProjectSettings from "./lib/ProjectSettings.svelte";
   import { startLanguageServer, type LanguageServer } from "./lib/lsp";
-  import { recentProjects, rememberProject } from "./lib/recent";
+  import { forgetProject, recentProjects, rememberProject } from "./lib/recent";
 
   /** Edits are saved this long after the last keystroke, which starts a build. */
   const SAVE_DELAY_MS = 600;
@@ -25,6 +26,11 @@
   let dirty = $state<Record<string, boolean>>({});
   const contents = new Map<string, string>();
   const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /** Shown when several files could be the main file and none is chosen. */
+  let choosingMain = $state(false);
+  let settingsOpen = $state(false);
+  let lastThumbnail = 0;
 
   let building = $state(false);
   let outcome = $state<Outcome | null>(null);
@@ -81,6 +87,8 @@
     await startLsp(project.root);
     await openFile(project.main);
     refreshOutline();
+    lastThumbnail = 0;
+    choosingMain = project.main_candidates.length > 1 && !project.config.main;
     // Show the existing PDF right away, then rebuild.
     api.readPdf().then((b) => pdf?.load(b)).catch(() => {});
     runBuild();
@@ -171,7 +179,10 @@
       diagnostics = result.diagnostics;
       editor?.showDiagnostics(diagnostics);
       if (result.status === "failed" && errors > 0) problemsOpen = true;
-      if (result.pdf) await pdf?.load(await api.readPdf());
+      if (result.pdf) {
+        await pdf?.load(await api.readPdf());
+        saveThumbnail();
+      }
     } catch (e) {
       if (seq === buildSeq) {
         outcome = null;
@@ -180,6 +191,33 @@
     } finally {
       if (seq === buildSeq) building = false;
     }
+  }
+
+  /** Refreshes the library thumbnail at most every two minutes. */
+  async function saveThumbnail() {
+    if (!project || Date.now() - lastThumbnail < 120_000) return;
+    lastThumbnail = Date.now();
+    const png = await pdf?.thumbnail().catch(() => null);
+    if (png && project) api.saveThumbnail(project.root, png).catch(() => {});
+  }
+
+  async function saveSettings(config: Config) {
+    if (!project) return;
+    settingsOpen = false;
+    const mainChanged = config.main !== project.main;
+    project = await api.setConfig(config);
+    if (mainChanged) await openFile(project.main);
+    refreshOutline();
+    runBuild();
+  }
+
+  async function chooseMain(main: string) {
+    if (!project) return;
+    choosingMain = false;
+    project = await api.setConfig({ ...project.config, main });
+    await openFile(main);
+    refreshOutline();
+    runBuild();
   }
 
   async function syncForward(path: string, line: number, column: number) {
@@ -251,7 +289,7 @@
 {:else if !tex.detection.ready}
   <Onboarding status={tex} {checking} onRecheck={recheck} />
 {:else if !project}
-  <Welcome {recent} error={openError} onOpen={openProject} />
+  <Library {recent} error={openError} onOpen={openProject} onForget={(p) => (recent = forgetProject(p))} />
 {:else}
   <div class="shell">
     <header>
@@ -266,6 +304,7 @@
           <option value="lualatex">LuaLaTeX</option>
         </select>
         {#if !lspAvailable}<span class="pill warn" title="texlab wasn't found, so completion and hover are off">no completion</span>{/if}
+        <button onclick={() => (settingsOpen = true)}>Settings</button>
         <button onclick={closeProject}>Close project</button>
         <button class="primary" onclick={() => saveAll().then(runBuild)} title="Ctrl+Enter">Recompile</button>
       </div>
@@ -311,6 +350,24 @@
   </div>
 {/if}
 
+{#if settingsOpen && project}
+  <ProjectSettings {project} onSave={saveSettings} onClose={() => (settingsOpen = false)} />
+{/if}
+
+{#if choosingMain && project}
+  <div class="backdrop" role="presentation">
+    <div class="dialog" role="dialog" aria-labelledby="main-title">
+      <h2 id="main-title">Which file is the main document?</h2>
+      <p>Several files start with <code>\documentclass</code>. Lemmata will build the one you choose and remember it in <code>lemmata.toml</code>.</p>
+      <ul>
+        {#each project.main_candidates as c (c)}
+          <li><button onclick={() => chooseMain(c)}>{c}</button></li>
+        {/each}
+      </ul>
+    </div>
+  </div>
+{/if}
+
 <style>
   .loading { height: 100%; display: grid; place-items: center; color: var(--muted); }
   .shell { display: flex; flex-direction: column; height: 100%; }
@@ -342,5 +399,11 @@
   .preview { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .pdfwrap { flex: 1; min-height: 0; }
   .problems { border-top: 1px solid var(--rule); background: var(--sheet); flex: none; max-height: 40%; display: flex; flex-direction: column; }
+  .backdrop { position: fixed; inset: 0; background: rgba(10, 15, 20, 0.45); display: grid; place-items: center; padding: 24px; z-index: 10; }
+  .dialog { width: min(520px, 100%); background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: 22px 24px; }
+  .dialog h2 { font: 400 20px var(--f-display); margin: 0 0 8px; }
+  .dialog p { color: var(--muted); margin: 0 0 12px; }
+  .dialog ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .dialog li button { width: 100%; text-align: left; font: 13px var(--f-mono); padding: 8px 12px; }
   .ph { display: flex; gap: 8px; align-items: center; border: none; border-radius: 0; background: var(--chrome); padding: 5px 12px; font: 500 12px var(--f-body); color: var(--muted); text-align: left; }
 </style>

@@ -1,0 +1,33 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=2cm]{geometry}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\definecolor{accent}{HTML}{2F7FB8}
+
+% \cvsection{Title} and \entry{when}{what}{where}{details}
+\newcommand{\cvsection}[1]{\par\vspace{1.2em}{\large\bfseries\color{accent}#1}\par\vspace{0.2em}\hrule\vspace{0.6em}}
+\newcommand{\entry}[4]{%
+  \begin{tabularx}{\linewidth}{@{}p{2.6cm}X@{}}
+    #1 & \textbf{#2}, #3\par\small #4
+  \end{tabularx}\par\vspace{0.4em}}
+
+\begin{document}
+{\Huge\bfseries First Last}\par\vspace{0.4em}
+Street 1, 1700 City \quad\textbullet\quad \href{mailto:you@example.com}{you@example.com} \quad\textbullet\quad +41 00 000 00 00
+
+\cvsection{Education}
+\entry{2024--2026}{MSc Computer Science}{University}{Thesis on a topic you care about.}
+\entry{2021--2024}{BSc Computer Science}{University}{}
+
+\cvsection{Experience}
+\entry{2025}{Research Assistant}{Lab}{What you did and what came of it.}
+
+\cvsection{Skills}
+\entry{Languages}{English, German, French}{}{}
+\entry{Tools}{\LaTeX, Python, Rust}{}{}
+\end{document}

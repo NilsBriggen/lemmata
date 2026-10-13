@@ -30,7 +30,7 @@
     "category": "Productivity",
     "shortDescription": "Local-first LaTeX editor",
     "longDescription": "Lemmata is a LaTeX editor with a live PDF preview and click-to-jump between PDF and source, running on your own TeX Live installation.",
-    "copyright": "© 2026 Nils Briggen. GPL-3.0.",
+    "copyright": "\u00a9 2026 Nils Briggen. GPL-3.0.",
     "license": "GPL-3.0-only",
     "homepage": "https://lemmata.briggen.dev",
     "icon": [
@@ -39,6 +39,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../../../templates/": "templates/"
+    }
   }
 }

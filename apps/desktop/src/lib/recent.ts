@@ -21,3 +21,13 @@ export function rememberProject(path: string, storage: Pick<Storage, "getItem" |
   }
   return list;
 }
+
+export function forgetProject(path: string, storage: Pick<Storage, "getItem" | "setItem"> = localStorage): string[] {
+  const list = recentProjects(storage).filter((p) => p !== path);
+  try {
+    storage.setItem(KEY, JSON.stringify(list));
+  } catch {
+    // Same as above.
+  }
+  return list;
+}

@@ -85,6 +85,20 @@
     }
   }
 
+  /** Page 1 as a small PNG, for the project library. */
+  export async function thumbnail(width = 360): Promise<Uint8Array | null> {
+    if (!doc) return null;
+    const page = await doc.getPage(1);
+    const base = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: width / base.width });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    await page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport }).promise;
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/png"));
+    return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+  }
+
   export function showBoxes(boxes: PdfBox[]) {
     const b = boxes[0];
     if (!b) return;
