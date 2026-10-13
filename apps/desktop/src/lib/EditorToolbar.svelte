@@ -74,7 +74,7 @@
 </div>
 
 <style>
-  .bar { display: flex; align-items: center; gap: 4px; padding: 4px 10px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; overflow-x: auto; }
+  .bar { display: flex; align-items: center; gap: 4px; padding: 4px 10px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; overflow-x: auto; scrollbar-width: none; }
   .group { display: flex; gap: 2px; }
   .sep { width: 1px; height: 18px; background: var(--border); margin: 0 6px; flex: none; }
   .heading { gap: 2px; }

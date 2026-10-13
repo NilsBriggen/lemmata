@@ -70,7 +70,7 @@ const tree = () => [
 let config = { main: "main.tex", engine: "pdflatex", bib: "biber", shell_escape: false, outdir: ".lemmata/build", spellcheck: null, words: [], figures_dir: "figures" };
 
 const errorDiagnostics = [
-  { severity: "error", kind: { type: "undefined-control-sequence" }, file: "./chapters/method.tex", line: 4, message: "Undefined control sequence.", hint: "A command isn't defined. Check its spelling, or load the package that provides it." },
+  { severity: "error", kind: { type: "undefined-control-sequence" }, file: "./chapters/method.tex", line: 4, message: "Undefined control sequence.", hint: "A command isn't defined. Check its spelling, or load the package that provides it.", fix: { explanation: "\\mathbb comes from the amssymb package.", command: null, package: "amssymb" } },
   { severity: "error", kind: { type: "missing-file", name: "pgfplots.sty" }, file: "./main.tex", line: 5, message: "File `pgfplots.sty' not found.", hint: null, fix: { explanation: "pgfplots.sty is part of the TeX Live package \"pgfplots\", which your system ships in texlive-pictures.", command: "sudo pacman -S --needed texlive-pictures" } },
   { severity: "warning", kind: { type: "undefined-citation", key: "nobody2020" }, file: "./chapters/method.tex", line: 7, message: "Citation 'nobody2020' on page 1 undefined.", hint: "No entry with this key in your .bib files, or the bibliography hasn't been built yet." },
   { severity: "info", kind: { type: "bad-box" }, file: "./main.tex", line: 12, message: "Overfull \\hbox (12.3pt too wide)", hint: null },
@@ -120,6 +120,7 @@ const handlers: Record<string, (a: Args) => unknown> = {
     return { status: scenario === "errors" ? "failed" : "success", duration_ms: 812, pdf: "/x/main.pdf", diagnostics: scenario === "errors" ? errorDiagnostics : okDiagnostics };
   },
   read_pdf: async () => (await fetch(samplePdf)).arrayBuffer(),
+  clean_build: () => 4,
   read_log: () => "This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026/Arch Linux)\n entering extended mode\n(./main.tex\nLaTeX2e <2025-06-01>\n...\nOutput written on main.pdf (2 pages, 155357 bytes).",
   synctex_forward: () => [{ page: 1, x: 100, y: 300, h: 133, v: 295, width: 343, height: 9 }],
   synctex_backward: () => ({ path: "chapters/method.tex", line: 3, inside_project: true }),

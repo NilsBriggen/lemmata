@@ -5,6 +5,8 @@
 //! Lemmata always invokes latexmk. Logs without it still parse, but errors
 //! fall back to the file stack for their location.
 
+pub mod packages;
+
 use regex::Regex;
 use serde::Serialize;
 use std::sync::LazyLock;
@@ -47,6 +49,9 @@ pub struct Fix {
     pub explanation: String,
     /// A shell command the user can run, if there is one.
     pub command: Option<String>,
+    /// A LaTeX package the document should load (`\usepackage{…}`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
 }
 
 /// TeX hard-wraps log lines at this many characters (`max_print_line`).
@@ -69,6 +74,12 @@ static MISSING_FILE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"File [`']([^']+)' not found").unwrap());
 static CITATION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Citation [`']([^']+)' (?:on page \d+ )?undefined").unwrap());
+static CONTEXT_TEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^l\.\d+ (.*)$").unwrap());
+static LAST_COMMAND: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\([A-Za-z@]+)\*?[^\\]*$").unwrap());
+static ENVIRONMENT_UNDEFINED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Environment (\S+) undefined").unwrap());
+static MULTIPLY_DEFINED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Label [`']([^']+)' multiply defined").unwrap());
 static REFERENCE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Reference [`']([^']+)' (?:on page \d+ )?undefined").unwrap());
 
@@ -91,7 +102,9 @@ pub fn parse(log: &str) -> Vec<Diagnostic> {
         if let Some(c) = FILE_LINE_ERROR.captures(line) {
             let msg = c[3].trim().to_string();
             if !NOISE.contains(&msg.as_str()) {
-                out.push(error(Some(c[1].to_string()), c[2].parse().ok(), msg));
+                let mut d = error(Some(c[1].to_string()), c[2].parse().ok(), msg);
+                add_package_fix(&mut d, &lines[i + 1..]);
+                out.push(d);
             }
             i += 1;
             continue;
@@ -107,7 +120,9 @@ pub fn parse(log: &str) -> Vec<Diagnostic> {
                 .take_while(|l| !l.starts_with("! "))
                 .find_map(|l| CONTEXT_LINE.captures(l).and_then(|c| c[1].parse().ok()));
             if !NOISE.contains(&msg.as_str()) {
-                out.push(error(files.top(), line_no, msg));
+                let mut d = error(files.top(), line_no, msg);
+                add_package_fix(&mut d, &lines[i + 1..]);
+                out.push(d);
             }
             i += 1;
             continue;
@@ -155,6 +170,35 @@ pub fn parse(log: &str) -> Vec<Diagnostic> {
     dedupe(out)
 }
 
+/// For an undefined command or environment we know a package for, suggest
+/// loading it. `after` is the log text following the error line.
+fn add_package_fix(d: &mut Diagnostic, after: &[String]) {
+    let found = match &d.kind {
+        Kind::UndefinedControlSequence => after
+            .iter()
+            .take(20)
+            .take_while(|l| !l.starts_with("! ") && !FILE_LINE_ERROR.is_match(l))
+            .find_map(|l| CONTEXT_TEXT.captures(l))
+            .and_then(|c| LAST_COMMAND.captures(&c[1]).map(|m| m[1].to_string()))
+            .and_then(|name| {
+                packages::for_command(&name).map(|p| (format!("\\{name}"), p.to_string()))
+            }),
+        _ => ENVIRONMENT_UNDEFINED
+            .captures(&d.message)
+            .and_then(|c| {
+                let name = c[1].to_string();
+                packages::for_environment(&name).map(|p| (format!("The {name} environment"), p.to_string()))
+            }),
+    };
+    if let Some((what, package)) = found {
+        d.fix = Some(Fix {
+            explanation: format!("{what} comes from the {package} package."),
+            command: None,
+            package: Some(package),
+        });
+    }
+}
+
 fn error(file: Option<String>, line: Option<u32>, message: String) -> Diagnostic {
     // "LaTeX Error:" adds nothing next to the error badge in the UI.
     let message = message
@@ -195,6 +239,19 @@ fn warning(file: Option<String>, text: String) -> Diagnostic {
                 "No \\label with this name. A label added just now resolves on the next build."
                     .into(),
             ),
+        )
+    } else if let Some(c) = MULTIPLY_DEFINED.captures(&text) {
+        (
+            Kind::Other,
+            Some(format!(
+                "Two \\label commands are both called \"{}\". Every label must be unique, or references may point to the wrong place.",
+                &c[1]
+            )),
+        )
+    } else if text.contains("may have changed") && text.contains("Rerun") {
+        (
+            Kind::Other,
+            Some("The numbering shifted during this build. Recompile once more to settle it.".into()),
         )
     } else {
         (Kind::Other, None)
@@ -298,6 +355,115 @@ impl FileStack {
             }
         }
     }
+}
+
+static BIBER_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(ERROR|WARN) - (.*)$").unwrap());
+static BIBER_SYNTAX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"BibTeX subsystem: .*?([^/\\ ]+?\.bib)_\w+\.utf8, line (\d+), (.*)$").unwrap()
+});
+static BIBER_ENTRY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"didn't find a database entry for '([^']+)'").unwrap());
+static BIBER_MISSING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Cannot find '([^']+)'").unwrap());
+static BIBTEX_ENTRY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^Warning--I didn't find a database entry for "([^"]+)""#).unwrap());
+static BIBTEX_OPEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^I couldn't open database file (\S+)").unwrap());
+static BIBTEX_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^---line (\d+) of file (\S+)").unwrap());
+
+fn bib_diag(
+    severity: Severity,
+    kind: Kind,
+    file: Option<String>,
+    line: Option<u32>,
+    message: String,
+    hint: &str,
+) -> Diagnostic {
+    Diagnostic {
+        severity,
+        kind,
+        file,
+        line,
+        message,
+        hint: Some(hint.into()),
+        fix: None,
+    }
+}
+
+/// Problems the bibliography tool reported in its `.blg` log (biber or
+/// BibTeX): a missing .bib file, a syntax error in an entry, a cited key
+/// that isn't in the database.
+pub fn parse_blg(blg: &str) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    let lines: Vec<&str> = blg.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(c) = BIBER_LINE.captures(line) {
+            let (level, msg) = (&c[1], c[2].trim());
+            let severity = if level == "ERROR" { Severity::Error } else { Severity::Warning };
+            if let Some(m) = BIBER_SYNTAX.captures(msg) {
+                out.push(bib_diag(
+                    Severity::Error,
+                    Kind::Other,
+                    Some(m[1].to_string()),
+                    m[2].parse().ok(),
+                    format!("Bibliography entry could not be read: {}", m[3].trim()),
+                    "Check that braces and quotes are balanced and that fields are separated by commas.",
+                ));
+            } else if let Some(m) = BIBER_ENTRY.captures(msg) {
+                out.push(bib_diag(
+                    severity,
+                    Kind::UndefinedCitation { key: m[1].to_string() },
+                    None,
+                    None,
+                    format!("Citation '{}' is not in your bibliography.", &m[1]),
+                    "No entry with this key in your .bib files. Check the key's spelling.",
+                ));
+            } else if let Some(m) = BIBER_MISSING.captures(msg) {
+                out.push(bib_diag(
+                    Severity::Error,
+                    Kind::MissingFile { name: m[1].to_string() },
+                    None,
+                    None,
+                    format!("Bibliography file '{}' was not found.", &m[1]),
+                    "Check the name in \\addbibresource{} or \\bibliography{}, and that the file is in the project.",
+                ));
+            } else if severity == Severity::Error {
+                out.push(bib_diag(severity, Kind::Other, None, None, msg.to_string(), "Reported by biber."));
+            }
+        } else if let Some(c) = BIBTEX_ENTRY.captures(line) {
+            out.push(bib_diag(
+                Severity::Warning,
+                Kind::UndefinedCitation { key: c[1].to_string() },
+                None,
+                None,
+                format!("Citation '{}' is not in your bibliography.", &c[1]),
+                "No entry with this key in your .bib files. Check the key's spelling.",
+            ));
+        } else if let Some(c) = BIBTEX_OPEN.captures(line) {
+            out.push(bib_diag(
+                Severity::Error,
+                Kind::MissingFile { name: c[1].to_string() },
+                None,
+                None,
+                format!("Bibliography file '{}' was not found.", &c[1]),
+                "Check the name in \\bibliography{}, and that the file is in the project.",
+            ));
+        } else if let Some(c) = BIBTEX_LINE.captures(line) {
+            // The complaint is on the previous line: "I was expecting a `,' or a `}'".
+            let what = lines.get(i.wrapping_sub(1)).map(|l| l.trim()).unwrap_or("syntax error");
+            out.push(bib_diag(
+                Severity::Error,
+                Kind::Other,
+                Some(c[2].to_string()),
+                c[1].parse().ok(),
+                format!("Bibliography entry could not be read: {what}."),
+                "Check that braces and quotes are balanced and that fields are separated by commas.",
+            ));
+        }
+    }
+    dedupe(out)
 }
 
 fn dedupe(diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
@@ -415,5 +581,59 @@ mod tests {
             unwrap_lines(&long),
             vec![format!("{}rest", "x".repeat(WRAP))]
         );
+    }
+
+    #[test]
+    fn undefined_command_suggests_its_package() {
+        let log = "./main.tex:12: Undefined control sequence.\nl.12 Let $x \\in \\mathbb\n                {R}$ be a number.\n";
+        let d = parse(log);
+        assert_eq!(d.len(), 1);
+        let fix = d[0].fix.as_ref().unwrap();
+        assert_eq!(fix.package.as_deref(), Some("amssymb"));
+        assert!(fix.explanation.contains("\\mathbb"));
+    }
+
+    #[test]
+    fn unknown_command_has_no_package() {
+        let log = "./main.tex:3: Undefined control sequence.\nl.3 \\frobnicate\n";
+        assert!(parse(log)[0].fix.is_none());
+    }
+
+    #[test]
+    fn undefined_environment_suggests_its_package() {
+        let log = "./main.tex:5: LaTeX Error: Environment align undefined.\n\nSee the LaTeX manual.\nl.5 \\begin{align}\n";
+        let d = parse(log);
+        assert_eq!(d[0].fix.as_ref().unwrap().package.as_deref(), Some("amsmath"));
+    }
+
+    #[test]
+    fn multiply_defined_label_is_explained() {
+        let d = parse("LaTeX Warning: Label `eq:a' multiply defined.\n\n");
+        assert!(d[0].hint.as_deref().unwrap().contains("eq:a"));
+    }
+
+    #[test]
+    fn biber_log_problems() {
+        let blg = "[12] Utils.pm:1> INFO - Looking for bibtex format file 'refs.bib'\n\
+[20] bibtex.pm:2> ERROR - BibTeX subsystem: /tmp/par-x/cache/refs.bib_Ab12.utf8, line 14, syntax error: at line 14, expected a field name\n\
+[21] Biber.pm:3> WARN - I didn't find a database entry for 'smith2020' (section 0)\n\
+[22] Biber.pm:4> ERROR - Cannot find 'missing.bib'!\n";
+        let d = parse_blg(blg);
+        assert_eq!(d.len(), 3);
+        assert_eq!(d[0].file.as_deref(), Some("refs.bib"));
+        assert_eq!(d[0].line, Some(14));
+        assert_eq!(d[1].kind, Kind::UndefinedCitation { key: "smith2020".into() });
+        assert_eq!(d[2].kind, Kind::MissingFile { name: "missing.bib".into() });
+    }
+
+    #[test]
+    fn bibtex_log_problems() {
+        let blg = "I was expecting a `,' or a `}'\n---line 7 of file refs.bib\nWarning--I didn't find a database entry for \"jones1999\"\nI couldn't open database file nope.bib\n";
+        let d = parse_blg(blg);
+        assert_eq!(d.len(), 3);
+        assert_eq!(d[0].line, Some(7));
+        assert_eq!(d[0].file.as_deref(), Some("refs.bib"));
+        assert_eq!(d[1].kind, Kind::UndefinedCitation { key: "jones1999".into() });
+        assert_eq!(d[2].kind, Kind::MissingFile { name: "nope.bib".into() });
     }
 }

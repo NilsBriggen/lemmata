@@ -85,6 +85,26 @@ pub struct Config {
     pub words: Vec<String>,
     /// Where dropped and pasted images go.
     pub figures_dir: String,
+    /// Fast mode: images are drawn as empty boxes so big figures don't slow
+    /// every build. The final PDF should be built without it.
+    #[serde(skip_serializing_if = "is_false")]
+    pub draft: bool,
+    /// Stop at the first error instead of pushing on to a complete PDF.
+    #[serde(skip_serializing_if = "is_false")]
+    pub stop_on_error: bool,
+    /// A build running longer than this is stopped. 0 means no limit.
+    #[serde(skip_serializing_if = "is_default_timeout")]
+    pub timeout_secs: u64,
+}
+
+pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+fn is_default_timeout(t: &u64) -> bool {
+    *t == DEFAULT_TIMEOUT_SECS
 }
 
 impl Default for Config {
@@ -98,6 +118,9 @@ impl Default for Config {
             spellcheck: None,
             words: Vec::new(),
             figures_dir: "figures".into(),
+            draft: false,
+            stop_on_error: false,
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
         }
     }
 }

@@ -40,6 +40,11 @@
     onRecompile: () => void;
     onStop: () => void;
     onAutoCompile: (on: boolean) => void;
+    draft: boolean;
+    stopOnError: boolean;
+    onDraft: (on: boolean) => void;
+    onStopOnError: (on: boolean) => void;
+    onClean: () => void;
     onEngine: (e: Engine) => void;
     onLibrary: () => void;
   }
@@ -117,8 +122,25 @@
         <span class="tick">{#if p.engine === id}<Check size={14} />{/if}</span> {label}
       </button>
     {/each}
+    <hr />
+    <div class="heading">Mode</div>
+    <button role="menuitemradio" aria-checked={!p.draft} onclick={() => p.onDraft(false)}>
+      <span class="tick">{#if !p.draft}<Check size={14} />{/if}</span> Normal
+    </button>
+    <button role="menuitemradio" aria-checked={p.draft} onclick={() => p.onDraft(true)} title="Figures are drawn as empty boxes, so builds are quicker">
+      <span class="tick">{#if p.draft}<Check size={14} />{/if}</span> Fast (draft)
+    </button>
+    <hr />
+    <div class="heading">When there's an error</div>
+    <button role="menuitemradio" aria-checked={!p.stopOnError} onclick={() => p.onStopOnError(false)}>
+      <span class="tick">{#if !p.stopOnError}<Check size={14} />{/if}</span> Keep going
+    </button>
+    <button role="menuitemradio" aria-checked={p.stopOnError} onclick={() => p.onStopOnError(true)}>
+      <span class="tick">{#if p.stopOnError}<Check size={14} />{/if}</span> Stop at the first error
+    </button>
+    <hr />
+    <button role="menuitem" onclick={p.onClean}>Clear cached files</button>
     {#if p.building}
-      <hr />
       <button role="menuitem" onclick={p.onStop}>Stop compiling</button>
     {/if}
   </DropMenu>

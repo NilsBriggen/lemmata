@@ -7,14 +7,19 @@
   import CircleCheck from "@lucide/svelte/icons/circle-check";
   import { api, errorMessage, type Diagnostic } from "./api";
   import CommandBox from "./CommandBox.svelte";
+  import Excerpt from "./Excerpt.svelte";
 
   interface Props {
     diagnostics: Diagnostic[];
     /** Changes after every build, so the raw log reloads. */
     buildId: number;
     onGoto: (file: string, line: number) => void;
+    /** Adds \usepackage{…} to the document, for "undefined command" fixes. */
+    onAddPackage: (pkg: string) => void;
+    /** Source text of a project file, for the excerpts. */
+    getSource: (file: string) => Promise<string | null>;
   }
-  let { diagnostics, buildId, onGoto }: Props = $props();
+  let { diagnostics, buildId, onGoto, onAddPackage, getSource }: Props = $props();
 
   let tab = $state<"problems" | "log">("problems");
   let showInfo = $state(false);
@@ -67,8 +72,14 @@
               </button>
             {/if}
           </header>
+          {#if d.severity === "error" && file(d) && d.line && i < 12}
+            <Excerpt file={file(d)!} line={d.line} {getSource} />
+          {/if}
           {#if d.fix}
             <p class="hint">{d.fix.explanation}</p>
+            {#if d.fix.package}
+              <div class="action"><button class="btn sm" onclick={() => onAddPackage(d.fix!.package!)}>Add \usepackage{"{"}{d.fix.package}{"}"}</button></div>
+            {/if}
             {#if d.fix.command && d.kind.type === "missing-file"}
               <CommandBox command={d.fix.command} install={{ what: "package", file: d.kind.name }} />
               <p class="after">After installing, recompile.</p>
@@ -118,6 +129,7 @@
   .loc:hover:not(:disabled) { border-color: var(--accent); }
   .loc:disabled { color: var(--muted); }
   .hint { margin: 0 0 0 24px; color: var(--muted); }
+  .action { margin: 2px 0 0 24px; }
   .after { margin: 0 0 0 24px; color: var(--muted); font-size: 12px; }
   .card :global(.box) { margin-left: 24px; }
   .clear { display: flex; flex-direction: column; align-items: center; text-align: center; color: var(--ok); padding: 36px 16px 16px; gap: 2px; }

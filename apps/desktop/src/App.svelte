@@ -293,7 +293,7 @@
       diagnostics = result.diagnostics;
       editor?.showDiagnostics(diagnostics);
       // Like Overleaf: a failed build with no PDF opens the logs.
-      if (result.status === "failed" && !result.pdf && errors > 0) logsOpen = true;
+      if ((result.status === "failed" || result.status === "timeout") && !result.pdf && errors > 0) logsOpen = true;
       if (result.pdf) {
         await pdf?.load(await api.readPdf());
         saveThumbnail();
@@ -340,6 +340,34 @@
     if (await api.hasPackage(pkg).catch(() => true)) return;
     offered.add(pkg);
     packageOffer = pkg;
+  }
+
+  async function setBuildOption(patch: Partial<Config>) {
+    if (!project) return;
+    project = await api.setConfig({ ...project.config, main: project.main, ...patch });
+    saveAll(false).then(runBuild);
+  }
+
+  async function cleanCache() {
+    try {
+      const n = await api.cleanBuild();
+      showNotice(n ? "Cleared the cached files." : "Nothing to clear.", { tone: "ok" });
+      saveAll(false).then(runBuild);
+    } catch (e) {
+      showNotice(errorMessage(e));
+    }
+  }
+
+  /** The source around a problem, for the Problems cards. */
+  async function sourceOf(file: string): Promise<string | null> {
+    const rel = file.replace(/^\.\//, "");
+    const open = contents.get(rel);
+    if (open !== undefined) return open;
+    try {
+      return await api.readText(rel);
+    } catch {
+      return null;
+    }
   }
 
   async function addPackage(pkg: string) {
@@ -882,6 +910,11 @@
       onRecompile={() => saveAll(false).then(runBuild)}
       onStop={stopBuild}
       onAutoCompile={(on) => updateSettings({ autoCompile: on })}
+      draft={project.config.draft ?? false}
+      stopOnError={project.config.stop_on_error ?? false}
+      onDraft={(draft) => setBuildOption({ draft })}
+      onStopOnError={(stop_on_error) => setBuildOption({ stop_on_error })}
+      onClean={cleanCache}
       onEngine={setEngine}
       onLibrary={closeProject}
     />
@@ -986,7 +1019,7 @@
           <span>{project.config.engine === "pdflatex" ? "pdfLaTeX" : project.config.engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"}</span>
           {#if outcome && !building}
             <span class={outcome.status === "success" ? "ok" : "bad"}>
-              {outcome.status === "success" ? `Compiled in ${(outcome.duration_ms / 1000).toFixed(1)} s` : errors ? `${errors} error${errors === 1 ? "" : "s"}` : "Compile failed"}
+              {outcome.status === "success" ? `Compiled in ${(outcome.duration_ms / 1000).toFixed(1)} s` : outcome.status === "timeout" ? "Stopped: took too long" : errors ? `${errors} error${errors === 1 ? "" : "s"}` : "Compile failed"}
             </span>
           {/if}
         </footer>
@@ -1015,6 +1048,8 @@
               onLogs={(o) => (logsOpen = o)}
               onSourceClick={syncBackward}
               onGoto={gotoProblem}
+              onAddPackage={addPackage}
+              getSource={sourceOf}
               onExport={exportPdf}
             />
           </div>

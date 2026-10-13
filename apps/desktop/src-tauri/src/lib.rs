@@ -206,6 +206,15 @@ async fn build(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<O
     Ok(outcome)
 }
 
+/// "Clear cached files": removes aux files and logs so the next build starts clean.
+#[tauri::command]
+fn clean_build(state: State<AppState>) -> CmdResult<usize> {
+    cancel_running(&state);
+    let guard = state.project.lock().unwrap();
+    let project = guard.as_ref().ok_or("No project is open.")?;
+    lemmata_tex::clean(project).map_err(err)
+}
+
 #[tauri::command]
 fn read_pdf(state: State<AppState>) -> CmdResult<Response> {
     let pdf = {
@@ -602,6 +611,7 @@ pub fn run() {
             lsp_start,
             lsp_send,
             outline,
+            clean_build,
             labels,
             word_count,
             package_names,

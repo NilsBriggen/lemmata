@@ -30,6 +30,8 @@
     onLogs: (open: boolean) => void;
     onSourceClick: (page: number, x: number, y: number) => void;
     onGoto: (file: string, line: number) => void;
+    onAddPackage: (pkg: string) => void;
+    getSource: (file: string) => Promise<string | null>;
     onExport: () => void;
   }
   let p: Props = $props();
@@ -135,14 +137,14 @@
         <button class="btn ghost icon sm" aria-label="Next page" disabled={currentPage >= pageCount} onclick={() => view?.gotoPage(currentPage + 1)}><ChevronRight size={16} /></button>
       </div>
       <div class="group">
-        <button class="btn ghost icon sm" aria-label="Zoom out" onclick={() => view?.zoomBy(1 / 1.15)}><ZoomOut size={16} /></button>
+        <button class="btn ghost icon sm optional" aria-label="Zoom out" onclick={() => view?.zoomBy(1 / 1.15)}><ZoomOut size={16} /></button>
         <button class="btn ghost sm zoom" bind:this={zoomBtn} aria-label="Zoom level" onclick={() => (zoomMenu = !zoomMenu)}>{percent}% <ChevronDown size={13} /></button>
-        <button class="btn ghost icon sm" aria-label="Zoom in" onclick={() => view?.zoomBy(1.15)}><ZoomIn size={16} /></button>
+        <button class="btn ghost icon sm optional" aria-label="Zoom in" onclick={() => view?.zoomBy(1.15)}><ZoomIn size={16} /></button>
       </div>
       <div class="group end">
         <button class="btn ghost icon sm" class:on={searchOpen} aria-pressed={searchOpen} title="Search in the PDF (Ctrl+F)" aria-label="Search in the PDF" onclick={() => (searchOpen ? closeSearch() : openSearch())}><Search size={15} /></button>
-        <button class="btn ghost icon sm" class:on={outlineOpen} aria-pressed={outlineOpen} title="Document outline" aria-label="Document outline" onclick={toggleOutline}><ListTree size={15} /></button>
-        <button class="btn ghost icon sm" title="Present full screen" aria-label="Present full screen" onclick={() => (presenting = true)}><Presentation size={15} /></button>
+        <button class="btn ghost icon sm optional" class:on={outlineOpen} aria-pressed={outlineOpen} title="Document outline" aria-label="Document outline" onclick={toggleOutline}><ListTree size={15} /></button>
+        <button class="btn ghost icon sm optional" title="Present full screen" aria-label="Present full screen" onclick={() => (presenting = true)}><Presentation size={15} /></button>
         <button class="btn ghost icon sm" class:on={settings.pdfDark} aria-pressed={settings.pdfDark} title="Dark pages in dark mode" aria-label="Dark pages" onclick={() => updateSettings({ pdfDark: !settings.pdfDark })}><Moon size={15} /></button>
         <button class="btn ghost icon sm" title="Export PDF" aria-label="Export PDF" onclick={p.onExport}><Download size={15} /></button>
       </div>
@@ -175,7 +177,7 @@
       <PdfView bind:this={view} bind:pageCount bind:currentPage bind:percent bind:matchCount bind:matchIndex onSourceClick={p.onSourceClick} />
     </div>
     {#if p.logsOpen}
-      <div class="pdf"><Problems diagnostics={p.diagnostics} buildId={p.buildId} onGoto={p.onGoto} /></div>
+      <div class="pdf"><Problems diagnostics={p.diagnostics} buildId={p.buildId} onGoto={p.onGoto} onAddPackage={p.onAddPackage} getSource={p.getSource} /></div>
     {/if}
   </div>
 </section>
@@ -196,7 +198,7 @@
 {/if}
 
 <style>
-  .pane { display: flex; flex-direction: column; height: 100%; min-width: 0; background: var(--pdf-ground); }
+  .pane { display: flex; flex-direction: column; height: 100%; min-width: 0; background: var(--pdf-ground); container-type: inline-size; }
   .bar {
     display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 8px; flex: none;
     background: var(--surface); border-bottom: 1px solid var(--border);
@@ -213,7 +215,10 @@
   .page-input::placeholder { color: var(--ink); }
   .page-input:focus { outline: none; border-color: var(--accent); }
   .page-input:focus::placeholder { color: var(--faint); }
-  .of { color: var(--muted); font-size: 12px; margin-right: 2px; font-variant-numeric: tabular-nums; }
+  .of { color: var(--muted); font-size: 12px; margin-right: 2px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bar { overflow: hidden; }
+  @container (max-width: 560px) { .optional { display: none; } }
+  @container (max-width: 420px) { .pages { display: none; } }
   .zoom { min-width: 64px; gap: 2px; font-variant-numeric: tabular-nums; }
   .progress { height: 2px; background: transparent; flex: none; overflow: hidden; position: relative; }
   .progress.on::after {

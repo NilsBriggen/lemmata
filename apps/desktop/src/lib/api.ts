@@ -17,7 +17,7 @@ export interface Diagnostic {
   line: number | null;
   message: string;
   hint: string | null;
-  fix?: { explanation: string; command: string | null };
+  fix?: { explanation: string; command: string | null; package?: string };
 }
 
 export type InstallRequest =
@@ -25,7 +25,7 @@ export type InstallRequest =
   | { what: "package"; file: string };
 
 export interface Outcome {
-  status: "success" | "failed" | "cancelled";
+  status: "success" | "failed" | "cancelled" | "timeout";
   duration_ms: number;
   pdf: string | null;
   diagnostics: Diagnostic[];
@@ -73,6 +73,10 @@ export interface Config {
   outdir: string;
   spellcheck?: string | null;
   words?: string[];
+  /** Fast mode: figures are drawn as boxes. */
+  draft?: boolean;
+  stop_on_error?: boolean;
+  timeout_secs?: number;
 }
 
 export interface Entry { name: string; path: string; is_dir: boolean; children: Entry[] }
@@ -149,6 +153,7 @@ export const api = {
   inspectZip: (zip: string) => invoke<{ bulk: boolean; projects: string[] }>("inspect_zip", { zip }),
   createExample: () => invoke<string>("create_example"),
   stopBuild: () => invoke<void>("stop_build"),
+  cleanBuild: () => invoke<number>("clean_build"),
   readLog: () => invoke<string>("read_log"),
   addFiles: (paths: string[], folder: string) => invoke<string[]>("add_files", { paths, folder }),
   saveThumbnail: (root: string, png: Uint8Array) =>

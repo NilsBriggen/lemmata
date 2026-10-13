@@ -5,5 +5,5 @@ pub mod build;
 pub mod detect;
 pub mod os;
 
-pub use build::{BuildOptions, Outcome, Status, build};
+pub use build::{BuildOptions, Outcome, Status, build, clean};
 pub use detect::{Detection, Distribution, detect};
