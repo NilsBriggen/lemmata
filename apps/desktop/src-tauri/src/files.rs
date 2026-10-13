@@ -547,7 +547,7 @@ mod tests {
         let w = written();
         w.lock().unwrap().insert(f.clone(), hash_bytes(b"ours"));
         assert_eq!(
-            classify(&root, ".lemmata/build", &w, &[f.clone()]),
+            classify(&root, ".lemmata/build", &w, std::slice::from_ref(&f)),
             Changes::default()
         );
         // Someone else edits it.
