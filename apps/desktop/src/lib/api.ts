@@ -99,6 +99,9 @@ export interface Snapshot {
 
 export interface BibEntry { key: string; kind: string; title: string; authors: string; year: string; file: string }
 
+export interface SearchOptions { query: string; regex: boolean; case_sensitive: boolean; whole_word: boolean }
+export interface FileMatches { path: string; matches: { line: number; text: string; ranges: [number, number][] }[] }
+
 export interface Template { id: string; name: string; description: string }
 
 export interface PdfBox { page: number; x: number; y: number; h: number; v: number; width: number; height: number }
@@ -141,6 +144,16 @@ export const api = {
   savePastedImage: (png: Uint8Array) => invoke<string>("save_pasted_image", png),
   hasPackage: (pkg: string) => invoke<boolean>("has_package", { package: pkg }),
   addPackage: (pkg: string) => invoke<void>("add_package", { package: pkg }),
+  searchProject: (options: SearchOptions) => invoke<FileMatches[]>("search_project", { options }),
+  replaceInFiles: (options: SearchOptions, replacement: string, paths: string[]) =>
+    invoke<number>("replace_in_files", { options, replacement, paths }),
+  createPath: (path: string, dir: boolean) => invoke<void>("create_path", { path, dir }),
+  trashPath: (path: string) => invoke<void>("trash_path", { path }),
+  findReferences: (path: string) => invoke<{ file: string; line: number; text: string }[]>("find_references", { path }),
+  renamePath: (from: string, to: string, updateReferences: boolean) =>
+    invoke<number>("rename_path", { from, to, updateReferences }),
+  exportPdf: (dest: string) => invoke<void>("export_pdf", { dest }),
+  exportArxiv: (dest: string, strip: boolean) => invoke<number>("export_arxiv", { dest, strip }),
   openInstallTerminal: (request: InstallRequest) => invoke<void>("open_install_terminal", { request }),
 };
 

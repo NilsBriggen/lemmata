@@ -2,7 +2,9 @@
 //! boundary are relative to the open project's root.
 
 mod bib;
+mod export;
 mod figures;
+mod files;
 mod history;
 mod lsp;
 mod projects;
@@ -34,6 +36,8 @@ pub(crate) struct AppState {
     lsp_generation: std::sync::atomic::AtomicU64,
     pub(crate) speller: Mutex<Option<lemmata_spell::Speller>>,
     pub(crate) update: tokio::sync::Mutex<Option<tauri_plugin_updater::Update>>,
+    /// Stops when dropped, i.e. when another project opens.
+    watcher: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
 }
 
 pub(crate) type CmdResult<T> = Result<T, String>;
@@ -100,10 +104,17 @@ fn project_info(p: &Project) -> ProjectInfo {
 }
 
 #[tauri::command]
-fn open_project(state: State<AppState>, path: String) -> CmdResult<ProjectInfo> {
+fn open_project(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> CmdResult<ProjectInfo> {
     cancel_running(&state);
     let project = Project::open(&path).map_err(err)?;
     let info = project_info(&project);
+    // Without a watcher the app still works; it just won't notice outside edits.
+    *state.watcher.lock().unwrap() =
+        files::watch(app, project.root.clone(), project.config.outdir.clone()).ok();
     *state.project.lock().unwrap() = Some(project);
     Ok(info)
 }
@@ -512,6 +523,14 @@ pub fn run() {
             figures::save_pasted_image,
             figures::has_package,
             add_package,
+            files::search_project,
+            files::replace_in_files,
+            files::create_path,
+            files::trash_path,
+            files::find_references,
+            files::rename_path,
+            export::export_pdf,
+            export::export_arxiv,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lemmata");

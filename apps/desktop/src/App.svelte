@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, errorMessage, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
+  import { api, errorMessage, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
   import Onboarding from "./lib/Onboarding.svelte";
   import Library from "./lib/Library.svelte";
   import Tree from "./lib/Tree.svelte";
@@ -12,6 +12,11 @@
   import HistoryPanel from "./lib/HistoryPanel.svelte";
   import Preferences from "./lib/Preferences.svelte";
   import CitePicker from "./lib/CitePicker.svelte";
+  import Palette, { type PaletteItem } from "./lib/Palette.svelte";
+  import SearchPanel from "./lib/SearchPanel.svelte";
+  import FileActions from "./lib/FileActions.svelte";
+  import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+  import { loadSession, saveSession } from "./lib/session";
   import { listen } from "@tauri-apps/api/event";
   import { relaunch } from "@tauri-apps/plugin-process";
   import { loadSettings, settings } from "./lib/settings.svelte";
@@ -41,6 +46,10 @@
   let settingsOpen = $state(false);
   let prefsOpen = $state(false);
   let citeOpen = $state(false);
+  let palette = $state<null | "commands" | "files">(null);
+  let searchOpen = $state(false);
+  let focusMode = $state(false);
+  let fileActions: FileActions | undefined = $state();
   /** A package a just-inserted snippet needs; offered once per package. */
   let packageOffer = $state<string | null>(null);
   const offered = new Set<string>();
@@ -113,6 +122,7 @@
     applySpellLanguage();
     setMathMacros(contents.get(project.main) ?? "");
     refreshOutline();
+    await restoreSession(project.root);
     lastThumbnail = 0;
     lastSnapshot = 0; // the first save of a session takes a snapshot
     choosingMain = project.main_candidates.length > 1 && !project.config.main;
@@ -267,6 +277,33 @@
     runBuild();
   }
 
+  async function restoreSession(root: string) {
+    const session = await loadSession(root);
+    if (!session) return;
+    const known = new Set(allFiles(project?.tree ?? []));
+    for (const t of session.tabs) if (known.has(t) && t !== active) await openFile(t);
+    if (session.active && known.has(session.active)) {
+      await openFile(session.active);
+      editor?.gotoLine(session.line);
+    }
+    if (session.pdf) pdf?.setPosition(session.pdf);
+  }
+
+  let sessionTimer: ReturnType<typeof setTimeout> | undefined;
+  function rememberSession() {
+    clearTimeout(sessionTimer);
+    sessionTimer = setTimeout(() => {
+      if (!project) return;
+      saveSession(project.root, { tabs, active, line: cursor.line, pdf: pdf?.getPosition() ?? null });
+    }, 1000);
+  }
+
+  $effect(() => {
+    // Re-run when any of these change.
+    void [tabs, active, cursor.line];
+    rememberSession();
+  });
+
   async function refreshTree() {
     if (project) project = await api.projectInfo();
   }
@@ -387,15 +424,137 @@
 
   function closeProject() {
     saveAll();
+    if (project) saveSession(project.root, { tabs, active, line: cursor.line, pdf: pdf?.getPosition() ?? null });
     lsp?.stop();
     lsp = null;
     editor?.setLanguageServer(null);
     project = null;
   }
 
+  function allFiles(entries: Entry[]): string[] {
+    return entries.flatMap((e) => (e.is_dir ? allFiles(e.children) : [e.path]));
+  }
+
+  const fileItems = $derived<PaletteItem[]>(
+    project
+      ? allFiles(project.tree)
+          .filter((p) => /\.(tex|bib|sty|cls|txt|md|toml|bst|tikz)$/i.test(p))
+          .map((p) => ({ id: p, label: p.split("/").pop()!, detail: p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "", run: () => openFile(p) }))
+      : [],
+  );
+
+  const commandItems = $derived<PaletteItem[]>(
+    [
+      { id: "recompile", label: "Recompile", detail: "Ctrl+Enter", run: () => saveAll().then(runBuild) },
+      { id: "open-file", label: "Open file…", detail: "Ctrl+P", run: () => (palette = "files") },
+      { id: "search", label: "Search in project", detail: "Ctrl+Shift+F", run: openSearch },
+      { id: "cite", label: "Insert citation", detail: "Ctrl+Shift+C", run: () => (citeOpen = true) },
+      { id: "snapshot", label: "Save a snapshot", detail: "Ctrl+Shift+S", run: () => (snapshotLabel = "") },
+      { id: "history", label: "Show history", run: () => (historyOpen = true) },
+      { id: "sync", label: "Show this line in the PDF", detail: "Ctrl+J", run: () => active && syncForward(active, editor?.currentLine() ?? 1, 0) },
+      { id: "focus", label: focusMode ? "Leave focus mode" : "Focus mode", detail: "F11", run: () => (focusMode = !focusMode) },
+      { id: "new-file", label: "New file…", run: () => fileActions?.openMenu(null, 240, 120) },
+      { id: "export-pdf", label: "Export PDF…", run: exportPdf },
+      { id: "export-arxiv", label: "Export for arXiv (.zip)…", run: exportArxiv },
+      { id: "project-settings", label: "Project settings", run: () => (settingsOpen = true) },
+      { id: "preferences", label: "Preferences", run: () => (prefsOpen = true) },
+      { id: "close", label: "Close project", run: closeProject },
+    ].filter(() => project),
+  );
+
+  function openSearch() {
+    focusMode = false;
+    searchOpen = true;
+  }
+
+  async function exportPdf() {
+    if (!project) return;
+    const dest = await saveDialog({ title: "Export PDF", defaultPath: `${project.name}.pdf`, filters: [{ name: "PDF", extensions: ["pdf"] }] });
+    if (!dest) return;
+    try {
+      await api.exportPdf(dest);
+      showNotice(`Saved ${dest.split(/[\\/]/).pop()}.`);
+    } catch (e) {
+      showNotice(errorMessage(e));
+    }
+  }
+
+  async function exportArxiv() {
+    if (!project) return;
+    await saveAll();
+    await runBuild();
+    const dest = await saveDialog({ title: "Export for arXiv", defaultPath: `${project.name}-arxiv.zip`, filters: [{ name: "Zip", extensions: ["zip"] }] });
+    if (!dest) return;
+    try {
+      const n = await api.exportArxiv(dest, true);
+      showNotice(`Exported ${n} files with comments removed, including the compiled bibliography.`);
+    } catch (e) {
+      showNotice(errorMessage(e));
+    }
+  }
+
+  /** Reloads files changed by another program, unless they have unsaved edits here. */
+  async function onFilesChanged(paths: string[]) {
+    if (!project) return;
+    await refreshTree();
+    for (const path of paths) {
+      if (!contents.has(path)) continue;
+      const disk = await api.readText(path).catch(() => null);
+      if (disk === null || disk === contents.get(path)) continue; // our own save, or deleted
+      if (dirty[path]) {
+        showNotice(`${path} changed on disk.`, { label: "Load the new version", run: () => reloadFromDisk(path) });
+      } else {
+        await reloadFromDisk(path);
+      }
+    }
+    refreshOutline();
+  }
+
+  async function reloadFromDisk(path: string) {
+    contents.delete(path);
+    editor?.forget(path);
+    dirty[path] = false;
+    if (active === path) await openFile(path);
+  }
+
+  function onRenamed(from: string, to: string) {
+    for (const p of [...contents.keys()]) {
+      if (p === from || p.startsWith(from + "/")) {
+        contents.delete(p);
+        editor?.forget(p);
+      }
+    }
+    const moved = (p: string) => (p === from ? to : p.startsWith(from + "/") ? to + p.slice(from.length) : p);
+    tabs = tabs.map(moved);
+    const wasActive = active;
+    active = null;
+    refreshTree().then(() => {
+      if (wasActive) openFile(moved(wasActive));
+    });
+    refreshOutline();
+  }
+
+  function onTrashed(path: string) {
+    for (const p of [...tabs]) if (p === path || p.startsWith(path + "/")) closeTab(p);
+    refreshTree();
+    refreshOutline();
+  }
+
   function onKey(e: KeyboardEvent) {
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.shiftKey && e.key.toLowerCase() === "c" && project && active) {
+    if (e.key === "F11" && project) {
+      e.preventDefault();
+      focusMode = !focusMode;
+    } else if (mod && e.shiftKey && e.key.toLowerCase() === "p" && project) {
+      e.preventDefault();
+      palette = "commands";
+    } else if (mod && !e.shiftKey && e.key.toLowerCase() === "p" && project) {
+      e.preventDefault();
+      palette = "files";
+    } else if (mod && e.shiftKey && e.key.toLowerCase() === "f" && project) {
+      e.preventDefault();
+      openSearch();
+    } else if (mod && e.shiftKey && e.key.toLowerCase() === "c" && project && active) {
       e.preventDefault();
       citeOpen = true;
     } else if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
@@ -460,6 +619,7 @@
         }
       })
       .catch(() => {});
+    listen<string[]>("files-changed", (e) => onFilesChanged(e.payload)).catch(() => {});
     await loadSettings();
     appliedKeymap = settings.keymap;
     await recheck(settings.texDir ?? undefined);
@@ -509,16 +669,29 @@
       </div>
     </header>
 
-    <div class="panes">
+    <div class="panes" class:focus={focusMode}>
       <nav class="side">
-        <div class="files">
-          <div class="h">Project</div>
-          <Tree entries={project.tree} {active} main={project.main} onOpen={openFile} />
-        </div>
-        <div class="outline">
-          <div class="h">Outline</div>
-          <Outline {headings} current={currentHeading} onJump={gotoProblem} />
-        </div>
+        {#if searchOpen}
+          <SearchPanel
+            onOpen={gotoProblem}
+            beforeReplace={saveAll}
+            onReplaced={async (paths) => {
+              for (const p of paths) await reloadFromDisk(p);
+              runBuild();
+            }}
+            onClose={() => (searchOpen = false)}
+          />
+        {:else}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="files" oncontextmenu={(e) => { e.preventDefault(); fileActions?.openMenu(null, e.clientX, e.clientY); }}>
+            <div class="h">Project</div>
+            <Tree entries={project.tree} {active} main={project.main} onOpen={openFile} onContext={(entry, x, y) => fileActions?.openMenu(entry, x, y)} />
+          </div>
+          <div class="outline">
+            <div class="h">Outline</div>
+            <Outline {headings} current={currentHeading} onJump={gotoProblem} />
+          </div>
+        {/if}
       </nav>
 
       <section class="code">
@@ -574,6 +747,28 @@
       </div>
     {/if}
   </div>
+{/if}
+
+<FileActions
+  bind:this={fileActions}
+  beforeChange={saveAll}
+  onCreated={async (path, dir) => {
+    await refreshTree();
+    if (!dir && /\.(tex|bib|sty|cls|txt|md|toml)$/i.test(path)) openFile(path);
+  }}
+  {onRenamed}
+  {onTrashed}
+/>
+
+{#if palette}
+  <Palette
+    items={palette === "files" ? fileItems : commandItems}
+    placeholder={palette === "files" ? "Open a file by name" : "Type a command"}
+    onClose={() => {
+      palette = null;
+      editor?.getView()?.focus();
+    }}
+  />
 {/if}
 
 {#if citeOpen}
@@ -663,6 +858,10 @@
   .crumbs { font: 12px var(--f-mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
   .panes { flex: 1; display: grid; grid-template-columns: 220px minmax(0, 1fr) minmax(0, 1fr); min-height: 0; }
+  /* Focus mode: only the editor, as a centred column. */
+  .panes.focus { grid-template-columns: minmax(0, 1fr); }
+  .panes.focus .side, .panes.focus .preview, .panes.focus .tabs { display: none; }
+  .panes.focus .code { border-right: none; padding-inline: max(24px, calc((100% - 88ch) / 2)); }
   .side { background: var(--chrome); border-right: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; }
   .files, .outline { overflow: auto; min-height: 0; }
   .files { flex: 1 1 55%; padding-bottom: 8px; }

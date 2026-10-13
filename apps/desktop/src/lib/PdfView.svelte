@@ -46,6 +46,10 @@
     pageCount = next.numPages;
     await renderAll(seq);
     old?.loadingTask.destroy();
+    if (pendingScroll !== null) {
+      scroller.scrollTop = pendingScroll * scroller.scrollHeight;
+      pendingScroll = null;
+    }
   }
 
   async function renderAll(seq: number) {
@@ -85,6 +89,19 @@
       wrap.prepend(canvas);
     }
   }
+
+  export function getPosition() {
+    return { zoom, scroll: scroller.scrollTop / Math.max(1, scroller.scrollHeight) };
+  }
+
+  /** Restores zoom and scroll; applied after the next PDF loads if none is shown yet. */
+  export async function setPosition(pos: { zoom: number; scroll: number }) {
+    zoom = pos.zoom;
+    if (doc) await renderAll(loadSeq);
+    scroller.scrollTop = pos.scroll * scroller.scrollHeight;
+    pendingScroll = doc ? null : pos.scroll;
+  }
+  let pendingScroll: number | null = null;
 
   /** Page 1 as a small PNG, for the project library. */
   export async function thumbnail(width = 360): Promise<Uint8Array | null> {
