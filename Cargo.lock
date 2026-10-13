@@ -2280,7 +2280,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-bib"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "biblatex",
  "lemmata-project",
@@ -2294,7 +2294,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-cli"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-desktop"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "lemmata-bib",
  "lemmata-history",
@@ -2339,7 +2339,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-history"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
  "tempfile",
@@ -2349,7 +2349,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-log"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "regex",
  "serde",
@@ -2357,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-pkgmap"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "flate2",
  "serde",
@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-project"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
  "tempfile",
@@ -2377,14 +2377,14 @@ dependencies = [
 
 [[package]]
 name = "lemmata-spell"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "spellbook",
 ]
 
 [[package]]
 name = "lemmata-synctex"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2392,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-tex"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "lemmata-log",
  "lemmata-pkgmap",

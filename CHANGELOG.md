@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 0.1.0-beta.2 (2026-10-13)
+
+### Added
+- Overleaf-style redesign and first-run welcome
+
+### Fixed
+- Import Overleaf bulk downloads
 ## 0.1.0-beta.1 (2026-10-13)
 
 ### Added
@@ -19,6 +26,8 @@ All notable changes to Lemmata.
 ### Fixed
 - Builds with \include'd chapters in subfolders
 - Fetch-texlab.sh works with macOS's bash 3.2
+- Provide per-architecture texlab for universal macOS builds
+- Sign macOS builds ad hoc until a Developer ID exists
 
 ### Documentation
 - Plan, website handoff and pitch
