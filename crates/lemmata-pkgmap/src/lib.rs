@@ -86,6 +86,22 @@ fn distros() -> &'static BTreeMap<String, Distro> {
         .get_or_init(|| toml::from_str(DISTROS_TOML).expect("data/distro-packages.toml is valid"))
 }
 
+/// Names of every LaTeX package (`.sty`) TeX Live ships, sorted, for
+/// completing `\usepackage{…}`.
+pub fn package_names() -> &'static [String] {
+    static NAMES: OnceLock<Vec<String>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        let mut names: Vec<String> = table()
+            .keys()
+            .filter_map(|f| f.strip_suffix(".sty"))
+            .filter(|n| !n.contains('/'))
+            .map(String::from)
+            .collect();
+        names.sort_unstable();
+        names
+    })
+}
+
 /// The TeX Live package that provides `file` (e.g. `pgfplots.sty`).
 pub fn lookup(file: &str) -> Option<&'static Provider> {
     table().get(file)
@@ -159,6 +175,14 @@ pub fn fix_for(file: &str, installer: Installer) -> Option<Fix> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_package_names() {
+        let n = package_names();
+        assert!(n.iter().any(|x| x == "amsmath"));
+        assert!(n.iter().any(|x| x == "tikz"));
+        assert!(n.windows(2).all(|w| w[0] < w[1]));
+    }
 
     #[test]
     fn finds_providers() {

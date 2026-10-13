@@ -2,16 +2,21 @@
   // CodeMirror 6 with one EditorState per open file, so each tab keeps its
   // own undo history and selection.
   import { onMount, onDestroy } from "svelte";
-  import { EditorState, type Extension } from "@codemirror/state";
+  import { EditorState, Prec, type Extension } from "@codemirror/state";
   import {
     EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter,
-    drawSelection, highlightSpecialChars,
+    drawSelection, highlightSpecialChars, rectangularSelection, crosshairCursor,
   } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { StreamLanguage, HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput } from "@codemirror/language";
   import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-  import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
-  import { setDiagnostics, lintGutter, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
+  import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from "@codemirror/autocomplete";
+  import { setDiagnostics, lintGutter, lintKeymap, nextDiagnostic, previousDiagnostic, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
+  import { serverCompletionSource } from "@codemirror/lsp-client";
+  import { environmentSync, closeEnvironment, unmatchedEnvironments } from "./editor/environments";
+  import { latexCompletions, type Providers } from "./editor/completions";
+  import { folding, foldKeymap } from "./editor/folding";
+  import { formattingKeymap } from "./editor/shortcuts";
   import { stex } from "@codemirror/legacy-modes/mode/stex";
   import { tags as t } from "@lezer/highlight";
   import type { Diagnostic } from "./api";
@@ -32,8 +37,18 @@
     onNeedsPackage?: (pkg: string) => void;
     /** Shown after a paste was turned into a table, with a way back. */
     onPastedTable?: (undo: () => void) => void;
+    /** Ctrl+Shift+E: ask which environment to wrap the selection in. */
+    onWrapEnvironment?: () => void;
+    /** Selection changed; the text is empty when nothing is selected. */
+    onSelection?: (text: string) => void;
   }
-  let { onChange, onSyncRequest, onCursor, onAddWord, onPasteImage, onNeedsPackage, onPastedTable }: Props = $props();
+  let { onChange, onSyncRequest, onCursor, onAddWord, onPasteImage, onNeedsPackage, onPastedTable, onWrapEnvironment, onSelection }: Props = $props();
+
+  /** What completions can look up about the project; set by the app. */
+  let providers: Providers | null = null;
+  export function setProviders(p: Providers | null) {
+    providers = p;
+  }
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
@@ -53,7 +68,10 @@
 
   const theme = EditorView.theme({
     "&": { height: "100%", backgroundColor: "var(--code-bg)", color: "var(--ink)", fontSize: "var(--editor-font-size)" },
-    ".cm-scroller": { fontFamily: "var(--f-mono)", lineHeight: "1.65" },
+    ".cm-scroller": { fontFamily: "var(--editor-font, var(--f-mono))", lineHeight: "var(--editor-line-height, 1.65)" },
+    ".cm-foldGutter .cm-gutterElement": { cursor: "pointer", padding: "0 3px", color: "var(--faint)", fontSize: "12px" },
+    ".cm-foldGutter .cm-gutterElement:hover": { color: "var(--ink)" },
+    ".cm-foldPlaceholder": { backgroundColor: "var(--accent-soft)", color: "var(--accent)", border: "none", borderRadius: "4px", padding: "0 6px" },
     ".cm-content": { caretColor: "var(--accent)", padding: "12px 0 40vh" },
     ".cm-line": { padding: "0 16px 0 10px" },
     ".cm-gutters": { backgroundColor: "var(--gutter)", color: "var(--faint)", border: "none", borderRight: "1px solid var(--border)" },
@@ -121,7 +139,10 @@
     return view?.posAtCoords({ x, y }) ?? null;
   }
 
+  const isTex = (path: string) => /\.(tex|sty|cls)$/.test(path);
+
   function extensions(path: string): Extension[] {
+    const tex = isTex(path);
     return [
       // Vim must come first so its keys take precedence.
       settings.keymap === "vim" ? vim() : [],
@@ -130,29 +151,61 @@
       highlightSpecialChars(),
       history(),
       drawSelection(),
+      EditorState.allowMultipleSelections.of(true),
+      rectangularSelection(),
+      crosshairCursor(),
       indentOnInput(),
       bracketMatching(),
-      closeBrackets(),
+      settings.autoClose ? closeBrackets() : [],
       highlightActiveLine(),
       highlightSelectionMatches(),
       lintGutter(),
-      EditorView.lineWrapping,
-      path.endsWith(".tex") || path.endsWith(".sty") || path.endsWith(".cls") ? StreamLanguage.define(stex) : [],
+      settings.wordWrap ? EditorView.lineWrapping : [],
+      tex ? StreamLanguage.define(stex) : [],
+      tex
+        ? EditorState.languageData.of(() => [{ commentTokens: { line: "%" }, closeBrackets: { brackets: ["(", "[", "{", "$"] } }])
+        : [],
       syntaxHighlighting(texHighlight),
       lspFor && /\.(tex|bib|sty|cls)$/.test(path) ? lspFor(path) : [],
+      tex && settings.autocomplete
+        ? autocompletion({
+            override: [
+              latexCompletions(
+                () => providers,
+                async (ctx) => (lspFor ? serverCompletionSource(ctx) : null),
+              ),
+            ],
+          })
+        : [],
+      tex && settings.envSync ? [environmentSync, unmatchedEnvironments] : [],
+      tex && settings.folding ? folding : [],
       path.endsWith(".tex") ? [spellcheck((w) => onAddWord?.(w)), mathPreview, pasteHandler] : [],
       theme,
-      keymap.of([
-        {
-          key: "Mod-j",
-          run: (v) => {
-            const pos = v.state.selection.main.head;
-            const line = v.state.doc.lineAt(pos);
-            onSyncRequest(path, line.number, pos - line.from);
-            return true;
+      Prec.high(
+        keymap.of([
+          {
+            key: "Mod-j",
+            run: (v) => {
+              const pos = v.state.selection.main.head;
+              const line = v.state.doc.lineAt(pos);
+              onSyncRequest(path, line.number, pos - line.from);
+              return true;
+            },
           },
-        },
+          ...(tex && settings.envSync ? [{ key: "Enter", run: closeEnvironment }] : []),
+        ]),
+      ),
+      tex
+        ? formattingKeymap({
+            nextProblem: (dir) => (view ? (dir === 1 ? nextDiagnostic(view) : previousDiagnostic(view)) : false),
+            wrapInEnvironment: () => (onWrapEnvironment?.(), true),
+          })
+        : [],
+      keymap.of([
         ...closeBracketsKeymap,
+        ...completionKeymap,
+        ...foldKeymap,
+        ...lintKeymap,
         ...defaultKeymap,
         ...searchKeymap,
         ...historyKeymap,
@@ -162,9 +215,28 @@
         if (u.docChanged) onChange(path, u.state.doc.toString());
         if (u.selectionSet || u.docChanged) {
           onCursor?.(path, u.state.doc.lineAt(u.state.selection.main.head).number);
+          const r = u.state.selection.main;
+          onSelection?.(r.empty ? "" : u.state.sliceDoc(r.from, r.to));
         }
       }),
     ];
+  }
+
+  /** Wraps the selection (or an empty line) in \begin{name} … \end{name}. */
+  export function wrapInEnvironment(name: string) {
+    if (!view) return;
+    const { from, to } = view.state.selection.main;
+    const first = view.state.doc.lineAt(from);
+    const last = view.state.doc.lineAt(to);
+    const indent = /^\s*/.exec(first.text)![0];
+    const body = view.state.sliceDoc(first.from, last.to);
+    const insert = `${indent}\\begin{${name}}\n${body.split("\n").map((l) => (l ? "  " + l : l)).join("\n")}\n${indent}\\end{${name}}`;
+    view.dispatch({
+      changes: { from: first.from, to: last.to, insert },
+      selection: { anchor: first.from + indent.length + `\\begin{${name}}`.length },
+      userEvent: "input",
+    });
+    view.focus();
   }
 
   export function open(path: string, text: string) {

@@ -478,6 +478,27 @@ fn outline(state: State<AppState>) -> CmdResult<lemmata_project::Outline> {
     ))
 }
 
+#[tauri::command]
+fn labels(state: State<AppState>) -> CmdResult<Vec<lemmata_project::extras::Label>> {
+    let guard = state.project.lock().unwrap();
+    Ok(lemmata_project::extras::labels(
+        guard.as_ref().ok_or("No project is open.")?,
+    ))
+}
+
+#[tauri::command]
+fn word_count(state: State<AppState>) -> CmdResult<lemmata_project::extras::Counts> {
+    let guard = state.project.lock().unwrap();
+    Ok(lemmata_project::extras::counts(
+        guard.as_ref().ok_or("No project is open.")?,
+    ))
+}
+
+#[tauri::command]
+fn package_names() -> Vec<String> {
+    lemmata_pkgmap::package_names().to_vec()
+}
+
 /// Starts (or restarts) texlab for the open project. Returns the server's
 /// generation, which tags every `lsp-message` event it sends.
 #[tauri::command]
@@ -581,6 +602,12 @@ pub fn run() {
             lsp_start,
             lsp_send,
             outline,
+            labels,
+            word_count,
+            package_names,
+        labels,
+        word_count,
+        package_names,
             list_templates,
             create_project,
             import_overleaf_zip,

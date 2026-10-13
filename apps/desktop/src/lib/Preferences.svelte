@@ -75,12 +75,16 @@
   <section>
     <h3>Editing</h3>
     <div class="row">
-      <span>Compile</span>
-      <div class="segmented" role="group" aria-label="When to compile">
+      <span>Save</span>
+      <div class="segmented" role="group" aria-label="When to save">
         <button aria-pressed={settings.autosaveMs > 0} onclick={() => set("autosaveMs", DEFAULTS.autosaveMs)}>As I type</button>
-        <button aria-pressed={settings.autosaveMs === 0} onclick={() => set("autosaveMs", 0)}>When I save</button>
+        <button aria-pressed={settings.autosaveMs === 0} onclick={() => set("autosaveMs", 0)}>With Ctrl+S</button>
       </div>
     </div>
+    <label class="check" for="pref-autocompile">
+      <input id="pref-autocompile" type="checkbox" checked={settings.autoCompile} onchange={(e) => set("autoCompile", e.currentTarget.checked)} />
+      Compile after every save
+    </label>
     <div class="row">
       <span>Keyboard</span>
       <div class="segmented" role="group" aria-label="Keyboard">
@@ -94,6 +98,47 @@
         <option value="auto">Match the document's language</option>
         {#each Object.entries(LANGUAGES) as [code, l] (code)}<option value={code}>{l.label}</option>{/each}
         <option value="off">Off</option>
+      </select>
+    </div>
+  </section>
+
+  <section>
+    <h3>Editor</h3>
+    <label class="check" for="pref-complete">
+      <input id="pref-complete" type="checkbox" checked={settings.autocomplete} onchange={(e) => set("autocomplete", e.currentTarget.checked)} />
+      Suggest commands, environments, labels and citations while typing
+    </label>
+    <label class="check" for="pref-env">
+      <input id="pref-env" type="checkbox" checked={settings.envSync} onchange={(e) => set("envSync", e.currentTarget.checked)} />
+      Rename \end{"{…}"} when \begin{"{…}"} changes, and the other way round
+    </label>
+    <label class="check" for="pref-close">
+      <input id="pref-close" type="checkbox" checked={settings.autoClose} onchange={(e) => set("autoClose", e.currentTarget.checked)} />
+      Close brackets and dollar signs automatically
+    </label>
+    <label class="check" for="pref-fold">
+      <input id="pref-fold" type="checkbox" checked={settings.folding} onchange={(e) => set("folding", e.currentTarget.checked)} />
+      Code folding for sections and environments
+    </label>
+    <label class="check" for="pref-wrap">
+      <input id="pref-wrap" type="checkbox" checked={settings.wordWrap} onchange={(e) => set("wordWrap", e.currentTarget.checked)} />
+      Wrap long lines
+    </label>
+    <div class="row">
+      <label for="pref-family">Font</label>
+      <select id="pref-family" class="input" value={settings.fontFamily} onchange={(e) => set("fontFamily", e.currentTarget.value)}>
+        <option value="plex">IBM Plex Mono</option>
+        <option value="system">System monospace</option>
+        {#if !["plex", "system"].includes(settings.fontFamily)}<option value={settings.fontFamily}>{settings.fontFamily}</option>{/if}
+        {#each ["JetBrains Mono", "Fira Code", "Cascadia Code", "Source Code Pro", "Menlo", "Consolas"] as f (f)}
+          <option value={f}>{f} (if installed)</option>
+        {/each}
+      </select>
+    </div>
+    <div class="row">
+      <label for="pref-lh">Line height</label>
+      <select id="pref-lh" class="input" value={String(settings.lineHeight)} onchange={(e) => set("lineHeight", Number(e.currentTarget.value))}>
+        {#each [1.4, 1.5, 1.65, 1.8, 2] as n (n)}<option value={String(n)}>{n}</option>{/each}
       </select>
     </div>
   </section>

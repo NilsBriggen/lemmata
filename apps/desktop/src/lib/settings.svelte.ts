@@ -5,8 +5,19 @@ import { load, type Store } from "@tauri-apps/plugin-store";
 export interface Settings {
   theme: "system" | "light" | "dark";
   fontSize: number;
-  /** Delay after the last keystroke before saving and building. */
+  /** Delay after the last keystroke before saving; 0 saves only on Ctrl+S. */
   autosaveMs: number;
+  /** Compile after every save. Off means only the Recompile button builds. */
+  autoCompile: boolean;
+  /** Editor behaviour. */
+  autoClose: boolean;
+  autocomplete: boolean;
+  envSync: boolean;
+  folding: boolean;
+  wordWrap: boolean;
+  /** "plex" (bundled look), "system" or a font family name. */
+  fontFamily: string;
+  lineHeight: number;
   keymap: "default" | "vim";
   updateChannel: "stable" | "beta";
   checkForUpdates: boolean;
@@ -29,6 +40,14 @@ export const DEFAULTS: Settings = {
   theme: "system",
   fontSize: 13,
   autosaveMs: 600,
+  autoCompile: true,
+  autoClose: true,
+  autocomplete: true,
+  envSync: true,
+  folding: true,
+  wordWrap: true,
+  fontFamily: "plex",
+  lineHeight: 1.65,
   keymap: "default",
   updateChannel: "stable",
   checkForUpdates: true,
@@ -51,6 +70,8 @@ export async function loadSettings() {
   try {
     store = await load("settings.json", { autoSave: 300, defaults: {} });
     const saved = (await store.get<Partial<Settings>>("settings")) ?? {};
+    // Before 1.0, "compile as I type" and "save as I type" were one switch.
+    if (saved.autoCompile === undefined && saved.autosaveMs === 0) saved.autoCompile = false;
     Object.assign(settings, { ...DEFAULTS, ...saved });
   } catch (e) {
     console.warn("settings unavailable:", e);
@@ -69,4 +90,9 @@ export function applyTheme() {
   if (settings.theme === "system") delete root.dataset.theme;
   else root.dataset.theme = settings.theme;
   root.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
+  root.style.setProperty("--editor-line-height", String(settings.lineHeight));
+  const family = settings.fontFamily;
+  if (family === "plex") root.style.removeProperty("--editor-font");
+  else if (family === "system") root.style.setProperty("--editor-font", "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace");
+  else root.style.setProperty("--editor-font", `"${family.replace(/"/g, "")}", ui-monospace, monospace`);
 }

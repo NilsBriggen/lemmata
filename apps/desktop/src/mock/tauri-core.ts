@@ -132,6 +132,17 @@ const handlers: Record<string, (a: Args) => unknown> = {
     ],
     total_words: 1177,
   }),
+  labels: () => [
+    { label: "sec:intro", file: "main.tex", line: 11, context: "\\section{Introduction}" },
+    { label: "eq:policy", file: "chapters/method.tex", line: 5, context: "J(\\theta) = \\mathbb{E}[R]" },
+    { label: "fig:curves", file: "chapters/method.tex", line: 14, context: "\\caption{Learning curves}" },
+  ],
+  word_count: () => ({
+    total_words: 1177,
+    files: [{ file: "main.tex", words: 142 }, { file: "chapters/method.tex", words: 1035 }],
+    headings: 4, inline_math: 18, display_math: 3, floats: 2, citations: 7,
+  }),
+  package_names: () => ["amsmath", "amssymb", "amsthm", "biblatex", "booktabs", "cleveref", "graphicx", "hyperref", "listings", "siunitx", "tikz", "xcolor"],
   lsp_start: () => {
     throw "texlab isn't available in the preview.";
   },

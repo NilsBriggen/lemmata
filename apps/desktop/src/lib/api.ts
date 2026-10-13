@@ -97,6 +97,17 @@ export interface Snapshot {
   changes: { status: "added" | "modified" | "deleted"; path: string }[];
 }
 
+export interface LabelInfo { label: string; file: string; line: number; context: string }
+export interface WordCounts {
+  total_words: number;
+  files: { file: string; words: number }[];
+  headings: number;
+  inline_math: number;
+  display_math: number;
+  floats: number;
+  citations: number;
+}
+
 export interface BibEntry { key: string; kind: string; title: string; authors: string; year: string; file: string }
 
 export interface SearchOptions { query: string; regex: boolean; case_sensitive: boolean; whole_word: boolean }
@@ -121,6 +132,9 @@ export const api = {
   synctexBackward: (page: number, x: number, y: number) =>
     invoke<SourceHit | null>("synctex_backward", { page, x, y }),
   outline: () => invoke<OutlineData>("outline"),
+  labels: () => invoke<LabelInfo[]>("labels"),
+  wordCount: () => invoke<WordCounts>("word_count"),
+  packageNames: () => invoke<string[]>("package_names"),
   historyStatus: () => invoke<HistoryStatus>("history_status"),
   historyEnable: () => invoke<void>("history_enable"),
   historySnapshot: (label: string) => invoke<string | null>("history_snapshot", { label }),

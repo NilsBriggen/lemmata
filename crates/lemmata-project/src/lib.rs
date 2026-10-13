@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+pub mod extras;
 pub mod prose;
 
 pub const CONFIG_FILE: &str = "lemmata.toml";
@@ -259,7 +260,8 @@ pub fn tree(root: &Path, outdir: &str) -> Vec<Entry> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Heading {
-    /// 0 = \part, 1 = \chapter, 2 = \section, 3 = \subsection, 4 = \subsubsection.
+    /// 0 = \part, 1 = \chapter, 2 = \section, 3 = \subsection, 4 = \subsubsection,
+    /// 5 = \paragraph. Beamer frames count as 3.
     pub level: u8,
     pub title: String,
     /// Relative to the project root, with forward slashes.
@@ -283,6 +285,9 @@ const HEADINGS: &[(&str, u8)] = &[
     ("section", 2),
     ("subsection", 3),
     ("subsubsection", 4),
+    ("paragraph", 5),
+    // Beamer slides sit at subsection depth.
+    ("frametitle", 3),
 ];
 
 /// The document's headings in reading order with word counts, following
@@ -348,9 +353,19 @@ impl Walk {
                         words: 0,
                     });
                 }
-            } else if matches!(name.as_str(), "input" | "include" | "subfile")
-                && let Some(target) = braced(after)
+            } else if name == "begin"
+                && let Some(env) = braced(after)
+                && env == "frame"
+                && let Some(title) = braced(skip_optional(&after[env.len() + 2..]))
             {
+                self.out.headings.push(Heading {
+                    level: 3,
+                    title: clean_title(&title),
+                    file: file.to_string(),
+                    line: i as u32 + 1,
+                    words: 0,
+                });
+            } else if let Some(target) = include_target(&name, after) {
                 let mut child = PathBuf::from(target.trim());
                 if child.extension().is_none() {
                     child.set_extension("tex");
@@ -362,6 +377,28 @@ impl Walk {
             }
         }
         self.count(raw);
+    }
+}
+
+/// The file named by `\input`, `\include`, `\subfile` or `\import{dir}{file}`.
+/// `\input file` without braces is accepted too.
+fn include_target(name: &str, after: &str) -> Option<String> {
+    match name {
+        "input" | "include" | "subfile" => braced(after).or_else(|| {
+            let bare: String = after
+                .trim_start()
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '\\' && *c != '{')
+                .collect();
+            (!bare.is_empty() && after.starts_with(char::is_whitespace)).then_some(bare)
+        }),
+        "import" | "subimport" | "includefrom" | "inputfrom" => {
+            let dir = braced(after)?;
+            let rest = after.trim_start();
+            let file = braced(&rest[dir.len() + 2..])?;
+            Some(format!("{}/{}", dir.trim_end_matches('/'), file))
+        }
+        _ => None,
     }
 }
 
@@ -426,6 +463,35 @@ fn clean_title(t: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outline_handles_paragraphs_frames_and_imports() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "main.tex",
+            "\\documentclass{beamer}\n\\begin{document}\n\\begin{frame}{Intro}\nHi\n\\end{frame}\n\\frametitle{Two}\n\\paragraph{Para}\n\\input sub/a\n\\import{sub/}{b}\n\\end{document}\n",
+        );
+        write(d.path(), "sub/a.tex", "\\section{A}\n");
+        write(d.path(), "sub/b.tex", "\\section{B}\n");
+        let p = Project::open(d.path()).unwrap();
+        let got: Vec<_> = outline(&p)
+            .headings
+            .iter()
+            .map(|h| (h.level, h.title.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (3, "Intro".into()),
+                (3, "Two".into()),
+                (5, "Para".into()),
+                (2, "A".into()),
+                (2, "B".into()),
+            ]
+        );
+    }
+
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);

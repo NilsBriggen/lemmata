@@ -105,10 +105,10 @@
   <DropMenu anchor={compileBtn} align="end" onClose={() => (open = null)}>
     <div class="heading">Auto compile</div>
     <button role="menuitemradio" aria-checked={p.autoCompile} onclick={() => p.onAutoCompile(true)}>
-      <span class="tick">{#if p.autoCompile}<Check size={14} />{/if}</span> On, as I type
+      <span class="tick">{#if p.autoCompile}<Check size={14} />{/if}</span> On, after each save
     </button>
     <button role="menuitemradio" aria-checked={!p.autoCompile} onclick={() => p.onAutoCompile(false)}>
-      <span class="tick">{#if !p.autoCompile}<Check size={14} />{/if}</span> Off, when I save
+      <span class="tick">{#if !p.autoCompile}<Check size={14} />{/if}</span> Off, only when I recompile
     </button>
     <hr />
     <div class="heading">Compiler</div>

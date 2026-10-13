@@ -2,7 +2,7 @@
 // and rename. The outline comes from lemmata-project, which follows \input.
 import {
   LSPClient, LSPPlugin, Workspace, type Transport, type WorkspaceFile,
-  serverCompletion, hoverTooltips, jumpToDefinitionKeymap, findReferencesKeymap, renameKeymap,
+  hoverTooltips, jumpToDefinitionKeymap, findReferencesKeymap, renameKeymap,
 } from "@codemirror/lsp-client";
 import { keymap, type EditorView } from "@codemirror/view";
 import type { Extension, Text } from "@codemirror/state";
@@ -140,7 +140,6 @@ export async function startLanguageServer(
   }).connect(transport);
 
   const shared: Extension = [
-    serverCompletion(),
     hoverTooltips(),
     keymap.of([...jumpToDefinitionKeymap, ...findReferencesKeymap, ...renameKeymap]),
   ];

@@ -20,6 +20,8 @@
   import Preferences from "./lib/Preferences.svelte";
   import CitePicker from "./lib/CitePicker.svelte";
   import Palette, { type PaletteItem } from "./lib/Palette.svelte";
+  import { ENVIRONMENTS } from "./lib/editor/data";
+  import type { Providers } from "./lib/editor/completions";
   import SearchPanel from "./lib/SearchPanel.svelte";
   import FileActions from "./lib/FileActions.svelte";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -58,7 +60,8 @@
   let settingsOpen = $state(false);
   let prefsOpen = $state(false);
   let citeOpen = $state(false);
-  let palette = $state<null | "commands" | "files">(null);
+  let selectionWords = $state(0);
+  let palette = $state<null | "commands" | "files" | "environments">(null);
   let searchOpen = $state(false);
   let focusMode = $state(false);
   let report = $state<{ system: string; log: string } | null>(null);
@@ -147,6 +150,36 @@
     runBuild();
   }
 
+  // Completion data for \ref, \cite, file names and packages. Labels and
+  // citation keys change as the user types, so they're cached only briefly.
+  function cached<T>(load: () => Promise<T>, ttl: number): () => Promise<T> {
+    let at = 0;
+    let value: Promise<T> | null = null;
+    return () => {
+      if (!value || Date.now() - at > ttl) {
+        at = Date.now();
+        value = load().catch(() => [] as unknown as T);
+      }
+      return value;
+    };
+  }
+  const providers: Providers = {
+    labels: cached(() => api.labels(), 1500),
+    cites: cached(async () => (await api.bibEntries()).entries, 3000),
+    files: () => (project ? allFiles(project.tree) : []),
+    packages: cached(() => api.packageNames(), 3_600_000),
+  };
+  $effect(() => {
+    editor?.setProviders(project ? providers : null);
+  });
+
+  const environmentItems: PaletteItem[] = ENVIRONMENTS.map((e) => ({
+    id: e.name,
+    label: e.name,
+    detail: e.detail,
+    run: () => editor?.wrapInEnvironment(e.name),
+  }));
+
   async function startLsp(root: string) {
     lsp?.stop();
     lsp = await startLanguageServer(root, async (rel) => {
@@ -221,14 +254,14 @@
     if (settings.autosaveMs > 0) saveTimers.set(path, setTimeout(() => save(path), settings.autosaveMs));
   }
 
-  async function save(path: string) {
+  async function save(path: string, build = settings.autoCompile) {
     clearTimeout(saveTimers.get(path));
     const text = contents.get(path);
     if (text === undefined || !dirty[path]) return;
     try {
       await api.writeText(path, text);
       dirty[path] = false;
-      runBuild();
+      if (build) runBuild();
       if (path.endsWith(".tex")) refreshOutline();
       if (path === project?.main) setMathMacros(text);
       if (Date.now() - lastSnapshot > AUTO_SNAPSHOT_MS) takeSnapshot("Automatic snapshot");
@@ -237,8 +270,8 @@
     }
   }
 
-  async function saveAll() {
-    await Promise.all(Object.keys(dirty).filter((p) => dirty[p]).map(save));
+  async function saveAll(build = settings.autoCompile) {
+    await Promise.all(Object.keys(dirty).filter((p) => dirty[p]).map((p) => save(p, build)));
   }
 
   async function runBuild() {
@@ -470,6 +503,19 @@
     project = null;
   }
 
+  /** Rough word count of a selection: counts words outside comments and commands. */
+  function countWords(text: string): number {
+    if (!text) return 0;
+    return text
+      .split("\n")
+      .map((l) => l.replace(/(^|[^\\])%.*$/, "$1"))
+      .join(" ")
+      .replace(/\\[a-zA-Z]+\*?/g, " ")
+      .replace(/[{}$&_^~\\[\]]/g, " ")
+      .split(/\s+/)
+      .filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
+  }
+
   function allFiles(entries: Entry[]): string[] {
     return entries.flatMap((e) => (e.is_dir ? allFiles(e.children) : [e.path]));
   }
@@ -484,7 +530,7 @@
 
   const commandItems = $derived<PaletteItem[]>(
     [
-      { id: "recompile", label: "Recompile", detail: "Ctrl+Enter", run: () => saveAll().then(runBuild) },
+      { id: "recompile", label: "Recompile", detail: "Ctrl+Enter", run: () => saveAll(false).then(runBuild) },
       { id: "open-file", label: "Open file…", detail: "Ctrl+P", run: () => (palette = "files") },
       { id: "search", label: "Search in project", detail: "Ctrl+Shift+F", run: openSearch },
       { id: "cite", label: "Insert citation", detail: "Ctrl+Shift+C", run: () => (citeOpen = true) },
@@ -660,7 +706,7 @@
       saveAll();
     } else if (mod && e.key === "Enter") {
       e.preventDefault();
-      saveAll().then(runBuild);
+      saveAll(false).then(runBuild);
     }
   }
 
@@ -695,13 +741,12 @@
     }
   }
 
-  // Switching to or from Vim rebuilds the editors.
-  let appliedKeymap = settings.keymap;
+  // Editor options that change the extension list rebuild the editors.
+  let appliedEditor = "";
   $effect(() => {
-    if (settings.keymap !== appliedKeymap) {
-      appliedKeymap = settings.keymap;
-      editor?.refreshExtensions();
-    }
+    const key = [settings.keymap, settings.autoClose, settings.autocomplete, settings.envSync, settings.folding, settings.wordWrap].join();
+    if (appliedEditor && key !== appliedEditor) editor?.refreshExtensions();
+    appliedEditor = key;
   });
 
   // Pane widths change continuously while dragging; save once it settles.
@@ -725,7 +770,7 @@
       .catch(() => {});
     listen<string[]>("files-changed", (e) => onFilesChanged(e.payload)).catch(() => {});
     await loadSettings();
-    appliedKeymap = settings.keymap;
+    appliedEditor = "";
     await recheck(settings.texDir ?? undefined);
     if (settings.checkForUpdates) {
       checkForUpdates();
@@ -809,7 +854,7 @@
       layout={settings.layout}
       sidebarOpen={settings.sidebarOpen}
       {historyOpen}
-      autoCompile={settings.autosaveMs > 0}
+      autoCompile={settings.autoCompile}
       engine={project.config.engine}
       menu={menuItems}
       onLayout={(l) => {
@@ -819,9 +864,9 @@
       onToggleSidebar={() => updateSettings({ sidebarOpen: !settings.sidebarOpen })}
       onHistory={() => (historyOpen = !historyOpen)}
       onProjectSettings={() => (settingsOpen = true)}
-      onRecompile={() => saveAll().then(runBuild)}
+      onRecompile={() => saveAll(false).then(runBuild)}
       onStop={stopBuild}
-      onAutoCompile={(on) => updateSettings({ autosaveMs: on ? DEFAULTS.autosaveMs : 0 })}
+      onAutoCompile={(on) => updateSettings({ autoCompile: on })}
       onEngine={setEngine}
       onLibrary={closeProject}
     />
@@ -896,11 +941,14 @@
             onAddWord={addWord}
             onPasteImage={pasteImage}
             onNeedsPackage={needsPackage}
+            onWrapEnvironment={() => (palette = "environments")}
+            onSelection={(t) => (selectionWords = countWords(t))}
             onPastedTable={(undo) => showNotice("Pasted as a table.", { label: "Paste as text instead", run: undo })}
           />
         </div>
         <footer class="status">
           <span>Line {cursor.line}</span>
+          {#if selectionWords}<span title="Words in the selection">{selectionWords} selected</span>{/if}
           {#if active}<span>{dirty[active] ? "Unsaved" : "Saved"}</span>{/if}
           <span class="grow"></span>
           {#if !lspAvailable}<span title="texlab wasn't found, so completion and hover are off">No completion</span>{/if}
@@ -1002,8 +1050,8 @@
 
 {#if palette}
   <Palette
-    items={palette === "files" ? fileItems : commandItems}
-    placeholder={palette === "files" ? "Open a file by name" : "Type a command"}
+    items={palette === "files" ? fileItems : palette === "environments" ? environmentItems : commandItems}
+    placeholder={palette === "files" ? "Open a file by name" : palette === "environments" ? "Wrap the selection in…" : "Type a command"}
     onClose={() => {
       palette = null;
       editor?.getView()?.focus();
