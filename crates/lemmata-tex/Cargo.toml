@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 lemmata-log.workspace = true
 lemmata-project.workspace = true
+lemmata-pkgmap.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

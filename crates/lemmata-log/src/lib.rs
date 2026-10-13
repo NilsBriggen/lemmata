@@ -37,6 +37,16 @@ pub struct Diagnostic {
     pub line: Option<u32>,
     pub message: String,
     pub hint: Option<String>,
+    /// How to fix it on this system, filled in by the build for missing files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix: Option<Fix>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Fix {
+    pub explanation: String,
+    /// A shell command the user can run, if there is one.
+    pub command: Option<String>,
 }
 
 /// TeX hard-wraps log lines at this many characters (`max_print_line`).
@@ -134,6 +144,7 @@ pub fn parse(log: &str) -> Vec<Diagnostic> {
                 line: c.get(2).and_then(|m| m.as_str().parse().ok()),
                 message: c[1].to_string(),
                 hint: None,
+                fix: None,
             });
         }
 
@@ -158,6 +169,7 @@ fn error(file: Option<String>, line: Option<u32>, message: String) -> Diagnostic
         line,
         message,
         hint,
+        fix: None,
     }
 }
 
@@ -194,6 +206,7 @@ fn warning(file: Option<String>, text: String) -> Diagnostic {
         line,
         message,
         hint,
+        fix: None,
     }
 }
 

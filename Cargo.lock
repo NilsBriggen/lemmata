@@ -1776,6 +1776,7 @@ name = "lemmata-desktop"
 version = "0.0.1"
 dependencies = [
  "lemmata-log",
+ "lemmata-pkgmap",
  "lemmata-project",
  "lemmata-synctex",
  "lemmata-tex",
@@ -1785,6 +1786,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tokio",
+ "which",
 ]
 
 [[package]]
@@ -1793,6 +1795,15 @@ version = "0.0.1"
 dependencies = [
  "regex",
  "serde",
+]
+
+[[package]]
+name = "lemmata-pkgmap"
+version = "0.0.1"
+dependencies = [
+ "flate2",
+ "serde",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
@@ -1819,6 +1830,7 @@ name = "lemmata-tex"
 version = "0.0.1"
 dependencies = [
  "lemmata-log",
+ "lemmata-pkgmap",
  "lemmata-project",
  "regex",
  "serde",

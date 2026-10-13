@@ -1,6 +1,8 @@
 //! Tauri commands the frontend calls. All file paths crossing the IPC
 //! boundary are relative to the open project's root.
 
+mod terminal;
+
 use lemmata_project::{Config, Entry, Project};
 use lemmata_tex::detect::Detection;
 use lemmata_tex::os::{Instructions, OsInfo};
@@ -176,6 +178,7 @@ async fn build(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<O
     let opts = BuildOptions {
         latexmk,
         bin_dir: detection.bin_dir.as_deref(),
+        installer: Some(detection.installer(lemmata_tex::os::detect().family)),
     };
     let outcome = lemmata_tex::build(&project, &opts, rx).await.map_err(err)?;
     Ok(outcome)
@@ -248,6 +251,47 @@ fn synctex_backward(
     }))
 }
 
+/// What to install in a terminal. The command itself is always built here
+/// from Lemmata's own data, never taken from the webview.
+#[derive(serde::Deserialize)]
+#[serde(tag = "what", rename_all = "lowercase")]
+enum InstallRequest {
+    /// The onboarding command for a platform ("recommended" or "full").
+    Tex { platform: String, full: bool },
+    /// The package providing a missing file, e.g. `pgfplots.sty`.
+    Package { file: String },
+}
+
+#[tauri::command]
+fn open_install_terminal(state: State<AppState>, request: InstallRequest) -> CmdResult<()> {
+    let command = match request {
+        InstallRequest::Tex { platform, full } => {
+            let all = lemmata_tex::os::all_instructions();
+            let i = all.get(&platform).ok_or("Unknown platform.")?;
+            let cmd = if full { &i.full } else { &i.recommended };
+            if cmd.starts_with("Install ") {
+                return Err(
+                    "There's no single command for this platform. Follow the link instead.".into(),
+                );
+            }
+            cmd.clone()
+        }
+        InstallRequest::Package { file } => {
+            let detection = state
+                .detection
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or("TeX hasn't been detected yet.")?;
+            let installer = detection.installer(lemmata_tex::os::detect().family);
+            lemmata_pkgmap::fix_for(&file, installer)
+                .and_then(|f| f.command)
+                .ok_or_else(|| format!("No install command is known for {file}."))?
+        }
+    };
+    terminal::open_with_command(&command)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -264,6 +308,7 @@ pub fn run() {
             read_pdf,
             synctex_forward,
             synctex_backward,
+            open_install_terminal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lemmata");

@@ -2,13 +2,16 @@
 //! don't inherit the shell's PATH, so besides PATH we probe the folders the
 //! usual installers write to.
 
+use crate::os::Family;
+use lemmata_pkgmap::Installer;
 use regex::Regex;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const REQUIRED: &[&str] = &["latexmk", "pdflatex", "synctex"];
-pub const RECOMMENDED: &[&str] = &["biber", "bibtex", "xelatex", "lualatex"];
+pub const REQUIRED: &[&str] = &["latexmk", "pdflatex"];
+/// Without synctex, building works but PDF ↔ source jumps don't.
+pub const RECOMMENDED: &[&str] = &["synctex", "biber", "bibtex", "xelatex", "lualatex"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "name", rename_all = "lowercase")]
@@ -40,6 +43,27 @@ pub struct Detection {
 impl Detection {
     pub fn tool(&self, name: &str) -> Option<&Path> {
         self.tools.iter().find(|t| t.name == name)?.path.as_deref()
+    }
+
+    /// How missing packages get installed with this TeX: the distro's
+    /// package manager for TeX Live in /usr/bin, otherwise tlmgr or MiKTeX.
+    pub fn installer(&self, family: Family) -> Installer<'static> {
+        if matches!(self.distribution, Distribution::Miktex { .. }) {
+            return Installer::Miktex;
+        }
+        let bin = self.bin_dir.as_deref().unwrap_or(Path::new(""));
+        let distro_key = match family {
+            Family::Arch | Family::Debian | Family::Fedora | Family::Suse => Some(family.key()),
+            _ => None,
+        };
+        match distro_key {
+            Some(key) if bin.starts_with("/usr/bin") => Installer::Distro(key),
+            // A per-user TeX Live (e.g. ~/texlive) is writable without sudo.
+            _ => Installer::Tlmgr {
+                sudo: !cfg!(windows)
+                    && !std::env::var_os("HOME").is_some_and(|h| bin.starts_with(h)),
+            },
+        }
     }
 }
 

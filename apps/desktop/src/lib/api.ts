@@ -17,7 +17,12 @@ export interface Diagnostic {
   line: number | null;
   message: string;
   hint: string | null;
+  fix?: { explanation: string; command: string | null };
 }
+
+export type InstallRequest =
+  | { what: "tex"; platform: string; full: boolean }
+  | { what: "package"; file: string };
 
 export interface Outcome {
   status: "success" | "failed" | "cancelled";
@@ -95,6 +100,7 @@ export const api = {
     invoke<PdfBox[]>("synctex_forward", { path, line, column }),
   synctexBackward: (page: number, x: number, y: number) =>
     invoke<SourceHit | null>("synctex_backward", { page, x, y }),
+  openInstallTerminal: (request: InstallRequest) => invoke<void>("open_install_terminal", { request }),
 };
 
 export function errorMessage(e: unknown): string {

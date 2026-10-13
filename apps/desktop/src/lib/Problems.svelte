@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Diagnostic } from "./api";
+  import CommandBox from "./CommandBox.svelte";
 
   interface Props {
     diagnostics: Diagnostic[];
@@ -31,10 +32,16 @@
       <b>{d.severity}</b>
       <span class="msg">
         {d.message}
-        {#if d.hint}<span class="hint">{d.hint}</span>{/if}
+        {#if d.fix}<span class="hint">{d.fix.explanation}</span>{:else if d.hint}<span class="hint">{d.hint}</span>{/if}
       </span>
       <span class="loc">{location(d)}</span>
     </button>
+    {#if d.fix?.command && d.kind.type === "missing-file"}
+      <div class="fix">
+        <CommandBox command={d.fix.command} install={{ what: "package", file: d.kind.name }} />
+        <p>After installing, press Recompile.</p>
+      </div>
+    {/if}
   {/each}
   {#if infoCount > 0}
     <label class="toggle"><input type="checkbox" bind:checked={showInfo} /> Show {infoCount} layout notes (overfull and underfull boxes)</label>
@@ -58,5 +65,7 @@
   .msg { flex: 1; min-width: 0; }
   .hint { display: block; color: var(--muted); }
   .loc { font-family: var(--f-mono); color: var(--muted); white-space: nowrap; }
+  .fix { padding: 4px 12px 10px 80px; border-bottom: 1px solid var(--rule); }
+  .fix p { margin: 6px 0 0; color: var(--muted); }
   .toggle { display: flex; gap: 6px; align-items: center; padding: 6px 12px; color: var(--muted); }
 </style>

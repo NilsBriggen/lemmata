@@ -83,6 +83,7 @@ async fn build(dir: PathBuf, json: bool) -> anyhow::Result<()> {
     let opts = BuildOptions {
         latexmk,
         bin_dir: det.bin_dir.as_deref(),
+        installer: Some(det.installer(lemmata_tex::os::detect().family)),
     };
     let outcome = lemmata_tex::build(&project, &opts, rx).await?;
 
@@ -103,6 +104,12 @@ async fn build(dir: PathBuf, json: bool) -> anyhow::Result<()> {
             println!("{loc}{sev}: {}", d.message);
             if let Some(h) = &d.hint {
                 println!("    {h}");
+            }
+            if let Some(fix) = &d.fix {
+                println!("    {}", fix.explanation);
+                if let Some(cmd) = &fix.command {
+                    println!("    Install it with: {cmd}");
+                }
             }
         }
         match &outcome.pdf {

@@ -104,8 +104,8 @@ The probe order, stopping at the first location that has the required tools:
 
 | Tools | Status |
 |---|---|
-| `latexmk`, `pdflatex`, `synctex` | Required |
-| `biber`, `xelatex`, `lualatex` | Recommended; missing ones are listed, not blocking |
+| `latexmk`, `pdflatex` | Required |
+| `synctex`, `biber`, `bibtex`, `xelatex`, `lualatex` | Recommended; missing ones are listed, not blocking. Without `synctex`, PDF ↔ source jumps are off |
 
 - The distribution and year come from `tex --version` (TeX Live) or `miktex --version`.
 - TeX Live older than 2022 gets a warning but still works.

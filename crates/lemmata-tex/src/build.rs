@@ -40,6 +40,8 @@ pub struct BuildOptions<'a> {
     pub latexmk: &'a Path,
     /// TeX bin folder, put first on PATH so latexmk finds the matching engine.
     pub bin_dir: Option<&'a Path>,
+    /// Used to suggest install commands for missing packages.
+    pub installer: Option<lemmata_pkgmap::Installer<'a>>,
 }
 
 /// The latexmk arguments for a project.
@@ -138,6 +140,14 @@ pub async fn build(
         {
             d.file = None;
             d.line = None;
+        }
+        if let (lemmata_log::Kind::MissingFile { name }, Some(installer)) =
+            (&d.kind, opts.installer)
+        {
+            d.fix = lemmata_pkgmap::fix_for(name, installer).map(|f| lemmata_log::Fix {
+                explanation: f.explanation,
+                command: f.command,
+            });
         }
     }
 

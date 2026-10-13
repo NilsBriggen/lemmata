@@ -1,0 +1,41 @@
+# How each Linux distro packages TeX Live, for missing-package fixes.
+# by = "collection": one distro package per TeX Live collection.
+# by = "package":    one distro package per TeX Live package.
+# The package name is prefix + name (without "collection-"), unless listed
+# under rename. Check these when a distro restructures its TeX packages.
+
+[arch]
+command = "sudo pacman -S --needed {packages}"
+by = "collection"
+prefix = "texlive-"
+
+[debian]
+command = "sudo apt install {packages}"
+by = "collection"
+prefix = "texlive-"
+# collection-lang<x> becomes texlive-lang-<x>.
+lang_dash = true
+
+[debian.rename]
+basic = "texlive-base"
+latex = "texlive-latex-base"
+latexrecommended = "texlive-latex-recommended"
+latexextra = "texlive-latex-extra"
+fontsrecommended = "texlive-fonts-recommended"
+fontsextra = "texlive-fonts-extra"
+fontutils = "texlive-font-utils"
+bibtexextra = "texlive-bibtex-extra"
+mathscience = "texlive-science"
+plaingeneric = "texlive-plain-generic"
+binextra = "texlive-extra-utils"
+formatsextra = "texlive-formats-extra"
+
+[fedora]
+command = "sudo dnf install {packages}"
+by = "package"
+prefix = "texlive-"
+
+[suse]
+command = "sudo zypper install {packages}"
+by = "package"
+prefix = "texlive-"

@@ -1,0 +1,12 @@
+[package]
+name = "lemmata-pkgmap"
+description = "Which TeX Live package provides a file, and how to install it here"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+flate2 = "1"

@@ -4,6 +4,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { untrack } from "svelte";
   import type { TexStatus } from "./api";
+  import CommandBox from "./CommandBox.svelte";
 
   interface Props {
     status: TexStatus;
@@ -16,26 +17,12 @@
   // Starts on this computer's platform; the user can switch tabs.
   let platform = $state(untrack(() => status.os.family as string));
   let size = $state<"recommended" | "full">("recommended");
-  let copied = $state(false);
 
   const inst = $derived(status.instructions[platform] ?? status.instructions.other);
   const command = $derived(size === "recommended" ? inst.recommended : inst.full);
   const isCommand = $derived(!command.startsWith("Install "));
   const found = $derived(status.detection.tools.filter((t) => t.path).length);
 
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(command);
-      copied = true;
-      setTimeout(() => (copied = false), 1500);
-    } catch {
-      const sel = window.getSelection();
-      const el = document.getElementById("install-cmd");
-      if (sel && el) {
-        sel.selectAllChildren(el);
-      }
-    }
-  }
 
   async function chooseFolder() {
     const dir = await open({ directory: true, title: "Choose the folder that contains pdflatex and latexmk" });
@@ -89,13 +76,14 @@
       </div>
     {/if}
 
-    <div class="cmd">
-      <code id="install-cmd">{command}</code>
-      {#if isCommand}<button onclick={copy}>{copied ? "Copied" : "Copy"}</button>{/if}
-    </div>
+    {#if isCommand}
+      <CommandBox {command} install={{ what: "tex", platform, full: size === "full" }} />
+    {:else}
+      <p class="note">{command}</p>
+    {/if}
     {#if inst.note}<p class="note">{inst.note}</p>{/if}
     {#if inst.link}<p class="note">Installer and instructions: <code>{inst.link}</code></p>{/if}
-    <p class="note">Run the command in a terminal. Lemmata never installs system packages itself.</p>
+    <p class="note">Open terminal shows the command and waits for you to press Enter. Lemmata never installs anything by itself.</p>
 
     <footer>
       <span>Installed somewhere else? <button class="link" onclick={chooseFolder}>Choose the TeX bin folder</button></span>
@@ -135,8 +123,6 @@
   .size button { flex: 1; text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; font-weight: 400; }
   .size button.on { border-color: var(--blue); background: var(--blue-soft); }
   .size span { color: var(--muted); }
-  .cmd { background: #0f1418; color: #d5dde3; border-radius: 6px; padding: 12px 14px; display: flex; gap: 14px; align-items: flex-start; }
-  .cmd code { flex: 1; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; user-select: text; }
   .note { color: var(--muted); margin: 0; }
   footer { margin-top: 8px; display: flex; align-items: center; gap: 12px; }
   footer > span { margin-right: auto; color: var(--muted); }
