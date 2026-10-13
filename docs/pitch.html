@@ -1,0 +1,544 @@
+<title>Lemmata Pitch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Young+Serif&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=STIX+Two+Text:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+/* Layout: a single reading column for the pitch, broken by full-width "proof sheets" that hold the mockups. */
+:root{
+  --paper:#f3f4f2; --sheet:#ffffff; --ink:#18212b; --muted:#5b6672; --rule:#d8dcdf;
+  --blue:#2f7fb8;          /* non-photo blue: the proofreader's pencil */
+  --blue-soft:#e3eff8;
+  --mark:#c4472f;          /* error marks only */
+  --ok:#2e7d55;
+  --chrome:#e7e9eb; --chrome-2:#dde0e3; --code-bg:#fbfbfa; --pdf:#ffffff; --pdf-ink:#111;
+  --f-display:"Young Serif", Georgia, serif;
+  --f-body:"IBM Plex Sans", system-ui, sans-serif;
+  --f-mono:"IBM Plex Mono", ui-monospace, monospace;
+  --f-tex:"STIX Two Text", "Times New Roman", serif;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --paper:#12171c; --sheet:#1a2027; --ink:#e4e8ec; --muted:#97a3ae; --rule:#2c343d;
+  --blue:#6fb3e3; --blue-soft:#1d2f3f; --mark:#e9765f; --ok:#5fbf8a;
+  --chrome:#20272f; --chrome-2:#29313a; --code-bg:#161b21; --pdf:#f4f4f1; --pdf-ink:#111;
+  color-scheme:dark }}
+:root[data-theme="dark"]{
+  --paper:#12171c; --sheet:#1a2027; --ink:#e4e8ec; --muted:#97a3ae; --rule:#2c343d;
+  --blue:#6fb3e3; --blue-soft:#1d2f3f; --mark:#e9765f; --ok:#5fbf8a;
+  --chrome:#20272f; --chrome-2:#29313a; --code-bg:#161b21; --pdf:#f4f4f1; --pdf-ink:#111;
+  color-scheme:dark }
+
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font:16px/1.6 var(--f-body);padding-inline:20px;padding-block:0 80px}
+.col{max-width:720px;margin:0 auto}
+.wide{max-width:1180px;margin:0 auto}
+h1,h2,h3{font-family:var(--f-display);font-weight:400;text-wrap:balance;line-height:1.15;margin:0}
+h1{font-size:clamp(2.6rem,6vw,4.2rem)}
+h2{font-size:clamp(1.7rem,3.4vw,2.3rem)}
+h3{font-size:1.3rem}
+p{margin:0}
+.eyebrow{font:500 .75rem/1 var(--f-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--blue)}
+section{padding-block:64px 0}
+.stack{display:flex;flex-direction:column;gap:16px}
+.lede{font-size:1.2rem;color:var(--muted);max-width:60ch}
+a{color:var(--blue)}
+code{font-family:var(--f-mono);font-size:.88em;background:var(--blue-soft);padding:1px 5px;border-radius:3px}
+
+/* hero */
+header{padding-block:72px 8px}
+.proofmark{font-family:var(--f-mono);font-size:.8rem;color:var(--blue);border:1px dashed var(--blue);display:inline-block;padding:4px 10px;border-radius:2px;transform:rotate(-1.5deg)}
+.hero-name{display:flex;align-items:baseline;gap:18px;flex-wrap:wrap}
+.hero-name small{font:400 1rem var(--f-mono);color:var(--muted)}
+
+/* names */
+.names{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:24px}
+.name{background:var(--sheet);border:1px solid var(--rule);padding:22px;display:flex;flex-direction:column;gap:10px;position:relative}
+.name.pick{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-soft)}
+.name .word{font-family:var(--f-display);font-size:2.1rem;line-height:1}
+.name .def{font-family:var(--f-tex);font-style:italic;color:var(--muted)}
+.name .meta{font:.8rem var(--f-mono);color:var(--muted)}
+.tag{position:absolute;top:-11px;right:14px;background:var(--blue);color:var(--sheet);font:500 .7rem/1 var(--f-mono);letter-spacing:.08em;text-transform:uppercase;padding:6px 8px}
+
+/* options */
+.options{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin-top:28px}
+.opt{background:var(--sheet);border:1px solid var(--rule);display:flex;flex-direction:column}
+.opt.pick{border-color:var(--blue)}
+.opt-head{padding:20px 22px 0;display:flex;flex-direction:column;gap:6px}
+.opt-letter{font:500 .8rem var(--f-mono);color:var(--blue)}
+.opt-body{padding:14px 22px 22px;display:flex;flex-direction:column;gap:14px;flex:1}
+.opt ul{margin:0;padding-left:18px;color:var(--muted);font-size:.94rem}
+.opt li{margin-block:3px}
+.pc{display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:.88rem}
+.pc b{display:block;font:500 .7rem var(--f-mono);letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px}
+.pc .pro b{color:var(--ok)} .pc .con b{color:var(--mark)}
+.effort{margin-top:auto;font:.8rem var(--f-mono);color:var(--muted);border-top:1px solid var(--rule);padding-top:12px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+
+/* mockup frame */
+.sheet-label{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.sheet-label span{font:.8rem var(--f-mono);color:var(--muted)}
+.scroller{overflow-x:auto;padding-bottom:6px}
+.win{min-width:920px;background:var(--sheet);border:1px solid var(--rule);border-radius:10px;overflow:hidden;box-shadow:0 18px 40px -24px rgba(10,20,30,.35);font-size:13px;line-height:1.45}
+.titlebar{display:flex;align-items:center;gap:14px;padding:9px 14px;background:var(--chrome);border-bottom:1px solid var(--rule)}
+.dots{display:flex;gap:6px}.dots i{width:11px;height:11px;border-radius:50%;background:var(--chrome-2);display:block}
+.brand{font-family:var(--f-display);font-size:15px}
+.crumbs{color:var(--muted);font-family:var(--f-mono);font-size:12px}
+.tb-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.btn{font:500 12px var(--f-body);border:1px solid var(--rule);background:var(--sheet);color:var(--ink);padding:5px 10px;border-radius:5px}
+.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.pill{font:500 11px var(--f-mono);padding:3px 8px;border-radius:99px;background:var(--blue-soft);color:var(--blue)}
+.pill.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent)}
+.pill.err{color:var(--mark);background:color-mix(in srgb,var(--mark) 14%,transparent)}
+
+.editor{display:grid;grid-template-columns:200px 1fr 1fr;height:560px}
+.tree{background:var(--chrome);border-right:1px solid var(--rule);padding:12px 0;font-family:var(--f-mono);font-size:12px;display:flex;flex-direction:column}
+.tree .h{font:500 10px var(--f-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:6px 14px}
+.tree div.f{padding:3px 14px;color:var(--ink)}
+.tree div.f.in{padding-left:28px}
+.tree div.f.on{background:var(--blue-soft);color:var(--blue);box-shadow:inset 2px 0 var(--blue)}
+.tree .dim{color:var(--muted)}
+.tree .foot{margin-top:auto;padding:10px 14px;border-top:1px solid var(--rule);color:var(--muted);display:flex;flex-direction:column;gap:4px}
+
+.code{background:var(--code-bg);font-family:var(--f-mono);font-size:12.5px;overflow:hidden;display:flex;flex-direction:column;border-right:1px solid var(--rule)}
+.tabs{display:flex;border-bottom:1px solid var(--rule);background:var(--chrome)}
+.tabs span{padding:7px 14px;font-size:12px;color:var(--muted);border-right:1px solid var(--rule)}
+.tabs span.on{background:var(--code-bg);color:var(--ink)}
+.lines{padding:10px 0;white-space:pre;flex:1}
+.ln{display:flex}.ln b{width:40px;text-align:right;padding-right:14px;color:var(--muted);opacity:.55;font-weight:400}
+.ln.cur{background:var(--blue-soft)}
+.k{color:var(--blue)} .c{color:var(--muted);font-style:italic} .a{color:#9a5b14} .m{color:var(--ok)}
+:root[data-theme="dark"] .a{color:#e0a85a}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .a{color:#e0a85a}}
+.squig{text-decoration:underline wavy var(--mark);text-underline-offset:3px}
+.cursor{display:inline-block;width:2px;height:15px;background:var(--blue);vertical-align:-3px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){.cursor{animation:none}}
+.complete{position:absolute;margin:2px 0 0 220px;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;box-shadow:0 8px 24px -10px rgba(0,0,0,.3);font-size:12px;min-width:230px;overflow:hidden}
+.complete div{padding:4px 10px;display:flex;justify-content:space-between;gap:14px}
+.complete div.on{background:var(--blue-soft)}
+.complete i{color:var(--muted);font-style:normal}
+
+.statusbar{display:flex;gap:16px;padding:6px 12px;border-top:1px solid var(--rule);background:var(--chrome);font:11.5px var(--f-mono);color:var(--muted)}
+.statusbar .r{margin-left:auto}
+
+.preview{background:var(--chrome-2);display:flex;flex-direction:column;overflow:hidden}
+.pv-bar{display:flex;gap:10px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--rule);background:var(--chrome);font:12px var(--f-mono);color:var(--muted)}
+.pv-bar .r{margin-left:auto;display:flex;gap:8px}
+.page{background:var(--pdf);color:var(--pdf-ink);margin:18px auto;width:82%;padding:34px 38px;font-family:var(--f-tex);font-size:11.5px;line-height:1.5;box-shadow:0 2px 10px rgba(0,0,0,.18)}
+.page .t{text-align:center;font-size:17px;margin-bottom:4px}
+.page .au{text-align:center;font-size:11px;margin-bottom:14px}
+.page .abs{margin:0 18px 14px;font-size:10.5px}
+.page .sec{font-weight:600;font-size:12.5px;margin:12px 0 4px}
+.page p{text-align:justify;hyphens:auto;margin-bottom:6px}
+.page .eq{display:flex;justify-content:center;gap:40px;font-style:italic;margin:8px 0;position:relative}
+.page .eq span:last-child{position:absolute;right:0;font-style:normal}
+.sync{background:color-mix(in srgb,var(--blue) 22%,transparent);outline:1px solid var(--blue)}
+
+.errors{border-top:1px solid var(--rule);background:var(--sheet);font-size:12px}
+.errors .row{display:flex;gap:10px;padding:6px 12px;border-bottom:1px solid var(--rule);align-items:baseline}
+.errors .row b{font:500 11px var(--f-mono);color:var(--mark);min-width:64px}
+.errors .row.w b{color:#a67812}
+.errors .row span.loc{margin-left:auto;font-family:var(--f-mono);color:var(--muted)}
+
+/* library mock */
+.lib{display:grid;grid-template-columns:200px 1fr;height:470px}
+.side{background:var(--chrome);border-right:1px solid var(--rule);padding:16px 12px;display:flex;flex-direction:column;gap:4px}
+.side div{padding:6px 10px;border-radius:5px;color:var(--muted)}
+.side div.on{background:var(--sheet);color:var(--ink);font-weight:500}
+.side .h{font:500 10px var(--f-mono);letter-spacing:.12em;text-transform:uppercase;padding:14px 10px 4px}
+.libmain{padding:20px 24px;display:flex;flex-direction:column;gap:16px;overflow:hidden}
+.libtop{display:flex;gap:10px;align-items:center}
+.search{flex:1;border:1px solid var(--rule);border-radius:6px;padding:7px 12px;color:var(--muted);background:var(--sheet)}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.card{border:1px solid var(--rule);border-radius:6px;overflow:hidden;background:var(--sheet)}
+.thumb{height:150px;background:var(--chrome-2);display:flex;align-items:flex-end;justify-content:center;padding-top:14px}
+.thumb div{background:var(--pdf);width:70%;height:100%;padding:12px 10px;display:flex;flex-direction:column;gap:5px;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+.thumb i{display:block;height:3px;background:#c9ccd0;border-radius:2px}
+.thumb i.t{height:5px;width:60%;margin:0 auto 4px;background:#888}
+.card .info{padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.card .info b{font-weight:500}
+.card .info span{font:11px var(--f-mono);color:var(--muted)}
+.new{border:1.5px dashed var(--rule);border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--muted)}
+.new b{font-size:26px;font-weight:300;color:var(--blue)}
+
+/* web/collab mock */
+.urlbar{flex:1;max-width:420px;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;padding:4px 12px;font:12px var(--f-mono);color:var(--muted)}
+.avatars{display:flex}.avatars i{width:24px;height:24px;border-radius:50%;border:2px solid var(--chrome);margin-left:-6px;display:grid;place-items:center;font:600 10px var(--f-body);color:#fff;font-style:normal}
+.collab{display:grid;grid-template-columns:1fr 1fr 230px;height:420px}
+.remote{background:color-mix(in srgb,#8a5cc2 18%,transparent)}
+.flag{display:inline-block;background:#8a5cc2;color:#fff;font:500 10px var(--f-body);padding:1px 5px;border-radius:3px;vertical-align:2px;margin-left:2px}
+.comments{background:var(--chrome);border-left:1px solid var(--rule);padding:12px;display:flex;flex-direction:column;gap:10px;font-size:12px}
+.cm{background:var(--sheet);border:1px solid var(--rule);border-radius:6px;padding:10px;display:flex;flex-direction:column;gap:4px}
+.cm b{font-weight:600}.cm span{color:var(--muted);font:11px var(--f-mono)}
+
+/* terminal mock */
+.term{min-width:620px;background:#0f1418;color:#d5dde3;border-radius:10px;padding:16px 18px;font:12.5px/1.6 var(--f-mono);white-space:pre;box-shadow:0 18px 40px -24px rgba(10,20,30,.45)}
+.term .p{color:#6fb3e3}.term .g{color:#5fbf8a}.term .d{color:#7d8a95}.term .r{color:#e9765f}
+
+.mock-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:28px}
+.note{font-size:.92rem;color:var(--muted);margin-top:10px;max-width:70ch}
+
+/* plan */
+table{border-collapse:collapse;width:100%;font-size:.92rem;min-width:560px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font:500 .72rem var(--f-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+td:first-child{font-weight:500;white-space:nowrap}
+.tbl{overflow-x:auto;background:var(--sheet);border:1px solid var(--rule)}
+.phases{display:flex;flex-direction:column;gap:0;margin-top:20px;border-left:2px solid var(--rule)}
+.phase{padding:0 0 26px 22px;position:relative;display:flex;flex-direction:column;gap:6px}
+.phase::before{content:"";position:absolute;left:-7px;top:6px;width:12px;height:12px;border-radius:50%;background:var(--paper);border:2px solid var(--blue)}
+.phase .when{font:.78rem var(--f-mono);color:var(--blue)}
+.phase ul{margin:0;padding-left:18px;color:var(--muted)}
+.qs{display:flex;flex-direction:column;gap:12px;margin-top:20px;padding:0;list-style:none;counter-reset:q}
+.qs li{background:var(--sheet);border:1px solid var(--rule);padding:14px 16px 14px 48px;position:relative;counter-increment:q}
+.qs li::before{content:counter(q);position:absolute;left:16px;top:13px;font:500 .9rem var(--f-mono);color:var(--blue)}
+.qs li span{display:block;color:var(--muted);font-size:.92rem}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+/* round 2 additions */
+.groups{display:flex;flex-direction:column;gap:28px;margin-top:28px}
+.group h3{font-size:1.05rem;font-family:var(--f-body);font-weight:600;margin-bottom:4px}
+.group > p{color:var(--muted);font-size:.94rem;margin-bottom:12px}
+button.name{font:inherit;color:inherit;text-align:left;cursor:pointer}
+button.name:hover{border-color:var(--blue)}
+button.name[aria-pressed="true"]{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-soft)}
+.avail{display:flex;gap:6px;flex-wrap:wrap}
+.avail span{font:500 10.5px var(--f-mono);padding:2px 6px;border-radius:3px;border:1px solid var(--rule);color:var(--muted)}
+.avail span.free{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
+.avail span.taken{text-decoration:line-through}
+.hint{font:.8rem var(--f-mono);color:var(--blue)}
+.decided{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:20px}
+.decided div{background:var(--sheet);border:1px solid var(--rule);padding:14px 16px;display:flex;flex-direction:column;gap:4px}
+.decided b{font:500 .7rem var(--f-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.decided span{font-weight:500}
+/* onboarding mock */
+.onb{display:grid;grid-template-columns:210px 1fr;height:540px}
+.steps{background:var(--chrome);border-right:1px solid var(--rule);padding:22px 16px;display:flex;flex-direction:column;gap:4px;counter-reset:s}
+.steps div{padding:7px 10px;border-radius:5px;color:var(--muted);display:flex;gap:10px;align-items:center;counter-increment:s}
+.steps div::before{content:counter(s);width:20px;height:20px;border-radius:50%;border:1px solid var(--rule);display:grid;place-items:center;font:500 11px var(--f-mono)}
+.steps div.done::before{content:"✓";color:var(--ok);border-color:var(--ok)}
+.steps div.on{background:var(--sheet);color:var(--ink);font-weight:500}
+.steps div.on::before{border-color:var(--blue);color:var(--blue)}
+.onb-main{padding:26px 32px;display:flex;flex-direction:column;gap:16px;overflow:hidden}
+.onb-main h4{font:400 22px var(--f-display);margin:0}
+.checks{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.chk{border:1px solid var(--rule);border-radius:6px;padding:9px 11px;display:flex;flex-direction:column;gap:2px;font-family:var(--f-mono);font-size:12px}
+.chk b{font-weight:500}.chk span{color:var(--muted);font-size:11px}
+.chk.no b::before{content:"✗ ";color:var(--mark)}
+.chk.yes b::before{content:"✓ ";color:var(--ok)}
+.ostabs{display:flex;gap:0;border-bottom:1px solid var(--rule)}
+.ostabs span{padding:7px 14px;font-size:12px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+.ostabs span.on{color:var(--ink);border-color:var(--blue)}
+.cmd{background:#0f1418;color:#d5dde3;border-radius:6px;padding:12px 14px;font:12.5px/1.6 var(--f-mono);display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+.cmd .d{color:#7d8a95}
+.size{display:flex;gap:10px}
+.size label{flex:1;border:1px solid var(--rule);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;font-size:12px}
+.size label.on{border-color:var(--blue);background:var(--blue-soft)}
+.size label b{font-weight:600}.size label span{color:var(--muted)}
+.onb-foot{margin-top:auto;display:flex;gap:10px;align-items:center}
+.onb-foot .l{color:var(--muted);font-size:12px;margin-right:auto}
+.pkgrow{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--rule);background:var(--blue-soft);font-size:12px}
+.pkgrow code{background:var(--sheet)}
+.pkgrow .btn{margin-left:auto}
+</style>
+
+<header class="col stack">
+  <span class="proofmark">proof 3 · approved · 13 Oct 2026</span>
+  <div class="hero-name"><h1 class="nm">Lemmata</h1><small>/ˈlɛm.ə.tə/ · plural of lemma</small></div>
+  <p class="lede">A local-first LaTeX workspace. The Overleaf workflow of editor, live PDF and click-to-jump, running on your machine against your own TeX Live, with your files as plain files and history in git.</p>
+</header>
+
+<section class="col" id="decided">
+  <div class="stack">
+    <span class="eyebrow">Decisions</span>
+    <h2>What we agreed</h2>
+  </div>
+  <div class="decided">
+    <div><b>Direction</b><span>A · desktop app</span></div>
+    <div><b>Audience</b><span>Public, open source</span></div>
+    <div><b>Name</b><span>Lemmata</span></div>
+    <div><b>Engine</b><span>System TeX Live, installed during onboarding; MiKTeX also accepted on Windows</span></div>
+    <div><b>Licence</b><span>GPL-3.0</span></div>
+    <div><b>Hosting</b><span>Code under your GitHub account; homepage at lemmata.briggen.dev</span></div>
+    <div><b>Linux at launch</b><span>AUR, AppImage, .deb/.rpm. Flathub later</span></div>
+  </div>
+</section>
+
+<section class="col" id="names">
+  <div class="stack">
+    <span class="eyebrow">Name options · round 2</span>
+    <h2>Round 2 names</h2>
+    <p>This round has three flavours, since I don't yet know what put you off Galley, Quire and Chase. Because it's a public project, I checked each name on crates.io, npm and the AUR on 13 Oct 2026. Green means the bare name is free. The code will live under your personal GitHub account, so the GitHub org name doesn't matter.</p>
+  </div>
+  <div class="groups">
+    <div class="group">
+      <h3>From the writing desk</h3>
+      <p>Objects and places from scholarly writing. Warm and a little old-fashioned.</p>
+      <div class="names">
+        <button class="name" type="button" data-name="Inkhorn" aria-pressed="false">
+          <span class="word">Inkhorn</span>
+          <span class="def">n. a portable ink pot carried by scribes; also “inkhorn term”, a needlessly learned word</span>
+          <span>Says "writing tool you carry with you". The second meaning is a wink at academic prose. No software of this name turned up in a search.</span>
+          <span class="avail"><span class="free">crates</span><span class="free">npm</span><span class="free">aur</span></span>
+        </button>
+        <button class="name" type="button" data-name="Carrel" aria-pressed="false">
+          <span class="word">Carrel</span>
+          <span class="def">n. a private study desk in a library</span>
+          <span>The exact metaphor: your own quiet desk, not a shared server. Package names are taken by unrelated projects.</span>
+          <span class="avail"><span class="taken">crates</span><span class="taken">npm</span><span class="free">aur</span></span>
+        </button>
+        <button class="name" type="button" data-name="Lamplight" aria-pressed="false">
+          <span class="word">Lamplight</span>
+          <span class="def">n. the light you write a thesis by at 2 a.m.</span>
+          <span>Friendly and easy to remember. Long for a command name.</span>
+          <span class="avail"><span class="free">crates</span><span class="taken">npm</span><span class="free">aur</span></span>
+        </button>
+      </div>
+    </div>
+    <div class="group">
+      <h3>From mathematics</h3>
+      <p>For the people who actually use LaTeX the most.</p>
+      <div class="names">
+        <button class="name pick" type="button" data-name="Lemmata" aria-pressed="true">
+          <span class="tag">Chosen</span>
+          <span class="word">Lemmata</span>
+          <span class="def">n. pl. of lemma: small proven steps toward a theorem</span>
+          <span>Fits how a paper gets written, one small result at a time. Mathematicians will smile; others may not know the word.</span>
+          <span class="avail"><span class="free">crates</span><span class="free">npm</span><span class="free">aur</span></span>
+        </button>
+        <button class="name" type="button" data-name="Scholium" aria-pressed="false">
+          <span class="word">Scholium</span>
+          <span class="def">n. an explanatory note added to a theorem</span>
+          <span>Newton used it in the Principia. Distinctive, but harder to spell and say.</span>
+          <span class="avail"><span class="taken">crates</span><span class="taken">npm</span><span class="free">aur</span></span>
+        </button>
+      </div>
+    </div>
+    <div class="group">
+      <h3>Local, with a nod to Overleaf</h3>
+      <p>Names about home and what grows beneath the leaves.</p>
+      <div class="names">
+        <button class="name" type="button" data-name="Understory" aria-pressed="false">
+          <span class="word">Understory</span>
+          <span class="def">n. the layer of a forest that grows beneath the canopy</span>
+          <span>Quietly answers "Overleaf" without borrowing the trademark, and "story" suits writing.</span>
+          <span class="avail"><span class="free">crates</span><span class="taken">npm</span><span class="free">aur</span></span>
+        </button>
+        <button class="name" type="button" data-name="Hearth" aria-pressed="false">
+          <span class="word">Hearth</span>
+          <span class="def">n. the floor of a fireplace; home</span>
+          <span>Short and warm, and says "local". Common as a word, so harder to search for.</span>
+          <span class="avail"><span class="free">crates</span><span class="taken">npm</span><span class="free">aur</span></span>
+        </button>
+      </div>
+    </div>
+  </div>
+  <p class="note">Lemmata is chosen. Clicking another card still renames the app in the mockups, for comparison. Searches found no LaTeX or writing app called Inkhorn, Lemmata or Lamplight. That is not a trademark search; do one before a public launch.</p>
+</section>
+
+<section class="wide" id="mockups">
+  <div class="col stack" style="margin-left:0;max-width:720px">
+    <span class="eyebrow">Mockups</span>
+    <h2>What it looks like</h2>
+  </div>
+
+  <div style="margin-top:28px">
+    <div class="sheet-label"><h3>First launch · TeX Live check</h3><span>new: runs before the project library opens</span></div>
+    <div class="scroller"><div class="win">
+      <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div><span class="brand nm">Lemmata</span><span class="crumbs">setup</span></div>
+      <div class="onb">
+        <div class="steps">
+          <div class="done">Welcome</div>
+          <div class="on">TeX Live</div>
+          <div>Editor settings</div>
+          <div>First project</div>
+        </div>
+        <div class="onb-main">
+          <h4>TeX Live isn't installed yet</h4>
+          <p style="color:var(--muted);max-width:62ch"><span class="nm">Lemmata</span> uses the TeX Live on your system to build PDFs. We looked in your PATH and the usual install folders and found nothing. Install it with the command below, then click Check again.</p>
+          <div class="checks">
+            <div class="chk no"><b>pdflatex</b><span>not found</span></div>
+            <div class="chk no"><b>latexmk</b><span>not found</span></div>
+            <div class="chk no"><b>biber</b><span>not found</span></div>
+            <div class="chk yes"><b>git</b><span>2.51.0</span></div>
+          </div>
+          <div class="ostabs"><span class="on">Arch / CachyOS</span><span>Debian / Ubuntu</span><span>Fedora</span><span>macOS</span><span>Windows</span></div>
+          <div class="size">
+            <label class="on"><b>Recommended · ≈1.2 GB</b><span>Covers almost every paper, thesis and Beamer deck</span></label>
+            <label><b>Full · ≈5.6 GB</b><span>Every package. No missing-package prompts later</span></label>
+          </div>
+          <div class="cmd"><span>sudo pacman -S texlive-basic texlive-latex texlive-latexrecommended \<br>&nbsp;&nbsp;texlive-latexextra texlive-fontsrecommended texlive-bibtexextra \<br>&nbsp;&nbsp;texlive-binextra texlive-mathscience biber<br><span class="d"># detected: CachyOS (Arch-based), pacman</span></span><button class="btn" type="button">Copy</button></div>
+          <div class="onb-foot">
+            <span class="l">Already installed somewhere else? <a href="#mockups">Choose the TeX bin folder</a></span>
+            <button class="btn" type="button">Open terminal</button>
+            <button class="btn primary" type="button">Check again</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+    <p class="note">The app never runs <code>sudo</code> itself. It detects the OS and package manager, shows the exact command and opens a terminal. On macOS it links to MacTeX or offers <code>brew install --cask mactex-no-gui</code>; on Windows it links to the TeX Live installer. Detection also probes <code>/Library/TeX/texbin</code> and <code>/usr/local/texlive/*/bin</code>, because apps launched from the dock don't inherit the shell's PATH.</p>
+  </div>
+
+  <div style="margin-top:28px">
+    <div class="sheet-label"><h3>Editor · direction A</h3><span>source left, galley proof right, SyncTeX highlight in blue</span></div>
+    <div class="scroller"><div class="win">
+      <div class="titlebar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="brand nm">Lemmata</span>
+        <span class="crumbs">~/thesis / chapters / 03-method.tex</span><span class="pill">TeX Live 2026 · pdfLaTeX</span>
+        <div class="tb-right">
+          <span class="pill ok">compiled 0.8 s</span>
+          <button class="btn" type="button">History</button>
+          <button class="btn primary" type="button">Recompile ⌘↵</button>
+        </div>
+      </div>
+      <div class="editor">
+        <div class="tree">
+          <div class="h">Project</div>
+          <div class="f">main.tex</div>
+          <div class="f dim">▾ chapters</div>
+          <div class="f in">01-intro.tex</div>
+          <div class="f in">02-background.tex</div>
+          <div class="f in on">03-method.tex</div>
+          <div class="f in">04-results.tex</div>
+          <div class="f dim">▸ figures</div>
+          <div class="f">refs.bib</div>
+          <div class="f">galley.toml</div>
+          <div class="h" style="margin-top:12px">Outline</div>
+          <div class="f">3 Method</div>
+          <div class="f in">3.1 Setup</div>
+          <div class="f in on">3.2 Policy gradient</div>
+          <div class="f in">3.3 Evaluation</div>
+          <div class="foot"><span>● git: main, 2 unsaved</span><span>engine: tectonic 0.15</span></div>
+        </div>
+        <div class="code">
+          <div class="tabs"><span>main.tex</span><span class="on">03-method.tex</span><span>refs.bib</span></div>
+          <div class="lines"><div class="ln"><b>1</b><span><span class="k">\section</span>{Method}<span class="k">\label</span>{<span class="a">sec:method</span>}</span></div><div class="ln"><b>2</b><span></span></div><div class="ln"><b>3</b><span><span class="k">\subsection</span>{Setup}</span></div><div class="ln"><b>4</b><span>We train agents on the Flatland rail grid with</span></div><div class="ln"><b>5</b><span>$N = 50$ trains and sparse rewards~<span class="k">\cite</span>{<span class="a">mohanty2020</span>}.</span></div><div class="ln"><b>6</b><span></span></div><div class="ln"><b>7</b><span><span class="k">\subsection</span>{Policy gradient}</span></div><div class="ln cur"><b>8</b><span>The objective maximises the expected return</span></div><div class="ln"><b>9</b><span><span class="k">\begin</span>{<span class="m">equation</span>}</span></div><div class="ln"><b>10</b><span>  J(<span class="k">\theta</span>) = <span class="k">\mathbb</span>{E}_{<span class="k">\tau</span> <span class="k">\sim</span> <span class="k">\pi</span>_<span class="k">\theta</span>}</span></div><div class="ln"><b>11</b><span>  <span class="k">\left</span>[ <span class="k">\sum</span>_{t=0}^{T} <span class="k">\gamma</span>^t r_t <span class="k">\right</span>]</span></div><div class="ln"><b>12</b><span><span class="k">\end</span>{<span class="m">equation</span>}</span></div><div class="ln"><b>13</b><span>as described in <span class="k">\cref</span>{<span class="a">fig:</span><span class="cursor"></span></span></div><div class="complete"><div class="on"><span>fig:flatland-grid</span><i>figures/grid.pdf</i></div><div><span>fig:reward-curve</span><i>04-results</i></div><div><span>fig:arch</span><i>figures/arch.tikz</i></div></div><div class="ln"><b>14</b><span></span></div><div class="ln"><b>15</b><span><span class="c">% TODO: cite Schulman for PPO</span></span></div><div class="ln"><b>16</b><span>We use <span class="squig">\citep</span>{<span class="a">schulman2017</span>} clipping.</span></div></div>
+          <div class="statusbar"><span>Ln 13, Col 32</span><span>UTF-8</span><span>1,284 words</span><span class="r">texlab ✓</span></div>
+        </div>
+        <div class="preview">
+          <div class="pv-bar"><span>page 14 / 62</span><div class="r"><span>−</span><span>110%</span><span>+</span></div></div>
+          <div class="page">
+            <div class="sec">3.2&nbsp;&nbsp;Policy gradient</div>
+            <p class="sync">The objective maximises the expected return</p>
+            <div class="eq"><span>J(θ) = 𝔼<sub>τ∼π<sub>θ</sub></sub> [ Σ<sub>t=0</sub><sup>T</sup> γ<sup>t</sup> r<sub>t</sub> ]</span><span>(3.1)</span></div>
+            <p>as described in Figure 3.2. The discount factor γ trades immediate against delayed arrivals, which matters when trains block one another at junctions several steps ahead.</p>
+            <p>We use [?] clipping to bound the policy update, keeping the new policy within a trust region of the old one without the second-order cost of TRPO.</p>
+            <div class="sec">3.3&nbsp;&nbsp;Evaluation</div>
+            <p>Each configuration is evaluated over 200 seeded episodes. We report the fraction of trains that reach their target before the step limit, together with mean delay.</p>
+          </div>
+          <div class="pkgrow">Package <code>pgfplots</code> is not installed.<span style="color:var(--muted)">sudo pacman -S texlive-pictures</span><button class="btn" type="button">Copy command</button></div>
+          <div class="errors">
+            <div class="row w"><b>warning</b>Citation “schulman2017” undefined. Did you mean “schulman2017ppo”?<span class="loc">03-method.tex:16</span></div>
+            <div class="row"><b>info</b>Underfull \hbox (badness 1803)<span class="loc">03-method.tex:20</span></div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+    <p class="note">Details that matter here: errors appear in plain words with a fix, not as raw log output, and a missing package names the exact install command for your distro; autocomplete knows labels across all files; the outline and file tree share one sidebar.</p>
+  </div>
+
+  <div style="margin-top:56px">
+    <div class="sheet-label"><h3>Project library</h3><span>the launch screen, plain folders on disk</span></div>
+    <div class="scroller"><div class="win">
+      <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div><span class="brand nm">Lemmata</span><div class="tb-right"><button class="btn" type="button">Import Overleaf .zip</button><button class="btn primary" type="button">New project</button></div></div>
+      <div class="lib">
+        <div class="side">
+          <div class="on">All projects</div><div>Recent</div><div>Starred</div>
+          <div class="h">Folders</div><div>~/Documents/papers</div><div>~/uni/fs26</div>
+          <div class="h">Templates</div><div>Article</div><div>Thesis (UniFr)</div><div>Beamer</div><div>CV</div>
+        </div>
+        <div class="libmain">
+          <div class="libtop"><div class="search">Search projects, files and labels…</div><button class="btn" type="button">Sort: last edited</button></div>
+          <div class="cards">
+            <div class="card"><div class="thumb"><div><i class="t"></i><i></i><i></i><i style="width:80%"></i><i></i><i></i></div></div><div class="info"><b>Master thesis</b><span>edited 2 h ago · 62 pp</span></div></div>
+            <div class="card"><div class="thumb"><div><i class="t"></i><i></i><i style="width:70%"></i><i></i><i></i><i></i></div></div><div class="info"><b>Flatland RL report</b><span>yesterday · 14 pp</span></div></div>
+            <div class="card"><div class="thumb"><div><i class="t" style="width:40%"></i><i></i><i></i><i></i><i style="width:50%"></i></div></div><div class="info"><b>Logic circuits slides</b><span>3 days ago · beamer</span></div></div>
+            <div class="new"><b>+</b><span>New from template</span></div>
+          </div>
+          <div class="cards">
+            <div class="card"><div class="thumb"><div><i class="t"></i><i></i><i></i><i></i></div></div><div class="info"><b>CV 2026</b><span>2 weeks ago · 2 pp</span></div></div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+
+</section>
+
+<section class="col" id="plan">
+  <div class="stack">
+    <span class="eyebrow">Plan</span>
+    <h2>Stack</h2>
+  </div>
+  <div class="tbl" style="margin-top:20px"><table>
+    <thead><tr><th>Layer</th><th>Choice</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Shell</td><td>Tauri 2</td><td>Small binaries, Rust backend, uses the system webview. Electron would be 10× the size.</td></tr>
+      <tr><td>Editor</td><td>CodeMirror 6</td><td>Fast with large files, good LaTeX grammar, and a Yjs binding if collaboration comes later.</td></tr>
+      <tr><td>Language</td><td>texlab (LSP)</td><td>Completion for commands, labels and citations, plus diagnostics and a document outline. Bundled, since it's one small binary.</td></tr>
+      <tr><td>Engine</td><td>System TeX Live via latexmk</td><td>pdfLaTeX, XeLaTeX and LuaLaTeX selectable per project. latexmk handles reruns and bibliography passes.</td></tr>
+      <tr><td>TeX detection</td><td>own crate</td><td>Finds TeX Live in PATH and known install folders, checks the version, and maps OS to the right install command.</td></tr>
+      <tr><td>Preview</td><td>PDF.js + SyncTeX</td><td>Re-renders without losing scroll position. SyncTeX handles click-to-source both ways.</td></tr>
+      <tr><td>Log parsing</td><td>own crate</td><td>Turns TeX logs into structured errors with file, line, plain message and a fix, including which package to install for a missing <code>.sty</code>.</td></tr>
+      <tr><td>History</td><td>git (gitoxide)</td><td>Snapshots become commits. Projects stay usable with any git tool.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 style="margin-top:48px">Shipping it publicly</h2>
+  <div class="tbl" style="margin-top:16px"><table>
+    <thead><tr><th>Platform</th><th>Channels</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Downloads</td><td>GitHub Releases, linked from lemmata.briggen.dev</td><td>The app checks for updates at lemmata.briggen.dev, which then points to GitHub. If the repo ever moves, only that redirect changes, not every installed copy.</td></tr>
+      <tr><td>Linux</td><td>AUR, AppImage, .deb/.rpm</td><td>Flathub is deferred: Flatpak can't see the host's TeX Live from inside its sandbox without <code>flatpak-spawn --host</code>.</td></tr>
+      <tr><td>macOS</td><td>Signed, notarised .dmg; own Homebrew tap</td><td>Needs an Apple Developer account (99 USD/year) for signing. The main Homebrew cask list favours GitHub-hosted, well-known projects, so start with your own <code>homebrew-tap</code> repo.</td></tr>
+      <tr><td>Windows</td><td>MSI via winget</td><td>Detects TeX Live or MiKTeX; with MiKTeX, missing packages can install on the fly. Unsigned installers trigger SmartScreen warnings. A code-signing certificate costs money; SignPath offers a free one to open-source projects.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 style="margin-top:48px">Roadmap</h2>
+  <div class="phases">
+    <div class="phase"><span class="when">Weeks 1–2 · spike</span><h3>Prove the loop</h3><ul><li>Tauri window, CodeMirror, latexmk compile on save</li><li>PDF.js preview that keeps its scroll position across recompiles</li><li>Exit test: edit to updated PDF in under 1.5 s on a 60-page thesis, on Linux, macOS and Windows</li></ul></div>
+    <div class="phase"><span class="when">Weeks 3–4 · onboarding</span><h3>TeX Live detection and setup</h3><ul><li>Detection across PATH and known install folders on all three OSes, plus MiKTeX on Windows</li><li>Install commands per distro, "Check again", choose folder manually</li><li>Missing-package prompts in the editor, with the matching distro package or <code>tlmgr</code> command</li></ul></div>
+    <div class="phase"><span class="when">Weeks 5–10 · MVP</span><h3>Usable every day</h3><ul><li>File tree, tabs, outline, texlab completion</li><li>SyncTeX both ways, readable error panel</li><li>Project library, templates, Overleaf .zip import</li><li>Git snapshots with a simple history view</li></ul></div>
+    <div class="phase"><span class="when">Weeks 11–13 · release</span><h3>Public 0.1</h3><ul><li>Signing, notarisation, auto-update through Tauri's updater</li><li>AUR, Homebrew tap and winget packages; homepage and docs on lemmata.briggen.dev</li><li>GPL-3.0 licence, contributing guide, issue templates, crash reporting that users opt into</li></ul></div>
+    <div class="phase"><span class="when">After 0.1</span><h3>Things Overleaf users miss</h3><ul><li>Bibliography manager, Zotero (Better BibTeX) sync</li><li>Local spell and grammar check with LanguageTool</li><li>Visual diff between snapshots; collaboration later if people ask</li></ul></div>
+  </div>
+
+  <h2 style="margin-top:40px">Main risks</h2>
+  <div class="tbl" style="margin-top:16px"><table>
+    <thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+    <tbody>
+      <tr><td>Onboarding drop-off</td><td>A multi-GB install is the biggest hurdle for new users. Lead with the smaller recommended set, show progress honestly, and let people browse templates while it installs.</td></tr>
+      <tr><td>Distro packaging</td><td>Debian, Arch and Fedora split TeX Live into different packages. Keep the mapping in a data file that contributors can update without touching code.</td></tr>
+      <tr><td>Webview quirks</td><td>WebKitGTK on Linux renders PDF.js more slowly. Benchmark it during the spike, before committing.</td></tr>
+      <tr><td>Old TeX Live</td><td>Ubuntu LTS can ship a TeX Live that's two years old. Warn below a minimum year rather than refusing to run.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="col" id="decide">
+  <div class="stack">
+    <span class="eyebrow">Next</span>
+    <h2>Next steps</h2>
+  </div>
+  <ol class="qs">
+    <li>Check the name<span>Trademark search for "Lemmata" in software, then create the repo under your GitHub account, reserve the crates.io name, and point lemmata.briggen.dev at a placeholder homepage.</span></li>
+    <li>Scaffold the repo<span>Tauri 2 + CodeMirror 6 workspace, GPL-3.0 licence, GitHub Actions building on Linux, macOS and Windows.</span></li>
+        <li>Run the two-week spike<span>Compile on save and live PDF preview, measured against the 1.5-second target on all three OSes.</span></li>
+  </ol>
+</section>
+
+<script>
+(function(){
+  var cards=[].slice.call(document.querySelectorAll('button.name'));
+  function apply(name){
+    document.querySelectorAll('.nm').forEach(function(el){el.textContent=name});
+    document.querySelectorAll('.cli').forEach(function(el){el.textContent=name.toLowerCase()});
+    cards.forEach(function(c){c.setAttribute('aria-pressed',c.dataset.name===name?'true':'false')});
+  }
+  cards.forEach(function(c){c.addEventListener('click',function(){
+    apply(c.dataset.name);
+    try{localStorage.setItem('pitch-name-v3',c.dataset.name)}catch(e){}
+  })});
+  var saved=null;
+  try{saved=localStorage.getItem('pitch-name-v3')}catch(e){}
+  if(saved&&cards.some(function(c){return c.dataset.name===saved}))apply(saved);
+})();
+</script>
