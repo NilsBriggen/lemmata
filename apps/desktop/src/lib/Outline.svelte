@@ -22,14 +22,15 @@
 </script>
 
 {#if headings.length === 0}
-  <p class="empty">Sections appear here as you add them.</p>
+  <p class="empty">Add a \section to see the outline here.</p>
 {:else}
   <ul>
     {#each headings as h, i (i)}
       <li>
         <button
           class:on={i === current}
-          style:padding-left="{12 + (h.level - minLevel) * 12}px"
+          class:top={h.level === minLevel}
+          style:padding-left="{14 + (h.level - minLevel) * 13}px"
           title="{h.file}:{h.line}"
           onclick={() => onJump(h.file, h.line)}
         >
@@ -42,15 +43,15 @@
 {/if}
 
 <style>
-  ul { list-style: none; margin: 0; padding: 0 0 8px; }
+  ul { list-style: none; margin: 0; padding: 0 0 10px; }
   button {
-    width: 100%; border: none; border-radius: 0; background: none; text-align: left;
-    font: 12px var(--f-body); color: var(--ink); padding-block: 3px; padding-right: 10px;
-    display: flex; gap: 8px;
+    display: flex; gap: 8px; align-items: center; width: 100%; height: 26px; border: none; border-radius: 0;
+    background: none; text-align: left; font: 12.5px var(--f-body); color: var(--chrome-muted); padding-right: 12px;
   }
+  button.top { color: var(--chrome-ink); }
+  button:hover { background: var(--chrome-hover); color: var(--chrome-ink); }
+  button.on { color: #fff; box-shadow: inset 3px 0 var(--accent-on-dark); background: var(--chrome-active); }
   .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .n { font: 10.5px var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
-  button:hover { background: color-mix(in srgb, var(--blue) 8%, transparent); }
-  button.on { color: var(--blue); box-shadow: inset 2px 0 var(--blue); background: var(--blue-soft); }
-  .empty { color: var(--muted); margin: 0; padding: 4px 14px 8px; font-size: 12px; }
+  .n { font: 10.5px var(--f-mono); color: var(--chrome-muted); font-variant-numeric: tabular-nums; opacity: 0.8; }
+  .empty { color: var(--chrome-muted); margin: 0; padding: 2px 14px 12px; font-size: 12px; }
 </style>

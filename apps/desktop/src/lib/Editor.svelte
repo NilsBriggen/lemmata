@@ -43,28 +43,38 @@
   let lspFor: ((path: string) => Extension) | null = null;
 
   const texHighlight = HighlightStyle.define([
-    { tag: [t.tagName, t.keyword], color: "var(--blue)" },
+    { tag: [t.tagName, t.keyword], color: "var(--accent)" },
     { tag: t.comment, color: "var(--muted)", fontStyle: "italic" },
     { tag: [t.atom, t.string, t.special(t.variableName)], color: "var(--atom)" },
     { tag: t.bracket, color: "var(--muted)" },
     { tag: t.number, color: "var(--ok)" },
-    { tag: t.invalid, color: "var(--mark)" },
+    { tag: t.invalid, color: "var(--error)" },
   ]);
 
   const theme = EditorView.theme({
     "&": { height: "100%", backgroundColor: "var(--code-bg)", color: "var(--ink)", fontSize: "var(--editor-font-size)" },
-    ".cm-scroller": { fontFamily: "var(--f-mono)", lineHeight: "1.6" },
-    ".cm-content": { caretColor: "var(--blue)", padding: "10px 0" },
-    ".cm-gutters": { backgroundColor: "var(--code-bg)", color: "var(--muted)", border: "none" },
-    ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "var(--blue-soft)" },
+    ".cm-scroller": { fontFamily: "var(--f-mono)", lineHeight: "1.65" },
+    ".cm-content": { caretColor: "var(--accent)", padding: "12px 0 40vh" },
+    ".cm-line": { padding: "0 16px 0 10px" },
+    ".cm-gutters": { backgroundColor: "var(--gutter)", color: "var(--faint)", border: "none", borderRight: "1px solid var(--border)" },
+    ".cm-lineNumbers .cm-gutterElement": { padding: "0 10px 0 14px", minWidth: "40px" },
+    ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--accent) 6%, transparent)" },
+    ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--ink-2)" },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-      backgroundColor: "color-mix(in srgb, var(--blue) 25%, transparent) !important",
+      backgroundColor: "color-mix(in srgb, var(--accent) 24%, transparent) !important",
     },
-    ".cm-cursor": { borderLeftColor: "var(--blue)", borderLeftWidth: "2px" },
-    ".cm-matchingBracket": { backgroundColor: "color-mix(in srgb, var(--blue) 18%, transparent)", outline: "none" },
-    ".cm-tooltip": { backgroundColor: "var(--sheet)", border: "1px solid var(--rule)", color: "var(--ink)" },
-    ".cm-panels": { backgroundColor: "var(--chrome)", color: "var(--ink)" },
+    ".cm-cursor": { borderLeftColor: "var(--accent)", borderLeftWidth: "2px" },
+    ".cm-matchingBracket": { backgroundColor: "color-mix(in srgb, var(--accent) 18%, transparent)", outline: "none" },
+    ".cm-tooltip": { backgroundColor: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink)", borderRadius: "8px", boxShadow: "var(--shadow)" },
+    ".cm-tooltip-autocomplete > ul > li": { padding: "3px 10px !important", fontFamily: "var(--f-mono)" },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "var(--accent-soft)", color: "var(--ink)" },
+    ".cm-panels": { backgroundColor: "var(--surface-2)", color: "var(--ink)", borderColor: "var(--border)" },
+    ".cm-panel.cm-search input, .cm-panel.cm-search button": { fontFamily: "var(--f-body)" },
+    ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy var(--error)", textUnderlineOffset: "3px" },
+    ".cm-lintRange-warning": { backgroundImage: "none", textDecoration: "underline wavy var(--warn)", textUnderlineOffset: "3px" },
+    ".cm-lint-marker": { width: "0.8em", height: "0.8em" },
   });
+
 
   const pasteHandler = EditorView.domEventHandlers({
     paste(e, v) {

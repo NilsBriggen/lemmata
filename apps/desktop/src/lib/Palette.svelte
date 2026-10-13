@@ -77,12 +77,13 @@
 </div>
 
 <style>
-  .backdrop { position: fixed; inset: 0; background: rgba(10, 15, 20, 0.3); display: grid; place-items: start center; padding: 12vh 24px 24px; z-index: 30; }
-  .palette { width: min(600px, 100%); background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; box-shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.5); }
-  input { width: 100%; border: none; border-bottom: 1px solid var(--rule); padding: 12px 14px; font: 14px var(--f-body); background: var(--sheet); color: var(--ink); outline: none; }
-  ul { list-style: none; margin: 0; padding: 4px; max-height: 50vh; overflow: auto; }
-  button { width: 100%; display: flex; justify-content: space-between; gap: 12px; border: none; background: none; text-align: left; padding: 7px 10px; font-weight: 400; border-radius: 5px; }
-  button.on { background: var(--blue-soft); }
-  kbd { font: 11px var(--f-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
-  .none { padding: 10px; color: var(--muted); }
+  .backdrop { position: fixed; inset: 0; background: rgba(12, 17, 22, 0.32); display: grid; place-items: start center; padding: 12vh 24px 24px; z-index: 55; animation: fade-in 0.1s ease; }
+  .palette { width: min(620px, 100%); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow-lg); animation: pop 0.12s var(--ease); }
+  input { width: 100%; border: none; border-bottom: 1px solid var(--border); padding: 14px 16px; font: 15px var(--f-body); background: var(--surface); color: var(--ink); outline: none; }
+  input:focus-visible { box-shadow: none; }
+  ul { list-style: none; margin: 0; padding: 6px; max-height: 52vh; overflow: auto; }
+  button { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; border: none; background: none; text-align: left; padding: 8px 10px; border-radius: var(--r); color: var(--ink); }
+  button.on { background: var(--accent-soft); }
+  kbd { font: 11px var(--f-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; border: none; background: none; padding: 0; }
+  .none { padding: 12px; color: var(--muted); }
 </style>

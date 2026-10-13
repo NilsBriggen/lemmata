@@ -2,7 +2,13 @@
   // App-wide preferences (lemmata.toml holds the per-project ones).
   import { open } from "@tauri-apps/plugin-dialog";
   import { getVersion } from "@tauri-apps/api/app";
-  import { settings, updateSettings, type Settings } from "./settings.svelte";
+  import Sun from "@lucide/svelte/icons/sun";
+  import Moon from "@lucide/svelte/icons/moon";
+  import Monitor from "@lucide/svelte/icons/monitor";
+  import FolderOpen from "@lucide/svelte/icons/folder-open";
+  import Modal from "./ui/Modal.svelte";
+  import { settings, updateSettings, DEFAULTS, type Settings } from "./settings.svelte";
+  import { LANGUAGES } from "./spell/service";
   import type { Detection } from "./api";
 
   interface Props {
@@ -38,108 +44,104 @@
 
   const distribution = $derived.by(() => {
     const d = detection?.distribution;
-    if (!d || d.name === "unknown") return "Unknown TeX distribution";
+    if (!d || d.name === "unknown") return "No TeX distribution found";
     return d.name === "texlive" ? `TeX Live ${d.year ?? ""}` : `MiKTeX ${d.version ?? ""}`;
   });
 </script>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onClose()}>
-  <div class="dialog" role="dialog" aria-labelledby="prefs-title">
-    <h2 id="prefs-title">Preferences</h2>
+<Modal title="Preferences" subtitle="These apply to every project." width={600} {onClose}>
+  <section>
+    <h3>Appearance</h3>
+    <div class="row">
+      <span>Theme</span>
+      <div class="segmented" role="group" aria-label="Theme">
+        <button aria-pressed={settings.theme === "system"} onclick={() => set("theme", "system")}><Monitor size={15} /> System</button>
+        <button aria-pressed={settings.theme === "light"} onclick={() => set("theme", "light")}><Sun size={15} /> Light</button>
+        <button aria-pressed={settings.theme === "dark"} onclick={() => set("theme", "dark")}><Moon size={15} /> Dark</button>
+      </div>
+    </div>
+    <div class="row">
+      <label for="pref-font">Editor text size</label>
+      <select id="pref-font" class="input" value={String(settings.fontSize)} onchange={(e) => set("fontSize", Number(e.currentTarget.value))}>
+        {#each [11, 12, 13, 14, 15, 16, 18, 20] as n (n)}<option value={String(n)}>{n} px</option>{/each}
+      </select>
+    </div>
+    <label class="check" for="pref-pdfdark">
+      <input id="pref-pdfdark" type="checkbox" checked={settings.pdfDark} onchange={(e) => set("pdfDark", e.currentTarget.checked)} />
+      Dark PDF pages when the app is dark
+    </label>
+  </section>
 
-    <section>
-      <h3>Appearance</h3>
-      <div class="field">
-        <label for="pref-theme">Theme</label>
-        <select id="pref-theme" value={settings.theme} onchange={(e) => set("theme", e.currentTarget.value as Settings["theme"])}>
-          <option value="system">Same as the system</option>
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
+  <section>
+    <h3>Editing</h3>
+    <div class="row">
+      <span>Compile</span>
+      <div class="segmented" role="group" aria-label="When to compile">
+        <button aria-pressed={settings.autosaveMs > 0} onclick={() => set("autosaveMs", DEFAULTS.autosaveMs)}>As I type</button>
+        <button aria-pressed={settings.autosaveMs === 0} onclick={() => set("autosaveMs", 0)}>When I save</button>
       </div>
-      <div class="field">
-        <label for="pref-font">Editor text size</label>
-        <select id="pref-font" value={String(settings.fontSize)} onchange={(e) => set("fontSize", Number(e.currentTarget.value))}>
-          {#each [11, 12, 13, 14, 15, 16, 18, 20] as n (n)}<option value={String(n)}>{n} px</option>{/each}
-        </select>
+    </div>
+    <div class="row">
+      <span>Keyboard</span>
+      <div class="segmented" role="group" aria-label="Keyboard">
+        <button aria-pressed={settings.keymap === "default"} onclick={() => set("keymap", "default")}>Standard</button>
+        <button aria-pressed={settings.keymap === "vim"} onclick={() => set("keymap", "vim")}>Vim</button>
       </div>
-      <label class="check" for="pref-pdfdark">
-        <input id="pref-pdfdark" type="checkbox" checked={settings.pdfDark} onchange={(e) => set("pdfDark", e.currentTarget.checked)} />
-        Show the PDF with dark pages in dark mode
-      </label>
-    </section>
+    </div>
+    <div class="row">
+      <label for="pref-spell">Spell check</label>
+      <select id="pref-spell" class="input" value={settings.spellDefault} onchange={(e) => set("spellDefault", e.currentTarget.value)}>
+        <option value="auto">Match the document's language</option>
+        {#each Object.entries(LANGUAGES) as [code, l] (code)}<option value={code}>{l.label}</option>{/each}
+        <option value="off">Off</option>
+      </select>
+    </div>
+  </section>
 
-    <section>
-      <h3>Editing</h3>
-      <div class="field">
-        <label for="pref-save">Save and build</label>
-        <select id="pref-save" value={String(settings.autosaveMs)} onchange={(e) => set("autosaveMs", Number(e.currentTarget.value))}>
-          <option value="300">Right after you stop typing (0.3 s)</option>
-          <option value="600">Shortly after you stop typing (0.6 s)</option>
-          <option value="1500">After a pause (1.5 s)</option>
-          <option value="0">Only when I press Ctrl+S</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="pref-keymap">Keyboard</label>
-        <select id="pref-keymap" value={settings.keymap} onchange={(e) => set("keymap", e.currentTarget.value as Settings["keymap"])}>
-          <option value="default">Standard</option>
-          <option value="vim">Vim</option>
-        </select>
-      </div>
-    </section>
+  <section>
+    <h3>TeX</h3>
+    <p class="muted">{distribution}{detection?.bin_dir ? ` in ${detection.bin_dir}` : ""}</p>
+    <div class="buttons">
+      <button class="btn" onclick={chooseTex}><FolderOpen size={15} /> Choose TeX folder…</button>
+      {#if settings.texDir}
+        <button class="btn ghost" onclick={async () => { await updateSettings({ texDir: null }); onTexDir(null); }}>Find automatically</button>
+      {/if}
+    </div>
+  </section>
 
-    <section>
-      <h3>TeX</h3>
-      <p class="muted">{distribution}{detection?.bin_dir ? ` in ${detection.bin_dir}` : ""}</p>
-      <div class="row">
-        <button onclick={chooseTex}>Choose TeX folder…</button>
-        {#if settings.texDir}
-          <button onclick={async () => { await updateSettings({ texDir: null }); onTexDir(null); }}>Find automatically</button>
-        {/if}
+  <section>
+    <h3>Updates</h3>
+    <label class="check" for="pref-updates">
+      <input id="pref-updates" type="checkbox" checked={settings.checkForUpdates} onchange={(e) => set("checkForUpdates", e.currentTarget.checked)} />
+      Check for updates automatically
+    </label>
+    <div class="row">
+      <span>Channel</span>
+      <div class="segmented" role="group" aria-label="Update channel">
+        <button aria-pressed={settings.updateChannel === "stable"} onclick={() => set("updateChannel", "stable")}>Stable</button>
+        <button aria-pressed={settings.updateChannel === "beta"} onclick={() => set("updateChannel", "beta")}>Beta</button>
       </div>
-    </section>
+    </div>
+    <div class="buttons">
+      <button class="btn" disabled={checking} onclick={checkNow}>{checking ? "Checking…" : "Check now"}</button>
+      {#if updateMessage}<span class="muted">{updateMessage}</span>{/if}
+    </div>
+  </section>
 
-    <section>
-      <h3>Updates</h3>
-      <label class="check" for="pref-updates">
-        <input id="pref-updates" type="checkbox" checked={settings.checkForUpdates} onchange={(e) => set("checkForUpdates", e.currentTarget.checked)} />
-        Check for updates automatically
-      </label>
-      <div class="field">
-        <label for="pref-channel">Channel</label>
-        <select id="pref-channel" value={settings.updateChannel} onchange={(e) => set("updateChannel", e.currentTarget.value as Settings["updateChannel"])}>
-          <option value="stable">Stable releases</option>
-          <option value="beta">Betas: new features sooner, rougher edges</option>
-        </select>
-      </div>
-      <div class="row">
-        <button disabled={checking} onclick={checkNow}>{checking ? "Checking…" : "Check now"}</button>
-        {#if updateMessage}<span class="muted">{updateMessage}</span>{/if}
-      </div>
-    </section>
-
-    <footer>
-      <span class="muted">Lemmata {version}</span>
-      <button class="primary" onclick={onClose}>Done</button>
-    </footer>
-  </div>
-</div>
+  {#snippet footer()}
+    <span class="version">Lemmata {version}</span>
+    <button class="btn primary" onclick={onClose}>Done</button>
+  {/snippet}
+</Modal>
 
 <style>
-  .backdrop { position: fixed; inset: 0; background: rgba(10, 15, 20, 0.45); display: grid; place-items: center; padding: 24px; z-index: 10; }
-  .dialog {
-    width: min(560px, 100%); max-height: 100%; overflow: auto; background: var(--sheet); border: 1px solid var(--rule);
-    border-radius: 8px; padding: 22px 24px; display: flex; flex-direction: column; gap: 18px;
-  }
-  h2 { font: 400 22px var(--f-display); margin: 0; }
-  h3 { font: 500 11px var(--f-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
-  section { display: flex; flex-direction: column; gap: 8px; }
-  .field { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 10px; }
-  .field label { color: var(--ink); }
-  select { padding: 5px 8px; font-size: 13px; }
-  .check { display: flex; gap: 8px; align-items: center; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  section { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+  section:last-of-type { border-bottom: none; padding-bottom: 0; }
+  h3 { font: 600 11px var(--f-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 4px 0 0; }
+  .row { display: grid; grid-template-columns: 140px 1fr; align-items: center; gap: 12px; }
+  .row .input { max-width: 300px; }
+  .row .segmented { justify-self: start; }
+  .buttons { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .muted { color: var(--muted); margin: 0; }
-  footer { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--rule); padding-top: 14px; }
+  .version { color: var(--faint); font-size: 12px; margin-right: auto; }
 </style>

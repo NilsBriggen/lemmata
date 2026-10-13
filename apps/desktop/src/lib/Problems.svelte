@@ -1,71 +1,130 @@
 <script lang="ts">
-  import type { Diagnostic } from "./api";
+  // Errors, warnings and layout notes from the last build, as cards; plus the
+  // full TeX log. Shown in place of the PDF, like Overleaf's logs view.
+  import CircleAlert from "@lucide/svelte/icons/circle-alert";
+  import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
+  import Info from "@lucide/svelte/icons/info";
+  import CircleCheck from "@lucide/svelte/icons/circle-check";
+  import { api, errorMessage, type Diagnostic } from "./api";
   import CommandBox from "./CommandBox.svelte";
 
   interface Props {
     diagnostics: Diagnostic[];
-    showInfo: boolean;
+    /** Changes after every build, so the raw log reloads. */
+    buildId: number;
     onGoto: (file: string, line: number) => void;
   }
-  let { diagnostics, showInfo = $bindable(), onGoto }: Props = $props();
+  let { diagnostics, buildId, onGoto }: Props = $props();
 
-  const visible = $derived(diagnostics.filter((d) => showInfo || d.severity !== "info"));
-  const infoCount = $derived(diagnostics.filter((d) => d.severity === "info").length);
+  let tab = $state<"problems" | "log">("problems");
+  let showInfo = $state(false);
+  let log = $state<string | null>(null);
+  let logError = $state<string | null>(null);
 
-  function location(d: Diagnostic) {
-    if (!d.file) return "";
-    const f = d.file.replace(/^\.\//, "");
-    return d.line ? `${f}:${d.line}` : f;
-  }
+  const errors = $derived(diagnostics.filter((d) => d.severity === "error"));
+  const warnings = $derived(diagnostics.filter((d) => d.severity === "warning"));
+  const infos = $derived(diagnostics.filter((d) => d.severity === "info"));
+  const shown = $derived([...errors, ...warnings, ...(showInfo ? infos : [])]);
+
+  $effect(() => {
+    void buildId;
+    if (tab !== "log") return;
+    api.readLog().then((t) => ((log = t), (logError = null))).catch((e) => (logError = errorMessage(e)));
+  });
+
+  const file = (d: Diagnostic) => d.file?.replace(/^\.\//, "") ?? null;
 </script>
 
-<div class="problems">
-  {#if visible.length === 0}
-    <p class="none">No errors or warnings.</p>
-  {/if}
-  {#each visible as d, i (i)}
-    <button
-      class="row {d.severity}"
-      disabled={!d.file || !d.line}
-      onclick={() => d.file && d.line && onGoto(d.file.replace(/^\.\//, ""), d.line)}
-    >
-      <b>{d.severity}</b>
-      <span class="msg">
-        {d.message}
-        {#if d.fix}<span class="hint">{d.fix.explanation}</span>{:else if d.hint}<span class="hint">{d.hint}</span>{/if}
-      </span>
-      <span class="loc">{location(d)}</span>
+<div class="logs">
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected={tab === "problems"} class:on={tab === "problems"} onclick={() => (tab = "problems")}>
+      Problems
+      {#if errors.length}<span class="badge error">{errors.length}</span>{/if}
+      {#if warnings.length}<span class="badge warn">{warnings.length}</span>{/if}
     </button>
-    {#if d.fix?.command && d.kind.type === "missing-file"}
-      <div class="fix">
-        <CommandBox command={d.fix.command} install={{ what: "package", file: d.kind.name }} />
-        <p>After installing, press Recompile.</p>
-      </div>
-    {/if}
-  {/each}
-  {#if infoCount > 0}
-    <label class="toggle"><input type="checkbox" bind:checked={showInfo} /> Show {infoCount} layout notes (overfull and underfull boxes)</label>
+    <button role="tab" aria-selected={tab === "log"} class:on={tab === "log"} onclick={() => (tab = "log")}>Raw log</button>
+  </div>
+
+  {#if tab === "problems"}
+    <div class="list">
+      {#if !errors.length && !warnings.length}
+        <div class="clear">
+          <CircleCheck size={28} />
+          <p><b>No errors or warnings.</b></p>
+          {#if infos.length}<p>{infos.length} layout note{infos.length === 1 ? "" : "s"} about overfull or underfull lines below.</p>{/if}
+        </div>
+      {/if}
+      {#each shown as d, i (i)}
+        <article class="card {d.severity}">
+          <header>
+            <span class="ico">
+              {#if d.severity === "error"}<CircleAlert size={16} />{:else if d.severity === "warning"}<TriangleAlert size={16} />{:else}<Info size={16} />{/if}
+            </span>
+            <span class="msg">{d.message}</span>
+            {#if file(d)}
+              <button class="loc" disabled={!d.line} onclick={() => d.line && onGoto(file(d)!, d.line)} title="Go to this line">
+                {file(d)}{d.line ? `:${d.line}` : ""}
+              </button>
+            {/if}
+          </header>
+          {#if d.fix}
+            <p class="hint">{d.fix.explanation}</p>
+            {#if d.fix.command && d.kind.type === "missing-file"}
+              <CommandBox command={d.fix.command} install={{ what: "package", file: d.kind.name }} />
+              <p class="after">After installing, recompile.</p>
+            {/if}
+          {:else if d.hint}
+            <p class="hint">{d.hint}</p>
+          {/if}
+        </article>
+      {/each}
+      {#if infos.length}
+        <label class="check toggle"><input type="checkbox" bind:checked={showInfo} /> Show {infos.length} layout note{infos.length === 1 ? "" : "s"}</label>
+      {/if}
+    </div>
+  {:else}
+    <div class="raw">
+      {#if logError}<p class="muted">{logError}</p>{:else if log === null}<p class="muted">Loading…</p>{:else}<pre>{log}</pre>{/if}
+    </div>
   {/if}
 </div>
 
 <style>
-  .problems { overflow: auto; max-height: 100%; font-size: 12px; background: var(--sheet); }
-  .none { color: var(--muted); padding: 8px 12px; margin: 0; }
-  .row {
-    display: flex; gap: 10px; align-items: baseline; width: 100%;
-    border: none; border-bottom: 1px solid var(--rule); border-radius: 0;
-    background: none; text-align: left; padding: 6px 12px; font: 12px var(--f-body); color: var(--ink);
+  .logs { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--surface-2); }
+  .tabs { display: flex; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid var(--border); background: var(--surface); flex: none; }
+  .tabs button {
+    display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
+    border: none; background: none; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    font: 500 13px var(--f-body); color: var(--muted);
   }
-  .row:disabled { cursor: default; opacity: 1; }
-  .row:hover:not(:disabled) { background: var(--blue-soft); }
-  .row b { font: 500 11px var(--f-mono); min-width: 58px; }
-  .error b { color: var(--mark); }
-  .warning b { color: var(--warn); }
-  .info b { color: var(--muted); }
-  .msg { flex: 1; min-width: 0; }
-  .hint { display: block; color: var(--muted); }
-  .loc { font-family: var(--f-mono); color: var(--muted); white-space: nowrap; }
-  .fix { padding: 4px 12px 10px 80px; border-bottom: 1px solid var(--rule); }
-  .fix p { margin: 6px 0 0; color: var(--muted); }
-  .toggle { display: flex; gap: 6px; align-items: center; padding: 6px 12px; color: var(--muted); }
+  .tabs button.on { color: var(--ink); border-bottom-color: var(--accent); }
+  .list { overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--faint);
+    border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+  }
+  .card.error { border-left-color: var(--error); }
+  .card.warning { border-left-color: var(--warn); }
+  .card header { display: flex; align-items: flex-start; gap: 8px; }
+  .ico { display: inline-flex; padding-top: 1px; color: var(--faint); }
+  .error .ico { color: var(--error); }
+  .warning .ico { color: var(--warn); }
+  .msg { flex: 1; min-width: 0; font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
+  .loc {
+    flex: none; border: 1px solid var(--border); background: var(--surface-2); border-radius: var(--r-sm);
+    font: 11.5px var(--f-mono); color: var(--accent); padding: 1px 6px; max-width: 45%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .loc:hover:not(:disabled) { border-color: var(--accent); }
+  .loc:disabled { color: var(--muted); }
+  .hint { margin: 0 0 0 24px; color: var(--muted); }
+  .after { margin: 0 0 0 24px; color: var(--muted); font-size: 12px; }
+  .card :global(.box) { margin-left: 24px; }
+  .clear { display: flex; flex-direction: column; align-items: center; text-align: center; color: var(--ok); padding: 36px 16px 16px; gap: 2px; }
+  .clear p { margin: 0; color: var(--muted); }
+  .clear b { color: var(--ink); }
+  .toggle { color: var(--muted); padding: 4px 2px; font-size: 12px; }
+  .raw { flex: 1; overflow: auto; background: var(--surface); }
+  pre { margin: 0; padding: 12px 14px; font: 12px/1.5 var(--f-mono); color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .muted { color: var(--muted); padding: 12px 14px; margin: 0; }
 </style>

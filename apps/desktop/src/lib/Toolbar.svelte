@@ -1,0 +1,150 @@
+<script lang="ts" module>
+  export interface MenuAction {
+    label: string;
+    hint?: string;
+    run: () => void;
+    /** Draw a line above this item. */
+    separator?: boolean;
+  }
+</script>
+
+<script lang="ts">
+  // The editor's top bar, after Overleaf's: menu, project, layout switch,
+  // and one prominent Recompile button with its options.
+  import Menu from "@lucide/svelte/icons/menu";
+  import PanelLeft from "@lucide/svelte/icons/panel-left";
+  import Columns2 from "@lucide/svelte/icons/columns-2";
+  import FileCode from "@lucide/svelte/icons/file-code";
+  import FileText from "@lucide/svelte/icons/file-text";
+  import History from "@lucide/svelte/icons/rotate-ccw-clock";
+  import Settings from "@lucide/svelte/icons/settings";
+  import RefreshCw from "@lucide/svelte/icons/refresh-cw";
+  import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import Check from "@lucide/svelte/icons/check";
+  import DropMenu from "./ui/DropMenu.svelte";
+  import type { Engine } from "./api";
+
+  interface Props {
+    projectName: string;
+    building: boolean;
+    layout: "split" | "editor" | "pdf";
+    sidebarOpen: boolean;
+    historyOpen: boolean;
+    autoCompile: boolean;
+    engine: Engine;
+    menu: MenuAction[];
+    onLayout: (l: "split" | "editor" | "pdf") => void;
+    onToggleSidebar: () => void;
+    onHistory: () => void;
+    onProjectSettings: () => void;
+    onRecompile: () => void;
+    onStop: () => void;
+    onAutoCompile: (on: boolean) => void;
+    onEngine: (e: Engine) => void;
+    onLibrary: () => void;
+  }
+  let p: Props = $props();
+
+  let menuBtn = $state<HTMLButtonElement>();
+  let compileBtn = $state<HTMLButtonElement>();
+  let open = $state<null | "menu" | "compile">(null);
+
+  const engines: [Engine, string][] = [
+    ["pdflatex", "pdfLaTeX"],
+    ["xelatex", "XeLaTeX"],
+    ["lualatex", "LuaLaTeX"],
+  ];
+</script>
+
+<header class="toolbar chrome">
+  <div class="left">
+    <button class="btn icon" bind:this={menuBtn} aria-label="Menu" aria-expanded={open === "menu"} onclick={() => (open = open === "menu" ? null : "menu")}>
+      <Menu size={18} />
+    </button>
+    <button class="brand" onclick={p.onLibrary} title="Back to all projects">Lemmata</button>
+    <span class="sep">/</span>
+    <span class="project" title={p.projectName}>{p.projectName}</span>
+  </div>
+
+  <div class="center">
+    <button class="btn icon" class:on={p.sidebarOpen} aria-pressed={p.sidebarOpen} aria-label="Show files and outline" title="Files and outline" onclick={p.onToggleSidebar}>
+      <PanelLeft size={17} />
+    </button>
+    <div class="segmented" role="group" aria-label="Layout">
+      <button aria-pressed={p.layout === "editor"} title="Editor only" onclick={() => p.onLayout("editor")}><FileCode size={15} /> Editor</button>
+      <button aria-pressed={p.layout === "split"} title="Editor and PDF" onclick={() => p.onLayout("split")}><Columns2 size={15} /> Both</button>
+      <button aria-pressed={p.layout === "pdf"} title="PDF only" onclick={() => p.onLayout("pdf")}><FileText size={15} /> PDF</button>
+    </div>
+  </div>
+
+  <div class="right">
+    <button class="btn" class:on={p.historyOpen} aria-pressed={p.historyOpen} onclick={p.onHistory}><History size={16} /> History</button>
+    <button class="btn icon" aria-label="Project settings" title="Project settings" onclick={p.onProjectSettings}><Settings size={17} /></button>
+    <div class="compile">
+      <button class="btn primary main" onclick={p.building ? p.onStop : p.onRecompile} title={p.building ? "Stop compiling" : "Recompile (Ctrl+Enter)"}>
+        <span class:spin={p.building}><RefreshCw size={15} /></span>
+        {p.building ? "Compiling…" : "Recompile"}
+      </button>
+      <button class="btn primary caret" bind:this={compileBtn} aria-label="Compile options" aria-expanded={open === "compile"} onclick={() => (open = open === "compile" ? null : "compile")}>
+        <ChevronDown size={15} />
+      </button>
+    </div>
+  </div>
+</header>
+
+{#if open === "menu" && menuBtn}
+  <DropMenu anchor={menuBtn} onClose={() => (open = null)}>
+    {#each p.menu as item (item.label)}
+      {#if item.separator}<hr />{/if}
+      <button role="menuitem" onclick={item.run}>{item.label}{#if item.hint}<span class="hint">{item.hint}</span>{/if}</button>
+    {/each}
+  </DropMenu>
+{/if}
+
+{#if open === "compile" && compileBtn}
+  <DropMenu anchor={compileBtn} align="end" onClose={() => (open = null)}>
+    <div class="heading">Auto compile</div>
+    <button role="menuitemradio" aria-checked={p.autoCompile} onclick={() => p.onAutoCompile(true)}>
+      <span class="tick">{#if p.autoCompile}<Check size={14} />{/if}</span> On, as I type
+    </button>
+    <button role="menuitemradio" aria-checked={!p.autoCompile} onclick={() => p.onAutoCompile(false)}>
+      <span class="tick">{#if !p.autoCompile}<Check size={14} />{/if}</span> Off, when I save
+    </button>
+    <hr />
+    <div class="heading">Compiler</div>
+    {#each engines as [id, label] (id)}
+      <button role="menuitemradio" aria-checked={p.engine === id} onclick={() => p.onEngine(id)}>
+        <span class="tick">{#if p.engine === id}<Check size={14} />{/if}</span> {label}
+      </button>
+    {/each}
+    {#if p.building}
+      <hr />
+      <button role="menuitem" onclick={p.onStop}>Stop compiling</button>
+    {/if}
+  </DropMenu>
+{/if}
+
+<style>
+  .toolbar {
+    display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px;
+    height: 46px; padding: 0 10px; background: var(--chrome); color: var(--chrome-ink);
+    border-bottom: 1px solid var(--chrome-border); flex: none;
+  }
+  .left, .right, .center { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .right { justify-content: flex-end; }
+  .brand {
+    border: none; background: none; padding: 2px 4px; border-radius: var(--r-sm);
+    font: 17px var(--f-display); color: var(--chrome-ink);
+  }
+  .brand:hover { color: #fff; }
+  .sep { color: var(--chrome-muted); }
+  .project { font-weight: 500; color: var(--chrome-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .compile { display: flex; margin-left: 4px; }
+  .compile .main { border-top-right-radius: 0; border-bottom-right-radius: 0; padding: 0 14px; min-width: 128px; }
+  .compile .caret { border-top-left-radius: 0; border-bottom-left-radius: 0; width: 30px; padding: 0; border-left: 1px solid rgba(255, 255, 255, 0.25); }
+  .compile span { display: inline-flex; }
+  .tick { width: 16px; display: inline-flex; color: var(--accent); }
+  @media (max-width: 1100px) {
+    .segmented button { font-size: 0; gap: 0; padding: 0 8px; }
+  }
+</style>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { recentProjects, rememberProject } from "./recent";
+import { forgetProject, recentEntries, recentProjects, rememberProject, rememberProjects } from "./recent";
 
 function memoryStorage() {
   const data = new Map<string, string>();
@@ -12,10 +12,17 @@ function memoryStorage() {
 describe("recent projects", () => {
   it("puts the newest first without duplicates", () => {
     const s = memoryStorage();
-    rememberProject("/a", s);
-    rememberProject("/b", s);
-    expect(rememberProject("/a", s)).toEqual(["/a", "/b"]);
+    rememberProject("/a", s, 1);
+    rememberProject("/b", s, 2);
+    rememberProject("/a", s, 3);
     expect(recentProjects(s)).toEqual(["/a", "/b"]);
+    expect(recentEntries(s)[0]).toEqual({ path: "/a", lastOpened: 3 });
+  });
+
+  it("reads the old format of plain paths", () => {
+    const s = memoryStorage();
+    s.setItem("lemmata.recent", JSON.stringify(["/old"]));
+    expect(recentEntries(s)).toEqual([{ path: "/old", lastOpened: 0 }]);
   });
 
   it("survives corrupt storage", () => {
@@ -24,10 +31,13 @@ describe("recent projects", () => {
     expect(recentProjects(s)).toEqual([]);
   });
 
-  it("keeps at most ten", () => {
+  it("adds several projects at once, keeping their order", () => {
     const s = memoryStorage();
-    for (let i = 0; i < 15; i++) rememberProject(`/p${i}`, s);
-    expect(recentProjects(s)).toHaveLength(10);
-    expect(recentProjects(s)[0]).toBe("/p14");
+    rememberProject("/x", s, 1);
+    rememberProjects(["/p1", "/p2"], s, 2);
+    expect(recentProjects(s)).toEqual(["/p1", "/p2", "/x"]);
+    expect(recentProjects(s)).not.toContain(undefined);
+    forgetProject("/p1", s);
+    expect(recentProjects(s)).toEqual(["/p2", "/x"]);
   });
 });

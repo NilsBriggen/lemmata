@@ -3,6 +3,8 @@
   // reference by DOI or arXiv ID.
   import { onMount, tick } from "svelte";
   import { api, errorMessage, type BibEntry } from "./api";
+  import Modal from "./ui/Modal.svelte";
+  import BookOpen from "@lucide/svelte/icons/book-open";
 
   interface Props {
     onInsert: (keys: string[]) => void;
@@ -102,12 +104,10 @@
   }
 </script>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onClose()}>
-  <div class="dialog" role="dialog" aria-labelledby="cite-title">
+<Modal title="Insert citation" subtitle="Search your bibliography by author, title, year or key." width={700} top {onClose}>
     <div class="head">
-      <h2 id="cite-title">Insert citation</h2>
       {#if zotero !== "unavailable"}
-        <button onclick={onZotero} disabled={zotero === "starting"} title="Opens Zotero's citation picker">
+        <button class="btn sm" onclick={onZotero} disabled={zotero === "starting"} title="Opens Zotero's citation picker"><BookOpen size={14} />
           {zotero === "starting" ? "Zotero is starting…" : "Cite from Zotero…"}
         </button>
       {/if}
@@ -154,44 +154,40 @@
         <select aria-label="Bibliography file" bind:value={addFile}>
           {#each files.length ? files : ["refs.bib"] as f (f)}<option value={f}>{f}</option>{/each}
         </select>
-        <button type="submit" disabled={adding || !addId.trim()}>{adding ? "Looking up…" : "Add"}</button>
+        <button class="btn" type="submit" disabled={adding || !addId.trim()}>{adding ? "Looking up…" : "Add"}</button>
       </div>
       {#if addMessage}<p class:error={!addMessage.ok} class="msg">{addMessage.text}</p>{/if}
       <p class="muted small">Looks the reference up on doi.org. This is the only time Lemmata goes online for references.</p>
     </form>
-  </div>
-</div>
+  
+</Modal>
 
 <style>
-  .backdrop { position: fixed; inset: 0; background: rgba(10, 15, 20, 0.45); display: grid; place-items: start center; padding: 10vh 24px 24px; z-index: 10; }
-  .dialog {
-    width: min(680px, 100%); max-height: 80vh; background: var(--sheet); border: 1px solid var(--rule);
-    border-radius: 8px; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px;
-  }
-  h2 { font: 400 20px var(--f-display); margin: 0; }
-  .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .head { display: flex; justify-content: flex-end; margin-top: -6px; }
+  .head:empty { display: none; }
   input:not([type="checkbox"]), select {
-    font: 13px var(--f-body); color: var(--ink); background: var(--sheet); border: 1px solid var(--rule);
-    border-radius: 5px; padding: 7px 10px;
+    font: 13px var(--f-body); color: var(--ink); background: var(--surface); border: 1px solid var(--border-strong);
+    border-radius: var(--r); padding: 7px 10px;
   }
+  input:not([type="checkbox"]):focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
   #cite-search { font-size: 14px; }
-  ul { list-style: none; margin: 0; padding: 0; overflow: auto; min-height: 80px; flex: 1; border: 1px solid var(--rule); border-radius: 6px; }
+  ul { list-style: none; margin: 0; padding: 0; overflow: auto; min-height: 80px; max-height: 42vh; border: 1px solid var(--border); border-radius: var(--r-lg); }
   li.muted { padding: 10px 12px; }
-  li button { width: 100%; text-align: left; border: none; border-radius: 0; border-bottom: 1px solid var(--rule); background: none; padding: 7px 12px; display: flex; flex-direction: column; gap: 2px; font-weight: 400; }
-  li button.on { background: var(--blue-soft); }
+  li button { width: 100%; text-align: left; border: none; border-radius: 0; border-bottom: 1px solid var(--border); background: none; padding: 7px 12px; display: flex; flex-direction: column; gap: 2px; font-weight: 400; }
+  li button.on { background: var(--accent-soft); }
   .top { display: flex; gap: 8px; align-items: center; }
   .year { color: var(--muted); }
   code { margin-left: auto; font-size: 11px; color: var(--muted); }
   .title { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hint { margin: 0; color: var(--muted); font-size: 12px; }
-  kbd { font-size: 11px; border: 1px solid var(--rule); border-radius: 3px; padding: 0 4px; }
-  .link { border: none; background: none; color: var(--blue); padding: 0; text-decoration: underline; font-weight: 400; }
-  .add { border-top: 1px solid var(--rule); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  kbd { font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+  .link { border: none; background: none; color: var(--accent); padding: 0; text-decoration: underline; font-weight: 400; }
+  .add { border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
   .add label { font: 500 11px var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
   .row { display: flex; gap: 8px; }
   .row input { flex: 1; min-width: 0; }
   .msg { margin: 0; color: var(--ok); }
-  .msg.error { color: var(--mark); }
+  .msg.error { color: var(--error); }
   .muted { color: var(--muted); margin: 0; }
   .small { font-size: 11px; }
 </style>

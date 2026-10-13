@@ -3,11 +3,18 @@
   import { api, errorMessage, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
   import Onboarding from "./lib/Onboarding.svelte";
   import Library from "./lib/Library.svelte";
-  import Tree from "./lib/Tree.svelte";
   import Editor from "./lib/Editor.svelte";
-  import PdfView from "./lib/PdfView.svelte";
-  import Problems from "./lib/Problems.svelte";
-  import Outline from "./lib/Outline.svelte";
+  import PdfPane from "./lib/PdfPane.svelte";
+  import Toolbar, { type MenuAction } from "./lib/Toolbar.svelte";
+  import Sidebar from "./lib/Sidebar.svelte";
+  import Splitter from "./lib/ui/Splitter.svelte";
+  import Modal from "./lib/ui/Modal.svelte";
+  import Welcome from "./lib/Welcome.svelte";
+  import X from "@lucide/svelte/icons/x";
+  import CircleCheck from "@lucide/svelte/icons/circle-check";
+  import Info from "@lucide/svelte/icons/info";
+  import Package from "@lucide/svelte/icons/package";
+  import Sparkles from "@lucide/svelte/icons/sparkles";
   import ProjectSettings from "./lib/ProjectSettings.svelte";
   import HistoryPanel from "./lib/HistoryPanel.svelte";
   import Preferences from "./lib/Preferences.svelte";
@@ -15,20 +22,20 @@
   import Palette, { type PaletteItem } from "./lib/Palette.svelte";
   import SearchPanel from "./lib/SearchPanel.svelte";
   import FileActions from "./lib/FileActions.svelte";
-  import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+  import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { loadSession, saveSession } from "./lib/session";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getVersion } from "@tauri-apps/api/app";
   import { errorSummary, issueUrl, systemSummary } from "./lib/report";
   import { listen } from "@tauri-apps/api/event";
   import { relaunch } from "@tauri-apps/plugin-process";
-  import { loadSettings, settings } from "./lib/settings.svelte";
+  import { loadSettings, settings, updateSettings, DEFAULTS } from "./lib/settings.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { setMathMacros } from "./lib/writing/math";
   import { figureSnippet } from "./lib/writing/table";
   import { startLanguageServer, type LanguageServer } from "./lib/lsp";
   import { detectLanguage, spell } from "./lib/spell/service";
-  import { forgetProject, recentProjects, rememberProject } from "./lib/recent";
+  import { forgetProject, recentEntries, rememberProject, rememberProjects, type Recent } from "./lib/recent";
 
   const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -36,7 +43,9 @@
   let checking = $state(false);
   let project = $state<ProjectInfo | null>(null);
   let openError = $state<string | null>(null);
-  let recent = $state<string[]>(recentProjects());
+  let recent = $state<Recent[]>(recentEntries());
+  /** First-run welcome: shown once, or when asked for from the library. */
+  let welcome = $state(false);
 
   let tabs = $state<string[]>([]);
   let active = $state<string | null>(null);
@@ -57,7 +66,7 @@
   /** A package a just-inserted snippet needs; offered once per package. */
   let packageOffer = $state<string | null>(null);
   const offered = new Set<string>();
-  let notice = $state<{ text: string; action?: { label: string; run: () => void } } | null>(null);
+  let notice = $state<{ text: string; tone?: "ok" | "info"; action?: { label: string; run: () => void } } | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let update = $state<{ version: string; progress: number | null; error: string | null } | null>(null);
   let historyOpen = $state(false);
@@ -71,15 +80,17 @@
   let building = $state(false);
   let outcome = $state<Outcome | null>(null);
   let diagnostics = $state<Diagnostic[]>([]);
-  let showInfo = $state(false);
-  let problemsOpen = $state(true);
-  let buildSeq = 0;
+  /** Logs replace the PDF in the right pane, like Overleaf's logs view. */
+  let logsOpen = $state(false);
+  let buildSeq = $state(0);
 
   let headings = $state<Heading[]>([]);
   let totalWords = $state(0);
   let cursor = $state<{ file: string; line: number }>({ file: "", line: 1 });
   let lsp: LanguageServer | null = null;
   let lspAvailable = $state(true);
+  /** Mirrors spell.language, which isn't reactive by itself. */
+  let spellLang = $state("off");
   let outlineTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Index of the heading the cursor is under, or -1. */
@@ -92,7 +103,7 @@
   });
 
   let editor: Editor | undefined = $state();
-  let pdf: PdfView | undefined = $state();
+  let pdf: PdfPane | undefined = $state();
 
   const errors = $derived(diagnostics.filter((d) => d.severity === "error").length);
   const warnings = $derived(diagnostics.filter((d) => d.severity === "warning").length);
@@ -115,6 +126,7 @@
       return;
     }
     recent = rememberProject(project.root);
+    welcome = false;
     tabs = [];
     contents.clear();
     dirty = {};
@@ -147,7 +159,8 @@
 
   function applySpellLanguage() {
     if (!project) return;
-    const lang = project.config.spellcheck ?? detectLanguage(contents.get(project.main) ?? "");
+    const fallback = settings.spellDefault === "auto" ? detectLanguage(contents.get(project.main) ?? "") : settings.spellDefault;
+    const lang = project.config.spellcheck ?? fallback;
     spell.setLanguage(lang, project.config.words ?? []);
   }
 
@@ -237,7 +250,8 @@
       outcome = result;
       diagnostics = result.diagnostics;
       editor?.showDiagnostics(diagnostics);
-      if (result.status === "failed" && errors > 0) problemsOpen = true;
+      // Like Overleaf: a failed build with no PDF opens the logs.
+      if (result.status === "failed" && !result.pdf && errors > 0) logsOpen = true;
       if (result.pdf) {
         await pdf?.load(await api.readPdf());
         saveThumbnail();
@@ -246,15 +260,36 @@
       if (seq === buildSeq) {
         outcome = null;
         diagnostics = [{ severity: "error", kind: { type: "other" }, file: null, line: null, message: errorMessage(e), hint: null }];
+        logsOpen = true;
       }
     } finally {
       if (seq === buildSeq) building = false;
     }
   }
 
-  function showNotice(text: string, action?: { label: string; run: () => void }) {
+  async function stopBuild() {
+    buildSeq++;
+    building = false;
+    await api.stopBuild().catch(() => {});
+  }
+
+  async function uploadFiles(folder = "") {
+    const picked = await openDialog({ multiple: true, title: "Add files to the project" });
+    const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    if (!paths.length) return;
+    try {
+      const added = await api.addFiles(paths, folder);
+      await refreshTree();
+      showNotice(`Added ${added.length} file${added.length === 1 ? "" : "s"}.`);
+    } catch (e) {
+      showNotice(errorMessage(e));
+    }
+  }
+
+  /** `extra` is either an action button or just a tone. */
+  function showNotice(text: string, extra?: { label: string; run: () => void } | { tone: "ok" | "info" }) {
     clearTimeout(noticeTimer);
-    notice = { text, action };
+    notice = extra && "label" in extra ? { text, action: extra } : { text, tone: extra?.tone };
     noticeTimer = setTimeout(() => (notice = null), 8000);
   }
 
@@ -290,7 +325,7 @@
       await openFile(session.active);
       editor?.gotoLine(session.line);
     }
-    if (session.pdf) pdf?.setPosition(session.pdf);
+    if (session.pdf && "fit" in session.pdf) pdf?.setPosition(session.pdf);
   }
 
   let sessionTimer: ReturnType<typeof setTimeout> | undefined;
@@ -669,7 +704,16 @@
     }
   });
 
+  // Pane widths change continuously while dragging; save once it settles.
+  let widthTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    void [settings.sidebarWidth, settings.pdfWidth];
+    clearTimeout(widthTimer);
+    widthTimer = setTimeout(() => updateSettings({}), 400);
+  });
+
   onMount(async () => {
+    spell.onChange(() => (spellLang = spell.language));
     // Tauri delivers file drops with real paths (DOM drop events don't have them).
     getCurrentWebview()
       .onDragDropEvent((e) => {
@@ -687,105 +731,222 @@
       checkForUpdates();
       setInterval(() => settings.checkForUpdates && !update && checkForUpdates(), UPDATE_INTERVAL_MS);
     }
-    if (tex?.detection.ready && recent[0]) openProject(recent[0]);
+    // Existing users (with projects) never see the welcome.
+    if (!settings.firstRunDone && recent.length === 0) {
+      welcome = true;
+    } else {
+      if (!settings.firstRunDone) updateSettings({ firstRunDone: true });
+      if (tex?.detection.ready && recent[0]) openProject(recent[0].path);
+    }
   });
 
-  const statusPill = $derived.by(() => {
-    if (building) return { cls: "", text: "building…" };
-    if (!outcome) return null;
-    if (outcome.status === "success") return { cls: "ok", text: `built in ${(outcome.duration_ms / 1000).toFixed(1)} s` };
-    return { cls: "err", text: errors ? `${errors} error${errors > 1 ? "s" : ""}` : "build failed" };
-  });
+  const menuItems = $derived<MenuAction[]>([
+    { label: "All projects", run: closeProject },
+    { label: "Command palette", hint: "Ctrl+Shift+P", run: () => (palette = "commands"), separator: true },
+    { label: "Open file…", hint: "Ctrl+P", run: () => (palette = "files") },
+    { label: "Search in project", hint: "Ctrl+Shift+F", run: openSearch },
+    { label: "Insert citation", hint: "Ctrl+Shift+C", run: () => (citeOpen = true) },
+    { label: "Save a snapshot", hint: "Ctrl+Shift+S", run: () => (snapshotLabel = "") },
+    { label: "Export PDF…", run: exportPdf, separator: true },
+    { label: "Export for arXiv…", run: exportArxiv },
+    { label: "Preferences", run: () => (prefsOpen = true), separator: true },
+    { label: "User guide", run: () => openUrl("https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md") },
+    { label: "Report a problem…", run: startReport },
+  ]);
+
+  const showEditor = $derived(settings.layout !== "pdf" || focusMode);
+  const showPdf = $derived(settings.layout !== "editor" && !focusMode);
+  const showSidebar = $derived(settings.sidebarOpen && !focusMode && settings.layout !== "pdf");
+  const words = new Intl.NumberFormat();
+
+  async function startFromWelcome(kind: "example" | "done") {
+    welcome = false;
+    await updateSettings({ firstRunDone: true });
+    if (kind === "example") {
+      try {
+        openProject(await api.createExample());
+      } catch (e) {
+        openError = errorMessage(e);
+      }
+    }
+  }
 </script>
 
 <svelte:window onkeydown={onKey} />
 
 {#if !tex}
-  <div class="loading">Looking for TeX…</div>
+  <div class="loading"><span class="wordmark">Lemmata</span></div>
+{:else if welcome}
+  <Welcome status={tex} {checking} onRecheck={recheck} onFinish={startFromWelcome} onOpen={(path) => { updateSettings({ firstRunDone: true }); openProject(path); }} onImported={(paths) => {
+      updateSettings({ firstRunDone: true });
+      welcome = false;
+      recent = rememberProjects(paths);
+      if (paths.length === 1) openProject(paths[0]);
+      else showNotice(`Imported ${paths.length} projects.`, { tone: "ok" });
+    }} />
 {:else if !tex.detection.ready}
   <Onboarding status={tex} {checking} onRecheck={recheck} />
 {:else if !project}
-  <Library {recent} error={openError} onOpen={openProject} onForget={(p) => (recent = forgetProject(p))} onPreferences={() => (prefsOpen = true)} />
+  <Library
+    {recent}
+    error={openError}
+    onOpen={openProject}
+    onForget={(p) => (recent = forgetProject(p))}
+    onImported={(paths) => {
+      recent = rememberProjects(paths);
+      if (paths.length === 1) openProject(paths[0]);
+      else showNotice(`Imported ${paths.length} projects.`, { tone: "ok" });
+    }}
+    onExample={() => startFromWelcome("example")}
+    onWelcome={() => (welcome = true)}
+    onPreferences={() => (prefsOpen = true)}
+  />
 {:else}
   <div class="shell">
-    <header>
-      <span class="brand">Lemmata</span>
-      <span class="crumbs">{project.name}{active ? ` / ${active}` : ""}</span>
-      <div class="right">
-        {#if tex.detection.outdated}<span class="pill warn" title="Some packages may lack newer features">old TeX Live</span>{/if}
-        {#if totalWords}<span class="words" title="Words in the document body, without commands, maths or comments">{totalWords.toLocaleString()} words</span>{/if}
-        {#if statusPill}<span class="pill {statusPill.cls}">{statusPill.text}</span>{/if}
-        <select aria-label="Engine" value={project.config.engine} onchange={(e) => setEngine(e.currentTarget.value as Engine)}>
-          <option value="pdflatex">pdfLaTeX</option>
-          <option value="xelatex">XeLaTeX</option>
-          <option value="lualatex">LuaLaTeX</option>
-        </select>
-        {#if !lspAvailable}<span class="pill warn" title="texlab wasn't found, so completion and hover are off">no completion</span>{/if}
-        <button class:on={historyOpen} onclick={() => (historyOpen = !historyOpen)}>History</button>
-        <button onclick={() => (settingsOpen = true)}>Project</button>
-        <button onclick={() => (prefsOpen = true)} aria-label="Preferences" title="Preferences">Preferences</button>
-        <button onclick={closeProject}>Close project</button>
-        <button class="primary" onclick={() => saveAll().then(runBuild)} title="Ctrl+Enter">Recompile</button>
-      </div>
-    </header>
+    <Toolbar
+      projectName={project.name}
+      {building}
+      layout={settings.layout}
+      sidebarOpen={settings.sidebarOpen}
+      {historyOpen}
+      autoCompile={settings.autosaveMs > 0}
+      engine={project.config.engine}
+      menu={menuItems}
+      onLayout={(l) => {
+        focusMode = false;
+        updateSettings({ layout: l });
+      }}
+      onToggleSidebar={() => updateSettings({ sidebarOpen: !settings.sidebarOpen })}
+      onHistory={() => (historyOpen = !historyOpen)}
+      onProjectSettings={() => (settingsOpen = true)}
+      onRecompile={() => saveAll().then(runBuild)}
+      onStop={stopBuild}
+      onAutoCompile={(on) => updateSettings({ autosaveMs: on ? DEFAULTS.autosaveMs : 0 })}
+      onEngine={setEngine}
+      onLibrary={closeProject}
+    />
 
-    <div class="panes" class:focus={focusMode}>
-      <nav class="side">
-        {#if searchOpen}
-          <SearchPanel
-            onOpen={gotoProblem}
-            beforeReplace={saveAll}
-            onReplaced={async (paths) => {
-              for (const p of paths) await reloadFromDisk(p);
-              runBuild();
-            }}
-            onClose={() => (searchOpen = false)}
-          />
-        {:else}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="files" oncontextmenu={(e) => { e.preventDefault(); fileActions?.openMenu(null, e.clientX, e.clientY); }}>
-            <div class="h">Project</div>
-            <Tree entries={project.tree} {active} main={project.main} onOpen={openFile} onContext={(entry, x, y) => fileActions?.openMenu(entry, x, y)} />
-          </div>
-          <div class="outline">
-            <div class="h">Outline</div>
-            <Outline {headings} current={currentHeading} onJump={gotoProblem} />
-          </div>
-        {/if}
-      </nav>
+    <div class="panes" class:focus={focusMode} style:--side-w="{showSidebar ? settings.sidebarWidth : 0}px">
+      {#if showSidebar}
+        <div class="side" style:width="{settings.sidebarWidth}px">
+          {#if searchOpen}
+            <div class="search-wrap chrome">
+              <SearchPanel
+                onOpen={gotoProblem}
+                beforeReplace={saveAll}
+                onReplaced={async (paths) => {
+                  for (const p of paths) await reloadFromDisk(p);
+                  runBuild();
+                }}
+                onClose={() => (searchOpen = false)}
+              />
+            </div>
+          {:else}
+            <Sidebar
+              tree={project.tree}
+              {active}
+              main={project.main}
+              {headings}
+              {currentHeading}
+              onOpen={openFile}
+              onJump={gotoProblem}
+              onContext={(entry, x, y) => fileActions?.openMenu(entry, x, y)}
+              onNewFile={() => fileActions?.newItem(false)}
+              onNewFolder={() => fileActions?.newItem(true)}
+              onUpload={() => uploadFiles()}
+              onSearch={openSearch}
+            />
+          {/if}
+        </div>
+        <Splitter
+          size={settings.sidebarWidth}
+          min={180}
+          max={480}
+          label="Resize the file panel"
+          onResize={(w) => (settings.sidebarWidth = w)}
+          onReset={() => updateSettings({ sidebarWidth: DEFAULTS.sidebarWidth })}
+        />
+      {/if}
 
-      <section class="code">
+      <section class="code" class:hidden={!showEditor}>
         <div class="tabs">
           {#each tabs as t (t)}
             <div class="tab" class:on={t === active}>
-              <button class="name" onclick={() => openFile(t)}>{t.split("/").pop()}{#if dirty[t]}<i>•</i>{/if}</button>
-              <button class="x" aria-label="Close {t}" onclick={() => closeTab(t)}>×</button>
+              <button class="name" onclick={() => openFile(t)} title={t}>
+                {t.split("/").pop()}
+              </button>
+              <button class="x" class:dirty={dirty[t]} aria-label={dirty[t] ? `${t} has unsaved changes; close` : `Close ${t}`} onclick={() => closeTab(t)}>
+                <span class="dot"></span><X size={13} />
+              </button>
             </div>
           {/each}
         </div>
-        <div class="cm"><Editor bind:this={editor} {onChange} onSyncRequest={syncForward} onCursor={(file, line) => (cursor = { file, line })}
+        {#if openError}
+          <div class="err-bar" role="alert">
+            <span>{openError}</span>
+            <button class="btn ghost icon sm" aria-label="Dismiss" onclick={() => (openError = null)}><X size={14} /></button>
+          </div>
+        {/if}
+        <div class="cm">
+          <Editor
+            bind:this={editor}
+            {onChange}
+            onSyncRequest={syncForward}
+            onCursor={(file, line) => (cursor = { file, line })}
             onAddWord={addWord}
             onPasteImage={pasteImage}
             onNeedsPackage={needsPackage}
             onPastedTable={(undo) => showNotice("Pasted as a table.", { label: "Paste as text instead", run: undo })}
-          /></div>
-        {#if openError}<div class="err-bar">{openError} <button onclick={() => (openError = null)}>Dismiss</button></div>{/if}
+          />
+        </div>
+        <footer class="status">
+          <span>Line {cursor.line}</span>
+          {#if active}<span>{dirty[active] ? "Unsaved" : "Saved"}</span>{/if}
+          <span class="grow"></span>
+          {#if !lspAvailable}<span title="texlab wasn't found, so completion and hover are off">No completion</span>{/if}
+          {#if tex.detection.outdated}<span class="warn" title="Some packages may lack newer features">Old TeX Live</span>{/if}
+          {#if spellLang !== "off"}<span title="Spell-check language">{spellLang}</span>{/if}
+          {#if totalWords}<span title="Words in the document body, without commands, maths or comments">{words.format(totalWords)} words</span>{/if}
+          <span>{project.config.engine === "pdflatex" ? "pdfLaTeX" : project.config.engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"}</span>
+          {#if outcome && !building}
+            <span class={outcome.status === "success" ? "ok" : "bad"}>
+              {outcome.status === "success" ? `Compiled in ${(outcome.duration_ms / 1000).toFixed(1)} s` : errors ? `${errors} error${errors === 1 ? "" : "s"}` : "Compile failed"}
+            </span>
+          {/if}
+        </footer>
       </section>
 
-      <section class="preview">
-        <div class="pdfwrap" class:hidden={historyOpen}><PdfView bind:this={pdf} onSourceClick={syncBackward} /></div>
-        {#if historyOpen}
-          <div class="pdfwrap"><HistoryPanel version={historyVersion} {currentText} {onRestored} onClose={() => (historyOpen = false)} /></div>
+      {#if showPdf}
+        {#if showEditor}
+          <Splitter
+            size={settings.pdfWidth}
+            side="after"
+            min={300}
+            max={1400}
+            label="Resize the PDF panel"
+            onResize={(w) => (settings.pdfWidth = w)}
+            onReset={() => updateSettings({ pdfWidth: DEFAULTS.pdfWidth })}
+          />
         {/if}
-        <div class="problems" class:open={problemsOpen}>
-          <button class="ph" onclick={() => (problemsOpen = !problemsOpen)}>
-            <span>{problemsOpen ? "▾" : "▸"} Problems</span>
-            {#if errors}<span class="pill err">{errors}</span>{/if}
-            {#if warnings}<span class="pill warn">{warnings}</span>{/if}
-          </button>
-          {#if problemsOpen}<Problems {diagnostics} bind:showInfo onGoto={gotoProblem} />{/if}
+        <div class="preview" style:width={showEditor ? `${settings.pdfWidth}px` : undefined} class:wide={!showEditor}>
+          <div class="fill" class:hidden={historyOpen}>
+            <PdfPane
+              bind:this={pdf}
+              {diagnostics}
+              {building}
+              buildId={buildSeq}
+              {logsOpen}
+              onLogs={(o) => (logsOpen = o)}
+              onSourceClick={syncBackward}
+              onGoto={gotoProblem}
+              onExport={exportPdf}
+            />
+          </div>
+          {#if historyOpen}
+            <div class="fill"><HistoryPanel version={historyVersion} {currentText} {onRestored} onClose={() => (historyOpen = false)} /></div>
+          {/if}
         </div>
-      </section>
+      {/if}
     </div>
   </div>
 {/if}
@@ -794,16 +955,18 @@
   <div class="toasts">
     {#if packageOffer}
       <div class="toast" role="status">
-        <span>This needs the <code>{packageOffer}</code> package, which your document doesn't load yet.</span>
-        <button onclick={() => (packageOffer = null)}>Not now</button>
-        <button class="primary" onclick={() => addPackage(packageOffer!)}>Add \usepackage{"{"}{packageOffer}{"}"}</button>
+        <span class="t-ico"><Package size={16} /></span>
+        <span class="t-text">This needs the <code>{packageOffer}</code> package, which your document doesn't load yet.</span>
+        <button class="btn sm ghost" onclick={() => (packageOffer = null)}>Not now</button>
+        <button class="btn sm primary" onclick={() => addPackage(packageOffer!)}>Add it</button>
       </div>
     {/if}
     {#if notice}
       <div class="toast" role="status">
-        <span>{notice.text}</span>
-        {#if notice.action}<button onclick={() => { notice?.action?.run(); notice = null; }}>{notice.action.label}</button>{/if}
-        <button class="x" aria-label="Dismiss" onclick={() => (notice = null)}>×</button>
+        <span class="t-ico" class:ok={notice.tone === "ok"}>{#if notice.tone === "ok"}<CircleCheck size={16} />{:else}<Info size={16} />{/if}</span>
+        <span class="t-text">{notice.text}</span>
+        {#if notice.action}<button class="btn sm" onclick={() => { notice?.action?.run(); notice = null; }}>{notice.action.label}</button>{/if}
+        <button class="btn ghost icon sm" aria-label="Dismiss" onclick={() => (notice = null)}><X size={14} /></button>
       </div>
     {/if}
   </div>
@@ -818,26 +981,23 @@
   }}
   {onRenamed}
   {onTrashed}
+  onUpload={uploadFiles}
 />
 
 {#if report}
-  <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && (report = null)}>
-    <div class="dialog" role="dialog" aria-labelledby="report-title">
-      <h2 id="report-title">Report a problem</h2>
-      <p>This opens a new issue on GitHub with the details below filled in. You can edit everything there before submitting. File paths are left out.</p>
-      <pre class="report">{report.system}{report.log ? `\n\n${report.log}` : ""}</pre>
-      <div class="actions">
-        <button onclick={() => (report = null)}>Cancel</button>
-        <button
-          class="primary"
-          onclick={() => {
-            openUrl(issueUrl(report!.system, report!.log)).catch((e) => showNotice(errorMessage(e)));
-            report = null;
-          }}>Open GitHub</button
-        >
-      </div>
-    </div>
-  </div>
+  <Modal title="Report a problem" subtitle="Opens a new GitHub issue with these details. You can edit everything before submitting; file paths are left out." width={560} onClose={() => (report = null)}>
+    <pre class="report">{report.system}{report.log ? `\n\n${report.log}` : ""}</pre>
+    {#snippet footer()}
+      <button class="btn" onclick={() => (report = null)}>Cancel</button>
+      <button
+        class="btn primary"
+        onclick={() => {
+          openUrl(issueUrl(report!.system, report!.log)).catch((e) => showNotice(errorMessage(e)));
+          report = null;
+        }}>Open GitHub</button
+      >
+    {/snippet}
+  </Modal>
 {/if}
 
 {#if palette}
@@ -880,18 +1040,17 @@
 {/if}
 
 {#if update}
-  <div class="update" role="status">
-    {#if update.error}
-      <span>The update failed: {update.error}</span>
-    {:else if update.progress !== null}
-      <span>Downloading Lemmata {update.version}… {Math.round(update.progress * 100)}%</span>
-    {:else}
-      <span>Lemmata {update.version} is available.</span>
-    {/if}
-    {#if update.progress === null}
-      <button onclick={() => (update = null)}>Later</button>
-      <button class="primary" onclick={installUpdate}>Install and restart</button>
-    {/if}
+  <div class="toasts right">
+    <div class="toast" role="status">
+      <span class="t-ico ok"><Sparkles size={16} /></span>
+      <span class="t-text">
+        {#if update.error}The update failed: {update.error}{:else if update.progress !== null}Downloading Lemmata {update.version}… {Math.round(update.progress * 100)}%{:else}Lemmata {update.version} is available.{/if}
+      </span>
+      {#if update.progress === null}
+        <button class="btn sm ghost" onclick={() => (update = null)}>Later</button>
+        <button class="btn sm primary" onclick={installUpdate}>Install and restart</button>
+      {/if}
+    </div>
   </div>
 {/if}
 
@@ -900,91 +1059,86 @@
 {/if}
 
 {#if snapshotLabel !== null}
-  <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && (snapshotLabel = null)}>
-    <form class="dialog" onsubmit={confirmSnapshot}>
-      <h2>Save a snapshot</h2>
-      <p>Give it a name you'll recognise later, like "Sent to supervisor".</p>
+  <Modal title="Save a snapshot" subtitle="Give it a name you'll recognise later, like “Sent to supervisor”." width={440} onClose={() => (snapshotLabel = null)}>
+    <form id="snapshot-form" onsubmit={confirmSnapshot}>
       <!-- svelte-ignore a11y_autofocus -->
-      <input id="snapshot-label" class="label-input" bind:value={snapshotLabel} placeholder="Snapshot" autofocus />
-      <div class="actions">
-        <button type="button" onclick={() => (snapshotLabel = null)}>Cancel</button>
-        <button class="primary" type="submit">Save snapshot</button>
-      </div>
+      <input id="snapshot-label" class="input" bind:value={snapshotLabel} placeholder="Snapshot" autofocus />
     </form>
-  </div>
+    {#snippet footer()}
+      <button class="btn" onclick={() => (snapshotLabel = null)}>Cancel</button>
+      <button class="btn primary" type="submit" form="snapshot-form">Save snapshot</button>
+    {/snippet}
+  </Modal>
 {/if}
 
 {#if choosingMain && project}
-  <div class="backdrop" role="presentation">
-    <div class="dialog" role="dialog" aria-labelledby="main-title">
-      <h2 id="main-title">Which file is the main document?</h2>
-      <p>Several files start with <code>\documentclass</code>. Lemmata will build the one you choose and remember it in <code>lemmata.toml</code>.</p>
-      <ul>
-        {#each project.main_candidates as c (c)}
-          <li><button onclick={() => chooseMain(c)}>{c}</button></li>
-        {/each}
-      </ul>
+  <Modal title="Which file is the main document?" subtitle="Several files start with \documentclass. Lemmata builds the one you choose and remembers it in lemmata.toml." width={480} onClose={() => (choosingMain = false)}>
+    <div class="choices">
+      {#each project.main_candidates as c (c)}
+        <button class="btn choice" onclick={() => chooseMain(c)}>{c}</button>
+      {/each}
     </div>
-  </div>
+  </Modal>
 {/if}
 
 <style>
-  .loading { height: 100%; display: grid; place-items: center; color: var(--muted); }
-  .shell { display: flex; flex-direction: column; height: 100%; }
-  header {
-    display: flex; align-items: center; gap: 14px; padding: 7px 14px;
-    background: var(--chrome); border-bottom: 1px solid var(--rule);
-  }
-  .brand { font: 16px var(--f-display); }
-  .crumbs { font: 12px var(--f-mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
-  .panes { flex: 1; display: grid; grid-template-columns: 220px minmax(0, 1fr) minmax(0, 1fr); min-height: 0; }
-  /* Focus mode: only the editor, as a centred column. */
-  .panes.focus { grid-template-columns: minmax(0, 1fr); }
-  .panes.focus .side, .panes.focus .preview, .panes.focus .tabs { display: none; }
-  .panes.focus .code { border-right: none; padding-inline: max(24px, calc((100% - 88ch) / 2)); }
-  .side { background: var(--chrome); border-right: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; }
-  .files, .outline { overflow: auto; min-height: 0; }
-  .files { flex: 1 1 55%; padding-bottom: 8px; }
-  .outline { flex: 1 1 45%; border-top: 1px solid var(--rule); }
-  .h { font: 500 10px var(--f-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); padding: 12px 14px 6px; }
-  .code { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--rule); background: var(--code-bg); }
-  .tabs { display: flex; background: var(--chrome); border-bottom: 1px solid var(--rule); overflow-x: auto; flex: none; }
-  .tab { display: flex; align-items: center; border-right: 1px solid var(--rule); }
+  .loading { height: 100%; display: grid; place-items: center; background: var(--chrome); }
+  .wordmark { font: 28px var(--f-display); color: var(--chrome-ink); opacity: 0.7; }
+  .shell { display: flex; flex-direction: column; height: 100%; background: var(--surface); }
+  .panes { flex: 1; display: flex; min-height: 0; }
+  .side { flex: none; min-width: 0; }
+  .search-wrap { height: 100%; background: var(--chrome-2); border-right: 1px solid var(--chrome-border); color: var(--chrome-ink); }
+
+  .code { flex: 1; display: flex; flex-direction: column; min-width: 280px; background: var(--code-bg); }
+  .code.hidden { display: none; }
+  .tabs { display: flex; height: 36px; background: var(--surface-2); border-bottom: 1px solid var(--border); overflow-x: auto; flex: none; scrollbar-width: none; }
+  .tab { display: flex; align-items: center; border-right: 1px solid var(--border); position: relative; max-width: 220px; }
   .tab.on { background: var(--code-bg); }
-  .tab button { border: none; background: none; border-radius: 0; font: 12px var(--f-mono); color: var(--muted); padding: 7px 4px 7px 12px; }
+  .tab.on::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--code-bg); }
+  .tab.on::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); }
+  .tab button { border: none; background: none; }
+  .tab .name { font: 13px var(--f-body); color: var(--muted); padding: 0 4px 0 14px; height: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tab.on .name { color: var(--ink); }
-  .tab .x { padding: 7px 10px 7px 4px; opacity: 0.6; }
-  .tab .x:hover { opacity: 1; color: var(--mark); }
-  .tab i { font-style: normal; color: var(--blue); margin-left: 4px; }
+  .tab .x { width: 26px; height: 26px; margin-right: 4px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--faint); position: relative; }
+  .tab .x :global(svg) { opacity: 0; grid-area: 1 / 1; }
+  .tab .x .dot { grid-area: 1 / 1; width: 7px; height: 7px; border-radius: 50%; background: transparent; }
+  .tab .x.dirty .dot { background: var(--accent); }
+  .tab:hover .x :global(svg), .tab.on .x:not(.dirty) :global(svg), .tab .x:focus-visible :global(svg) { opacity: 1; }
+  .tab:hover .x .dot, .tab .x:focus-visible .dot { opacity: 0; }
+  .tab .x:hover { background: var(--surface-3); color: var(--ink); }
   .cm { flex: 1; min-height: 0; }
-  .err-bar { background: color-mix(in srgb, var(--mark) 14%, var(--sheet)); color: var(--mark); padding: 6px 12px; display: flex; gap: 10px; align-items: center; }
-  .err-bar button { margin-left: auto; }
-  .preview { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .pdfwrap { flex: 1; min-height: 0; }
-  .pdfwrap.hidden { display: none; }
-  header button.on { border-color: var(--blue); color: var(--blue); }
-  .label-input { width: 100%; font: 13px var(--f-body); padding: 7px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--sheet); color: var(--ink); }
-  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
-  .problems { border-top: 1px solid var(--rule); background: var(--sheet); flex: none; max-height: 40%; display: flex; flex-direction: column; }
-  .backdrop { position: fixed; inset: 0; background: rgba(10, 15, 20, 0.45); display: grid; place-items: center; padding: 24px; z-index: 10; }
-  .dialog { width: min(520px, 100%); background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: 22px 24px; }
-  .dialog h2 { font: 400 20px var(--f-display); margin: 0 0 8px; }
-  .dialog p { color: var(--muted); margin: 0 0 12px; }
-  .dialog ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .dialog li button { width: 100%; text-align: left; font: 13px var(--f-mono); padding: 8px 12px; }
-  .report { background: var(--code-bg); border-radius: 5px; padding: 10px 12px; font: 12px var(--f-mono); white-space: pre-wrap; max-height: 240px; overflow: auto; margin: 0; }
-  .toasts { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 20; display: flex; flex-direction: column; gap: 8px; }
+  .err-bar { display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 14px; background: var(--error-soft); color: var(--error); border-bottom: 1px solid var(--border); }
+  .err-bar span { flex: 1; }
+  .status {
+    display: flex; align-items: center; gap: 16px; height: 26px; padding: 0 12px; flex: none;
+    border-top: 1px solid var(--border); background: var(--surface-2); color: var(--muted); font-size: 12px;
+    white-space: nowrap; overflow: hidden;
+  }
+  .status .grow { flex: 1; }
+  .status .ok { color: var(--ok); }
+  .status .bad, .status .warn { color: var(--error); }
+
+  /* The editor always keeps at least 320px, however wide the PDF was dragged. */
+  .preview { flex: none; display: flex; min-width: 0; max-width: calc(100% - var(--side-w) - 320px); position: relative; border-left: 1px solid var(--border); }
+  .preview.wide { flex: 1; border-left: none; }
+  .fill { position: absolute; inset: 0; }
+  .fill.hidden { visibility: hidden; }
+
+  /* Focus mode: only the editor, as a centred column. */
+  .panes.focus .tabs { display: none; }
+  .panes.focus .code :global(.cm-content) { max-width: 88ch; margin: 0 auto; }
+
+  .toasts { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 45; display: flex; flex-direction: column; gap: 8px; }
+  .toasts.right { left: auto; right: 20px; transform: none; }
   .toast {
-    display: flex; gap: 10px; align-items: center; background: var(--sheet); border: 1px solid var(--rule);
-    border-radius: 8px; padding: 9px 12px; box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.4); max-width: min(720px, 90vw);
+    display: flex; gap: 10px; align-items: center; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-lg); padding: 8px 8px 8px 12px; box-shadow: var(--shadow); max-width: min(720px, 90vw);
+    animation: pop 0.16s var(--ease);
   }
-  .toast .x { border: none; background: none; padding: 0 4px; }
-  .update {
-    position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; gap: 10px; align-items: center;
-    background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px;
-    box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.4);
-  }
-  .words { font: 11px var(--f-mono); color: var(--muted); white-space: nowrap; }
-  .ph { display: flex; gap: 8px; align-items: center; border: none; border-radius: 0; background: var(--chrome); padding: 5px 12px; font: 500 12px var(--f-body); color: var(--muted); text-align: left; }
+  .t-ico { display: inline-flex; color: var(--accent); }
+  .t-ico.ok { color: var(--ok); }
+  .t-text { flex: 1; min-width: 0; }
+  .report { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; font: 12px var(--f-mono); white-space: pre-wrap; max-height: 260px; overflow: auto; margin: 0; }
+  .choices { display: flex; flex-direction: column; gap: 6px; }
+  .choice { justify-content: flex-start; font-family: var(--f-mono); height: 36px; }
 </style>

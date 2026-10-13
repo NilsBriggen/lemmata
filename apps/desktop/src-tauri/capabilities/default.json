@@ -21,6 +21,7 @@
           "url": "https://lemmata.briggen.dev/*"
         }
       ]
-    }
+    },
+    "opener:allow-reveal-item-in-dir"
   ]
 }

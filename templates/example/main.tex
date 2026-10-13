@@ -1,0 +1,46 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage[backend=biber,style=authoryear]{biblatex}
+\addbibresource{refs.bib}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\R}{\mathbb{R}}
+
+\title{A Tour of Lemmata}
+\author{You}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Write, and watch the PDF}
+Type anywhere in this file. A moment after you stop, Lemmata saves and
+rebuilds, and the PDF on the right updates without losing your place.
+
+Double-click any word in the PDF to jump to it here. Press Ctrl+J to go
+the other way.
+
+\section{Maths}
+Put the cursor inside the equation below to see it rendered above the line.
+Your own commands work too: $\R$ is defined in the preamble.
+\begin{equation}
+  \int_{-\infty}^{\infty} e^{-x^2}\,\mathrm{d}x = \sqrt{\pi}
+\end{equation}
+
+\section{Citations}
+Press Ctrl+Shift+C to search the bibliography, or paste a DOI there to add
+a new reference. This one is already in \texttt{refs.bib}:
+\textcite{knuth1984}.
+
+\section{Mistakes}
+Misspelled words get a wavy line: try right-clicking this one: recieve.
+If you type an unknown command like \texttt{\textbackslash foo}, the
+Problems panel explains what went wrong in plain words.
+
+\section{Everything else}
+Press Ctrl+Shift+P for every command: history, search, exports and more.
+This example lives in Lemmata's own folder, so feel free to break it.
+
+\printbibliography
+\end{document}

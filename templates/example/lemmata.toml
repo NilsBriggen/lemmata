@@ -1,0 +1,4 @@
+main = "main.tex"
+engine = "pdflatex"
+bib = "biber"
+words = ["Lemmata"]

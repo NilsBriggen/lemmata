@@ -92,7 +92,7 @@ export function spellcheck(onAddWord: (word: string) => void) {
   );
 
   const theme = EditorView.baseTheme({
-    ".cm-misspelled": { textDecoration: "underline wavy var(--mark)", textDecorationSkipInk: "none", textUnderlineOffset: "3px" },
+    ".cm-misspelled": { textDecoration: "underline wavy var(--error)", textDecorationSkipInk: "none", textUnderlineOffset: "3px" },
   });
 
   return [plugin, theme];

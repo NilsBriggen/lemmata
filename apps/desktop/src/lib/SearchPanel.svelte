@@ -129,25 +129,33 @@
 </div>
 
 <style>
-  .search { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-  .bar { display: flex; align-items: center; padding: 10px 12px 4px 14px; }
-  .bar b { font: 500 10px var(--f-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
-  .x { margin-left: auto; border: none; background: none; padding: 0 4px; }
-  .fields { padding: 4px 10px; display: flex; flex-direction: column; gap: 6px; }
-  .row { display: flex; gap: 4px; }
-  .row input { flex: 1; min-width: 0; font: 12px var(--f-mono); padding: 5px 7px; border: 1px solid var(--rule); border-radius: 4px; background: var(--sheet); color: var(--ink); }
-  .toggle { border: none; background: none; padding: 0 2px; }
+  /* Sits in the dark sidebar, so it uses the chrome colours. */
+  .search { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--chrome-ink); }
+  .bar { display: flex; align-items: center; height: 36px; padding: 0 6px 0 14px; }
+  .bar b { font: 600 11px var(--f-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--chrome-muted); }
+  .x { margin-left: auto; border: none; background: none; padding: 2px 6px; color: var(--chrome-muted); border-radius: var(--r-sm); }
+  .x:hover { background: var(--chrome-hover); color: var(--chrome-ink); }
+  .fields { padding: 2px 10px 8px; display: flex; flex-direction: column; gap: 6px; }
+  .row { display: flex; gap: 4px; align-items: center; }
+  .row input {
+    flex: 1; min-width: 0; height: 28px; font: 12.5px var(--f-body); padding: 0 8px; border-radius: var(--r-sm);
+    border: 1px solid var(--chrome-border); background: var(--chrome-3); color: var(--chrome-ink);
+  }
+  .row input:focus { outline: none; border-color: var(--accent-on-dark); }
+  .row input::placeholder { color: var(--chrome-muted); }
+  .row > button:not(.toggle) { height: 28px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--chrome-border); background: var(--chrome-3); color: var(--chrome-ink); font-size: 12px; white-space: nowrap; }
+  .toggle { border: none; background: none; padding: 0 2px; color: var(--chrome-muted); }
   .opts { display: flex; gap: 4px; padding-left: 18px; }
-  .opts button { font: 11px var(--f-mono); padding: 2px 6px; }
-  .opts button.on { border-color: var(--blue); color: var(--blue); background: var(--blue-soft); }
-  .error { color: var(--mark); padding: 0 14px; margin: 4px 0; font-size: 12px; }
+  .opts button { font: 11px var(--f-mono); height: 22px; padding: 0 7px; border-radius: var(--r-sm); border: 1px solid var(--chrome-border); background: transparent; color: var(--chrome-muted); }
+  .opts button.on { border-color: var(--accent-on-dark); color: var(--accent-on-dark); background: var(--chrome-active); }
+  .error { color: var(--error); padding: 0 14px; margin: 4px 0; font-size: 12px; }
   .msg { color: var(--ok); padding: 0 14px; margin: 4px 0; font-size: 12px; }
-  .count { color: var(--muted); font-size: 11px; padding: 0 14px; margin: 4px 0; }
+  .count { color: var(--chrome-muted); font-size: 11.5px; padding: 0 14px; margin: 2px 0 4px; }
   ul { list-style: none; margin: 0; padding: 0 0 12px; overflow: auto; flex: 1; }
-  .file { display: flex; gap: 6px; align-items: center; padding: 6px 12px 2px; font: 500 12px var(--f-mono); }
-  .hit { display: flex; gap: 8px; width: 100%; border: none; border-radius: 0; background: none; text-align: left; padding: 2px 12px 2px 22px; font: 11.5px var(--f-mono); font-weight: 400; }
-  .hit:hover { background: color-mix(in srgb, var(--blue) 8%, transparent); }
-  .hit i { font-style: normal; color: var(--muted); min-width: 2.5em; text-align: right; }
+  .file { display: flex; gap: 6px; align-items: center; padding: 8px 12px 2px 14px; font: 600 12px var(--f-body); color: var(--chrome-ink); }
+  .hit { display: flex; gap: 8px; width: 100%; border: none; border-radius: 0; background: none; text-align: left; padding: 3px 12px 3px 16px; font: 12px var(--f-mono); color: var(--chrome-muted); }
+  .hit:hover { background: var(--chrome-hover); color: var(--chrome-ink); }
+  .hit i { font-style: normal; color: var(--chrome-muted); min-width: 2.5em; text-align: right; opacity: 0.7; }
   .hit span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  mark { background: color-mix(in srgb, var(--warn) 30%, transparent); color: inherit; border-radius: 2px; }
+  mark { background: color-mix(in srgb, var(--warn) 40%, transparent); color: var(--chrome-ink); border-radius: 2px; }
 </style>

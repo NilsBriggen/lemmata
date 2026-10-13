@@ -1,5 +1,14 @@
 <script lang="ts">
   import Tree from "./Tree.svelte";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import Folder from "@lucide/svelte/icons/folder";
+  import FolderOpen from "@lucide/svelte/icons/folder-open";
+  import FileText from "@lucide/svelte/icons/file-text";
+  import FileImage from "@lucide/svelte/icons/file-image";
+  import BookOpen from "@lucide/svelte/icons/book-open";
+  import Braces from "@lucide/svelte/icons/braces";
+  import Settings from "@lucide/svelte/icons/settings";
+  import File from "@lucide/svelte/icons/file";
   import type { Entry } from "./api";
 
   interface Props {
@@ -8,10 +17,20 @@
     main: string;
     depth?: number;
     onOpen: (path: string) => void;
-    /** Right-click on an entry (or empty space when `entry` is null). */
-    onContext?: (entry: Entry | null, x: number, y: number) => void;
+    /** Right-click on an entry. */
+    onContext?: (entry: Entry, x: number, y: number) => void;
   }
   let { entries, active, main, depth = 0, onOpen, onContext }: Props = $props();
+  let collapsed = $state<Record<string, boolean>>({});
+
+  const editable = (name: string) => /\.(tex|bib|sty|cls|txt|md|toml|bst|tikz|bbx|cbx)$/i.test(name);
+  const kind = (name: string) =>
+    /\.tex$/i.test(name) ? "tex"
+    : /\.bib$/i.test(name) ? "bib"
+    : /\.(png|jpe?g|pdf|eps|svg|gif)$/i.test(name) ? "image"
+    : /\.(sty|cls|bst|bbx|cbx|tikz)$/i.test(name) ? "code"
+    : /\.toml$/i.test(name) ? "config"
+    : "file";
 
   function context(e: MouseEvent, entry: Entry) {
     if (!onContext) return;
@@ -19,33 +38,36 @@
     e.stopPropagation();
     onContext(entry, e.clientX, e.clientY);
   }
-  let collapsed = $state<Record<string, boolean>>({});
-
-  const editable = (name: string) => /\.(tex|bib|sty|cls|txt|md|toml|bst|tikz)$/i.test(name);
 </script>
 
-<ul class:root={depth === 0}>
+<ul role={depth === 0 ? "tree" : "group"}>
   {#each entries as e (e.path)}
-    <li>
+    <li role="treeitem" aria-selected={e.path === active} aria-expanded={e.is_dir ? !collapsed[e.path] : undefined}>
       {#if e.is_dir}
-        <button class="row dir" style:padding-left="{12 + depth * 14}px" onclick={() => (collapsed[e.path] = !collapsed[e.path])} oncontextmenu={(ev) => context(ev, e)}>
-          <span class="caret">{collapsed[e.path] ? "▸" : "▾"}</span>{e.name}
+        <button class="row" style:padding-left="{8 + depth * 14}px" onclick={() => (collapsed[e.path] = !collapsed[e.path])} oncontextmenu={(ev) => context(ev, e)}>
+          <span class="caret" class:open={!collapsed[e.path]}><ChevronRight size={13} /></span>
+          <span class="ico folder">{#if collapsed[e.path]}<Folder size={15} />{:else}<FolderOpen size={15} />{/if}</span>
+          <span class="name">{e.name}</span>
         </button>
         {#if !collapsed[e.path]}
           <Tree entries={e.children} {active} {main} depth={depth + 1} {onOpen} {onContext} />
         {/if}
       {:else}
+        {@const k = kind(e.name)}
         <button
           class="row"
           class:on={e.path === active}
           class:dim={!editable(e.name)}
-          aria-disabled={!editable(e.name)}
-          style:padding-left="{12 + depth * 14 + 12}px"
+          style:padding-left="{8 + depth * 14 + 15}px"
+          title={editable(e.name) ? e.path : `${e.path} (not a text file)`}
           onclick={() => editable(e.name) && onOpen(e.path)}
           oncontextmenu={(ev) => context(ev, e)}
-          title={e.path === main ? "Main file" : e.path}
         >
-          {e.name}{#if e.path === main}<span class="main">main</span>{/if}
+          <span class="ico {k}">
+            {#if k === "tex"}<FileText size={15} />{:else if k === "bib"}<BookOpen size={15} />{:else if k === "image"}<FileImage size={15} />{:else if k === "code"}<Braces size={15} />{:else if k === "config"}<Settings size={15} />{:else}<File size={15} />{/if}
+          </span>
+          <span class="name">{e.name}</span>
+          {#if e.path === main}<span class="main" title="Main document">main</span>{/if}
         </button>
       {/if}
     </li>
@@ -55,14 +77,25 @@
 <style>
   ul { list-style: none; margin: 0; padding: 0; }
   .row {
-    display: flex; align-items: center; gap: 4px; width: 100%;
+    display: flex; align-items: center; gap: 6px; width: 100%; height: 28px;
     border: none; border-radius: 0; background: none; text-align: left;
-    font: 12px var(--f-mono); color: var(--ink); padding-block: 3px; padding-right: 10px;
+    font: 13px var(--f-body); color: var(--chrome-ink); padding-right: 10px;
   }
-  .row:hover { background: color-mix(in srgb, var(--blue) 8%, transparent); }
-  .row.on { background: var(--blue-soft); color: var(--blue); box-shadow: inset 2px 0 var(--blue); }
-  .row.dir { color: var(--muted); }
-  .row.dim { color: var(--muted); opacity: 0.7; cursor: default; }
-  .caret { width: 10px; display: inline-block; }
-  .main { margin-left: auto; font-size: 10px; color: var(--blue); text-transform: uppercase; letter-spacing: 0.08em; }
+  .row:hover { background: var(--chrome-hover); }
+  .row.on { background: var(--chrome-active); color: #fff; box-shadow: inset 3px 0 var(--accent-on-dark); }
+  .row.dim { color: var(--chrome-muted); cursor: default; }
+  .row:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-on-dark); }
+  .caret { display: inline-flex; color: var(--chrome-muted); transition: transform 0.12s var(--ease); }
+  .caret.open { transform: rotate(90deg); }
+  .ico { display: inline-flex; flex: none; color: var(--chrome-muted); }
+  .ico.tex { color: var(--accent-on-dark); }
+  .ico.bib { color: #c7a2e0; }
+  .ico.image { color: #8fcf9f; }
+  .ico.folder { color: #d9b56a; }
+  .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .main {
+    font: 600 9.5px var(--f-body); letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--accent-on-dark); border: 1px solid color-mix(in srgb, var(--accent-on-dark) 45%, transparent);
+    border-radius: 3px; padding: 0 4px; line-height: 14px;
+  }
 </style>

@@ -6,7 +6,8 @@ export interface Session {
   tabs: string[];
   active: string | null;
   line: number;
-  pdf: { zoom: number; scroll: number } | null;
+  /** `fit` replaced an older `zoom` field; sessions with only `zoom` are ignored. */
+  pdf: { fit: "width" | "page" | number; scroll: number } | null;
 }
 
 let store: Promise<Store> | null = null;

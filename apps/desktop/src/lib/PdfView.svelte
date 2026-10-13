@@ -1,7 +1,11 @@
+<script lang="ts" module>
+  export type Fit = "width" | "page" | number;
+</script>
+
 <script lang="ts">
   // Renders the build's PDF with PDF.js. A new PDF replaces the old one page
   // by page in place, so the reader keeps their position across rebuilds.
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import * as pdfjs from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
   import type { PDFDocumentProxy } from "pdfjs-dist";
@@ -13,15 +17,18 @@
   interface Props {
     /** Called when the user double-clicks or Ctrl/Cmd-clicks a point. Coordinates are PDF points from the top-left. */
     onSourceClick: (page: number, x: number, y: number) => void;
+    pageCount?: number;
+    currentPage?: number;
+    /** Current scale in percent of the PDF's real size, for display. */
+    percent?: number;
   }
-  let { onSourceClick }: Props = $props();
+  let { onSourceClick, pageCount = $bindable(0), currentPage = $bindable(1), percent = $bindable(100) }: Props = $props();
 
   let scroller: HTMLDivElement;
   let pagesEl = $state<HTMLDivElement>()!;
   let doc: PDFDocumentProxy | null = null;
-  let zoom = $state(1);
-  let pageCount = $state(0);
-  let currentPage = $state(1);
+  /** "width" and "page" fit the pane; a number is a fixed scale (1 = 100%). */
+  let fit = $state<Fit>("width");
   let highlight = $state<{ page: number; left: number; top: number; width: number; height: number } | null>(null);
   let loadSeq = 0;
 
@@ -29,9 +36,15 @@
   const scales: number[] = [];
   const dpr = () => window.devicePixelRatio || 1;
 
-  function fitScale(pageWidthPts: number) {
-    const available = Math.max(200, scroller.clientWidth - 48);
-    return (available / pageWidthPts) * zoom;
+  /** PDF points are 1/72 in; CSS pixels are 1/96 in. */
+  const PT = 96 / 72;
+
+  function scaleFor(w: number, h: number) {
+    const availW = Math.max(160, scroller.clientWidth - 48);
+    const availH = Math.max(160, scroller.clientHeight - 40);
+    if (fit === "width") return availW / w;
+    if (fit === "page") return Math.min(availW / w, availH / h);
+    return fit * PT;
   }
 
   export async function load(data: Uint8Array) {
@@ -63,8 +76,9 @@
       const page = await doc.getPage(n);
       if (seq !== loadSeq) return;
       const base = page.getViewport({ scale: 1 });
-      const scale = fitScale(base.width);
+      const scale = scaleFor(base.width, base.height);
       scales[n - 1] = scale;
+      if (n === 1) percent = Math.round((scale / PT) * 100);
 
       let wrap = pagesEl.children[n - 1] as HTMLDivElement | undefined;
       if (!wrap) {
@@ -90,13 +104,13 @@
     }
   }
 
-  export function getPosition() {
-    return { zoom, scroll: scroller.scrollTop / Math.max(1, scroller.scrollHeight) };
+  export function getPosition(): { fit: Fit; scroll: number } {
+    return { fit, scroll: scroller.scrollTop / Math.max(1, scroller.scrollHeight) };
   }
 
   /** Restores zoom and scroll; applied after the next PDF loads if none is shown yet. */
-  export async function setPosition(pos: { zoom: number; scroll: number }) {
-    zoom = pos.zoom;
+  export async function setPosition(pos: { fit: Fit; scroll: number }) {
+    fit = pos.fit;
     if (doc) await renderAll(loadSeq);
     scroller.scrollTop = pos.scroll * scroller.scrollHeight;
     pendingScroll = doc ? null : pos.scroll;
@@ -151,28 +165,50 @@
     }
   }
 
-  async function setZoom(z: number) {
+  /** Changes the zoom, keeping the same part of the document in view. */
+  export async function setFit(next: Fit) {
     const ratio = scroller.scrollTop / Math.max(1, scroller.scrollHeight);
-    zoom = Math.min(3, Math.max(0.4, z));
+    fit = typeof next === "number" ? Math.min(4, Math.max(0.25, next)) : next;
     await renderAll(loadSeq);
     scroller.scrollTop = ratio * scroller.scrollHeight;
   }
+
+  export function zoomBy(factor: number) {
+    return setFit(Math.round((percent / 100) * factor * 20) / 20);
+  }
+
+  export function gotoPage(n: number) {
+    const el = pagesEl.children[Math.max(0, Math.min(pageCount - 1, n - 1))] as HTMLElement | undefined;
+    if (el) scroller.scrollTo({ top: el.offsetTop - 12, behavior: "smooth" });
+  }
+
+  function onWheel(e: WheelEvent) {
+    // Ctrl+wheel zooms, like a browser's PDF viewer.
+    if (!e.ctrlKey || !doc) return;
+    e.preventDefault();
+    zoomBy(e.deltaY < 0 ? 1.1 : 1 / 1.1);
+  }
+
+  // Fitted layouts follow the pane's size (window resize, splitter drag).
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  onMount(() => {
+    let lastWidth = scroller.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (typeof fit === "number" || !doc || Math.abs(scroller.clientWidth - lastWidth) < 4) return;
+      lastWidth = scroller.clientWidth;
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => setFit(fit), 120);
+    });
+    ro.observe(scroller);
+    return () => ro.disconnect();
+  });
 
   onDestroy(() => doc?.loadingTask.destroy());
 </script>
 
 <div class="pdf" class:dark-pages={settings.pdfDark}>
-  <div class="bar">
-    <span>{pageCount ? `page ${currentPage} / ${pageCount}` : "no PDF yet"}</span>
-    <div class="zoom">
-      <button onclick={() => setZoom(zoom - 0.1)} aria-label="Zoom out">−</button>
-      <span>{Math.round(zoom * 100)}%</span>
-      <button onclick={() => setZoom(zoom + 0.1)} aria-label="Zoom in">+</button>
-      <button onclick={() => setZoom(1)}>Fit width</button>
-    </div>
-  </div>
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div class="scroller" bind:this={scroller} onscroll={onScroll} onclick={handleClick} ondblclick={handleClick}>
+  <div class="scroller" bind:this={scroller} onscroll={onScroll} onclick={handleClick} ondblclick={handleClick} onwheel={onWheel}>
     <div class="pages" bind:this={pagesEl}></div>
     {#if highlight}
       {@const wrap = pagesEl.children[highlight.page - 1] as HTMLElement | undefined}
@@ -187,23 +223,19 @@
       {/if}
     {/if}
     {#if !pageCount}
-      <p class="empty">The PDF appears here after the first build.<br />Double-click the PDF to jump to the source. Press <kbd>Ctrl</kbd>+<kbd>J</kbd> in the editor to jump to the PDF.</p>
+      <div class="empty">
+        <p><b>Your PDF appears here</b> after the first compile.</p>
+        <p>Double-click in the PDF to jump to the source. Press <kbd>Ctrl</kbd> <kbd>J</kbd> in the editor to find the current line here.</p>
+      </div>
     {/if}
   </div>
 </div>
 
 <style>
   .pdf { display: flex; flex-direction: column; height: 100%; background: var(--pdf-ground); min-width: 0; }
-  .bar {
-    display: flex; align-items: center; gap: 10px; padding: 5px 12px;
-    background: var(--chrome); border-bottom: 1px solid var(--rule);
-    font: 12px var(--f-mono); color: var(--muted);
-  }
-  .zoom { margin-left: auto; display: flex; gap: 6px; align-items: center; }
-  .zoom button { padding: 2px 8px; }
   .scroller { flex: 1; overflow: auto; position: relative; }
-  .pages { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 20px 24px 40px; }
-  .pages :global(.page) { position: relative; background: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22); flex: none; }
+  .pages { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 18px 24px 40px; }
+  .pages :global(.page) { position: relative; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 6px 18px -6px rgba(0, 0, 0, 0.25); flex: none; }
   .pages :global(.page canvas) { width: 100%; height: 100%; display: block; }
   /* Dark pages only while the app itself is dark. */
   @media (prefers-color-scheme: dark) {
@@ -212,11 +244,15 @@
   :global(:root[data-theme="dark"]) .dark-pages :global(.page canvas) { filter: invert(0.92) hue-rotate(180deg); }
   .sync {
     position: absolute; pointer-events: none; border-radius: 3px;
-    background: color-mix(in srgb, var(--blue) 22%, transparent);
-    outline: 1.5px solid var(--blue);
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    outline: 1.5px solid var(--accent);
     animation: fade 1.8s ease-out forwards;
   }
   @keyframes fade { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
-  .empty { position: absolute; inset: 40% 24px auto; text-align: center; color: var(--muted); margin: 0; line-height: 1.7; }
-  kbd { font-size: 11px; border: 1px solid var(--rule); border-radius: 3px; padding: 0 4px; background: var(--sheet); }
+  .empty {
+    position: absolute; top: 34%; left: 50%; transform: translateX(-50%); width: min(340px, 80%);
+    text-align: center; color: var(--muted); line-height: 1.6;
+  }
+  .empty p { margin: 0 0 8px; }
+  .empty b { color: var(--ink-2); font-weight: 600; }
 </style>

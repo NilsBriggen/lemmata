@@ -17,7 +17,7 @@ describe("Lemmata", () => {
     await openProject(path.join(fixtures, "article"));
     await expect($(".cm-content")).toHaveText(expect.stringContaining("\\documentclass"));
     await $(".pages .page canvas").waitForExist({ timeout: 90_000 });
-    await expect($("header .pill.ok")).toHaveText(expect.stringContaining("built in"));
+    await expect($(".status .ok")).toHaveText(expect.stringContaining("Compiled in"));
   });
 
   it("rebuilds after an edit and lists problems", async () => {
@@ -28,14 +28,18 @@ describe("Lemmata", () => {
     await browser.keys("\\undefinedcommandxyz");
     await browser.keys("Escape"); // close completion so Enter adds a line
     await browser.keys("Enter");
-    await $(".problems .row.error").waitForExist({ timeout: 60_000 });
-    await expect($(".problems")).toHaveText(expect.stringContaining("Undefined control sequence"));
+    // The error shows in the Logs view (a PDF still exists, so it doesn't open by itself).
+    await $(".logs .badge.error").waitForExist({ timeout: 60_000 });
+    if ((await $("button.logs").getAttribute("aria-pressed")) !== "true") await $("button.logs").click();
+    await expect($(".card.error")).toHaveText(expect.stringContaining("Undefined control sequence"));
+    await $(".cm-content").click();
     await browser.keys(["Control", "z"]);
   });
 
   it("explains a missing package", async () => {
     await openProject(path.join(fixtures, "missing-package"));
-    await $(".problems .row.error").waitForExist({ timeout: 60_000 });
-    await expect($(".problems")).toHaveText(expect.stringContaining("lemmata-does-not-exist.sty"));
+    // No PDF, so the logs open by themselves, like Overleaf.
+    await $(".card.error").waitForExist({ timeout: 60_000 });
+    await expect($(".card.error")).toHaveText(expect.stringContaining("lemmata-does-not-exist.sty"));
   });
 });

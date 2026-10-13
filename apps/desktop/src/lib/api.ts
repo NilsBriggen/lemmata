@@ -131,7 +131,12 @@ export const api = {
   createProject: (template: string, parent: string, name: string) =>
     invoke<string>("create_project", { template, parent, name }),
   importOverleafZip: (zip: string, parent: string, name: string) =>
-    invoke<string>("import_overleaf_zip", { zip, parent, name }),
+    invoke<string[]>("import_overleaf_zip", { zip, parent, name }),
+  inspectZip: (zip: string) => invoke<{ bulk: boolean; projects: string[] }>("inspect_zip", { zip }),
+  createExample: () => invoke<string>("create_example"),
+  stopBuild: () => invoke<void>("stop_build"),
+  readLog: () => invoke<string>("read_log"),
+  addFiles: (paths: string[], folder: string) => invoke<string[]>("add_files", { paths, folder }),
   saveThumbnail: (root: string, png: Uint8Array) =>
     invoke<void>("save_thumbnail", png, { headers: { "x-project-root": encodeURIComponent(root) } }),
   loadThumbnail: async (root: string) => new Uint8Array(await invoke<ArrayBuffer>("load_thumbnail", { root })),

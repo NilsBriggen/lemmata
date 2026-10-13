@@ -3,6 +3,9 @@
   // the install itself: it shows the command for this system and checks again.
   import { open } from "@tauri-apps/plugin-dialog";
   import { untrack } from "svelte";
+  import CircleCheck from "@lucide/svelte/icons/circle-check";
+  import CircleX from "@lucide/svelte/icons/circle-x";
+  import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import { updateSettings } from "./settings.svelte";
   import type { TexStatus } from "./api";
   import CommandBox from "./CommandBox.svelte";
@@ -35,16 +38,9 @@
 </script>
 
 <div class="onb">
-  <aside class="steps">
-    <span class="brand">Lemmata</span>
-    <ol>
-      <li class="done">Welcome</li>
-      <li class="on">TeX Live</li>
-      <li>First project</li>
-    </ol>
-  </aside>
-
-  <main>
+  <div class="top"><span class="brand">Lemmata</span></div>
+  <main class="card">
+    <span class="eyebrow">One step before you start</span>
     <h1>{found === 0 ? "TeX Live isn't installed yet" : "TeX Live is incomplete"}</h1>
     <p class="lede">
       Lemmata uses the TeX installation on your computer to build PDFs. We looked in your PATH and the usual install
@@ -55,7 +51,7 @@
     <div class="checks">
       {#each status.detection.tools as t (t.name)}
         <div class="chk" class:yes={t.path} class:no={!t.path} class:optional={!t.required}>
-          <b>{t.path ? "✓" : "✗"} {t.name}</b>
+          <b>{#if t.path}<CircleCheck size={14} />{:else}<CircleX size={14} />{/if} {t.name}</b>
           <span>{t.path ? "found" : t.required ? "required" : "optional"}</span>
         </div>
       {/each}
@@ -91,44 +87,44 @@
 
     <footer>
       <span>Installed somewhere else? <button class="link" onclick={chooseFolder}>Choose the TeX bin folder</button></span>
-      <button class="primary" disabled={checking} onclick={() => onRecheck()}>{checking ? "Checking…" : "Check again"}</button>
+      <button class="btn primary lg" disabled={checking} onclick={() => onRecheck()}><span class:spin={checking}><RefreshCw size={16} /></span> {checking ? "Checking…" : "Check again"}</button>
     </footer>
   </main>
 </div>
 
 <style>
-  .onb { display: grid; grid-template-columns: 220px 1fr; height: 100%; }
-  .steps { background: var(--chrome); border-right: 1px solid var(--rule); padding: 24px 16px; }
-  .brand { font: 20px var(--f-display); display: block; margin: 0 0 24px 10px; }
-  ol { list-style: none; margin: 0; padding: 0; counter-reset: s; display: flex; flex-direction: column; gap: 4px; }
-  li { counter-increment: s; padding: 7px 10px; border-radius: 5px; color: var(--muted); display: flex; gap: 10px; align-items: center; }
-  li::before {
-    content: counter(s); width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--rule);
-    display: grid; place-items: center; font: 500 11px var(--f-mono);
+  .onb {
+    height: 100%; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 24px 24px 40px;
+    background: radial-gradient(1200px 500px at 50% -10%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%), var(--app);
   }
-  li.done::before { content: "✓"; color: var(--ok); border-color: var(--ok); }
-  li.on { background: var(--sheet); color: var(--ink); font-weight: 500; }
-  li.on::before { border-color: var(--blue); color: var(--blue); }
-
-  main { padding: 36px 44px; overflow: auto; display: flex; flex-direction: column; gap: 16px; max-width: 980px; }
-  h1 { font: 400 26px var(--f-display); margin: 0; }
-  .lede { color: var(--muted); max-width: 64ch; margin: 0; font-size: 14px; }
-  .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
-  .chk { border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; font: 12px var(--f-mono); background: var(--sheet); }
-  .chk span { color: var(--muted); font-size: 11px; }
-  .chk.yes b { color: var(--ok); }
-  .chk.no:not(.optional) b { color: var(--mark); }
-  .chk.no.optional b { color: var(--muted); }
-  .tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--rule); }
-  .tabs button { border: none; border-radius: 0; background: none; color: var(--muted); padding: 8px 12px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
-  .tabs button.on { color: var(--ink); border-bottom-color: var(--blue); }
-  .tabs i { font-style: normal; color: var(--blue); }
-  .size { display: flex; gap: 10px; }
-  .size button { flex: 1; text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; font-weight: 400; }
-  .size button.on { border-color: var(--blue); background: var(--blue-soft); }
-  .size span { color: var(--muted); }
+  .top { width: min(860px, 100%); margin-bottom: 5vh; }
+  .brand { font: 22px var(--f-display); }
+  .card {
+    width: min(860px, 100%); background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: var(--shadow); padding: 32px 36px 26px; display: flex; flex-direction: column; gap: 16px;
+  }
+  .eyebrow { font: 600 11px var(--f-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+  h1 { font: 400 30px var(--f-display); margin: -6px 0 0; }
+  .lede { color: var(--muted); max-width: 64ch; margin: 0; font-size: 14.5px; line-height: 1.55; }
+  .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
+  .chk { border: 1px solid var(--border); border-radius: var(--r); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; background: var(--surface-2); }
+  .chk b { display: flex; align-items: center; gap: 6px; font: 500 12.5px var(--f-mono); color: var(--ink); }
+  .chk span { color: var(--muted); font-size: 11.5px; }
+  .chk.yes b :global(svg) { color: var(--ok); }
+  .chk.no:not(.optional) { border-color: color-mix(in srgb, var(--error) 40%, var(--border)); background: var(--error-soft); }
+  .chk.no:not(.optional) b :global(svg) { color: var(--error); }
+  .chk.no.optional b :global(svg) { color: var(--faint); }
+  .tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+  .tabs button { border: none; background: none; color: var(--muted); height: 36px; padding: 0 12px; border-bottom: 2px solid transparent; margin-bottom: -1px; font: 500 13px var(--f-body); }
+  .tabs button.on { color: var(--ink); border-bottom-color: var(--accent); }
+  .tabs i { font-style: normal; color: var(--accent); }
+  .size { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .size button { text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: var(--r-lg); border: 1px solid var(--border); background: var(--surface); color: var(--ink); }
+  .size button.on { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  .size span { color: var(--muted); font-size: 12.5px; }
   .note { color: var(--muted); margin: 0; }
-  footer { margin-top: 8px; display: flex; align-items: center; gap: 12px; }
+  footer { margin-top: 6px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
   footer > span { margin-right: auto; color: var(--muted); }
-  .link { border: none; background: none; color: var(--blue); padding: 0; text-decoration: underline; font-weight: 400; }
+  footer .btn span { display: inline-flex; }
+  .link { border: none; background: none; color: var(--accent); padding: 0; text-decoration: underline; text-underline-offset: 3px; }
 </style>

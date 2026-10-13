@@ -13,6 +13,16 @@ export interface Settings {
   /** A TeX bin folder chosen during onboarding. */
   texDir: string | null;
   pdfDark: boolean;
+  /** Which panes the editor screen shows, like Overleaf's layout menu. */
+  layout: "split" | "editor" | "pdf";
+  sidebarOpen: boolean;
+  sidebarWidth: number;
+  /** Width of the PDF pane in split layout. */
+  pdfWidth: number;
+  /** Spell-check language for projects that don't choose one. */
+  spellDefault: string;
+  libraryView: "list" | "grid";
+  firstRunDone: boolean;
 }
 
 export const DEFAULTS: Settings = {
@@ -24,6 +34,13 @@ export const DEFAULTS: Settings = {
   checkForUpdates: true,
   texDir: null,
   pdfDark: false,
+  layout: "split",
+  sidebarOpen: true,
+  sidebarWidth: 240,
+  pdfWidth: 560,
+  spellDefault: "auto",
+  libraryView: "list",
+  firstRunDone: false,
 };
 
 export const settings: Settings = $state({ ...DEFAULTS });

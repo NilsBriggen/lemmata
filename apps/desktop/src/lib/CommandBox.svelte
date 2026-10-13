@@ -47,5 +47,5 @@
   code { flex: 1; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; user-select: text; }
   .actions { display: flex; gap: 6px; flex: none; }
   .actions button { background: #1d252c; color: #d5dde3; border-color: #2c343d; }
-  .error { color: var(--mark); margin: 4px 0 0; font-size: 12px; }
+  .error { color: var(--error); margin: 4px 0 0; font-size: 12px; }
 </style>
