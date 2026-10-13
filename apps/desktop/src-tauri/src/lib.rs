@@ -1,6 +1,7 @@
 //! Tauri commands the frontend calls. All file paths crossing the IPC
 //! boundary are relative to the open project's root.
 
+mod history;
 mod lsp;
 mod projects;
 mod terminal;
@@ -18,20 +19,20 @@ use tauri::{Emitter, Manager, State};
 use tokio::sync::oneshot;
 
 #[derive(Default)]
-struct AppState {
+pub(crate) struct AppState {
     detection: Mutex<Option<Detection>>,
     /// Folders the user pointed us at in onboarding.
     extra_tex_dirs: Mutex<Vec<PathBuf>>,
-    project: Mutex<Option<Project>>,
+    pub(crate) project: Mutex<Option<Project>>,
     /// Sending on this cancels the build in progress.
     cancel_build: Mutex<Option<oneshot::Sender<()>>>,
     lsp: tokio::sync::Mutex<Option<lsp::Server>>,
     lsp_generation: std::sync::atomic::AtomicU64,
 }
 
-type CmdResult<T> = Result<T, String>;
+pub(crate) type CmdResult<T> = Result<T, String>;
 
-fn err(e: impl std::fmt::Display) -> String {
+pub(crate) fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
@@ -418,7 +419,6 @@ fn open_install_terminal(state: State<AppState>, request: InstallRequest) -> Cmd
     terminal::open_with_command(&command)
 }
 
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -444,6 +444,12 @@ pub fn run() {
             import_overleaf_zip,
             save_thumbnail,
             load_thumbnail,
+            history::history_status,
+            history::history_enable,
+            history::history_snapshot,
+            history::history_list,
+            history::history_file,
+            history::history_restore,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lemmata");

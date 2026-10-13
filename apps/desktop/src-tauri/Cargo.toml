@@ -19,6 +19,7 @@ lemmata-log.workspace = true
 lemmata-project.workspace = true
 lemmata-synctex.workspace = true
 lemmata-pkgmap.workspace = true
+lemmata-history.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

@@ -86,6 +86,14 @@ export interface ProjectInfo {
 
 export interface Heading { level: number; title: string; file: string; line: number }
 
+export type HistoryStatus = { state: "on" } | { state: "not-a-repo" } | { state: "no-git"; message: string };
+export interface Snapshot {
+  id: string;
+  time: number;
+  label: string;
+  changes: { status: "added" | "modified" | "deleted"; path: string }[];
+}
+
 export interface Template { id: string; name: string; description: string }
 
 export interface PdfBox { page: number; x: number; y: number; h: number; v: number; width: number; height: number }
@@ -105,6 +113,12 @@ export const api = {
   synctexBackward: (page: number, x: number, y: number) =>
     invoke<SourceHit | null>("synctex_backward", { page, x, y }),
   outline: () => invoke<Heading[]>("outline"),
+  historyStatus: () => invoke<HistoryStatus>("history_status"),
+  historyEnable: () => invoke<void>("history_enable"),
+  historySnapshot: (label: string) => invoke<string | null>("history_snapshot", { label }),
+  historyList: () => invoke<Snapshot[]>("history_list"),
+  historyFile: (id: string, path: string) => invoke<string | null>("history_file", { id, path }),
+  historyRestore: (id: string, path: string) => invoke<void>("history_restore", { id, path }),
   listTemplates: () => invoke<Template[]>("list_templates"),
   createProject: (template: string, parent: string, name: string) =>
     invoke<string>("create_project", { template, parent, name }),

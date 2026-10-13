@@ -1,0 +1,15 @@
+[package]
+name = "lemmata-history"
+description = "Project snapshots on a private git ref"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+which.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

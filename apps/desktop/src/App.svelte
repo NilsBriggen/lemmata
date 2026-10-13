@@ -9,6 +9,7 @@
   import Problems from "./lib/Problems.svelte";
   import Outline from "./lib/Outline.svelte";
   import ProjectSettings from "./lib/ProjectSettings.svelte";
+  import HistoryPanel from "./lib/HistoryPanel.svelte";
   import { startLanguageServer, type LanguageServer } from "./lib/lsp";
   import { forgetProject, recentProjects, rememberProject } from "./lib/recent";
 
@@ -30,6 +31,12 @@
   /** Shown when several files could be the main file and none is chosen. */
   let choosingMain = $state(false);
   let settingsOpen = $state(false);
+  let historyOpen = $state(false);
+  let historyVersion = $state(0);
+  /** Label input for a manual snapshot (Ctrl+Shift+S); null when closed. */
+  let snapshotLabel = $state<string | null>(null);
+  let lastSnapshot = Date.now();
+  const AUTO_SNAPSHOT_MS = 10 * 60 * 1000;
   let lastThumbnail = 0;
 
   let building = $state(false);
@@ -88,6 +95,7 @@
     await openFile(project.main);
     refreshOutline();
     lastThumbnail = 0;
+    lastSnapshot = 0; // the first save of a session takes a snapshot
     choosingMain = project.main_candidates.length > 1 && !project.config.main;
     // Show the existing PDF right away, then rebuild.
     api.readPdf().then((b) => pdf?.load(b)).catch(() => {});
@@ -160,6 +168,7 @@
       dirty[path] = false;
       runBuild();
       if (path.endsWith(".tex")) refreshOutline();
+      if (Date.now() - lastSnapshot > AUTO_SNAPSHOT_MS) takeSnapshot("Automatic snapshot");
     } catch (e) {
       openError = errorMessage(e);
     }
@@ -191,6 +200,37 @@
     } finally {
       if (seq === buildSeq) building = false;
     }
+  }
+
+  async function takeSnapshot(label: string) {
+    lastSnapshot = Date.now();
+    try {
+      if (await api.historySnapshot(label)) historyVersion++;
+    } catch {
+      // History is off for this project (not a repo, or no git): nothing to do.
+    }
+  }
+
+  async function confirmSnapshot(e: SubmitEvent) {
+    e.preventDefault();
+    const label = snapshotLabel?.trim() || "Snapshot";
+    snapshotLabel = null;
+    await saveAll();
+    await takeSnapshot(label);
+    historyOpen = true;
+  }
+
+  async function currentText(path: string) {
+    return contents.get(path) ?? api.readText(path).catch(() => null);
+  }
+
+  async function onRestored(path: string) {
+    contents.delete(path);
+    editor?.forget(path);
+    dirty[path] = false;
+    if (active === path || tabs.includes(path)) await openFile(path);
+    historyVersion++;
+    runBuild();
   }
 
   /** Refreshes the library thumbnail at most every two minutes. */
@@ -260,7 +300,10 @@
 
   function onKey(e: KeyboardEvent) {
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.key === "s") {
+    if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      if (project) snapshotLabel = "";
+    } else if (mod && e.key === "s") {
       e.preventDefault();
       saveAll();
     } else if (mod && e.key === "Enter") {
@@ -304,6 +347,7 @@
           <option value="lualatex">LuaLaTeX</option>
         </select>
         {#if !lspAvailable}<span class="pill warn" title="texlab wasn't found, so completion and hover are off">no completion</span>{/if}
+        <button class:on={historyOpen} onclick={() => (historyOpen = !historyOpen)}>History</button>
         <button onclick={() => (settingsOpen = true)}>Settings</button>
         <button onclick={closeProject}>Close project</button>
         <button class="primary" onclick={() => saveAll().then(runBuild)} title="Ctrl+Enter">Recompile</button>
@@ -336,7 +380,10 @@
       </section>
 
       <section class="preview">
-        <div class="pdfwrap"><PdfView bind:this={pdf} onSourceClick={syncBackward} /></div>
+        <div class="pdfwrap" class:hidden={historyOpen}><PdfView bind:this={pdf} onSourceClick={syncBackward} /></div>
+        {#if historyOpen}
+          <div class="pdfwrap"><HistoryPanel version={historyVersion} {currentText} {onRestored} onClose={() => (historyOpen = false)} /></div>
+        {/if}
         <div class="problems" class:open={problemsOpen}>
           <button class="ph" onclick={() => (problemsOpen = !problemsOpen)}>
             <span>{problemsOpen ? "▾" : "▸"} Problems</span>
@@ -352,6 +399,21 @@
 
 {#if settingsOpen && project}
   <ProjectSettings {project} onSave={saveSettings} onClose={() => (settingsOpen = false)} />
+{/if}
+
+{#if snapshotLabel !== null}
+  <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && (snapshotLabel = null)}>
+    <form class="dialog" onsubmit={confirmSnapshot}>
+      <h2>Save a snapshot</h2>
+      <p>Give it a name you'll recognise later, like "Sent to supervisor".</p>
+      <!-- svelte-ignore a11y_autofocus -->
+      <input id="snapshot-label" class="label-input" bind:value={snapshotLabel} placeholder="Snapshot" autofocus />
+      <div class="actions">
+        <button type="button" onclick={() => (snapshotLabel = null)}>Cancel</button>
+        <button class="primary" type="submit">Save snapshot</button>
+      </div>
+    </form>
+  </div>
 {/if}
 
 {#if choosingMain && project}
@@ -398,6 +460,10 @@
   .err-bar button { margin-left: auto; }
   .preview { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .pdfwrap { flex: 1; min-height: 0; }
+  .pdfwrap.hidden { display: none; }
+  header button.on { border-color: var(--blue); color: var(--blue); }
+  .label-input { width: 100%; font: 13px var(--f-body); padding: 7px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--sheet); color: var(--ink); }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
   .problems { border-top: 1px solid var(--rule); background: var(--sheet); flex: none; max-height: 40%; display: flex; flex-direction: column; }
   .backdrop { position: fixed; inset: 0; background: rgba(10, 15, 20, 0.45); display: grid; place-items: center; padding: 24px; z-index: 10; }
   .dialog { width: min(520px, 100%); background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: 22px 24px; }

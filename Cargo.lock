@@ -1781,6 +1781,7 @@ dependencies = [
 name = "lemmata-desktop"
 version = "0.0.1"
 dependencies = [
+ "lemmata-history",
  "lemmata-log",
  "lemmata-pkgmap",
  "lemmata-project",
@@ -1796,6 +1797,16 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "which",
  "zip",
+]
+
+[[package]]
+name = "lemmata-history"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "which",
 ]
 
 [[package]]
