@@ -1,15 +1,24 @@
-// Drag state shared by the nested Tree components: which entry is being
-// dragged and which folder it's over. Pointer events are used instead of
+// Drag state shared by the nested Tree components: which entries are being
+// dragged and which folder they're over. Pointer events are used instead of
 // HTML5 drag and drop, which Tauri turns off on Windows.
-export const dragState = $state({ active: false, path: "", name: "", x: 0, y: 0, target: null as string | null });
+import { canMove, parentOf as parent } from "./treeModel";
 
-export const parentOf = (path: string) => path.split("/").slice(0, -1).join("/");
+export const dragState = $state({
+  active: false,
+  paths: [] as string[],
+  /** What the ghost shows: a name, or "3 items". */
+  name: "",
+  x: 0,
+  y: 0,
+  target: null as string | null,
+  /** A folder an OS file drag is hovering over ("" is the project root). */
+  external: null as string | null,
+});
+
+export const parentOf = parent;
 
 /** Can `path` be moved into `folder` ("" is the project root)? */
-export function canDrop(path: string, folder: string): boolean {
-  if (folder === parentOf(path)) return false;
-  return folder !== path && !folder.startsWith(path + "/");
-}
+export const canDrop = (path: string, folder: string) => canMove([path], folder);
 
 let justDragged = false;
 /** True right after a drag ends, so the click that follows can be ignored. */
@@ -18,23 +27,27 @@ export const wasDrag = () => justDragged;
 export function startDrag(
   e: PointerEvent,
   entry: { path: string; name: string },
-  onDrop: (path: string, folder: string) => void,
+  /** The paths that travel with this row: the selection when it is part of it. */
+  paths: () => string[],
+  onDrop: (paths: string[], folder: string) => void,
 ) {
-  if (e.button !== 0) return;
+  if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
   const [sx, sy] = [e.clientX, e.clientY];
   let started = false;
+  let dragged: string[] = [];
   const move = (ev: PointerEvent) => {
     if (!started && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6) return;
+    if (!started) dragged = paths();
     started = true;
     const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>("[data-drop]");
     const folder = el?.dataset.drop ?? null;
     Object.assign(dragState, {
       active: true,
-      path: entry.path,
-      name: entry.name,
+      paths: dragged,
+      name: dragged.length > 1 ? `${dragged.length} items` : entry.name,
       x: ev.clientX,
       y: ev.clientY,
-      target: folder !== null && canDrop(entry.path, folder) ? folder : null,
+      target: folder !== null && canMove(dragged, folder) ? folder : null,
     });
   };
   const up = () => {
@@ -47,7 +60,7 @@ export function startDrag(
     dragState.target = null;
     justDragged = true;
     setTimeout(() => (justDragged = false), 60);
-    if (target !== null) onDrop(entry.path, target);
+    if (target !== null) onDrop(dragged, target);
   };
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", up);

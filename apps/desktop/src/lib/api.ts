@@ -65,6 +65,8 @@ export interface TexStatus {
 
 export type Engine = "pdflatex" | "xelatex" | "lualatex";
 
+export interface Target { name: string; main: string; engine?: Engine | null }
+
 export interface Config {
   main: string | null;
   engine: Engine;
@@ -77,9 +79,15 @@ export interface Config {
   draft?: boolean;
   stop_on_error?: boolean;
   timeout_secs?: number;
+  /** Named build presets: another main file, and maybe another compiler. */
+  targets?: Target[];
 }
 
-export interface Entry { name: string; path: string; is_dir: boolean; children: Entry[] }
+export interface Entry { name: string; path: string; is_dir: boolean; size: number; modified: number; children: Entry[] }
+export type SymbolKind = "label" | "cite";
+export interface Occurrence { kind: SymbolKind; role: "def" | "use"; name: string; file: string; line: number; col: number; text: string }
+export interface Moved { from: string; to: string }
+export interface TrashBatch { id: string; paths: string[] }
 
 export interface ProjectInfo {
   root: string;
@@ -115,9 +123,10 @@ export interface WordCounts {
 export interface BibEntry { key: string; kind: string; title: string; authors: string; year: string; file: string }
 
 export interface SearchOptions { query: string; regex: boolean; case_sensitive: boolean; whole_word: boolean }
-export interface FileMatches { path: string; matches: { line: number; text: string; ranges: [number, number][] }[] }
+export interface FileMatches { path: string; matches: { line: number; text: string; ranges: [number, number][]; replaced?: string }[] }
+export interface ReplaceTarget { path: string; lines: number[] }
 
-export interface Template { id: string; name: string; description: string }
+export interface Template { id: string; name: string; description: string; /** Saved by the user, so it can be deleted. */ user?: boolean }
 
 export interface PdfBox { page: number; x: number; y: number; h: number; v: number; width: number; height: number }
 export interface SourceHit { path: string; line: number; inside_project: boolean }
@@ -139,6 +148,7 @@ export const api = {
   labels: () => invoke<LabelInfo[]>("labels"),
   wordCount: () => invoke<WordCounts>("word_count"),
   packageNames: () => invoke<string[]>("package_names"),
+  gitStatus: () => invoke<{ path: string; status: string }[]>("git_status"),
   historyStatus: () => invoke<HistoryStatus>("history_status"),
   historyEnable: () => invoke<void>("history_enable"),
   historySnapshot: (label: string) => invoke<string | null>("history_snapshot", { label }),
@@ -148,6 +158,8 @@ export const api = {
   historyCompare: (a: string, b: string) => invoke<Snapshot["changes"]>("history_compare", { a, b }),
   historyRelabel: (id: string, label: string) => invoke<void>("history_relabel", { id, label }),
   historyRestore: (id: string, path: string) => invoke<void>("history_restore", { id, path }),
+  saveAsTemplate: (name: string, description: string) => invoke<string>("save_as_template", { name, description }),
+  deleteTemplate: (id: string) => invoke<void>("delete_template", { id }),
   listTemplates: () => invoke<Template[]>("list_templates"),
   createProject: (template: string, parent: string, name: string) =>
     invoke<string>("create_project", { template, parent, name }),
@@ -171,9 +183,9 @@ export const api = {
   savePastedImage: (png: Uint8Array) => invoke<string>("save_pasted_image", png),
   hasPackage: (pkg: string) => invoke<boolean>("has_package", { package: pkg }),
   addPackage: (pkg: string) => invoke<void>("add_package", { package: pkg }),
-  searchProject: (options: SearchOptions) => invoke<FileMatches[]>("search_project", { options }),
-  replaceInFiles: (options: SearchOptions, replacement: string, paths: string[]) =>
-    invoke<number>("replace_in_files", { options, replacement, paths }),
+  searchProject: (options: SearchOptions, replacement?: string) => invoke<FileMatches[]>("search_project", { options, replacement: replacement ?? null }),
+  replaceInFiles: (options: SearchOptions, replacement: string, targets: ReplaceTarget[]) =>
+    invoke<number>("replace_in_files", { options, replacement, targets }),
   createPath: (path: string, dir: boolean) => invoke<void>("create_path", { path, dir }),
   copyPath: (from: string, to: string) => invoke<void>("copy_path", { from, to }),
   readBinary: async (path: string) => new Uint8Array(await invoke<ArrayBuffer>("read_binary", { path })),
@@ -181,7 +193,17 @@ export const api = {
   findReferences: (path: string) => invoke<{ file: string; line: number; text: string }[]>("find_references", { path }),
   renamePath: (from: string, to: string, updateReferences: boolean) =>
     invoke<number>("rename_path", { from, to, updateReferences }),
+  movePaths: (paths: string[], folder: string, updateReferences: boolean) =>
+    invoke<Moved[]>("move_paths", { paths, folder, updateReferences }),
+  trashPaths: (paths: string[]) => invoke<TrashBatch>("trash_paths", { paths }),
+  restoreTrash: (id: string) => invoke<string[]>("restore_trash", { id }),
+  purgeTrash: (days: number) => invoke<number>("purge_trash", { days }),
+  unusedFiles: () => invoke<string[]>("unused_files"),
+  symbolDefs: () => invoke<Occurrence[]>("symbol_defs"),
+  symbolUses: (kind: SymbolKind, name: string) => invoke<Occurrence[]>("symbol_uses", { kind, name }),
+  renameSymbol: (kind: SymbolKind, old: string, newName: string) => invoke<string[]>("rename_symbol", { kind, old, new: newName }),
   exportPdf: (dest: string) => invoke<void>("export_pdf", { dest }),
+  exportZip: (dest: string, withPdf: boolean) => invoke<number>("export_zip", { dest, withPdf }),
   exportArxiv: (dest: string, strip: boolean) => invoke<number>("export_arxiv", { dest, strip }),
   zoteroStatus: () => invoke<"ready" | "starting" | "unavailable">("zotero_status"),
   zoteroPick: () => invoke<string[]>("zotero_pick"),

@@ -17,7 +17,10 @@
   import { latexCompletions, type Providers } from "./editor/completions";
   import { previews } from "./editor/mathCommands";
   import { renderTex } from "./writing/katexRender";
-  import { folding, foldKeymap } from "./editor/folding";
+  import { folding, foldKeymap, foldRange } from "./editor/folding";
+  import { snippetCompletions } from "./editor/snippets";
+  import { symbolAt } from "./writing/symbolAt";
+  import { foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
   import { formattingKeymap, toggleWrap } from "./editor/shortcuts";
   import { stex } from "@codemirror/legacy-modes/mode/stex";
   import { tags as t } from "@lezer/highlight";
@@ -43,8 +46,10 @@
     onWrapEnvironment?: () => void;
     /** Selection changed; the text is empty when nothing is selected. */
     onSelection?: (text: string) => void;
+    /** A section or environment was folded or unfolded. */
+    onFoldsChange?: () => void;
   }
-  let { onChange, onSyncRequest, onCursor, onAddWord, onPasteImage, onNeedsPackage, onPastedTable, onWrapEnvironment, onSelection }: Props = $props();
+  let { onChange, onSyncRequest, onCursor, onAddWord, onPasteImage, onNeedsPackage, onPastedTable, onWrapEnvironment, onSelection, onFoldsChange }: Props = $props();
 
   /** What completions can look up about the project; set by the app. */
   let providers: Providers | null = null;
@@ -197,6 +202,7 @@
                 () => providers,
                 async (ctx) => (lspFor ? serverCompletionSource(ctx) : null),
               ),
+              snippetCompletions(() => settings.snippets),
             ],
           })
         : [],
@@ -236,6 +242,7 @@
       ]),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) onChange(path, u.state.doc.toString());
+        if (u.transactions.some((tr) => tr.effects.some((e) => e.is(foldEffect) || e.is(unfoldEffect)))) onFoldsChange?.();
         if (u.selectionSet || u.docChanged) {
           onCursor?.(path, u.state.doc.lineAt(u.state.selection.main.head).number);
           const r = u.state.selection.main;
@@ -336,7 +343,41 @@
     }
     currentPath = path;
     view.setState(state);
+    const folds = pendingFolds.get(path);
+    if (folds) {
+      pendingFolds.delete(path);
+      applyFolds(view, folds);
+    }
     view.focus();
+  }
+
+  /** Folds waiting for their file to be opened (restored from the last session). */
+  const pendingFolds = new Map<string, number[]>();
+
+  function applyFolds(v: EditorView, lines: number[]) {
+    const effects = lines
+      .filter((n) => n >= 1 && n <= v.state.doc.lines)
+      .flatMap((n) => {
+        const line = v.state.doc.line(n);
+        const r = foldRange(v.state, line.from, line.to);
+        return r ? [foldEffect.of(r)] : [];
+      });
+    if (effects.length) v.dispatch({ effects });
+  }
+
+  /** Line numbers of the folded sections in the open file. */
+  export function foldedLines(): number[] {
+    if (!view) return [];
+    const v = view;
+    const out: number[] = [];
+    foldedRanges(v.state).between(0, v.state.doc.length, (from) => void out.push(v.state.doc.lineAt(from).number));
+    return out;
+  }
+
+  /** Folds these lines in `path`, now if it is open, otherwise when it opens. */
+  export function setFolds(path: string, lines: number[]) {
+    if (view && path === currentPath) applyFolds(view, lines);
+    else pendingFolds.set(path, lines);
   }
 
   /** Use a language server for files opened from now on; drops cached
@@ -377,6 +418,14 @@
 
   export function getView(): EditorView | undefined {
     return view;
+  }
+
+  /** The label or citation key under the cursor, if any. */
+  export function symbolAtCursor() {
+    if (!view) return null;
+    const head = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(head);
+    return symbolAt(line.text, head - line.from, currentPath?.endsWith(".bib") ?? false);
   }
 
   export function currentLine(): number {

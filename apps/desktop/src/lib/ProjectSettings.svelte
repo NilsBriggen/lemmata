@@ -3,6 +3,8 @@
   import { untrack } from "svelte";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import Modal from "./ui/Modal.svelte";
+  import Plus from "@lucide/svelte/icons/plus";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import type { Config, ProjectInfo } from "./api";
   import { LANGUAGES } from "./spell/service";
 
@@ -58,6 +60,27 @@
       {/if}
     </div>
 
+    <div class="field">
+      <span class="label">Build targets</span>
+      <p class="hint">Optional. Name more than one main file (a paper and its slides, say) to get a picker in the toolbar.</p>
+      {#each config.targets ?? [] as t, i (i)}
+        <div class="target">
+          <input class="input" bind:value={t.name} placeholder="Name" aria-label="Target name" />
+          <select class="input mono" bind:value={t.main} aria-label="Main file of {t.name}">
+            {#each candidates as c (c)}<option value={c}>{c}</option>{/each}
+          </select>
+          <select class="input" value={t.engine ?? ""} onchange={(e) => (t.engine = (e.currentTarget.value || null) as typeof t.engine)} aria-label="Compiler of {t.name}">
+            <option value="">Keep compiler</option>
+            <option value="pdflatex">pdfLaTeX</option>
+            <option value="xelatex">XeLaTeX</option>
+            <option value="lualatex">LuaLaTeX</option>
+          </select>
+          <button type="button" class="btn icon" aria-label="Remove {t.name}" onclick={() => (config.targets = (config.targets ?? []).filter((_, j) => j !== i))}><Trash2 size={15} /></button>
+        </div>
+      {/each}
+      <button type="button" class="btn sm add" onclick={() => (config.targets = [...(config.targets ?? []), { name: `Target ${(config.targets?.length ?? 0) + 1}`, main: config.main ?? project.main, engine: null }])}><Plus size={14} /> Add target</button>
+    </div>
+
     <label class="check" for="ps-shell">
       <input id="ps-shell" type="checkbox" bind:checked={config.shell_escape} />
       Allow the document to run programs (shell escape)
@@ -78,6 +101,8 @@
 <style>
   form { display: flex; flex-direction: column; gap: 14px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .target { display: grid; grid-template-columns: 1fr 1.3fr 1fr auto; gap: 6px; margin-bottom: 6px; }
+  .add { align-self: flex-start; }
   .hint { margin: -6px 0 0; color: var(--muted); font-size: 12px; }
   .field .hint { margin: 2px 0 0; }
   .warn { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--r); color: var(--warn); background: var(--warn-soft); }

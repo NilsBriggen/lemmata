@@ -8,6 +8,7 @@ use walkdir::WalkDir;
 
 pub mod extras;
 pub mod prose;
+pub mod symbols;
 
 pub const CONFIG_FILE: &str = "lemmata.toml";
 
@@ -66,6 +67,17 @@ pub enum Bib {
     Bibtex,
 }
 
+/// A named way to build the project: another main file, and optionally
+/// another compiler (a paper and its slides, say). Picking one in the
+/// toolbar sets `main` and `engine`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Target {
+    pub name: String,
+    pub main: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<Engine>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -95,6 +107,9 @@ pub struct Config {
     /// A build running longer than this is stopped. 0 means no limit.
     #[serde(skip_serializing_if = "is_default_timeout")]
     pub timeout_secs: u64,
+    /// Named build presets; empty for a project with one main file.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<Target>,
 }
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -121,6 +136,7 @@ impl Default for Config {
             draft: false,
             stop_on_error: false,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            targets: Vec::new(),
         }
     }
 }
@@ -235,6 +251,10 @@ pub struct Entry {
     /// Relative to the project root, with forward slashes.
     pub path: String,
     pub is_dir: bool,
+    /// Bytes; 0 for folders.
+    pub size: u64,
+    /// Last change, seconds since the Unix epoch; 0 when unknown.
+    pub modified: u64,
     pub children: Vec<Entry>,
 }
 
@@ -253,6 +273,7 @@ pub fn tree(root: &Path, outdir: &str) -> Vec<Entry> {
             })
             .map(|e| {
                 let path = e.path();
+                let meta = e.metadata().ok();
                 let is_dir = path.is_dir();
                 let rel = path
                     .strip_prefix(root)
@@ -263,6 +284,12 @@ pub fn tree(root: &Path, outdir: &str) -> Vec<Entry> {
                     name: e.file_name().to_string_lossy().into_owned(),
                     path: rel,
                     is_dir,
+                    size: meta.as_ref().filter(|_| !is_dir).map_or(0, |m| m.len()),
+                    modified: meta
+                        .as_ref()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_secs()),
                     children: if is_dir {
                         walk(&path, root, outdir)
                     } else {
@@ -562,6 +589,41 @@ mod tests {
     }
 
     #[test]
+    fn targets_survive_a_config_round_trip() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "main.tex", "\\documentclass{article}");
+        write(d.path(), "slides.tex", "\\documentclass{beamer}");
+        let mut p = Project::open(d.path()).unwrap();
+        p.config.targets = vec![
+            Target {
+                name: "Paper".into(),
+                main: "main.tex".into(),
+                engine: None,
+            },
+            Target {
+                name: "Slides".into(),
+                main: "slides.tex".into(),
+                engine: Some(Engine::Xelatex),
+            },
+        ];
+        p.save_config().unwrap();
+        let text = fs::read_to_string(d.path().join("lemmata.toml")).unwrap();
+        assert!(text.contains("[[targets]]") && text.contains("xelatex"));
+        let again = Project::open(d.path()).unwrap();
+        assert_eq!(again.config.targets, p.config.targets);
+        // Projects without targets don't gain an empty table.
+        let q = tempfile::tempdir().unwrap();
+        write(q.path(), "main.tex", "\\documentclass{article}");
+        let plain = Project::open(q.path()).unwrap();
+        plain.save_config().unwrap();
+        assert!(
+            !fs::read_to_string(q.path().join("lemmata.toml"))
+                .unwrap()
+                .contains("targets")
+        );
+    }
+
+    #[test]
     fn tree_skips_hidden_and_build() {
         let d = tempfile::tempdir().unwrap();
         write(d.path(), "main.tex", "\\documentclass{article}");
@@ -572,6 +634,18 @@ mod tests {
         let names: Vec<_> = t.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["figures", "main.tex"]);
         assert_eq!(t[0].children[0].path, "figures/a.png");
+    }
+
+    #[test]
+    fn tree_reports_size_and_modified_time() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "main.tex", "12345");
+        write(d.path(), "figures/a.png", "");
+        let t = tree(d.path(), ".lemmata/build");
+        let main = t.iter().find(|e| e.name == "main.tex").unwrap();
+        assert_eq!(main.size, 5);
+        assert!(main.modified > 1_600_000_000);
+        assert_eq!(t[0].size, 0, "folders have no size");
     }
 
     #[test]

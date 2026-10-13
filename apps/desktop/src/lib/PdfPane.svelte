@@ -25,6 +25,8 @@
   interface Props {
     diagnostics: Diagnostic[];
     building: boolean;
+    /** The last build ended without writing a PDF. */
+    failed?: boolean;
     buildId: number;
     logsOpen: boolean;
     onLogs: (open: boolean) => void;
@@ -37,6 +39,9 @@
   let p: Props = $props();
 
   let view = $state<PdfView>();
+
+  /** Is a PDF loaded in the viewer? */
+  export const hasPdf = () => pageCount > 0;
   let pageCount = $state(0);
   let currentPage = $state(1);
   let percent = $state(100);
@@ -174,7 +179,7 @@
       </aside>
     {/if}
     <div class="pdf" class:hidden={p.logsOpen} class:with-outline={outlineOpen && !p.logsOpen}>
-      <PdfView bind:this={view} bind:pageCount bind:currentPage bind:percent bind:matchCount bind:matchIndex onSourceClick={p.onSourceClick} />
+      <PdfView bind:this={view} bind:pageCount bind:currentPage bind:percent bind:matchCount bind:matchIndex building={p.building} failed={p.failed} onShowLogs={() => p.onLogs(true)} onSourceClick={p.onSourceClick} />
     </div>
     {#if p.logsOpen}
       <div class="pdf"><Problems diagnostics={p.diagnostics} buildId={p.buildId} onGoto={p.onGoto} onAddPackage={p.onAddPackage} getSource={p.getSource} /></div>

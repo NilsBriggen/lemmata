@@ -43,6 +43,8 @@
     ["lualatex", "LuaLaTeX"],
   ];
   const found = (name: string) => d.tools.some((t) => t.name === name && t.path);
+  /** Only listed for MiKTeX on Windows, which doesn't ship the Perl latexmk runs on. */
+  const needsPerl = $derived(d.tools.some((t) => t.name === "perl") && !found("perl"));
 
   function set<K extends keyof Settings>(k: K, v: Settings[K]) {
     updateSettings({ [k]: v } as Partial<Settings>);
@@ -79,6 +81,12 @@
         <p class="lede">Write LaTeX on the left, read the PDF on the right, all on your own computer. Your projects stay ordinary folders.</p>
         <div class="tex">
           <div class="ok"><CircleCheck size={20} /> <span><b>{distribution}</b> is ready{#if d.bin_dir}{" "}<span class="where">in {d.bin_dir}</span>{/if}</span></div>
+          {#if needsPerl}
+            <p class="perl">
+              <b>Perl is missing.</b> latexmk needs it and MiKTeX doesn't include it. Run
+              <code>winget install StrawberryPerl.StrawberryPerl</code> in a terminal, then restart Lemmata.
+            </p>
+          {/if}
           <ul>
             {#each extras as [tool, what] (tool)}
               <li class:missing={!found(tool)}>
@@ -134,7 +142,7 @@
         <p class="lede">Pick up an existing project, or begin a new one.</p>
         <div class="starts">
           <button class="start" onclick={() => (dialog = "new")}>
-            <span class="ico"><Plus size={20} /></span><b>New project</b><span>From a template: article, thesis, slides, CV, letter or homework.</span>
+            <span class="ico"><Plus size={20} /></span><b>New project</b><span>From a template: article, thesis, slides, CV, letter, homework, or your own.</span>
           </button>
           <button class="start" onclick={openFolder}>
             <span class="ico"><FolderOpen size={20} /></span><b>Open folder</b><span>Any folder with a .tex file.</span>
@@ -222,4 +230,6 @@
     .starts { grid-template-columns: 1fr; }
     .card { padding: 24px; }
   }
+.perl { margin: 8px 0 4px; padding: 8px 10px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--warn, #c77d00) 14%, transparent); font-size: 13px; line-height: 1.45; }
+  .perl code { font-family: var(--f-mono); user-select: all; }
 </style>

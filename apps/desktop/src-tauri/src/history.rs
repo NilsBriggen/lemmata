@@ -39,6 +39,12 @@ pub fn history_status(state: State<AppState>) -> CmdResult<HistoryStatus> {
     })
 }
 
+/// Files that differ from the last commit in the user's own git repository.
+#[tauri::command]
+pub fn git_status(state: State<AppState>) -> CmdResult<Vec<lemmata_history::FileStatus>> {
+    Ok(lemmata_history::working_status(&root(&state)?))
+}
+
 #[tauri::command]
 pub fn history_enable(state: State<AppState>) -> CmdResult<()> {
     let h = History::init(&root(&state)?).map_err(err)?;

@@ -22,7 +22,7 @@
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import Check from "@lucide/svelte/icons/check";
   import DropMenu from "./ui/DropMenu.svelte";
-  import type { Engine } from "./api";
+  import type { Engine, Target } from "./api";
 
   interface Props {
     projectName: string;
@@ -47,12 +47,18 @@
     onClean: () => void;
     onEngine: (e: Engine) => void;
     onLibrary: () => void;
+    /** Build presets from the project settings; the picker shows only when there are two or more. */
+    targets?: Target[];
+    mainFile?: string;
+    onTarget?: (t: Target) => void;
   }
   let p: Props = $props();
 
   let menuBtn = $state<HTMLButtonElement>();
   let compileBtn = $state<HTMLButtonElement>();
-  let open = $state<null | "menu" | "compile">(null);
+  let targetBtn = $state<HTMLButtonElement>();
+  let open = $state<null | "menu" | "compile" | "target">(null);
+  const activeTarget = $derived((p.targets ?? []).find((t) => t.main === p.mainFile));
 
   const engines: [Engine, string][] = [
     ["pdflatex", "pdfLaTeX"],
@@ -69,6 +75,11 @@
     <button class="brand" onclick={p.onLibrary} title="Back to all projects">Lemmata</button>
     <span class="sep">/</span>
     <span class="project" title={p.projectName}>{p.projectName}</span>
+    {#if (p.targets?.length ?? 0) > 1}
+      <button class="btn target" bind:this={targetBtn} aria-haspopup="menu" aria-expanded={open === "target"} title="What to build" onclick={() => (open = open === "target" ? null : "target")}>
+        {activeTarget?.name ?? p.mainFile}<ChevronDown size={13} />
+      </button>
+    {/if}
   </div>
 
   <div class="center">
@@ -102,6 +113,17 @@
     {#each p.menu as item (item.label)}
       {#if item.separator}<hr />{/if}
       <button role="menuitem" onclick={item.run}>{item.label}{#if item.hint}<span class="hint">{item.hint}</span>{/if}</button>
+    {/each}
+  </DropMenu>
+{/if}
+
+{#if open === "target" && targetBtn}
+  <DropMenu anchor={targetBtn} onClose={() => (open = null)}>
+    <div class="heading">Build</div>
+    {#each p.targets ?? [] as t (t.name)}
+      <button role="menuitemradio" aria-checked={t.main === p.mainFile} onclick={() => ((open = null), p.onTarget?.(t))}>
+        <span class="tick">{#if t.main === p.mainFile}<Check size={14} />{/if}</span> {t.name}<span class="hint">{t.main}</span>
+      </button>
     {/each}
   </DropMenu>
 {/if}
@@ -147,6 +169,7 @@
 {/if}
 
 <style>
+  .target { height: 28px; padding: 0 8px; margin-left: 8px; gap: 4px; font-size: 12.5px; }
   .toolbar {
     display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px;
     height: 46px; padding: 0 10px; background: var(--chrome); color: var(--chrome-ink);

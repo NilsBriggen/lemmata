@@ -71,6 +71,51 @@ pub fn strip_comments(tex: &str) -> String {
     out
 }
 
+/// Every project file a backup needs: the whole tree except hidden files
+/// and the build folder.
+pub fn project_files(root: &Path, outdir: &str) -> Vec<String> {
+    fn walk(entries: &[lemmata_project::Entry], out: &mut Vec<String>) {
+        for e in entries {
+            if e.is_dir {
+                walk(&e.children, out);
+            } else {
+                out.push(e.path.clone());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&lemmata_project::tree(root, outdir), &mut out);
+    out
+}
+
+/// Zips the whole project (not hidden files or the build folder), for a
+/// backup or to share it. With `with_pdf`, the latest PDF is added too.
+#[tauri::command]
+pub fn export_zip(state: State<AppState>, dest: String, with_pdf: bool) -> CmdResult<usize> {
+    let p = project(&state)?;
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&dest).map_err(err)?);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut count = 0;
+    for rel in project_files(&p.root, &p.config.outdir) {
+        zip.start_file(&rel, opts).map_err(err)?;
+        zip.write_all(&std::fs::read(p.root.join(&rel)).map_err(err)?)
+            .map_err(err)?;
+        count += 1;
+    }
+    if with_pdf && let Ok(pdf) = std::fs::read(p.pdf_path()) {
+        let name = p
+            .pdf_path()
+            .file_name()
+            .map_or("main.pdf".into(), |n| n.to_string_lossy().into_owned());
+        zip.start_file(name, opts).map_err(err)?;
+        zip.write_all(&pdf).map_err(err)?;
+        count += 1;
+    }
+    zip.finish().map_err(err)?;
+    Ok(count)
+}
+
 /// Zips the files the last build used, plus the .bbl (arXiv doesn't run
 /// biber), ready to upload to arXiv.
 #[tauri::command]
@@ -127,6 +172,25 @@ pub fn export_arxiv(state: State<AppState>, dest: String, strip: bool) -> CmdRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_files_skip_hidden_and_build_output() {
+        let d = tempfile::tempdir().unwrap();
+        for (f, t) in [
+            ("main.tex", "x"),
+            ("chapters/a.tex", "y"),
+            (".lemmata/build/main.pdf", "z"),
+            (".git/HEAD", "h"),
+        ] {
+            let full = d.path().join(f);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, t).unwrap();
+        }
+        assert_eq!(
+            project_files(d.path(), ".lemmata/build"),
+            ["chapters/a.tex", "main.tex"]
+        );
+    }
 
     #[test]
     fn collects_project_inputs_from_fls() {

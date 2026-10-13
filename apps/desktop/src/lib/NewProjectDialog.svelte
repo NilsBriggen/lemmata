@@ -9,6 +9,8 @@
   import IdCard from "@lucide/svelte/icons/id-card";
   import Mail from "@lucide/svelte/icons/mail";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
+  import Trash2 from "@lucide/svelte/icons/trash";
+  import Star from "@lucide/svelte/icons/star";
   import Modal from "./ui/Modal.svelte";
   import { api, errorMessage, type Template } from "./api";
 
@@ -27,13 +29,23 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
 
-  const icons: Record<string, typeof FileText> = { article: FileText, thesis: GraduationCap, slides: Presentation, cv: IdCard, letter: Mail };
+  const icons: Record<string, typeof FileText> = { homework: GraduationCap, article: FileText, thesis: GraduationCap, slides: Presentation, cv: IdCard, letter: Mail };
 
   onMount(async () => {
     templates = await api.listTemplates().catch(() => []);
     chosen = templates[0]?.id ?? "article";
     parent = defaultParent || (await documentDir().catch(() => ""));
   });
+
+  async function remove(t: Template) {
+    try {
+      await api.deleteTemplate(t.id);
+      templates = templates.filter((x) => x.id !== t.id);
+      if (chosen === t.id) chosen = templates[0]?.id ?? "article";
+    } catch (err) {
+      error = errorMessage(err);
+    }
+  }
 
   async function chooseParent() {
     const dir = await open({ directory: true, title: "Choose where to put the project", defaultPath: parent || undefined });
@@ -58,12 +70,17 @@
   <form id="new-project" onsubmit={create}>
     <div class="templates" role="radiogroup" aria-label="Template">
       {#each templates as t (t.id)}
-        {@const Icon = icons[t.id] ?? FileText}
-        <button type="button" role="radio" aria-checked={chosen === t.id} class:on={chosen === t.id} onclick={() => (chosen = t.id)}>
-          <span class="ico"><Icon size={20} /></span>
-          <b>{t.name}</b>
-          <span class="desc">{t.description}</span>
-        </button>
+        {@const Icon = t.user ? Star : (icons[t.id] ?? FileText)}
+        <div class="tpl">
+          <button type="button" role="radio" aria-checked={chosen === t.id} class:on={chosen === t.id} onclick={() => (chosen = t.id)}>
+            <span class="ico"><Icon size={20} /></span>
+            <b>{t.name}</b>
+            <span class="desc">{t.description || (t.user ? "Your template" : "")}</span>
+          </button>
+          {#if t.user}
+            <button type="button" class="del" aria-label="Delete template {t.name}" title="Delete this template" onclick={() => remove(t)}><Trash2 size={14} /></button>
+          {/if}
+        </div>
       {/each}
     </div>
     <div class="row">
@@ -91,6 +108,10 @@
 <style>
   form { display: flex; flex-direction: column; gap: 16px; }
   .templates { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 8px; }
+  .tpl { position: relative; display: flex; }
+  .tpl > button:first-child { flex: 1; }
+  .templates .del { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; padding: 0; align-items: center; justify-content: center; border-radius: var(--r-sm); border-color: transparent; background: transparent; color: var(--faint); }
+  .templates .del:hover { color: var(--error); background: var(--surface-2); }
   .templates button {
     display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; text-align: left;
     background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); color: var(--ink);

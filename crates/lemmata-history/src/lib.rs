@@ -44,6 +44,88 @@ pub struct Change {
     pub path: String,
 }
 
+/// A file's state in the user's own working tree, as `git status` sees it.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct FileStatus {
+    /// Relative to the project folder, with forward slashes.
+    pub path: String,
+    /// "M" modified, "A" added, "D" deleted, "R" renamed, "?" untracked,
+    /// "U" conflicted.
+    pub status: String,
+}
+
+/// Turns `git status --porcelain=v1 -z` output into statuses for files
+/// inside `prefix` (the project's folder relative to the repository root,
+/// "" or ending in "/").
+pub fn parse_status(z: &str, prefix: &str) -> Vec<FileStatus> {
+    let mut out = Vec::new();
+    let mut parts = z.split('\0');
+    while let Some(entry) = parts.next() {
+        // "XY path": two status letters, a space, then the path.
+        if entry.len() <= 3 || !entry.is_char_boundary(3) {
+            continue;
+        }
+        let (xy, path) = (&entry[..2], &entry[3..]);
+        let mut chars = xy.chars();
+        let (x, y) = (chars.next().unwrap_or(' '), chars.next().unwrap_or(' '));
+        // A rename lists the old name as the next entry.
+        if x == 'R' || x == 'C' {
+            parts.next();
+        }
+        let status = match (x, y) {
+            ('?', '?') => "?",
+            ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D') => "U",
+            ('R', _) | ('C', _) => "R",
+            ('A', _) => "A",
+            ('D', _) | (_, 'D') => "D",
+            _ => "M",
+        };
+        if let Some(rel) = path.strip_prefix(prefix) {
+            out.push(FileStatus {
+                path: rel.to_string(),
+                status: status.into(),
+            });
+        }
+    }
+    out
+}
+
+/// Which files of the project differ from the last commit. Empty when the
+/// folder isn't in a git repository (or git isn't installed). Never changes
+/// anything in the repository.
+pub fn working_status(root: &Path) -> Vec<FileStatus> {
+    let Ok(git) = which::which("git") else {
+        return Vec::new();
+    };
+    let run = |args: &[&str]| {
+        let mut c = Command::new(&git);
+        c.arg("-C")
+            .arg(root)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .args(args);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000);
+        }
+        c.output().ok().filter(|o| o.status.success())
+    };
+    let Some(prefix) = run(&["rev-parse", "--show-prefix"]) else {
+        return Vec::new();
+    };
+    let prefix = String::from_utf8_lossy(&prefix.stdout).trim().to_string();
+    let Some(out) = run(&[
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "-uall",
+        "--ignore-submodules",
+    ]) else {
+        return Vec::new();
+    };
+    parse_status(&String::from_utf8_lossy(&out.stdout), &prefix)
+}
+
 pub struct History {
     git: PathBuf,
     root: PathBuf,
@@ -344,6 +426,82 @@ fn parse_entry(entry: &str) -> Option<Snapshot> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn working_status_sees_real_changes() {
+        let Ok(git) = which::which("git") else { return };
+        let d = tempfile::tempdir().unwrap();
+        let g = |args: &[&str]| {
+            let ok = Command::new(&git)
+                .arg("-C")
+                .arg(d.path())
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t.t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        g(&["init", "-q"]);
+        std::fs::write(d.path().join("main.tex"), "a").unwrap();
+        std::fs::write(d.path().join("keep.tex"), "a").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "first"]);
+        std::fs::write(d.path().join("main.tex"), "b").unwrap();
+        std::fs::write(d.path().join("new.tex"), "n").unwrap();
+        let mut got: Vec<_> = working_status(d.path())
+            .into_iter()
+            .map(|f| (f.path, f.status))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                ("main.tex".to_string(), "M".to_string()),
+                ("new.tex".to_string(), "?".to_string())
+            ]
+        );
+        // Outside a repository there is simply nothing to show.
+        let plain = tempfile::tempdir().unwrap();
+        assert!(working_status(plain.path()).is_empty());
+    }
+
+    #[test]
+    fn parses_porcelain_status() {
+        let z = " M main.tex\0?? notes.txt\0A  chapters/new.tex\0 D old.tex\0R  renamed.tex\0was.tex\0UU conflict.tex\0";
+        let got: Vec<_> = parse_status(z, "")
+            .into_iter()
+            .map(|f| (f.path, f.status))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("main.tex", "M"),
+                ("notes.txt", "?"),
+                ("chapters/new.tex", "A"),
+                ("old.tex", "D"),
+                ("renamed.tex", "R"),
+                ("conflict.tex", "U"),
+            ]
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+        );
+    }
+
+    #[test]
+    fn status_paths_are_relative_to_the_project_folder() {
+        let z = " M thesis/main.tex\0 M other/readme.md\0";
+        let got = parse_status(z, "thesis/");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].path, "main.tex");
+    }
+
     use super::*;
     use std::fs;
 

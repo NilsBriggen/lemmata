@@ -27,9 +27,16 @@
     /** Search results: how many, and which one is current (1-based, 0 when none). */
     matchCount?: number;
     matchIndex?: number;
+    /** For the empty state: a build is running, or the last one ended without a PDF. */
+    building?: boolean;
+    failed?: boolean;
+    onShowLogs?: () => void;
   }
   let {
     onSourceClick,
+    building = false,
+    failed = false,
+    onShowLogs,
     pageCount = $bindable(0),
     currentPage = $bindable(1),
     percent = $bindable(100),
@@ -502,8 +509,16 @@
     {/each}
     {#if !pageCount}
       <div class="empty">
-        <p><b>Your PDF appears here</b> after the first compile.</p>
-        <p>Double-click in the PDF to jump to the source. Press <kbd>Ctrl</kbd> <kbd>J</kbd> in the editor to find the current line here.</p>
+        {#if building}
+          <p><b>Compiling…</b> your PDF appears here when it's done.</p>
+        {:else if failed}
+          <p><b>No PDF was produced.</b> The last compile failed before it could write one.</p>
+          <p>Open the logs to see what went wrong; fixing the first error is usually enough.</p>
+          {#if onShowLogs}<p><button class="btn sm" onclick={onShowLogs}>Show logs</button></p>{/if}
+        {:else}
+          <p><b>Your PDF appears here</b> after the first compile.</p>
+          <p>Double-click in the PDF to jump to the source. Press <kbd>Ctrl</kbd> <kbd>J</kbd> in the editor to find the current line here.</p>
+        {/if}
       </div>
     {/if}
   </div>

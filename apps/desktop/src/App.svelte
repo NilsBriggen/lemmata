@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, errorMessage, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
+  import { api, errorMessage, type Target, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
   import Onboarding from "./lib/Onboarding.svelte";
   import Library from "./lib/Library.svelte";
   import Editor from "./lib/Editor.svelte";
@@ -35,9 +35,15 @@
   import { ENVIRONMENTS } from "./lib/editor/data";
   import type { Providers } from "./lib/editor/completions";
   import SearchPanel from "./lib/SearchPanel.svelte";
+  import RenameSymbol from "./lib/RenameSymbol.svelte";
+  import SaveTemplateDialog from "./lib/SaveTemplateDialog.svelte";
   import FileActions from "./lib/FileActions.svelte";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { loadSession, saveSession } from "./lib/session";
+  import { magicLanguage } from "./lib/spell/magic";
+  import { clearSelection, prune, reveal, setGitStatus, tree as treeView } from "./lib/treeSelection.svelte";
+  import { dragState } from "./lib/treeDrag.svelte";
+  import { findEntry } from "./lib/treeModel";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getVersion } from "@tauri-apps/api/app";
   import { errorSummary, issueUrl, systemSummary } from "./lib/report";
@@ -62,6 +68,11 @@
   let welcome = $state(false);
 
   let tabs = $state<string[]>([]);
+  /** Pinned tabs (always first in `tabs`), recently closed files (newest first) and folds per file. */
+  let pinned = $state<string[]>([]);
+  let closedTabs = $state<string[]>([]);
+  let folds: Record<string, number[]> = {};
+  let foldsVersion = $state(0);
   let active = $state<string | null>(null);
   let dirty = $state<Record<string, boolean>>({});
   const contents = new Map<string, string>();
@@ -77,7 +88,10 @@
   let dialog = $state<null | "figure" | "table" | "symbols" | "words" | "shortcuts">(null);
   const hint = (id: string) => display(keysOf(id));
   let selectionWords = $state(0);
-  let palette = $state<null | "commands" | "files" | "environments">(null);
+  let palette = $state<null | "commands" | "files" | "environments" | "headings" | "symbols">(null);
+  let savingTemplate = $state(false);
+  let renaming = $state<{ kind: "label" | "cite"; name: string } | null>(null);
+  let symbolItems = $state<PaletteItem[]>([]);
   let searchOpen = $state(false);
   let focusMode = $state(false);
   let report = $state<{ system: string; log: string } | null>(null);
@@ -157,6 +171,16 @@
     tabs = [];
     contents.clear();
     dirty = {};
+    clearSelection();
+    pinned = [];
+    closedTabs = [];
+    folds = {};
+    treeView.clipboard = null;
+    treeView.collapsed = {};
+    setGitStatus([]);
+    refreshGit();
+    fileActions?.forgetHistory();
+    api.purgeTrash(7).catch(() => {});
     diagnostics = [];
     outcome = null;
     headings = [];
@@ -216,10 +240,14 @@
     editor?.setLanguageServer(lsp ? lsp.extensions : null);
   }
 
+  let fileLanguage: string | null = null;
+
   function applySpellLanguage() {
     if (!project) return;
     const fallback = settings.spellDefault === "auto" ? detectLanguage(contents.get(project.main) ?? "") : settings.spellDefault;
-    const lang = project.config.spellcheck ?? fallback;
+    // A "% !TeX spellcheck = de_DE" comment in the open file wins over the project's choice.
+    fileLanguage = active && /\.(tex|sty|cls)$/i.test(active) ? magicLanguage(contents.get(active) ?? "") : null;
+    const lang = fileLanguage ?? project.config.spellcheck ?? fallback;
     spell.setLanguage(lang, project.config.words ?? []);
   }
 
@@ -273,11 +301,15 @@
     active = path;
     editor?.open(path, text);
     editor?.showDiagnostics(diagnostics);
+    if (project && magicLanguage(text) !== fileLanguage) applySpellLanguage();
   }
 
   function closeTab(path: string, saveFirst = true) {
     if (saveFirst && dirty[path]) save(path);
     clearTimeout(saveTimers.get(path));
+    if (tabs.includes(path)) closedTabs = [path, ...closedTabs.filter((c) => c !== path)].slice(0, 10);
+    pinned = pinned.filter((p) => p !== path);
+    delete folds[path];
     tabs = tabs.filter((t) => t !== path);
     contents.delete(path);
     lastSaved.delete(path);
@@ -290,9 +322,33 @@
     }
   }
 
+  /** Pinned tabs always come first, in the order they were pinned. */
+  function pinFirst(list: string[]) {
+    return [...pinned.filter((p) => list.includes(p)), ...list.filter((t) => !pinned.includes(t))];
+  }
+
+  function togglePin(path: string) {
+    pinned = pinned.includes(path) ? pinned.filter((p) => p !== path) : [...pinned, path];
+    tabs = pinFirst(tabs);
+  }
+
+  async function reopenClosed() {
+    while (closedTabs.length) {
+      const [path, ...rest] = closedTabs;
+      closedTabs = rest;
+      // A file that was deleted since can't come back (undoing the delete makes it reopenable).
+      if (project && findEntry(project.tree, path)) {
+        await openFile(path);
+        return;
+      }
+    }
+    showNotice("No closed tab to reopen.");
+  }
+
   function onChange(path: string, text: string) {
     contents.set(path, text);
     dirty[path] = true;
+    if (path === active && project && magicLanguage(text) !== fileLanguage) applySpellLanguage();
     clearTimeout(saveTimers.get(path));
     // A delay of 0 means: only save on Ctrl+S.
     if (settings.autosaveMs > 0) saveTimers.set(path, setTimeout(() => save(path), settings.autosaveMs));
@@ -305,6 +361,7 @@
     try {
       await api.writeText(path, text);
       lastSaved.set(path, text);
+      refreshGit();
       // Typing continued while the write was in flight: those edits aren't saved yet.
       if (contents.get(path) === text) dirty[path] = false;
       else if (settings.autosaveMs > 0) saveTimers.set(path, setTimeout(() => save(path), settings.autosaveMs));
@@ -338,6 +395,9 @@
       if (result.pdf) {
         await pdf?.load(await api.readPdf());
         saveThumbnail();
+      } else {
+        // The build wrote no new PDF (up to date, or it failed), but an older one may exist.
+        await showExistingPdf();
       }
     } catch (e) {
       if (seq === buildSeq) {
@@ -347,6 +407,16 @@
       }
     } finally {
       if (seq === buildSeq) building = false;
+    }
+  }
+
+  /** Loads the PDF on disk if the viewer has none, so the pane is never empty when a PDF exists. */
+  async function showExistingPdf() {
+    if (!pdf || pdf.hasPdf()) return;
+    try {
+      await pdf.load(await api.readPdf());
+    } catch {
+      // No PDF has been built yet: the pane explains that.
     }
   }
 
@@ -431,6 +501,11 @@
   async function restoreSession(root: string) {
     const session = await loadSession(root);
     if (!session) return;
+    pinned = session.pinned ?? [];
+    closedTabs = [];
+    folds = session.folds ?? {};
+    for (const [path, lines] of Object.entries(folds)) editor?.setFolds(path, lines);
+    treeView.collapsed = Object.fromEntries((session.collapsed ?? []).map((p) => [p, true]));
     const known = new Set(allFiles(project?.tree ?? []));
     for (const t of session.tabs) if (known.has(t) && t !== active) await openFile(t);
     if (session.active && known.has(session.active)) {
@@ -440,23 +515,62 @@
     if (session.pdf && "fit" in session.pdf) pdf?.setPosition(session.pdf);
   }
 
+  /** Remembers the open file's folds and returns them for every open tab. */
+  function currentFolds() {
+    if (active && /\.(tex|sty|cls)$/i.test(active) && editor) {
+      const lines = editor.foldedLines();
+      if (lines.length) folds[active] = lines;
+      else delete folds[active];
+    }
+    return Object.fromEntries(Object.entries(folds).filter(([p]) => tabs.includes(p)));
+  }
+
   let sessionTimer: ReturnType<typeof setTimeout> | undefined;
   function rememberSession() {
     clearTimeout(sessionTimer);
     sessionTimer = setTimeout(() => {
       if (!project) return;
-      saveSession(project.root, { tabs, active, line: cursor.line, pdf: pdf?.getPosition() ?? null });
+      saveSession(project.root, {
+        tabs,
+        active,
+        line: cursor.line,
+        collapsed: Object.keys(treeView.collapsed).filter((k) => treeView.collapsed[k]),
+        pinned: pinned.filter((p) => tabs.includes(p)),
+        folds: currentFolds(),
+        pdf: pdf?.getPosition() ?? null,
+      });
     }, 1000);
   }
 
   $effect(() => {
     // Re-run when any of these change.
-    void [tabs, active, cursor.line];
+    void [tabs, active, cursor.line, Object.keys(treeView.collapsed).length, pinned.length, foldsVersion];
     rememberSession();
   });
 
+  async function revealActive() {
+    if (!active) return;
+    reveal(active);
+    treeView.selected = [active];
+    treeView.cursor = active;
+    if (!settings.sidebarOpen) await updateSettings({ sidebarOpen: true });
+  }
+
+  let gitTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Marks changed files in the tree when the project is in a git repository. */
+  function refreshGit() {
+    clearTimeout(gitTimer);
+    gitTimer = setTimeout(() => {
+      if (project) api.gitStatus().then(setGitStatus).catch(() => setGitStatus([]));
+    }, 600);
+  }
+
   async function refreshTree() {
-    if (project) project = await api.projectInfo();
+    if (!project) return;
+    refreshGit();
+    project = await api.projectInfo();
+    const tree = project.tree;
+    prune((path) => !!findEntry(tree, path));
   }
 
   async function pasteImage(png: Uint8Array) {
@@ -568,6 +682,17 @@
     runBuild();
   }
 
+  /** Switches to a build preset from the project settings. */
+  async function setTarget(t: Target) {
+    if (!project) return;
+    project = await api.setConfig({ ...project.config, main: t.main, engine: t.engine ?? project.config.engine });
+    await openFile(project.main);
+    applySpellLanguage();
+    setMathMacros(contents.get(project.main) ?? "");
+    refreshOutline();
+    runBuild();
+  }
+
   async function chooseMain(main: string) {
     if (!project) return;
     choosingMain = false;
@@ -641,6 +766,30 @@
       : [],
   );
 
+  const headingItems = $derived<PaletteItem[]>(
+    headings.map((h, i) => ({
+      id: `${h.file}:${h.line}:${i}`,
+      label: `${"\u2003".repeat(Math.max(0, h.level - 1))}${h.title || "(untitled)"}`,
+      detail: `${h.file.split("/").pop()}:${h.line}`,
+      run: () => gotoProblem(h.file, h.line),
+    })),
+  );
+
+  async function openSymbols() {
+    try {
+      const defs = await api.symbolDefs();
+      symbolItems = defs.map((d) => ({
+        id: `${d.kind}:${d.file}:${d.line}:${d.name}`,
+        label: d.name,
+        detail: `${d.kind === "label" ? "label" : "citation"} · ${d.file}:${d.line}`,
+        run: () => gotoProblem(d.file, d.line),
+      }));
+      palette = "symbols";
+    } catch (e) {
+      showNotice(errorMessage(e));
+    }
+  }
+
   const commandItems = $derived<PaletteItem[]>(
     [
       { id: "recompile", label: "Recompile", detail: hint("recompile"), run: () => saveAll(false).then(runBuild) },
@@ -658,9 +807,18 @@
       { id: "sync", label: "Show this line in the PDF", detail: hint("sync"), run: () => active && syncForward(active, editor?.currentLine() ?? 1, 0) },
       { id: "focus", label: focusMode ? "Leave focus mode" : "Focus mode", detail: hint("focus"), run: () => (focusMode = !focusMode) },
       { id: "new-file", label: "New file…", run: () => fileActions?.openMenu(null, 240, 120) },
+      { id: "goto-heading", label: "Go to a section…", detail: hint("goto-heading"), run: () => (palette = "headings") },
+      { id: "goto-symbol", label: "Go to a label or citation…", run: openSymbols },
+      { id: "rename-symbol", label: "Rename label or citation key…", run: () => (renaming = editor?.symbolAtCursor() ?? { kind: "label", name: "" }) },
+      { id: "reopen-tab", label: "Reopen the last closed tab", detail: hint("reopen-tab"), run: reopenClosed },
+      { id: "reveal", label: "Show the open file in the file tree", run: revealActive },
+      { id: "unused", label: "Find unused files…", run: () => fileActions?.showUnused() },
+      { id: "undo-files", label: "Undo the last file operation", run: () => fileActions?.undo() },
       { id: "zotero-cite", label: "Cite from Zotero…", run: citeFromZotero },
       { id: "zotero-sync", label: "Sync zotero.bib from Zotero", run: () => syncZotero(true) },
       { id: "export-pdf", label: "Export PDF…", run: exportPdf },
+      { id: "save-template", label: "Save this project as a template…", run: () => (savingTemplate = true) },
+      { id: "export-zip", label: "Export the whole project (.zip)…", run: exportZip },
       { id: "export-arxiv", label: "Export for arXiv (.zip)…", run: exportArxiv },
       { id: "project-settings", label: "Project settings", run: () => (settingsOpen = true) },
       { id: "preferences", label: "Preferences", run: () => (prefsOpen = true) },
@@ -740,6 +898,19 @@
           run: () => setBuildOption({ draft: false }),
         });
       } else showNotice(`Saved ${name}.`);
+    } catch (e) {
+      showNotice(errorMessage(e));
+    }
+  }
+
+  async function exportZip() {
+    if (!project) return;
+    await saveAll(false);
+    const dest = await saveDialog({ title: "Export the project as a zip", defaultPath: `${project.name}.zip`, filters: [{ name: "Zip", extensions: ["zip"] }] });
+    if (!dest) return;
+    try {
+      const n = await api.exportZip(dest, true);
+      showNotice(`Saved ${n} files, with the latest PDF, to ${dest.split(/[\\/]/).pop()}.`, { tone: "ok" });
     } catch (e) {
       showNotice(errorMessage(e));
     }
@@ -826,6 +997,10 @@
     if (active === path) await openFile(path);
   }
 
+  /** Which tab to reopen once the tree has refreshed; set by the first rename of a batch. */
+  let reopenAfterMove: string | null | undefined;
+  let moveTimer: ReturnType<typeof setTimeout> | undefined;
+
   function onRenamed(from: string, to: string) {
     for (const p of [...contents.keys()]) {
       if (p === from || p.startsWith(from + "/")) {
@@ -835,12 +1010,18 @@
     }
     const moved = (p: string) => (p === from ? to : p.startsWith(from + "/") ? to + p.slice(from.length) : p);
     tabs = tabs.map(moved);
-    const wasActive = active;
+    // Several renames can arrive together (moving a selection): follow the active file through all of them.
+    if (reopenAfterMove === undefined) reopenAfterMove = active;
+    if (reopenAfterMove) reopenAfterMove = moved(reopenAfterMove);
     active = null;
-    refreshTree().then(() => {
-      if (wasActive) openFile(moved(wasActive));
-    });
-    refreshOutline();
+    clearTimeout(moveTimer);
+    moveTimer = setTimeout(async () => {
+      await refreshTree();
+      const reopen = reopenAfterMove;
+      reopenAfterMove = undefined;
+      if (reopen) openFile(reopen);
+      refreshOutline();
+    }, 0);
   }
 
   function onTrashed(path: string) {
@@ -859,6 +1040,7 @@
     if (hit("focus")) focusMode = !focusMode;
     else if (hit("palette")) palette = "commands";
     else if (hit("quick-open")) palette = "files";
+    else if (hit("goto-heading")) palette = "headings";
     else if (hit("search")) openSearch();
     else if (active && hit("cite")) citeOpen = true;
     else if (active && hit("symbols")) dialog = "symbols";
@@ -867,6 +1049,7 @@
     else if (hit("save")) saveAll();
     else if (hit("recompile")) saveAll(false).then(runBuild);
     else if (active && hit("close-tab")) closeTab(active);
+    else if (hit("reopen-tab")) reopenClosed();
     else if (hit("next-tab")) cycleTab(1);
     else if (hit("prev-tab")) cycleTab(-1);
   }
@@ -928,9 +1111,15 @@
     // Tauri delivers file drops with real paths (DOM drop events don't have them).
     getCurrentWebview()
       .onDragDropEvent((e) => {
+        const scale = window.devicePixelRatio || 1;
         if (e.payload.type === "drop") {
-          const scale = window.devicePixelRatio || 1;
+          dragState.external = null;
           dropFiles(e.payload.paths, e.payload.position.x / scale, e.payload.position.y / scale);
+        } else if (e.payload.type === "enter" || e.payload.type === "over") {
+          const el = document.elementFromPoint(e.payload.position.x / scale, e.payload.position.y / scale)?.closest<HTMLElement>("[data-drop]");
+          dragState.external = el?.dataset.drop ?? null;
+        } else {
+          dragState.external = null;
         }
       })
       .catch(() => {});
@@ -964,6 +1153,7 @@
     { label: "Word count", run: () => (dialog = "words") },
     { label: "Save a snapshot", hint: hint("snapshot"), run: () => (snapshotLabel = "") },
     { label: "Export PDF…", run: exportPdf, separator: true },
+    { label: "Export project (.zip)…", run: exportZip },
     { label: "Export for arXiv…", run: exportArxiv },
     { label: "Preferences", run: () => (prefsOpen = true), separator: true },
     { label: "Keyboard shortcuts", hint: hint("shortcuts"), run: () => (dialog = "shortcuts") },
@@ -1046,6 +1236,9 @@
       onClean={cleanCache}
       onEngine={setEngine}
       onLibrary={closeProject}
+      targets={project.config.targets ?? []}
+      mainFile={project.main}
+      onTarget={setTarget}
     />
 
     <div class="panes" class:focus={focusMode} style:--side-w="{showSidebar ? settings.sidebarWidth : 0}px">
@@ -1055,7 +1248,10 @@
             <div class="search-wrap chrome">
               <SearchPanel
                 onOpen={gotoProblem}
-                beforeReplace={saveAll}
+                beforeReplace={async () => {
+                  await saveAll();
+                  await takeSnapshot("Before replace");
+                }}
                 onReplaced={async (paths) => {
                   for (const p of paths) await reloadFromDisk(p);
                   runBuild();
@@ -1077,7 +1273,7 @@
               onNewFolder={() => fileActions?.newItem(true)}
               onUpload={() => uploadFiles()}
               onSearch={openSearch}
-              onMove={(path, folder) => fileActions?.move(path, folder)}
+              actions={fileActions}
             />
           {/if}
         </div>
@@ -1093,7 +1289,18 @@
 
       <section class="code" class:hidden={!showEditor}>
         <div class="tabstrip">
-          <TabStrip {tabs} {active} {dirty} onSelect={openFile} onClose={closeTab} onReorder={(next) => (tabs = next)} />
+          <TabStrip
+            {tabs}
+            {active}
+            {dirty}
+            {pinned}
+            closed={closedTabs}
+            onPin={togglePin}
+            onReopen={reopenClosed}
+            onSelect={openFile}
+            onClose={closeTab}
+            onReorder={(next) => (tabs = pinFirst(next))}
+          />
         </div>
         <EditorToolbar
           disabled={!active || !/\.(tex|sty|cls)$/.test(active)}
@@ -1128,6 +1335,7 @@
             onNeedsPackage={needsPackage}
             onWrapEnvironment={() => (palette = "environments")}
             onSelection={(t) => (selectionWords = countWords(t))}
+            onFoldsChange={() => foldsVersion++}
             onPastedTable={(undo) => showNotice("Pasted as a table.", { label: "Paste as text instead", run: undo })}
           />
         </div>
@@ -1171,9 +1379,13 @@
               bind:this={pdf}
               {diagnostics}
               {building}
+              failed={!!outcome && outcome.status !== "success" && !outcome.pdf}
               buildId={buildSeq}
               {logsOpen}
-              onLogs={(o) => (logsOpen = o)}
+              onLogs={(o) => {
+                logsOpen = o;
+                if (!o) showExistingPdf();
+              }}
               onSourceClick={syncBackward}
               onGoto={gotoProblem}
               onAddPackage={addPackage}
@@ -1225,8 +1437,13 @@
 
 <FileActions
   root={project?.root ?? ""}
+  entries={project?.tree ?? []}
+  main={project?.main ?? ""}
   bind:this={fileActions}
   beforeChange={saveAll}
+  onChanged={refreshTree}
+  onSetMain={chooseMain}
+  onNotice={(text, action) => showNotice(text, action)}
   onCreated={async (path, dir) => {
     await refreshTree();
     if (!dir && /\.(tex|bib|sty|cls|txt|md|toml)$/i.test(path)) openFile(path);
@@ -1254,12 +1471,40 @@
 
 {#if palette}
   <Palette
-    items={palette === "files" ? fileItems : palette === "environments" ? environmentItems : commandItems}
-    placeholder={palette === "files" ? "Open a file by name" : palette === "environments" ? "Wrap the selection in…" : "Type a command"}
+    items={palette === "files" ? fileItems : palette === "environments" ? environmentItems : palette === "headings" ? headingItems : palette === "symbols" ? symbolItems : commandItems}
+    placeholder={palette === "files" ? "Open a file by name" : palette === "environments" ? "Wrap the selection in…" : palette === "headings" ? "Go to a section" : palette === "symbols" ? "Go to a label or citation key" : "Type a command"}
     onClose={() => {
       palette = null;
       editor?.getView()?.focus();
     }}
+  />
+{/if}
+
+{#if savingTemplate && project}
+  <SaveTemplateDialog
+    projectName={project.name}
+    onSaved={(name) => {
+      savingTemplate = false;
+      showNotice(`Saved the template "${name}". It appears when you create a new project.`, { tone: "ok" });
+    }}
+    onClose={() => (savingTemplate = false)}
+  />
+{/if}
+
+{#if renaming && project}
+  <RenameSymbol
+    kind={renaming.kind}
+    name={renaming.name}
+    beforeApply={async () => {
+      await saveAll();
+      await takeSnapshot("Before rename");
+    }}
+    onApplied={async (files, text) => {
+      for (const f of files) await reloadFromDisk(f);
+      showNotice(text, { tone: "ok" });
+      runBuild();
+    }}
+    onClose={() => (renaming = null)}
   />
 {/if}
 

@@ -6,6 +6,8 @@ Lemmata is a LaTeX editor that builds your document as you write and shows the P
 
 Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't find one, it shows the install command for your system. **Open terminal** shows that command in a terminal and waits for you to press Enter; Lemmata never installs anything by itself. Afterwards click **Check again**. If TeX is installed somewhere unusual, choose its `bin` folder.
 
+**Windows with MiKTeX:** MiKTeX does not include Perl, and `latexmk` is a Perl script. Also run `winget install StrawberryPerl.StrawberryPerl` and restart Lemmata. The first build downloads the packages your document needs, which can take a minute. If a build fails before TeX starts, the Problems panel shows what `latexmk` printed.
+
 ## Projects
 
 - **New project** starts from a template: article, thesis, slides, CV, letter or homework (exercise sheets with problem boxes and a name-and-course header).
@@ -13,6 +15,12 @@ Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't f
 - **Import Overleaf .zip** takes the zip from Overleaf's *Menu → Download → Source*.
 
 Per-project settings (main file, engine, bibliography tool, spell-check language, shell escape) are stored in `lemmata.toml` in the project folder, so they travel with it.
+
+**Several documents in one project.** Under *Project settings → Build targets* you can name more than one main file, for example a paper and its slides, each with its own compiler if you like. With two or more targets, a picker next to the project name in the toolbar switches what Recompile builds.
+
+**Your own templates.** *Save this project as a template…* in the command palette copies the project (without hidden files or build output) so that *New project* offers it next to the built-in ones. Delete your own templates from the same dialog.
+
+**Git.** If the project folder is in a git repository, changed files in the file tree get a letter (M modified, A added, D deleted, ? not tracked) and folders with changes get a dot. Lemmata only reads the repository's status; it never commits or stages anything.
 
 ## Writing and building
 
@@ -90,7 +98,13 @@ With Zotero and the [Better BibTeX](https://retorque.re/zotero-better-bibtex/) p
 
 If one of these needs a package your document doesn't load yet (`graphicx`, `booktabs`), Lemmata offers to add it.
 
+**Going places and renaming.** `Ctrl+Shift+O` jumps to a section by name. *Go to a label or citation…* in the command palette lists every `\label` and every entry in your `.bib` files. *Rename label or citation key…* changes a label or key everywhere at once: the definition, every `\ref`, `\cref` or `\cite` that uses it, and the `.bib` entry. It shows each place first and saves a snapshot, so History can undo it. Put the cursor on the name before opening it and the dialog is filled in for you.
+
+**Snippets.** *Preferences → Snippets* lets you define short triggers that expand to longer text. Type the trigger (two or more letters) and pick it from the completion list; `${}` in the text marks places Tab jumps to.
+
 ## Spelling and word count
+
+A file can choose its own language with a comment in its first lines, such as `% !TeX spellcheck = de_DE`, which beats the project setting for that file. English (US and UK), German (Germany and Switzerland) and French are available.
 
 Misspelled words get a wavy underline. Commands, labels, citation keys, file names, maths and comments are skipped. Right-click a word for suggestions or **Add to dictionary**; added words are saved in `lemmata.toml`.
 
@@ -106,15 +120,26 @@ History uses its own git ref. If the project already is a git repository, your b
 
 ## Files
 
-Right-click in the file tree to create, rename, duplicate or delete files and folders, copy a path, or show a file in your file manager. **Drag** a file onto a folder to move it, or drag files from your computer onto a folder to add them. Renaming or moving a chapter or figure offers to update the `\input`, `\include` and `\includegraphics` lines that refer to it. Deleted files go to your system's trash.
+Right-click in the file tree to create, rename, duplicate or delete files and folders, copy a path, set the main file, or show a file in your file manager. Drag files from your computer onto a folder to add them.
 
-Images and PDFs in the project open in a viewer tab. Tabs can be dragged to reorder; middle-click or Ctrl+W closes one, and right-click offers *Close others*, *Close to the right* and *Close all*.
+**Selecting.** Click a row, Ctrl-click (⌘-click on a Mac) to add or remove rows, Shift-click for a range. **Drag** the selection onto a folder to move it. Renaming or moving a chapter or figure offers to update the `\input`, `\include` and `\includegraphics` lines that refer to it.
+
+**Keyboard.** Click the tree, then use the arrow keys to move, Left and Right to fold and unfold folders, Enter to open, `F2` to rename, `Delete` to delete, `Ctrl+X`, `Ctrl+C` and `Ctrl+V` to cut, copy and paste, `Ctrl+D` to duplicate, `Ctrl+A` to select all, `Ctrl+N` and `Ctrl+Shift+N` for a new file or folder, and `Ctrl+Z` to undo. Typing a few letters jumps to a matching name.
+
+**Undo.** Moves, renames, deletes, duplicates, pastes and new files can be undone with the *Undo* button in the notice, `Ctrl+Z` in the tree, or *Undo the last file operation* in the command palette. Deleted files wait in `.lemmata/trash` inside the project for a week, then disappear. If you prefer your computer's trash, choose *System trash* under *Deleted files* in Preferences; those deletions can't be undone from Lemmata.
+
+**Sorting and cleaning up.** The sort button above the tree orders files by name, type, last modified or size, with folders first or mixed in, and collapses or expands every folder. Hover a file to see its size and modification time. *Find unused files* lists images, `.tex` parts and bibliographies that no command in the project refers to, so you can delete them in one go. *Show the open file in the file tree* in the command palette scrolls to the file you are editing. Which folders are collapsed is remembered for each project.
+
+**Tabs.** Right-click a tab to pin it: pinned tabs stay at the left, show a pin instead of a close button, and survive *Close others* and *Close all*. `Ctrl+Shift+T` reopens the last closed tab. Folded sections are remembered per file.
+
+Images and PDFs in the project open in a viewer tab. Tabs can be dragged to reorder; middle-click or Ctrl+W closes one.
 
 Files changed by other programs (another editor, `git pull`) reload automatically. If you have unsaved changes to the same file, Lemmata asks first; it never mistakes its own autosaves for outside changes. If a file or folder is deleted outside Lemmata, its tabs close and a short notice tells you.
 
 ## Exporting
 
 - **Export PDF** saves a copy of the PDF.
+- **Export the whole project (.zip)** packs every file of the project (not hidden files or the build folder) plus the latest PDF, for a backup or to send to someone.
 - **Export for arXiv** builds the project, then zips exactly the files the build used plus the compiled bibliography (`.bbl`), with comments removed. That's ready to upload to arXiv.
 
 ## Shell escape

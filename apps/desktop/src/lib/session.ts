@@ -6,6 +6,12 @@ export interface Session {
   tabs: string[];
   active: string | null;
   line: number;
+  /** Folders collapsed in the file tree. */
+  collapsed?: string[];
+  /** Tabs that stay put at the left and can't be closed by accident. */
+  pinned?: string[];
+  /** Folded sections per file, as the line numbers of their first lines. */
+  folds?: Record<string, number[]>;
   /** `fit` replaced an older `zoom` field; sessions with only `zoom` are ignored. */
   pdf: { fit: "width" | "page" | number; scroll: number } | null;
 }

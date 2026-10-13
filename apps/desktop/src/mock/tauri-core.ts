@@ -59,13 +59,61 @@ const instructions = {
 
 let openRoot = "/home/you/Documents/papers/rl-thesis";
 
-const tree = () => [
-  { name: "chapters", path: "chapters", is_dir: true, children: [{ name: "method.tex", path: "chapters/method.tex", is_dir: false, children: [] }] },
-  { name: "figures", path: "figures", is_dir: true, children: [{ name: "reward-curve.pdf", path: "figures/reward-curve.pdf", is_dir: false, children: [] }] },
-  { name: "lemmata.toml", path: "lemmata.toml", is_dir: false, children: [] },
-  { name: "main.tex", path: "main.tex", is_dir: false, children: [] },
-  { name: "refs.bib", path: "refs.bib", is_dir: false, children: [] },
-];
+// A small in-memory file system, so the file tree can be driven in the preview.
+interface Node { dir: boolean; modified: number; size: number }
+const stamp = Math.floor(Date.now() / 1000);
+const fsNodes = new Map<string, Node>(
+  (
+    [
+      ["chapters", true, 0, 0],
+      ["chapters/method.tex", false, stamp - 3600, 2210],
+      ["chapters/old-draft.tex", false, stamp - 40 * 86400, 640],
+      ["figures", true, 0, 0],
+      ["figures/reward-curve.pdf", false, stamp - 86400, 48_300],
+      ["figures/unused-plot.png", false, stamp - 20 * 86400, 120_400],
+      ["lemmata.toml", false, stamp - 7 * 86400, 38],
+      ["main.tex", false, stamp - 600, 1480],
+      ["refs.bib", false, stamp - 5 * 86400, 910],
+    ] as [string, boolean, number, number][]
+  ).map(([path, dir, modified, size]) => [path, { dir, modified, size }]),
+);
+const parentDir = (p: string) => p.split("/").slice(0, -1).join("/");
+const underPath = (p: string, root: string) => p === root || p.startsWith(root + "/");
+
+const tree = (parent = ""): unknown[] =>
+  [...fsNodes.entries()]
+    .filter(([path]) => parentDir(path) === parent)
+    .map(([path, n]) => ({
+      name: path.split("/").pop(),
+      path,
+      is_dir: n.dir,
+      size: n.dir ? 0 : (files[path]?.length ?? n.size),
+      modified: n.modified,
+      children: n.dir ? tree(path) : [],
+    }))
+    .sort((a: any, b: any) => Number(b.is_dir) - Number(a.is_dir) || a.name.localeCompare(b.name));
+
+const touch = (path: string, dir = false) => {
+  for (let d = parentDir(path); d; d = parentDir(d)) if (!fsNodes.has(d)) fsNodes.set(d, { dir: true, modified: 0, size: 0 });
+  fsNodes.set(path, { dir, modified: Math.floor(Date.now() / 1000), size: 0 });
+};
+const subtree = (root: string) => [...fsNodes.keys()].filter((p) => underPath(p, root));
+const relocate = (from: string, to: string) => {
+  if (fsNodes.has(to)) throw `${to} already exists.`;
+  for (const p of subtree(from)) {
+    const dest = to + p.slice(from.length);
+    touch(parentDir(dest) + "/_", true);
+    fsNodes.delete(parentDir(dest) + "/_");
+    fsNodes.set(dest, fsNodes.get(p)!);
+    fsNodes.delete(p);
+    if (p in files) {
+      files[dest] = files[p];
+      delete files[p];
+    }
+  }
+};
+const topOf = (paths: string[]) => paths.filter((p, i) => paths.indexOf(p) === i && !paths.some((o) => o !== p && p.startsWith(o + "/")));
+const trashBin = new Map<string, { paths: string[]; nodes: [string, Node][]; text: Record<string, string> }>();
 
 let config = { main: "main.tex", engine: "pdflatex", bib: "biber", shell_escape: false, outdir: ".lemmata/build", spellcheck: null, words: [], figures_dir: "figures" };
 
@@ -173,7 +221,70 @@ const handlers: Record<string, (a: Args) => unknown> = {
   history_restore_all: () => 3,
   history_compare: () => [{ status: "modified", path: "main.tex" }, { status: "added", path: "refs.bib" }],
   history_relabel: () => {},
-  copy_path: () => {},
+  copy_path: (a) => {
+    for (const p of subtree(a.from)) {
+      const dest = a.to + p.slice(a.from.length);
+      fsNodes.set(dest, { ...fsNodes.get(p)! });
+      if (p in files) files[dest] = files[p];
+    }
+    if (!fsNodes.has(a.to)) throw `${a.from} doesn't exist.`;
+  },
+  create_path: (a) => {
+    if (fsNodes.has(a.path)) throw `${a.path} already exists.`;
+    touch(a.path, a.dir);
+    if (!a.dir) files[a.path] = "";
+  },
+  rename_path: (a) => {
+    relocate(a.from, a.to);
+    return 0;
+  },
+  move_paths: (a) => {
+    const plan = topOf(a.paths)
+      .map((from: string) => ({ from, to: (a.folder ? a.folder + "/" : "") + from.split("/").pop() }))
+      .filter((m: { from: string; to: string }) => m.from !== m.to);
+    for (const m of plan) {
+      if (fsNodes.has(m.to)) throw `${m.to} already exists.`;
+      if (a.folder === m.from || a.folder.startsWith(m.from + "/")) throw `${m.from} can't be moved into itself.`;
+    }
+    for (const m of plan) relocate(m.from, m.to);
+    return plan;
+  },
+  trash_paths: (a) => {
+    const paths = topOf(a.paths);
+    const id = String(Date.now());
+    const nodes = paths.flatMap((p) => subtree(p)).map((p): [string, Node] => [p, fsNodes.get(p)!]);
+    const text: Record<string, string> = {};
+    for (const [p] of nodes) {
+      if (p in files) text[p] = files[p];
+      fsNodes.delete(p);
+      delete files[p];
+    }
+    trashBin.set(id, { paths, nodes, text });
+    return { id, paths };
+  },
+  restore_trash: (a) => {
+    const batch = trashBin.get(a.id);
+    if (!batch) throw "That deletion can't be undone anymore.";
+    for (const p of batch.paths) if (fsNodes.has(p)) throw `${p} exists again, so it can't be restored.`;
+    for (const [p, n] of batch.nodes) fsNodes.set(p, n);
+    Object.assign(files, batch.text);
+    trashBin.delete(a.id);
+    return batch.paths;
+  },
+  trash_path: (a) => handlers.trash_paths({ paths: [a.path] }),
+  purge_trash: () => 0,
+  symbol_defs: () => [
+    { kind: "label", role: "def", name: "sec:intro", file: "main.tex", line: 11, col: 7, text: "\\section{Introduction}\\label{sec:intro}" },
+    { kind: "label", role: "def", name: "eq:policy", file: "chapters/method.tex", line: 5, col: 6, text: "\\label{eq:policy}" },
+    { kind: "cite", role: "def", name: "schulman2017ppo", file: "refs.bib", line: 1, col: 9, text: "@article{schulman2017ppo," },
+    { kind: "cite", role: "def", name: "mnih2015human", file: "refs.bib", line: 9, col: 9, text: "@article{mnih2015human," },
+  ],
+  symbol_uses: (a) => [
+    { kind: a.kind, role: "def", name: a.name, file: "main.tex", line: 11, col: 7, text: `\\label{${a.name}}` },
+    { kind: a.kind, role: "use", name: a.name, file: "chapters/method.tex", line: 7, col: 20, text: `as in \\ref{${a.name}}` },
+  ],
+  rename_symbol: () => ["main.tex", "chapters/method.tex"],
+  unused_files: () => ["chapters/old-draft.tex", "figures/unused-plot.png"],
   read_binary: async () => (await fetch(samplePdf)).arrayBuffer(),
   spell_set_language: () => {},
   spell_check: (a) => (a.words as string[]).filter((w) => ["recieve", "teh", "Overleaf"].includes(w)),
@@ -189,10 +300,36 @@ const handlers: Record<string, (a: Args) => unknown> = {
   }),
   bib_add_reference: () => ({ key: "vaswani2017attention", file: "refs.bib" }),
   zotero_status: () => "unavailable",
-  search_project: () => [],
+  search_project: (a) => {
+    const q = String(a.options.query ?? "");
+    if (!q) return [];
+    const needle = a.options.case_sensitive ? q : q.toLowerCase();
+    return Object.entries(files).flatMap(([path, text]) => {
+      const matches = text.split("\n").flatMap((line, i) => {
+        const hay = a.options.case_sensitive ? line : line.toLowerCase();
+        const ranges: [number, number][] = [];
+        for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + needle.length)) ranges.push([at, at + needle.length]);
+        const replaced = a.replacement == null ? undefined : line.split(q).join(a.replacement);
+        return ranges.length ? [{ line: i + 1, text: line, ranges, replaced }] : [];
+      });
+      return matches.length ? [{ path, matches }] : [];
+    });
+  },
+  replace_in_files: (a) => {
+    let n = 0;
+    for (const t of a.targets) {
+      files[t.path] = files[t.path].split("\n").map((l: string, i: number) => (t.lines.includes(i + 1) ? (n++, l.split(a.options.query).join(a.replacement)) : l)).join("\n");
+    }
+    return n;
+  },
   update_check: () => null,
   has_package: () => true,
-  find_references: () => [],
+  find_references: (a) => {
+    const stem = String(a.path).replace(/\.tex$/, "");
+    return Object.entries(files).flatMap(([file, text]) =>
+      text.split("\n").flatMap((line, i) => (line.includes(`{${stem}}`) || line.includes(`{${a.path}}`) ? [{ file, line: i + 1, text: line.trim() }] : [])),
+    );
+  },
 };
 
 function projectInfo() {

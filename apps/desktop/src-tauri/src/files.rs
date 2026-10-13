@@ -85,6 +85,9 @@ pub struct LineMatch {
     text: String,
     /// Character (not byte) ranges within `text`.
     ranges: Vec<(usize, usize)>,
+    /// The line as it would read after replacing, when a replacement was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replaced: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -107,15 +110,55 @@ pub fn search_in(text: &str, re: &Regex) -> Vec<LineMatch> {
                 line: i as u32 + 1,
                 text: line.to_string(),
                 ranges,
+                replaced: None,
             })
         })
         .collect()
+}
+
+/// The text of one line after replacing every match in it.
+fn replace_line(line: &str, re: &Regex, replacement: &str, regex_mode: bool) -> String {
+    if regex_mode {
+        re.replace_all(line, replacement).into_owned()
+    } else {
+        re.replace_all(line, regex::NoExpand(replacement))
+            .into_owned()
+    }
+}
+
+/// Replaces matches only on the listed (1-based) lines. Returns the new text
+/// and how many matches changed. Line endings are kept as they were.
+pub fn replace_on_lines(
+    text: &str,
+    re: &Regex,
+    replacement: &str,
+    regex_mode: bool,
+    lines: &std::collections::HashSet<u32>,
+) -> (String, usize) {
+    let mut out = String::with_capacity(text.len());
+    let mut count = 0;
+    for (i, raw) in text.split_inclusive('\n').enumerate() {
+        if !lines.contains(&(i as u32 + 1)) {
+            out.push_str(raw);
+            continue;
+        }
+        let body = raw.strip_suffix('\n').unwrap_or(raw);
+        let (body, eol) = match body.strip_suffix('\r') {
+            Some(b) => (b, &raw[b.len()..]),
+            None => (body, &raw[body.len()..]),
+        };
+        count += re.find_iter(body).filter(|m| !m.is_empty()).count();
+        out.push_str(&replace_line(body, re, replacement, regex_mode));
+        out.push_str(eol);
+    }
+    (out, count)
 }
 
 #[tauri::command]
 pub fn search_project(
     state: State<AppState>,
     options: SearchOptions,
+    replacement: Option<String>,
 ) -> CmdResult<Vec<FileMatches>> {
     if options.query.is_empty() {
         return Ok(Vec::new());
@@ -128,7 +171,12 @@ pub fn search_project(
         let Ok(text) = std::fs::read_to_string(p.root.join(&rel)) else {
             continue;
         };
-        let matches = search_in(&text, &re);
+        let mut matches = search_in(&text, &re);
+        if let Some(r) = &replacement {
+            for m in &mut matches {
+                m.replaced = Some(replace_line(&m.text, &re, r, options.regex));
+            }
+        }
         if matches.is_empty() {
             continue;
         }
@@ -141,30 +189,104 @@ pub fn search_project(
     Ok(out)
 }
 
-/// Replaces every match in the given files on disk. Files open with unsaved
-/// edits are handled by the frontend instead.
+#[derive(Deserialize)]
+pub struct ReplaceTarget {
+    path: String,
+    /// 1-based lines to replace on.
+    lines: Vec<u32>,
+}
+
+/// Replaces matches on the chosen lines of the given files on disk. Files
+/// open with unsaved edits are saved by the frontend first.
 #[tauri::command]
 pub fn replace_in_files(
     state: State<AppState>,
     options: SearchOptions,
     replacement: String,
-    paths: Vec<String>,
+    targets: Vec<ReplaceTarget>,
 ) -> CmdResult<usize> {
     let p = project(&state)?;
     let re = build_regex(&options)?;
     let mut count = 0;
-    for rel in paths {
-        let path = p.root.join(safe_rel(&rel)?);
+    for t in targets {
+        let path = p.root.join(safe_rel(&t.path)?);
         let text = std::fs::read_to_string(&path).map_err(err)?;
-        count += re.find_iter(&text).count();
-        let new = if options.regex {
-            re.replace_all(&text, replacement.as_str())
-        } else {
-            re.replace_all(&text, regex::NoExpand(&replacement))
-        };
-        std::fs::write(&path, new.as_ref()).map_err(err)?;
+        let lines = t.lines.into_iter().collect();
+        let (new, n) = replace_on_lines(&text, &re, &replacement, options.regex, &lines);
+        if n > 0 {
+            std::fs::write(&path, new).map_err(err)?;
+        }
+        count += n;
     }
     Ok(count)
+}
+
+/// Where labels and citation keys are defined, for "Go to label or citation".
+#[tauri::command]
+pub fn symbol_defs(state: State<AppState>) -> CmdResult<Vec<lemmata_project::symbols::Occurrence>> {
+    let p = project(&state)?;
+    Ok(lemmata_project::symbols::scan(&p)
+        .into_iter()
+        .filter(|o| o.role == lemmata_project::symbols::Role::Def)
+        .collect())
+}
+
+/// Every mention of a label or key, to preview a rename or list its uses.
+#[tauri::command]
+pub fn symbol_uses(
+    state: State<AppState>,
+    kind: lemmata_project::symbols::Kind,
+    name: String,
+) -> CmdResult<Vec<lemmata_project::symbols::Occurrence>> {
+    let p = project(&state)?;
+    Ok(lemmata_project::symbols::scan(&p)
+        .into_iter()
+        .filter(|o| o.kind == kind && o.name == name)
+        .collect())
+}
+
+/// Renames a label or citation key in every .tex and .bib file. Returns the
+/// files that changed. The caller saves open files first and reloads after.
+#[tauri::command]
+pub fn rename_symbol(
+    state: State<AppState>,
+    kind: lemmata_project::symbols::Kind,
+    old: String,
+    new: String,
+) -> CmdResult<Vec<String>> {
+    use lemmata_project::symbols::{Role, rename_in_text, scan, valid_name};
+    let p = project(&state)?;
+    if !valid_name(&new) {
+        return Err(
+            "A name can't be empty or contain spaces, commas, braces or backslashes.".into(),
+        );
+    }
+    let all = scan(&p);
+    if new != old
+        && all
+            .iter()
+            .any(|o| o.kind == kind && o.role == Role::Def && o.name == new)
+    {
+        return Err(format!("{new} is already defined."));
+    }
+    let mut files: Vec<String> = all
+        .iter()
+        .filter(|o| o.kind == kind && o.name == old)
+        .map(|o| o.file.clone())
+        .collect();
+    files.sort();
+    files.dedup();
+    let mut changed = Vec::new();
+    for f in files {
+        let path = p.root.join(safe_rel(&f)?);
+        let text = std::fs::read_to_string(&path).map_err(err)?;
+        let (out, n) = rename_in_text(&f, &text, f.ends_with(".bib"), kind, &old, &new);
+        if n > 0 {
+            std::fs::write(&path, out).map_err(err)?;
+            changed.push(f);
+        }
+    }
+    Ok(changed)
 }
 
 #[tauri::command]
@@ -330,6 +452,50 @@ fn strip_ext(p: &str) -> String {
     }
 }
 
+/// Renames a file or folder inside the project and, with `update_references`,
+/// rewrites the `\input{...}` lines that name it.
+fn rename_one(
+    state: &State<AppState>,
+    p: &lemmata_project::Project,
+    from: &str,
+    to: &str,
+    update_references: bool,
+) -> CmdResult<usize> {
+    let src = p.root.join(safe_rel(from)?);
+    let dst = p.root.join(safe_rel(to)?);
+    if dst.exists() {
+        return Err(format!("{to} already exists."));
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(err)?;
+    }
+    std::fs::rename(&src, &dst).map_err(err)?;
+    let mut updated = 0;
+    if update_references {
+        for rel in text_files(p) {
+            let path = p.root.join(&rel);
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let new = rewrite_references(&text, from, to);
+            if new != text {
+                std::fs::write(&path, new).map_err(err)?;
+                updated += 1;
+            }
+        }
+    }
+    // Keep lemmata.toml's main file pointing at the right place.
+    let mut guard = state.project.lock().unwrap();
+    if let Some(proj) = guard.as_mut()
+        && proj.main == Path::new(from)
+    {
+        proj.main = PathBuf::from(to);
+        proj.config.main = Some(to.to_string());
+        proj.save_config().map_err(err)?;
+    }
+    Ok(updated)
+}
+
 /// Renames a file or folder; with `update_references`, also rewrites
 /// `\input{...}` and friends that name it.
 #[tauri::command]
@@ -340,39 +506,259 @@ pub fn rename_path(
     update_references: bool,
 ) -> CmdResult<usize> {
     let p = project(&state)?;
-    let src = p.root.join(safe_rel(&from)?);
-    let dst = p.root.join(safe_rel(&to)?);
-    if dst.exists() {
-        return Err(format!("{to} already exists."));
+    rename_one(&state, &p, &from, &to, update_references)
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct Moved {
+    pub from: String,
+    pub to: String,
+}
+
+/// Drops entries that sit inside another entry of the list (moving a folder
+/// already moves what is in it), and duplicates.
+pub fn top_level(paths: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in paths {
+        let inside = paths
+            .iter()
+            .any(|o| o != p && p.starts_with(&format!("{o}/")));
+        if !inside && !out.contains(p) {
+            out.push(p.clone());
+        }
     }
-    if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent).map_err(err)?;
+    out
+}
+
+fn join_rel(folder: &str, name: &str) -> String {
+    if folder.is_empty() {
+        name.to_string()
+    } else {
+        format!("{folder}/{name}")
     }
-    std::fs::rename(&src, &dst).map_err(err)?;
-    let mut updated = 0;
-    if update_references {
-        for rel in text_files(&p) {
-            let path = p.root.join(&rel);
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let new = rewrite_references(&text, &from, &to);
-            if new != text {
-                std::fs::write(&path, new).map_err(err)?;
-                updated += 1;
+}
+
+/// Moves files and folders into `folder` ("" is the project root), all or
+/// nothing: every move is checked before the first one happens.
+#[tauri::command]
+pub fn move_paths(
+    state: State<AppState>,
+    paths: Vec<String>,
+    folder: String,
+    update_references: bool,
+) -> CmdResult<Vec<Moved>> {
+    let p = project(&state)?;
+    let plan = plan_moves(&p.root, &paths, &folder)?;
+    for m in &plan {
+        rename_one(&state, &p, &m.from, &m.to, update_references)?;
+    }
+    Ok(plan)
+}
+
+/// What moving `paths` into `folder` would do, or why it can't be done.
+pub fn plan_moves(root: &Path, paths: &[String], folder: &str) -> CmdResult<Vec<Moved>> {
+    if !folder.is_empty() {
+        safe_rel(folder)?;
+    }
+    let mut plan: Vec<Moved> = Vec::new();
+    for from in top_level(paths) {
+        safe_rel(&from)?;
+        let name = from.rsplit('/').next().unwrap_or(&from).to_string();
+        let to = join_rel(folder, &name);
+        if to == from {
+            continue;
+        }
+        if folder == from || folder.starts_with(&format!("{from}/")) {
+            return Err(format!("{from} can't be moved into itself."));
+        }
+        if root.join(&to).exists() || plan.iter().any(|m| m.to == to) {
+            return Err(format!("{to} already exists."));
+        }
+        plan.push(Moved { from, to });
+    }
+    Ok(plan)
+}
+
+const TRASH_DIR: &str = ".lemmata/trash";
+const MANIFEST: &str = "manifest.json";
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TrashBatch {
+    /// Milliseconds since the epoch; also the folder name.
+    pub id: String,
+    pub paths: Vec<String>,
+}
+
+/// Moves files and folders into `.lemmata/trash/<id>/`, keeping their
+/// project-relative paths, so "Undo" can put them back exactly.
+#[tauri::command]
+pub fn trash_paths(state: State<AppState>, paths: Vec<String>) -> CmdResult<TrashBatch> {
+    trash_into(&project(&state)?.root, &paths)
+}
+
+pub fn trash_into(root: &Path, paths: &[String]) -> CmdResult<TrashBatch> {
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
+        .to_string();
+    let batch = root.join(TRASH_DIR).join(&id);
+    let paths = top_level(paths);
+    for rel in &paths {
+        safe_rel(rel)?;
+        if !root.join(rel).exists() {
+            return Err(format!("{rel} no longer exists."));
+        }
+    }
+    for rel in &paths {
+        let dest = batch.join(rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(err)?;
+        }
+        std::fs::rename(root.join(rel), &dest)
+            .map_err(|e| format!("Could not move {rel} to the trash: {e}"))?;
+    }
+    let result = TrashBatch { id, paths };
+    std::fs::write(
+        batch.join(MANIFEST),
+        serde_json::to_vec(&result).map_err(err)?,
+    )
+    .map_err(err)?;
+    Ok(result)
+}
+
+/// Puts a trashed batch back where it came from. Nothing is restored if any
+/// of the original paths is taken again.
+#[tauri::command]
+pub fn restore_trash(state: State<AppState>, id: String) -> CmdResult<Vec<String>> {
+    restore_from(&project(&state)?.root, &id)
+}
+
+pub fn restore_from(root: &Path, id: &str) -> CmdResult<Vec<String>> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+        return Err("Unknown trash entry.".into());
+    }
+    let batch = root.join(TRASH_DIR).join(id);
+    let manifest: TrashBatch = serde_json::from_slice(
+        &std::fs::read(batch.join(MANIFEST))
+            .map_err(|_| "That deletion can't be undone anymore.")?,
+    )
+    .map_err(err)?;
+    for rel in &manifest.paths {
+        safe_rel(rel)?;
+        if root.join(rel).exists() {
+            return Err(format!("{rel} exists again, so it can't be restored."));
+        }
+    }
+    for rel in &manifest.paths {
+        let dest = root.join(rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(err)?;
+        }
+        std::fs::rename(batch.join(rel), dest).map_err(err)?;
+    }
+    let _ = std::fs::remove_dir_all(&batch);
+    Ok(manifest.paths)
+}
+
+/// Deletes trash batches older than `days`. Called when a project opens.
+#[tauri::command]
+pub fn purge_trash(state: State<AppState>, days: u64) -> CmdResult<usize> {
+    Ok(purge_in(&project(&state)?.root, days, now_ms()))
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
+}
+
+pub fn purge_in(root: &Path, days: u64, now: u128) -> usize {
+    let limit = u128::from(days) * 24 * 60 * 60 * 1000;
+    let mut removed = 0;
+    let Ok(read) = std::fs::read_dir(root.join(TRASH_DIR)) else {
+        return 0;
+    };
+    for e in read.flatten() {
+        let old = e
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u128>().ok())
+            .is_some_and(|id| now.saturating_sub(id) > limit);
+        if old && std::fs::remove_dir_all(e.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Files nothing in the project refers to by name: images, `.tex` parts,
+/// bibliographies and packages left behind. The main file never counts.
+#[tauri::command]
+pub fn unused_files(state: State<AppState>) -> CmdResult<Vec<String>> {
+    let p = project(&state)?;
+    let sources: Vec<String> = text_files(&p)
+        .iter()
+        .filter_map(|rel| std::fs::read_to_string(p.root.join(rel)).ok())
+        .collect();
+    let main = p.main.to_string_lossy().replace('\\', "/");
+    Ok(unused_in(&all_files(&p), &sources, &main))
+}
+
+const CANDIDATE_EXTS: &[&str] = &[
+    "tex", "bib", "sty", "cls", "png", "jpg", "jpeg", "pdf", "eps", "svg", "tikz",
+];
+
+fn all_files(project: &lemmata_project::Project) -> Vec<String> {
+    fn walk(entries: &[lemmata_project::Entry], out: &mut Vec<String>) {
+        for e in entries {
+            if e.is_dir {
+                walk(&e.children, out);
+            } else {
+                out.push(e.path.clone());
             }
         }
     }
-    // Keep lemmata.toml's main file pointing at the right place.
-    let mut guard = state.project.lock().unwrap();
-    if let Some(proj) = guard.as_mut()
-        && proj.main == Path::new(&from)
-    {
-        proj.main = PathBuf::from(&to);
-        proj.config.main = Some(to.clone());
-        proj.save_config().map_err(err)?;
+    let mut out = Vec::new();
+    walk(
+        &lemmata_project::tree(&project.root, &project.config.outdir),
+        &mut out,
+    );
+    out
+}
+
+/// A file counts as used when a `{...}` argument in some source names it,
+/// by path or by bare name (which also covers `\graphicspath`), with or
+/// without the extension.
+pub fn unused_in(files: &[String], sources: &[String], main: &str) -> Vec<String> {
+    let base_of = |name: &str| -> String {
+        let name = name.trim().trim_start_matches("./");
+        let stem = strip_ext(name);
+        stem.rsplit('/').next().unwrap_or(&stem).to_string()
+    };
+    let mut names = std::collections::HashSet::new();
+    let re = Regex::new(r"\{([^{}]*)\}").unwrap();
+    for src in sources {
+        for c in re.captures_iter(src) {
+            for part in c[1].split(',') {
+                let part = part.trim();
+                if !part.is_empty() {
+                    names.insert(base_of(part));
+                }
+            }
+        }
     }
-    Ok(updated)
+    files
+        .iter()
+        .filter(|f| *f != main)
+        .filter(|f| {
+            Path::new(f)
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| CANDIDATE_EXTS.contains(&x.to_ascii_lowercase().as_str()))
+        })
+        .filter(|f| !names.contains(&base_of(f)))
+        .cloned()
+        .collect()
 }
 
 /// Hashes of the files the app itself last wrote, so the watcher can tell
@@ -467,6 +853,162 @@ pub fn watch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn touch(root: &Path, rel: &str, text: &str) {
+        let full = root.join(rel);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    }
+
+    #[test]
+    fn replaces_only_the_chosen_lines_and_keeps_line_endings() {
+        let re = build_regex(&SearchOptions {
+            query: "cat".into(),
+            regex: false,
+            case_sensitive: true,
+            whole_word: false,
+        })
+        .unwrap();
+        let text = "cat one\r\ncat two\ncat cat three";
+        let lines = [1, 3].into_iter().collect();
+        let (new, n) = replace_on_lines(text, &re, "dog", false, &lines);
+        assert_eq!(new, "dog one\r\ncat two\ndog dog three");
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn regex_replacements_use_groups_and_literal_ones_do_not() {
+        let mk = |regex: bool, q: &str| {
+            build_regex(&SearchOptions {
+                query: q.into(),
+                regex,
+                case_sensitive: true,
+                whole_word: false,
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            replace_line("ab12", &mk(true, r"([a-z]+)(\d+)"), "$2$1", true),
+            "12ab"
+        );
+        assert_eq!(replace_line("a.b", &mk(false, "."), "$1", false), "a$1b");
+    }
+
+    #[test]
+    fn top_level_drops_children_and_duplicates() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            top_level(&v(&["a", "a/b.tex", "a", "ab.tex", "c/d"])),
+            v(&["a", "ab.tex", "c/d"])
+        );
+    }
+
+    #[test]
+    fn plans_moves_and_refuses_clashes_and_cycles() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "a.tex", "");
+        touch(d.path(), "chapters/a.tex", "");
+        touch(d.path(), "chapters/b.tex", "");
+        touch(d.path(), "figs/x.png", "");
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let plan = plan_moves(d.path(), &v(&["chapters/b.tex", "figs"]), "").unwrap();
+        assert_eq!(
+            plan,
+            [
+                Moved {
+                    from: "chapters/b.tex".into(),
+                    to: "b.tex".into()
+                },
+                // figs already sits in the root: nothing to do for it.
+            ]
+        );
+        assert!(
+            plan_moves(d.path(), &v(&["a.tex"]), "chapters").is_err(),
+            "name taken"
+        );
+        assert!(
+            plan_moves(d.path(), &v(&["chapters"]), "chapters/sub").is_err(),
+            "into itself"
+        );
+        assert!(
+            plan_moves(d.path(), &v(&["../x"]), "").is_err(),
+            "escapes the project"
+        );
+    }
+
+    #[test]
+    fn trash_and_restore_round_trip() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "chapters/one.tex", "one");
+        touch(d.path(), "chapters/two.tex", "two");
+        touch(d.path(), "refs.bib", "bib");
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let batch =
+            trash_into(d.path(), &v(&["chapters", "chapters/one.tex", "refs.bib"])).unwrap();
+        assert_eq!(batch.paths, v(&["chapters", "refs.bib"]));
+        assert!(!d.path().join("chapters").exists());
+        assert!(!d.path().join("refs.bib").exists());
+        let back = restore_from(d.path(), &batch.id).unwrap();
+        assert_eq!(back, v(&["chapters", "refs.bib"]));
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("chapters/two.tex")).unwrap(),
+            "two"
+        );
+        assert!(!d.path().join(TRASH_DIR).join(&batch.id).exists());
+    }
+
+    #[test]
+    fn restore_refuses_when_the_path_is_taken_again() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "a.tex", "old");
+        let batch = trash_into(d.path(), &["a.tex".to_string()]).unwrap();
+        touch(d.path(), "a.tex", "new");
+        assert!(restore_from(d.path(), &batch.id).is_err());
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("a.tex")).unwrap(),
+            "new"
+        );
+        assert!(restore_from(d.path(), "../etc").is_err());
+    }
+
+    #[test]
+    fn purge_removes_only_old_batches() {
+        let d = tempfile::tempdir().unwrap();
+        let day = 24 * 60 * 60 * 1000u128;
+        let now = 100 * day;
+        for id in [now - 8 * day, now - day] {
+            touch(d.path(), &format!("{TRASH_DIR}/{id}/x.tex"), "");
+        }
+        assert_eq!(purge_in(d.path(), 7, now), 1);
+        assert!(
+            d.path()
+                .join(TRASH_DIR)
+                .join((now - day).to_string())
+                .exists()
+        );
+    }
+
+    #[test]
+    fn unused_files_ignores_referenced_ones() {
+        let files: Vec<String> = [
+            "main.tex",
+            "chapters/a.tex",
+            "chapters/b.tex",
+            "figs/x.png",
+            "figs/old.png",
+            "refs.bib",
+            "notes.txt",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let sources =
+            vec!["\\input{chapters/a}\\includegraphics{x}\\addbibresource{refs.bib}".to_string()];
+        assert_eq!(
+            unused_in(&files, &sources, "main.tex"),
+            ["chapters/b.tex", "figs/old.png"]
+        );
+    }
 
     #[test]
     fn search_reports_character_ranges() {

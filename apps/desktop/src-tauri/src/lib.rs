@@ -224,6 +224,11 @@ async fn build(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<O
         latexmk,
         bin_dir: detection.bin_dir.as_deref(),
         installer: Some(detection.installer(lemmata_tex::os::detect().family)),
+        miktex: matches!(
+            detection.distribution,
+            lemmata_tex::Distribution::Miktex { .. }
+        ),
+        perl_dir: detection.tool("perl").and_then(|p| p.parent()),
     };
     let outcome = lemmata_tex::build(&project, &opts, rx).await.map_err(err)?;
     Ok(outcome)
@@ -309,9 +314,45 @@ fn templates_dir(app: &tauri::AppHandle) -> CmdResult<PathBuf> {
     Ok(app.path().resource_dir().map_err(err)?.join("templates"))
 }
 
+/// Templates the user saved from their own projects.
+fn user_templates_dir(app: &tauri::AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().app_data_dir().map_err(err)?.join("templates"))
+}
+
 #[tauri::command]
 fn list_templates(app: tauri::AppHandle) -> CmdResult<Vec<projects::Template>> {
-    Ok(projects::list_templates(&templates_dir(&app)?))
+    Ok(projects::list_all(
+        &templates_dir(&app)?,
+        &user_templates_dir(&app)?,
+    ))
+}
+
+/// Saves the open project as a template for new projects.
+#[tauri::command]
+fn save_as_template(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    name: String,
+    description: String,
+) -> CmdResult<String> {
+    let p = state
+        .project
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("No project is open.")?;
+    projects::save_as_template(
+        &user_templates_dir(&app)?,
+        &p.root,
+        &p.config.outdir,
+        &name,
+        &description,
+    )
+}
+
+#[tauri::command]
+fn delete_template(app: tauri::AppHandle, id: String) -> CmdResult<()> {
+    projects::delete_user_template(&user_templates_dir(&app)?, &id)
 }
 
 #[tauri::command]
@@ -321,7 +362,13 @@ fn create_project(
     parent: String,
     name: String,
 ) -> CmdResult<PathBuf> {
-    projects::create_from_template(&templates_dir(&app)?, &template, Path::new(&parent), &name)
+    projects::create_from_template(
+        &templates_dir(&app)?,
+        &user_templates_dir(&app)?,
+        &template,
+        Path::new(&parent),
+        &name,
+    )
 }
 
 /// The example document, created in Lemmata's data folder on first use.
@@ -644,6 +691,8 @@ pub fn run() {
             word_count,
             package_names,
             list_templates,
+            save_as_template,
+            delete_template,
             create_project,
             import_overleaf_zip,
             inspect_zip,
@@ -654,6 +703,7 @@ pub fn run() {
             save_thumbnail,
             load_thumbnail,
             history::history_status,
+            history::git_status,
             history::history_enable,
             history::history_snapshot,
             history::history_list,
@@ -684,8 +734,17 @@ pub fn run() {
             files::trash_path,
             files::find_references,
             files::rename_path,
+            files::move_paths,
+            files::trash_paths,
+            files::restore_trash,
+            files::purge_trash,
+            files::unused_files,
+            files::symbol_defs,
+            files::symbol_uses,
+            files::rename_symbol,
             export::export_pdf,
             export::export_arxiv,
+            export::export_zip,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lemmata");

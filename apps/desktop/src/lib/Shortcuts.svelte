@@ -3,7 +3,7 @@
   import { SHORTCUTS, display } from "./shortcuts";
 
   let { onClose }: { onClose: () => void } = $props();
-  const groups = ["Project", "Navigation", "Writing", "Editing", "PDF"] as const;
+  const groups = ["Project", "Navigation", "Files", "Writing", "Editing", "PDF"] as const;
 </script>
 
 <Modal title="Keyboard shortcuts" width={620} {onClose}>

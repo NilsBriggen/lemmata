@@ -1,6 +1,7 @@
 // App-wide settings, saved with tauri-plugin-store in the app's config
 // folder. Project-specific options live in lemmata.toml instead.
 import { load, type Store } from "@tauri-apps/plugin-store";
+import type { Snippet } from "./editor/snippets";
 
 export interface Settings {
   theme: "system" | "light" | "dark";
@@ -33,6 +34,13 @@ export interface Settings {
   /** Spell-check language for projects that don't choose one. */
   spellDefault: string;
   libraryView: "list" | "grid";
+  /** How the file tree is ordered, and whether folders stay above files. */
+  treeSort: "name" | "type" | "modified" | "size";
+  treeFoldersFirst: boolean;
+  /** "project" keeps deleted files in .lemmata/trash so Undo works; "system" uses the OS trash. */
+  trashMode: "project" | "system";
+  /** Text the editor offers after typing a short trigger. */
+  snippets: Snippet[];
   firstRunDone: boolean;
 }
 
@@ -59,6 +67,10 @@ export const DEFAULTS: Settings = {
   pdfWidth: 560,
   spellDefault: "auto",
   libraryView: "list",
+  treeSort: "name",
+  treeFoldersFirst: true,
+  trashMode: "project",
+  snippets: [],
   firstRunDone: false,
 };
 

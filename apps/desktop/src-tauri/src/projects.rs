@@ -10,9 +10,14 @@ pub struct Template {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// Saved by the user from one of their projects, so it can be deleted.
+    pub user: bool,
 }
 
-#[derive(Deserialize)]
+/// Ids of user templates start with this, so they can't clash with bundled ones.
+pub const USER_PREFIX: &str = "user:";
+
+#[derive(Deserialize, Serialize)]
 struct TemplateMeta {
     name: String,
     description: String,
@@ -36,7 +41,14 @@ pub fn ensure_example(templates: &Path, dir: &Path) -> Result<PathBuf, String> {
     Ok(dir.to_path_buf())
 }
 
-pub fn list_templates(dir: &Path) -> Vec<Template> {
+/// Bundled templates in their own order, then the user's, by name.
+pub fn list_all(bundled: &Path, user: &Path) -> Vec<Template> {
+    let mut all = list_templates(bundled, false);
+    all.extend(list_templates(user, true));
+    all
+}
+
+fn list_templates(dir: &Path, user: bool) -> Vec<Template> {
     let mut found: Vec<(u32, Template)> = fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -46,13 +58,19 @@ pub fn list_templates(dir: &Path) -> Vec<Template> {
         .filter_map(|e| {
             let text = fs::read_to_string(e.path().join(META)).ok()?;
             let meta: TemplateMeta = toml::from_str(&text).ok()?;
-            let id = e.file_name().to_string_lossy().into_owned();
+            let folder = e.file_name().to_string_lossy().into_owned();
+            let id = if user {
+                format!("{USER_PREFIX}{folder}")
+            } else {
+                folder
+            };
             Some((
                 meta.order,
                 Template {
                     id,
                     name: meta.name,
                     description: meta.description,
+                    user,
                 },
             ))
         })
@@ -81,13 +99,22 @@ fn fresh_target(parent: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(target)
 }
 
+/// The folder a template id names: bundled, or the user's (`user:` prefix).
+fn template_dir(bundled: &Path, user: &Path, id: &str) -> Result<PathBuf, String> {
+    Ok(match id.strip_prefix(USER_PREFIX) {
+        Some(folder) => user.join(check_name(folder)?),
+        None => bundled.join(check_name(id)?),
+    })
+}
+
 pub fn create_from_template(
-    templates: &Path,
+    bundled: &Path,
+    user: &Path,
     id: &str,
     parent: &Path,
     name: &str,
 ) -> Result<PathBuf, String> {
-    let source = templates.join(check_name(id)?);
+    let source = template_dir(bundled, user, id)?;
     if !source.join(META).is_file() {
         return Err(format!("There is no template called {id}."));
     }
@@ -95,6 +122,98 @@ pub fn create_from_template(
     copy_dir(&source, &target).map_err(|e| format!("Could not create the project: {e}"))?;
     let _ = fs::remove_file(target.join(META));
     Ok(target)
+}
+
+/// A folder name for a template called `name`: letters, digits and dashes.
+fn slug(name: &str) -> String {
+    let s: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let s = s
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if s.is_empty() { "template".into() } else { s }
+}
+
+/// Saves a copy of a project (without hidden files or build output) as a
+/// user template. Returns the new template's id.
+pub fn save_as_template(
+    user: &Path,
+    project_root: &Path,
+    outdir: &str,
+    name: &str,
+    description: &str,
+) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give the template a name.".into());
+    }
+    let mut folder = slug(name);
+    let mut n = 1;
+    while user.join(&folder).exists() {
+        n += 1;
+        folder = format!("{}-{n}", slug(name));
+    }
+    let dest = user.join(&folder);
+    let result = (|| -> io::Result<()> {
+        fn walk(entries: &[lemmata_project::Entry], root: &Path, dest: &Path) -> io::Result<()> {
+            for e in entries {
+                let target = dest.join(&e.path);
+                if e.is_dir {
+                    fs::create_dir_all(&target)?;
+                    walk(&e.children, root, dest)?;
+                } else {
+                    if let Some(parent) = target.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::copy(root.join(&e.path), target)?;
+                }
+            }
+            Ok(())
+        }
+        fs::create_dir_all(&dest)?;
+        walk(
+            &lemmata_project::tree(project_root, outdir),
+            project_root,
+            &dest,
+        )?;
+        let meta = TemplateMeta {
+            name: name.to_string(),
+            description: description.trim().to_string(),
+            order: 1000,
+        };
+        fs::write(
+            dest.join(META),
+            toml::to_string_pretty(&meta).map_err(io::Error::other)?,
+        )
+    })();
+    if let Err(e) = result {
+        let _ = fs::remove_dir_all(&dest);
+        return Err(format!("Could not save the template: {e}"));
+    }
+    Ok(format!("{USER_PREFIX}{folder}"))
+}
+
+/// Deletes a user template. Bundled ones can't be deleted.
+pub fn delete_user_template(user: &Path, id: &str) -> Result<(), String> {
+    let folder = id
+        .strip_prefix(USER_PREFIX)
+        .ok_or("Only your own templates can be deleted.")?;
+    let dir = user.join(check_name(folder)?);
+    if !dir.join(META).is_file() {
+        return Err("That template no longer exists.".into());
+    }
+    fs::remove_dir_all(dir).map_err(|e| format!("Could not delete the template: {e}"))
 }
 
 fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
@@ -348,20 +467,53 @@ mod tests {
         fs::create_dir_all(&t).unwrap();
         fs::write(t.join(META), "name = \"Article\"\ndescription = \"x\"\n").unwrap();
         fs::write(t.join("main.tex"), "\\documentclass{article}").unwrap();
-        assert_eq!(
-            list_templates(&d.path().join("templates"))[0].name,
-            "Article"
-        );
+        let (bundled, user) = (d.path().join("templates"), d.path().join("user"));
+        assert_eq!(list_all(&bundled, &user)[0].name, "Article");
 
-        let p = create_from_template(&d.path().join("templates"), "article", d.path(), "My Paper")
-            .unwrap();
+        let p = create_from_template(&bundled, &user, "article", d.path(), "My Paper").unwrap();
         assert!(p.join("main.tex").is_file());
         assert!(!p.join(META).exists());
-        assert!(
-            create_from_template(&d.path().join("templates"), "article", d.path(), "My Paper")
-                .is_err()
+        assert!(create_from_template(&bundled, &user, "article", d.path(), "My Paper").is_err());
+        assert!(create_from_template(&bundled, &user, "../x", d.path(), "q").is_err());
+        assert!(create_from_template(&bundled, &user, "user:../x", d.path(), "q").is_err());
+    }
+
+    #[test]
+    fn saves_a_project_as_a_template_and_uses_it() {
+        let d = tempfile::tempdir().unwrap();
+        let (bundled, user, proj) = (
+            d.path().join("bundled"),
+            d.path().join("user"),
+            d.path().join("thesis"),
         );
-        assert!(create_from_template(&d.path().join("templates"), "../x", d.path(), "q").is_err());
+        fs::create_dir_all(proj.join("chapters")).unwrap();
+        fs::create_dir_all(proj.join(".lemmata/build")).unwrap();
+        fs::write(proj.join("main.tex"), "\\documentclass{book}").unwrap();
+        fs::write(proj.join("chapters/one.tex"), "x").unwrap();
+        fs::write(proj.join(".lemmata/build/main.pdf"), "pdf").unwrap();
+
+        let id = save_as_template(&user, &proj, ".lemmata/build", "My Thesis!", "Mine").unwrap();
+        assert_eq!(id, "user:my-thesis");
+        // A second save with the same name doesn't overwrite.
+        assert_eq!(
+            save_as_template(&user, &proj, ".lemmata/build", "My Thesis!", "").unwrap(),
+            "user:my-thesis-2"
+        );
+        assert!(save_as_template(&user, &proj, ".lemmata/build", "  ", "").is_err());
+
+        let listed = list_all(&bundled, &user);
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|t| t.user));
+        assert!(listed.iter().any(|t| t.description == "Mine"));
+
+        let made = create_from_template(&bundled, &user, &id, d.path(), "New thesis").unwrap();
+        assert!(made.join("chapters/one.tex").is_file());
+        assert!(!made.join(".lemmata").exists() && !made.join(META).exists());
+
+        delete_user_template(&user, &id).unwrap();
+        assert_eq!(list_all(&bundled, &user).len(), 1);
+        assert!(delete_user_template(&user, "article").is_err());
+        assert!(delete_user_template(&user, "user:../../x").is_err());
     }
 
     fn zip_bytes(files: &[(&str, &str)]) -> Vec<u8> {

@@ -6,6 +6,7 @@ Status: 1.0. See the [user guide](docs/guide.md) for what it does, and [docs/PLA
 
 ## Features
 
+- A real file manager: multi-select, drag and drop, cut/copy/paste, keyboard control, sorting, and Undo for deletes and moves.
 - Overleaf-style layout: file tree, outline, editor and PDF side by side, with a formatting toolbar and an insert menu for figures, tables and symbols.
 - Environment pairing (`\begin{x}` and `\end{x}` stay in step), completion for commands, labels, citations, files and packages, folding, formatting shortcuts.
 - A PDF viewer with text selection, search, working links, outline and a presentation mode.

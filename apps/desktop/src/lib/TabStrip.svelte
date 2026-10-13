@@ -3,16 +3,24 @@
   // right-click for Close others / to the right / all.
   import X from "@lucide/svelte/icons/x";
   import FileImage from "@lucide/svelte/icons/file-image";
+  import Pin from "@lucide/svelte/icons/pin";
 
   interface Props {
     tabs: string[];
     active: string | null;
     dirty: Record<string, boolean>;
+    /** Pinned tabs sit at the left; the close button is replaced by a pin. */
+    pinned?: string[];
+    onPin?: (path: string) => void;
+    /** Recently closed files, newest first, for the "Reopen" entry. */
+    closed?: string[];
+    onReopen?: () => void;
     onSelect: (path: string) => void;
     onClose: (path: string) => void;
     onReorder: (tabs: string[]) => void;
   }
-  let { tabs, active, dirty, onSelect, onClose, onReorder }: Props = $props();
+  let { tabs, active, dirty, pinned = [], onPin, closed = [], onReopen, onSelect, onClose, onReorder }: Props = $props();
+  const isPinned = (p: string) => pinned.includes(p);
 
   let strip = $state<HTMLDivElement>();
   let drag = $state<{ path: string; over: number } | null>(null);
@@ -60,7 +68,8 @@
   function act(kind: "close" | "others" | "right" | "all") {
     if (!menu) return;
     const i = tabs.indexOf(menu.path);
-    const victims = kind === "close" ? [menu.path] : kind === "others" ? tabs.filter((t) => t !== menu!.path) : kind === "right" ? tabs.slice(i + 1) : [...tabs];
+    // Closing "the others" or "all" leaves pinned tabs alone.
+    const victims = kind === "close" ? [menu.path] : (kind === "others" ? tabs.filter((t) => t !== menu!.path) : kind === "right" ? tabs.slice(i + 1) : [...tabs]).filter((t) => !isPinned(t));
     menu = null;
     for (const t of victims) onClose(t);
   }
@@ -71,14 +80,20 @@
 <div class="tabs" bind:this={strip} role="tablist">
   {#each tabs as t, i (t)}
     {#if drag && drag.over === i && drag.path !== t}<span class="marker"></span>{/if}
-    <div class="tab" class:on={t === active} class:moving={drag?.path === t} role="presentation" onpointerdown={(e) => press(e, t)} oncontextmenu={(e) => context(e, t)} onauxclick={(e) => e.button === 1 && (e.preventDefault(), onClose(t))}>
+    <div class="tab" class:on={t === active} class:moving={drag?.path === t} class:pinned={isPinned(t)} role="presentation" onpointerdown={(e) => press(e, t)} oncontextmenu={(e) => context(e, t)} onauxclick={(e) => e.button === 1 && (e.preventDefault(), !isPinned(t) && onClose(t))}>
       <button class="name" role="tab" aria-selected={t === active} onclick={() => !swallow && onSelect(t)} title={t}>
         {#if isViewer(t)}<FileImage size={13} />{/if}
         {t.split("/").pop()}
       </button>
-      <button class="x" class:dirty={dirty[t]} aria-label={dirty[t] ? `${t} has unsaved changes; close` : `Close ${t}`} onclick={() => onClose(t)}>
-        <span class="dot"></span><X size={13} />
-      </button>
+      {#if isPinned(t)}
+        <button class="x pin" class:dirty={dirty[t]} aria-label="Unpin {t}" title="Pinned. Click to unpin." onclick={() => onPin?.(t)}>
+          <span class="dot"></span><Pin size={12} />
+        </button>
+      {:else}
+        <button class="x" class:dirty={dirty[t]} aria-label={dirty[t] ? `${t} has unsaved changes; close` : `Close ${t}`} onclick={() => onClose(t)}>
+          <span class="dot"></span><X size={13} />
+        </button>
+      {/if}
     </div>
   {/each}
   {#if drag && drag.over === tabs.length}<span class="marker"></span>{/if}
@@ -86,10 +101,16 @@
 
 {#if menu}
   <div class="menu tab-menu" role="menu" style:left="{menu.x}px" style:top="{menu.y}px">
+    <button role="menuitem" onclick={() => { const p = menu!.path; menu = null; onPin?.(p); }}>{isPinned(menu.path) ? "Unpin" : "Pin"}</button>
+    <hr />
     <button role="menuitem" onclick={() => act("close")}>Close</button>
     <button role="menuitem" disabled={tabs.length < 2} onclick={() => act("others")}>Close others</button>
     <button role="menuitem" disabled={tabs.indexOf(menu.path) === tabs.length - 1} onclick={() => act("right")}>Close to the right</button>
     <button role="menuitem" onclick={() => act("all")}>Close all</button>
+    {#if closed.length}
+      <hr />
+      <button role="menuitem" onclick={() => { menu = null; onReopen?.(); }}>Reopen {closed[0].split("/").pop()}</button>
+    {/if}
   </div>
 {/if}
 
@@ -108,6 +129,10 @@
   .tab .x.dirty .dot { background: var(--accent); }
   .tab:hover .x :global(svg), .tab.on .x:not(.dirty) :global(svg), .tab .x:focus-visible :global(svg) { opacity: 1; }
   .tab:hover .x .dot, .tab .x:focus-visible .dot { opacity: 0; }
+  .tab.pinned .name { padding-left: 10px; }
+  .tab .x.pin :global(svg) { opacity: 1; color: var(--accent); }
+  .tab .x.pin .dot { display: none; }
+  .tab .x.pin.dirty .dot { display: block; position: absolute; top: 3px; right: 3px; }
   .tab .x:hover { background: var(--surface-3); color: var(--ink); }
   .marker { width: 2px; background: var(--accent); flex: none; }
   .tab.moving { opacity: 0.5; }

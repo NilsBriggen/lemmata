@@ -6,7 +6,7 @@ export interface Shortcut {
   id: string;
   keys: string;
   label: string;
-  group: "Project" | "Editing" | "Writing" | "PDF" | "Navigation";
+  group: "Project" | "Editing" | "Writing" | "PDF" | "Navigation" | "Files";
 }
 
 export const SHORTCUTS: Shortcut[] = [
@@ -20,6 +20,8 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "close-tab", keys: "Mod-w", label: "Close tab", group: "Navigation" },
   { id: "next-tab", keys: "Ctrl-Tab", label: "Next tab", group: "Navigation" },
   { id: "prev-tab", keys: "Ctrl-Shift-Tab", label: "Previous tab", group: "Navigation" },
+  { id: "goto-heading", keys: "Mod-Shift-o", label: "Go to a section", group: "Navigation" },
+  { id: "reopen-tab", keys: "Mod-Shift-t", label: "Reopen the last closed tab", group: "Navigation" },
   { id: "shortcuts", keys: "Mod-Shift-/", label: "Keyboard shortcuts", group: "Navigation" },
   { id: "cite", keys: "Mod-Shift-c", label: "Insert citation", group: "Writing" },
   { id: "symbols", keys: "Mod-Shift-m", label: "Insert symbol", group: "Writing" },
@@ -39,6 +41,17 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "definition", keys: "F12", label: "Go to definition", group: "Editing" },
   { id: "references", keys: "Shift-F12", label: "Find references", group: "Editing" },
   { id: "rename", keys: "F2", label: "Rename symbol", group: "Editing" },
+  // These work while the file tree has focus.
+  { id: "tree-rename", keys: "F2", label: "Rename the selected file", group: "Files" },
+  { id: "tree-delete", keys: "Delete", label: "Delete the selected files", group: "Files" },
+  { id: "tree-cut", keys: "Mod-x", label: "Cut files", group: "Files" },
+  { id: "tree-copy", keys: "Mod-c", label: "Copy files", group: "Files" },
+  { id: "tree-paste", keys: "Mod-v", label: "Paste files", group: "Files" },
+  { id: "tree-duplicate", keys: "Mod-d", label: "Duplicate files", group: "Files" },
+  { id: "tree-undo", keys: "Mod-z", label: "Undo the last file operation", group: "Files" },
+  { id: "tree-select-all", keys: "Mod-a", label: "Select all files", group: "Files" },
+  { id: "tree-new-file", keys: "Mod-n", label: "New file in the selected folder", group: "Files" },
+  { id: "tree-new-folder", keys: "Mod-Shift-n", label: "New folder", group: "Files" },
 ];
 
 export const keysOf = (id: string): string => SHORTCUTS.find((s) => s.id === id)?.keys ?? "";

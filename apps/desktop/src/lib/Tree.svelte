@@ -11,6 +11,8 @@
   import File from "@lucide/svelte/icons/file";
   import type { Entry } from "./api";
   import { dragState, parentOf, startDrag, wasDrag } from "./treeDrag.svelte";
+  import { isSelected, targets, tree } from "./treeSelection.svelte";
+  import { countFiles, formatSize } from "./treeModel";
 
   interface Props {
     entries: Entry[];
@@ -20,16 +22,34 @@
     onOpen: (path: string) => void;
     /** Right-click on an entry. */
     onContext?: (entry: Entry, x: number, y: number) => void;
-    /** An entry was dragged onto a folder ("" for the project root). */
-    onMove?: (path: string, folder: string) => void;
+    /** Entries were dragged onto a folder ("" for the project root). */
+    onMove?: (paths: string[], folder: string) => void;
+    /** A row was clicked; Ctrl/Shift extend the selection instead of opening. */
+    onSelect?: (path: string, mods: { ctrl: boolean; shift: boolean }) => void;
   }
-  let { entries, active, main, depth = 0, onOpen, onContext, onMove }: Props = $props();
-  let collapsed = $state<Record<string, boolean>>({});
+  let { entries, active, main, depth = 0, onOpen, onContext, onMove, onSelect }: Props = $props();
 
   const editable = (name: string) => /\.(tex|bib|sty|cls|txt|md|toml|bst|tikz|bbx|cbx)$/i.test(name);
   /** Images and PDFs open in a read-only viewer tab. */
   const viewable = (name: string) => /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(name);
-  const press = (ev: PointerEvent, e: Entry) => onMove && startDrag(ev, e, onMove);
+  const press = (ev: PointerEvent, e: Entry) => onMove && startDrag(ev, e, () => targets(e.path), onMove);
+  const mods = (ev: MouseEvent) => ({ ctrl: ev.ctrlKey || ev.metaKey, shift: ev.shiftKey });
+  /** Returns true when the click only changed the selection. */
+  function selectOnly(ev: MouseEvent, path: string) {
+    if (wasDrag()) return true;
+    const m = mods(ev);
+    onSelect?.(path, m);
+    return m.ctrl || m.shift;
+  }
+  const GIT_TITLES: Record<string, string> = {
+    M: "Changed since the last git commit",
+    A: "Added to git, not committed yet",
+    D: "Deleted, not committed yet",
+    R: "Renamed, not committed yet",
+    "?": "Not tracked by git",
+    U: "Merge conflict",
+  };
+  const modified = (secs: number) => (secs ? new Date(secs * 1000).toLocaleString() : "");
   const kind = (name: string) =>
     /\.tex$/i.test(name) ? "tex"
     : /\.bib$/i.test(name) ? "bib"
@@ -42,41 +62,52 @@
     if (!onContext) return;
     e.preventDefault();
     e.stopPropagation();
+    // Right-clicking outside the selection selects that row alone.
+    if (!isSelected(entry.path)) onSelect?.(entry.path, { ctrl: false, shift: false });
     onContext(entry, e.clientX, e.clientY);
   }
 </script>
 
-<ul role={depth === 0 ? "tree" : "group"}>
+<ul role={depth === 0 ? "tree" : "group"} aria-multiselectable={depth === 0 ? true : undefined}>
   {#each entries as e (e.path)}
-    <li role="treeitem" aria-selected={e.path === active} aria-expanded={e.is_dir ? !collapsed[e.path] : undefined}>
+    <li role="treeitem" aria-selected={isSelected(e.path) || e.path === active} aria-expanded={e.is_dir ? !tree.collapsed[e.path] : undefined}>
       {#if e.is_dir}
         <button
           class="row"
-          class:drop={dragState.active && dragState.target === e.path}
+          class:drop={(dragState.active && dragState.target === e.path) || dragState.external === e.path}
+          class:sel={isSelected(e.path)}
+          class:cursor={tree.cursor === e.path}
+          class:dragging={dragState.active && dragState.paths.includes(e.path)}
           data-drop={e.path}
+          data-path={e.path}
           style:padding-left="{8 + depth * 14}px"
-          onclick={() => !wasDrag() && (collapsed[e.path] = !collapsed[e.path])}
+          onclick={(ev) => !selectOnly(ev, e.path) && (tree.collapsed[e.path] = !tree.collapsed[e.path])}
           onpointerdown={(ev) => press(ev, e)}
           oncontextmenu={(ev) => context(ev, e)}
         >
-          <span class="caret" class:open={!collapsed[e.path]}><ChevronRight size={13} /></span>
-          <span class="ico folder">{#if collapsed[e.path]}<Folder size={15} />{:else}<FolderOpen size={15} />{/if}</span>
+          <span class="caret" class:open={!tree.collapsed[e.path]}><ChevronRight size={13} /></span>
+          <span class="ico folder">{#if tree.collapsed[e.path]}<Folder size={15} />{:else}<FolderOpen size={15} />{/if}</span>
           <span class="name">{e.name}</span>
+          {#if tree.collapsed[e.path]}<span class="count" title="Files inside">{countFiles(e)}</span>{/if}
+          {#if tree.gitFolders[e.path]}<span class="gitdot" title="Contains changes not yet committed to git"></span>{/if}
         </button>
-        {#if !collapsed[e.path]}
-          <Tree entries={e.children} {active} {main} depth={depth + 1} {onOpen} {onContext} {onMove} />
+        {#if !tree.collapsed[e.path]}
+          <Tree entries={e.children} {active} {main} depth={depth + 1} {onOpen} {onContext} {onMove} {onSelect} />
         {/if}
       {:else}
         {@const k = kind(e.name)}
         <button
           class="row"
           class:on={e.path === active}
+          class:sel={isSelected(e.path)}
+          class:cursor={tree.cursor === e.path}
           class:dim={!editable(e.name) && !viewable(e.name)}
-          class:dragging={dragState.active && dragState.path === e.path}
+          class:dragging={dragState.active && dragState.paths.includes(e.path)}
           data-drop={parentOf(e.path)}
+          data-path={e.path}
           style:padding-left="{8 + depth * 14 + 15}px"
-          title={editable(e.name) || viewable(e.name) ? e.path : `${e.path} (not a text file)`}
-          onclick={() => !wasDrag() && (editable(e.name) || viewable(e.name)) && onOpen(e.path)}
+          title="{e.path}{editable(e.name) || viewable(e.name) ? '' : ' (not a text file)'}{e.size ? `\n${formatSize(e.size)}` : ''}{e.modified ? `\n${modified(e.modified)}` : ''}"
+          onclick={(ev) => !selectOnly(ev, e.path) && (editable(e.name) || viewable(e.name)) && onOpen(e.path)}
           onpointerdown={(ev) => press(ev, e)}
           oncontextmenu={(ev) => context(ev, e)}
         >
@@ -85,6 +116,7 @@
           </span>
           <span class="name">{e.name}</span>
           {#if e.path === main}<span class="main" title="Main document">main</span>{/if}
+          {#if tree.git[e.path]}<span class="git s{tree.git[e.path] === "?" ? "u" : tree.git[e.path]}" title={GIT_TITLES[tree.git[e.path]] ?? "Changed"}>{tree.git[e.path]}</span>{/if}
         </button>
       {/if}
     </li>
@@ -105,7 +137,16 @@
   .row:hover { background: var(--chrome-hover); }
   .row.on { background: var(--chrome-active); color: #fff; box-shadow: inset 3px 0 var(--accent-on-dark); }
   .row.drop { background: color-mix(in srgb, var(--accent-on-dark) 28%, transparent); box-shadow: inset 0 0 0 1px var(--accent-on-dark); }
+  .row.sel { background: color-mix(in srgb, var(--accent-on-dark) 20%, transparent); }
+  .row.sel.on { background: var(--chrome-active); }
+  :global(.tree-scroll:focus-within) .row.cursor { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-on-dark) 55%, transparent); }
   .row.dragging { opacity: 0.5; }
+  .git { font: 600 10.5px var(--f-mono); width: 14px; text-align: center; flex: none; }
+  .git.sM, .git.sR { color: #e5b567; }
+  .git.sA, .git.su { color: #8fcf9f; }
+  .git.sD, .git.sU { color: #e58c8c; }
+  .gitdot { width: 6px; height: 6px; border-radius: 50%; background: #e5b567; flex: none; }
+  .count { font: 11px var(--f-body); color: var(--chrome-muted); background: var(--chrome-3); border-radius: 8px; padding: 0 6px; line-height: 16px; }
   .ghost { position: fixed; z-index: 60; pointer-events: none; padding: 3px 9px; border-radius: var(--r-sm); background: var(--chrome-3); color: var(--chrome-ink); border: 1px solid var(--chrome-border); font: 12.5px var(--f-body); box-shadow: var(--shadow); }
   .row.dim { color: var(--chrome-muted); cursor: default; }
   .row:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-on-dark); }

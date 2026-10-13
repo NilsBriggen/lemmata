@@ -7,6 +7,7 @@
   import Monitor from "@lucide/svelte/icons/monitor";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import Modal from "./ui/Modal.svelte";
+  import SnippetsDialog from "./SnippetsDialog.svelte";
   import { settings, updateSettings, DEFAULTS, type Settings } from "./settings.svelte";
   import { LANGUAGES } from "./spell/service";
   import type { Detection } from "./api";
@@ -18,6 +19,7 @@
     onClose: () => void;
   }
   let { detection, onTexDir, onCheckUpdates, onClose }: Props = $props();
+  let snippetsOpen = $state(false);
 
   let version = $state("");
   let updateMessage = $state<string | null>(null);
@@ -85,6 +87,17 @@
       <input id="pref-autocompile" type="checkbox" checked={settings.autoCompile} onchange={(e) => set("autoCompile", e.currentTarget.checked)} />
       Compile after every save
     </label>
+    <div class="row">
+      <span>Snippets</span>
+      <button class="btn" onclick={() => (snippetsOpen = true)}>{settings.snippets.length ? `Edit ${settings.snippets.length}…` : "Add…"}</button>
+    </div>
+    <div class="row">
+      <span>Deleted files</span>
+      <div class="segmented" role="group" aria-label="Where deleted files go">
+        <button aria-pressed={settings.trashMode === "project"} title="Kept inside the project for a week, so Undo can bring them back" onclick={() => set("trashMode", "project")}>Keep for Undo</button>
+        <button aria-pressed={settings.trashMode === "system"} title="Sent to your computer's trash" onclick={() => set("trashMode", "system")}>System trash</button>
+      </div>
+    </div>
     <div class="row">
       <span>Keyboard</span>
       <div class="segmented" role="group" aria-label="Keyboard">
@@ -178,6 +191,10 @@
     <button class="btn primary" onclick={onClose}>Done</button>
   {/snippet}
 </Modal>
+
+{#if snippetsOpen}
+  <SnippetsDialog onClose={() => (snippetsOpen = false)} />
+{/if}
 
 <style>
   section { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
