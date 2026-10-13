@@ -1,9 +1,24 @@
 # Changelog
 
 All notable changes to Lemmata.
-
-## Unreleased
+## 0.1.0-beta.1 (2026-10-13)
 
 ### Added
+- Editor, live PDF preview, SyncTeX and TeX setup (M0)
+- Install commands for missing packages
+- Completion, hover and go to definition via texlab, plus an outline
+- Project library, templates, Overleaf import and project settings
+- Project history with snapshots, diffs and restore
+- Spell check and word count
+- Preferences, auto-update, Vim keys and dark PDF pages
+- Writing aids: citation picker, references by DOI, figures, tables, math preview
+- Project tools and comfort features
+- Zotero citations through Better BibTeX
+- Report a problem, user guide and end-to-end tests
 
-- M0 spike: editor, compile on save with latexmk, PDF preview, SyncTeX both ways, error panel, TeX Live onboarding screen.
+### Fixed
+- Builds with \include'd chapters in subfolders
+- Fetch-texlab.sh works with macOS's bash 3.2
+
+### Documentation
+- Plan, website handoff and pitch
