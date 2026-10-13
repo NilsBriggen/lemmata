@@ -46,7 +46,13 @@ case $triple in
   x86_64-apple-darwin) cp "$(fetch x86_64-macos.tar.gz)" "$out/texlab-$triple" ;;
   aarch64-apple-darwin) cp "$(fetch aarch64-macos.tar.gz)" "$out/texlab-$triple" ;;
   universal-apple-darwin)
-    lipo -create -output "$out/texlab-$triple" "$(fetch x86_64-macos.tar.gz)" "$(fetch aarch64-macos.tar.gz)" ;;
+    # Tauri builds each architecture separately and then merges them, so it
+    # needs the per-architecture binaries as well as the universal one.
+    x86=$(fetch x86_64-macos.tar.gz)
+    arm=$(fetch aarch64-macos.tar.gz)
+    cp "$x86" "$out/texlab-x86_64-apple-darwin"
+    cp "$arm" "$out/texlab-aarch64-apple-darwin"
+    lipo -create -output "$out/texlab-$triple" "$x86" "$arm" ;;
   x86_64-pc-windows-msvc) cp "$(fetch x86_64-windows.zip)" "$out/texlab-$triple.exe" ;;
   *) echo "no texlab build for $triple" >&2; exit 1 ;;
 esac
