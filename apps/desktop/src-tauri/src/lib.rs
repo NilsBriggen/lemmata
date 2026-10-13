@@ -292,9 +292,89 @@ fn create_project(
     projects::create_from_template(&templates_dir(&app)?, &template, Path::new(&parent), &name)
 }
 
+/// The example document, created in Lemmata's data folder on first use.
 #[tauri::command]
-fn import_overleaf_zip(zip: String, parent: String, name: String) -> CmdResult<PathBuf> {
+fn create_example(app: tauri::AppHandle) -> CmdResult<PathBuf> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(err)?
+        .join(projects::EXAMPLE);
+    projects::ensure_example(&templates_dir(&app)?, &dir)
+}
+
+/// Stops the build in progress, if any.
+#[tauri::command]
+fn stop_build(state: State<AppState>) {
+    cancel_running(&state);
+}
+
+/// The full TeX log of the last build, for the "Raw log" view.
+#[tauri::command]
+fn read_log(state: State<AppState>) -> CmdResult<String> {
+    let path = state
+        .project
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|p| p.log_path())
+        .ok_or("No project is open.")?;
+    std::fs::read(&path)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .map_err(|_| "There's no log yet. Build the project first.".into())
+}
+
+/// Copies files chosen by the user into a project folder (`folder` is
+/// project-relative; empty for the root). Returns the new relative paths.
+#[tauri::command]
+fn add_files(state: State<AppState>, paths: Vec<String>, folder: String) -> CmdResult<Vec<String>> {
+    let root = state
+        .project
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|p| p.root.clone())
+        .ok_or("No project is open.")?;
+    let rel = Path::new(&folder);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("That folder is outside the project.".into());
+    }
+    let dest_dir = root.join(rel);
+    std::fs::create_dir_all(&dest_dir).map_err(err)?;
+    let mut added = Vec::new();
+    for p in paths {
+        let src = PathBuf::from(&p);
+        let name = src.file_name().ok_or("Not a file.")?;
+        let dest = dest_dir.join(name);
+        if dest.exists() {
+            return Err(format!(
+                "{} already exists in the project.",
+                name.to_string_lossy()
+            ));
+        }
+        std::fs::copy(&src, &dest).map_err(|e| format!("Could not copy {p}: {e}"))?;
+        added.push(
+            dest.strip_prefix(&root)
+                .unwrap_or(&dest)
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
+    }
+    Ok(added)
+}
+
+#[tauri::command]
+fn import_overleaf_zip(zip: String, parent: String, name: String) -> CmdResult<Vec<PathBuf>> {
     projects::import_zip(Path::new(&zip), Path::new(&parent), &name)
+}
+
+#[tauri::command]
+fn inspect_zip(zip: String) -> CmdResult<projects::ZipInfo> {
+    projects::inspect_zip(Path::new(&zip))
 }
 
 /// Undoes `encodeURIComponent` (header values must be ASCII).
@@ -504,6 +584,11 @@ pub fn run() {
             list_templates,
             create_project,
             import_overleaf_zip,
+            inspect_zip,
+            create_example,
+            stop_build,
+            read_log,
+            add_files,
             save_thumbnail,
             load_thumbnail,
             history::history_status,
