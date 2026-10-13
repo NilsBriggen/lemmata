@@ -14,6 +14,14 @@ async function openProject(dir: string) {
 }
 
 describe("Lemmata", () => {
+  // The spec reporter only prints at the end, so say where we are as we go.
+  beforeEach(function () {
+    console.log(`[e2e] start: ${this.currentTest?.title}`);
+  });
+  afterEach(function () {
+    console.log(`[e2e] ${this.currentTest?.state}: ${this.currentTest?.title}`);
+  });
+
   it("builds a project and shows its PDF", async () => {
     await openProject(path.join(fixtures, "article"));
     await expect($(".cm-content")).toHaveText(expect.stringContaining("\\documentclass"));
