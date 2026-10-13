@@ -82,4 +82,33 @@ describe("latex completions", () => {
   it("stays quiet for plain words", async () => {
     expect(await complete("hello wor")).toBeNull();
   });
+
+  it("ranks maths first inside maths and text commands first in prose", async () => {
+    const inside = await complete("Let $x = \\al");
+    const prose = await complete("Let us write \\al");
+    const boost = (r: CompletionResult | null, label: string) => r!.options.find((o) => o.label === label)!.boost;
+    expect(labels(inside)).toContain("\\alpha");
+    expect(boost(inside, "\\alpha")).toBeGreaterThan(boost(inside, "\\section") ?? 0);
+    // In prose \alpha is still there, but below the text commands.
+    expect(boost(prose, "\\alpha")).toBeLessThan(0);
+    expect(boost(prose, "\\section")).toBeGreaterThan(0);
+  });
+
+  it("gives maths structures real tab stops and a preview", async () => {
+    const { previews } = await import("./mathCommands");
+    const r = await complete("$\\fra");
+    const frac = r!.options.find((o) => o.label === "\\frac")!;
+    expect(typeof frac.apply).toBe("function"); // a snippet
+    expect(previews.get(frac)).toBe("\\frac{a}{b}");
+    expect(labels(await complete("$\\su"))).toContain("\\sum");
+  });
+
+  it("every maths completion renders", async () => {
+    const { mathCompletions, previews } = await import("./mathCommands");
+    const { renderTex } = await import("../writing/katexRender");
+    const all = mathCompletions(0);
+    expect(all.length).toBeGreaterThan(150);
+    const bad = all.filter((c) => !renderTex(previews.get(c)!)).map((c) => c.label);
+    expect(bad.length).toBeLessThan(all.length * 0.05);
+  });
 });

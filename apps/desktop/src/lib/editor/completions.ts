@@ -4,6 +4,8 @@
 import { snippet, type Completion, type CompletionContext, type CompletionResult, type CompletionSource } from "@codemirror/autocomplete";
 import { ENVIRONMENTS, COMMANDS } from "./data";
 import { tokens } from "./environments";
+import { inMath } from "./mathContext";
+import { mathCompletions, mathLabels } from "./mathCommands";
 import type { BibEntry, LabelInfo } from "../api";
 
 /** What the editor can look up about the open project. */
@@ -126,13 +128,17 @@ export function latexCompletions(
     const cmd = CMD.exec(before);
     if (cmd && (cmd[0].length > 1 || ctx.explicit)) {
       const from = ctx.pos - cmd[0].length;
-      const ours: Completion[] = COMMANDS.map((x) => ({
+      // In maths, symbols and maths structures come first; in prose, text commands do.
+      const math = inMath(ctx.state.doc, ctx.pos);
+      const mathItems = mathCompletions(math ? 20 : -40);
+      const text: Completion[] = COMMANDS.filter((x) => !mathLabels.has(x.label)).map((x) => ({
         label: x.label,
         detail: x.detail,
         type: "function",
-        boost: 5,
+        boost: math ? -10 : 5,
         apply: snippet(x.apply),
       }));
+      const ours = [...mathItems, ...text];
       let merged = ours;
       try {
         const theirs = await fallback(ctx);

@@ -32,6 +32,7 @@ Errors and warnings appear in the **Problems** panel in plain language, with a f
 
 - **Environments stay paired.** Type `\begin{itemize` and accept the suggestion: Lemmata adds the body and the matching `\end{itemize}`. Rename either half and the other follows. After a `\begin{name}` with no `\end`, **Enter** adds it.
 - **Completion** suggests environments, commands, `\ref` labels from every file, `\cite` keys (with author and title), file names for `\input` and `\includegraphics`, and package names for `\usepackage`. texlab adds more when it's installed.
+- **Maths**: inside `$…$`, `\[…\]` or an equation environment, typing `\` suggests symbols and structures first (`\alpha`, `\frac`, `\sum`), each with a rendered preview and a larger one for the highlighted entry; Tab moves between the fields of a template like `\frac{}{}`. In prose, text commands come first. The rendered formula above the cursor works for `$…$`, `$$…$$`, `\[…\]` and the maths environments, also while you're still typing, and keeps the last good version when an expression is incomplete.
 - **Folding**: click the arrow in the gutter to fold a section, environment or block of comments.
 - **Formatting**: Ctrl+B and Ctrl+I toggle bold and italic, Ctrl+/ comments lines, Ctrl+] and Ctrl+[ change a heading's level, Ctrl+Shift+E wraps the selection in an environment. The toolbar above the editor has buttons for these, headings, links, figures, tables, lists and citations.
 - **Insert dialogs**: **Figure** (pick an image from the project or your computer, caption, label, width), **Table** (choose the size on a grid) and **Symbols** (about 300 maths symbols, Ctrl+Shift+M).
@@ -109,7 +110,7 @@ Right-click in the file tree to create, rename, duplicate or delete files and fo
 
 Images and PDFs in the project open in a viewer tab. Tabs can be dragged to reorder; middle-click or Ctrl+W closes one, and right-click offers *Close others*, *Close to the right* and *Close all*.
 
-Files changed by other programs (another editor, `git pull`) reload automatically. If you have unsaved changes to the same file, Lemmata asks first.
+Files changed by other programs (another editor, `git pull`) reload automatically. If you have unsaved changes to the same file, Lemmata asks first; it never mistakes its own autosaves for outside changes. If a file or folder is deleted outside Lemmata, its tabs close and a short notice tells you.
 
 ## Exporting
 

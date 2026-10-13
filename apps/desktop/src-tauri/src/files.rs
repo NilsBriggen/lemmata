@@ -375,12 +375,73 @@ pub fn rename_path(
     Ok(updated)
 }
 
-/// Watches the project folder and emits `files-changed` with the changed
-/// project-relative paths (build output and hidden folders ignored).
+/// Hashes of the files the app itself last wrote, so the watcher can tell
+/// its own saves from edits made elsewhere.
+pub type Written = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>>;
+
+pub fn hash_bytes(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
+/// What the watcher reports for one batch of events.
+#[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Changes {
+    /// Project-relative paths that exist and differ from what the app wrote.
+    pub changed: Vec<String>,
+    /// Paths that no longer exist (a deleted folder is reported once, as itself).
+    pub removed: Vec<String>,
+}
+
+/// Sorts raw event paths into `changed` and `removed`: hidden files and the
+/// build folder are ignored, and so are files whose content is exactly what
+/// the app last wrote.
+pub fn classify(root: &Path, outdir: &str, written: &Written, paths: &[PathBuf]) -> Changes {
+    let outdir = outdir.trim_start_matches("./").trim_end_matches('/');
+    let mut out = Changes::default();
+    for abs in paths {
+        let Ok(rel) = abs.strip_prefix(root) else {
+            continue;
+        };
+        let p = rel.to_string_lossy().replace('\\', "/");
+        if p.is_empty()
+            || p.split('/').any(|seg| seg.starts_with('.'))
+            || (!outdir.is_empty() && (p == outdir || p.starts_with(&format!("{outdir}/"))))
+        {
+            continue;
+        }
+        if !abs.exists() {
+            out.removed.push(p);
+            continue;
+        }
+        if abs.is_file()
+            && let Some(&known) = written.lock().unwrap().get(abs)
+            && std::fs::read(abs).is_ok_and(|b| hash_bytes(&b) == known)
+        {
+            continue;
+        }
+        out.changed.push(p);
+    }
+    out.changed.sort();
+    out.changed.dedup();
+    out.removed.sort();
+    out.removed.dedup();
+    // Files inside a removed folder add nothing to "the folder is gone".
+    let folders = out.removed.clone();
+    out.removed
+        .retain(|p| !folders.iter().any(|f| p.starts_with(&format!("{f}/"))));
+    out
+}
+
+/// Watches the project folder and emits `files-changed` with the changes
+/// (build output and hidden folders ignored).
 pub fn watch(
     app: AppHandle,
     root: PathBuf,
     outdir: String,
+    written: Written,
 ) -> CmdResult<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>> {
     use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
     let watch_root = root.clone();
@@ -388,18 +449,10 @@ pub fn watch(
         std::time::Duration::from_millis(400),
         move |res: DebounceEventResult| {
             let Ok(events) = res else { return };
-            let mut paths: Vec<String> = events
-                .iter()
-                .filter_map(|e| e.path.strip_prefix(&root).ok())
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .filter(|p| {
-                    !p.split('/').any(|seg| seg.starts_with('.')) && !p.starts_with(&outdir)
-                })
-                .collect();
-            paths.sort();
-            paths.dedup();
-            if !paths.is_empty() {
-                let _ = app.emit("files-changed", paths);
+            let paths: Vec<PathBuf> = events.into_iter().map(|e| e.path).collect();
+            let changes = classify(&root, &outdir, &written, &paths);
+            if !changes.changed.is_empty() || !changes.removed.is_empty() {
+                let _ = app.emit("files-changed", changes);
             }
         },
     )
@@ -478,6 +531,72 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(d.path().join("copy/b/x.tex")).unwrap(),
             "x"
+        );
+    }
+
+    fn written() -> Written {
+        Written::default()
+    }
+
+    #[test]
+    fn ignores_our_own_writes_but_not_other_edits() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        let f = root.join("main.tex");
+        std::fs::write(&f, "ours").unwrap();
+        let w = written();
+        w.lock().unwrap().insert(f.clone(), hash_bytes(b"ours"));
+        assert_eq!(
+            classify(&root, ".lemmata/build", &w, &[f.clone()]),
+            Changes::default()
+        );
+        // Someone else edits it.
+        std::fs::write(&f, "theirs").unwrap();
+        let c = classify(&root, ".lemmata/build", &w, &[f]);
+        assert_eq!(c.changed, ["main.tex"]);
+        assert!(c.removed.is_empty());
+    }
+
+    #[test]
+    fn reports_a_deleted_folder_once() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        let gone = [root.join("chapters"), root.join("chapters/a.tex")];
+        let c = classify(&root, ".lemmata/build", &written(), &gone);
+        assert_eq!(c.removed, ["chapters"]);
+        assert!(c.changed.is_empty());
+    }
+
+    #[test]
+    fn skips_hidden_temp_files_and_the_build_folder_by_whole_segment() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        for rel in [
+            ".main.tex.lemmata-tmp",
+            ".git/HEAD",
+            "build/main.pdf",
+            "build2/x.tex",
+        ] {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+        }
+        let all: Vec<PathBuf> = [
+            ".main.tex.lemmata-tmp",
+            ".git/HEAD",
+            "build/main.pdf",
+            "build2/x.tex",
+        ]
+        .iter()
+        .map(|r| root.join(r))
+        .collect();
+        let c = classify(&root, "build", &written(), &all);
+        // "build2" is not the build folder, even though its name starts with it.
+        assert_eq!(c.changed, ["build2/x.tex"]);
+        // An empty output folder name must not hide everything.
+        assert_eq!(
+            classify(&root, "", &written(), &all[3..]).changed,
+            ["build2/x.tex"]
         );
     }
 }

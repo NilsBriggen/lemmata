@@ -1,17 +1,17 @@
 // Live preview of the maths under the cursor, rendered with KaTeX.
 import { StateField, type EditorState, type Text } from "@codemirror/state";
 import { showTooltip, type Tooltip } from "@codemirror/view";
-import katex from "katex";
 import "katex/dist/katex.min.css";
+import { mathContextAt, closingOf } from "../editor/mathContext";
+import { renderTexResult, setMacros } from "./katexRender";
 
-const DISPLAY_ENVS = [
-  "equation", "equation*", "align", "align*", "gather", "gather*", "multline", "multline*",
-  "flalign", "flalign*", "displaymath",
-];
+/** Environments whose content KaTeX renders as plain maths, without the environment around it. */
+const MATH_ONLY = new Set(["equation", "equation*", "displaymath", "math"]);
 /** Environments KaTeX renders with their own name; others become `aligned`/`gathered`. */
 const KATEX_ENVS: Record<string, string> = {
   align: "aligned", "align*": "aligned", flalign: "aligned", "flalign*": "aligned",
   gather: "gathered", "gather*": "gathered", multline: "gathered", "multline*": "gathered",
+  alignat: "aligned", "alignat*": "aligned", eqnarray: "aligned", "eqnarray*": "aligned",
 };
 
 export interface MathSpan {
@@ -21,56 +21,41 @@ export interface MathSpan {
   display: boolean;
 }
 
-/** Inline math on the cursor's line: `$…$` or `\(…\)`. */
-function inlineAt(line: string, offset: number, base: number): MathSpan | null {
-  const re = /(?<!\\)\$([^$]+?)(?<!\\)\$|\\\((.+?)\\\)/g;
-  for (let m; (m = re.exec(line)); ) {
-    if (m.index < offset && offset < m.index + m[0].length) {
-      return { from: base + m.index, to: base + m.index + m[0].length, tex: m[1] ?? m[2], display: false };
-    }
-  }
-  return null;
-}
-
-/** Display math around `pos`: `\[…\]` or a math environment, up to 60 lines away. */
-function displayAt(doc: Text, pos: number): MathSpan | null {
-  const line = doc.lineAt(pos);
-  const startLine = Math.max(1, line.number - 60);
-  const endLine = Math.min(doc.lines, line.number + 60);
-  const before = doc.sliceString(doc.line(startLine).from, pos);
-  const after = doc.sliceString(pos, doc.line(endLine).to);
-
-  const envOpen = [...before.matchAll(/\\begin\{([a-z]+\*?)\}/g)].filter((m) => DISPLAY_ENVS.includes(m[1])).pop();
-  if (envOpen && envOpen.index !== undefined) {
-    const env = envOpen[1];
-    const opened = before.slice(envOpen.index + envOpen[0].length);
-    const end = `\\end{${env}}`;
-    if (!opened.includes(end)) {
-      const close = after.indexOf(end);
-      if (close >= 0) {
-        const from = doc.line(startLine).from + envOpen.index;
-        let tex = opened + after.slice(0, close);
-        tex = tex.replace(/\\(label|nonumber|notag)\b(\{[^}]*\})?/g, "");
-        const wrap = KATEX_ENVS[env];
-        if (wrap) tex = `\\begin{${wrap}}${tex}\\end{${wrap}}`;
-        return { from, to: pos + close + end.length, tex, display: true };
+/** Drops `%` comments, which KaTeX would choke on. */
+function stripComments(tex: string): string {
+  return tex
+    .split("\n")
+    .map((line) => {
+      for (let i = 0; i < line.length; i++) {
+        if (line[i] === "\\") i++;
+        else if (line[i] === "%") return line.slice(0, i);
       }
-    }
-  }
-  const sq = before.lastIndexOf("\\[");
-  if (sq >= 0 && !before.slice(sq).includes("\\]")) {
-    const close = after.indexOf("\\]");
-    if (close >= 0) {
-      const from = doc.line(startLine).from + sq;
-      return { from, to: pos + close + 2, tex: before.slice(sq + 2) + after.slice(0, close), display: true };
-    }
-  }
-  return null;
+      return line;
+    })
+    .join("\n");
 }
 
+/** The maths around `pos`, closed or still being typed: inline, `$$`, `\[`, or a math environment. */
 export function mathAt(doc: Text, pos: number): MathSpan | null {
-  const line = doc.lineAt(pos);
-  return inlineAt(line.text, pos - line.from, line.from) ?? displayAt(doc, pos);
+  const ctx = mathContextAt(doc, pos);
+  if (!ctx) return null;
+  const closing = closingOf(doc, ctx, pos);
+  // Unclosed while typing: preview what's there up to the end of the line (inline) or paragraph.
+  const lineEnd = doc.lineAt(pos).to;
+  const contentTo = closing ? closing.start : lineEnd;
+  const stop = Math.max(contentTo, ctx.contentFrom);
+  let before = doc.sliceString(ctx.contentFrom, Math.min(pos, stop));
+  const after = doc.sliceString(Math.min(pos, stop), stop);
+  // A command still being typed (\alp|) isn't an error yet: leave it out.
+  if (!/^[A-Za-z]/.test(after)) before = before.replace(/\\[A-Za-z]*$/, "");
+  let tex = stripComments(before + after);
+  if (ctx.open === "begin" && ctx.env) {
+    tex = tex.replace(/\\(label|nonumber|notag)\b(\{[^}]*\})?/g, "");
+    const wrap = KATEX_ENVS[ctx.env];
+    if (wrap) tex = `\\begin{${wrap}}${tex}\\end{${wrap}}`;
+    else if (!MATH_ONLY.has(ctx.env)) tex = `\\begin{${ctx.env}}${tex}\\end{${ctx.env}}`;
+  }
+  return { from: ctx.from, to: closing ? closing.end : contentTo, tex, display: ctx.kind !== "inline" };
 }
 
 /** \newcommand, \renewcommand, \def and \DeclareMathOperator from the preamble, as KaTeX macros. */
@@ -96,12 +81,13 @@ export function collectMacros(preamble: string): Record<string, string> {
   return macros;
 }
 
-let macros: Record<string, string> = {};
-
 /** Called by the app whenever the main file's preamble may have changed. */
 export function setMathMacros(preamble: string) {
-  macros = collectMacros(preamble.split("\\begin{document}")[0]);
+  setMacros(collectMacros(preamble.split("\\begin{document}")[0]));
 }
+
+/** The last successful render, shown dimmed under an error while the user is mid-expression. */
+let lastGood: string | null = null;
 
 function tooltipFor(state: EditorState): Tooltip | null {
   const sel = state.selection.main;
@@ -109,18 +95,30 @@ function tooltipFor(state: EditorState): Tooltip | null {
   const span = mathAt(state.doc, sel.head);
   if (!span || !span.tex.trim()) return null;
   return {
-    pos: span.from,
+    // Tall display maths is anchored at the cursor so the preview stays in view.
+    pos: span.display ? sel.head : span.from,
     above: true,
     strictSide: false,
     arrow: false,
     create() {
       const dom = document.createElement("div");
       dom.className = "cm-math-preview";
-      try {
-        katex.render(span.tex, dom, { displayMode: span.display, throwOnError: true, macros: { ...macros }, trust: false });
-      } catch (e) {
+      const { html, error } = renderTexResult(span.tex, span.display);
+      if (html) {
+        lastGood = html;
+        dom.innerHTML = html;
+      } else {
         dom.classList.add("error");
-        dom.textContent = e instanceof Error ? e.message.replace(/^KaTeX parse error: /, "") : String(e);
+        if (lastGood) {
+          const old = document.createElement("div");
+          old.className = "stale";
+          old.innerHTML = lastGood;
+          dom.append(old);
+        }
+        const msg = document.createElement("div");
+        msg.className = "msg";
+        msg.textContent = error ?? "";
+        dom.append(msg);
       }
       return { dom };
     },

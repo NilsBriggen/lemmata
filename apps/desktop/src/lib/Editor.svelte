@@ -15,6 +15,8 @@
   import { serverCompletionSource } from "@codemirror/lsp-client";
   import { environmentSync, closeEnvironment, unmatchedEnvironments } from "./editor/environments";
   import { latexCompletions, type Providers } from "./editor/completions";
+  import { previews } from "./editor/mathCommands";
+  import { renderTex } from "./writing/katexRender";
   import { folding, foldKeymap } from "./editor/folding";
   import { formattingKeymap, toggleWrap } from "./editor/shortcuts";
   import { stex } from "@codemirror/legacy-modes/mode/stex";
@@ -85,6 +87,12 @@
     ".cm-matchingBracket": { backgroundColor: "color-mix(in srgb, var(--accent) 18%, transparent)", outline: "none" },
     ".cm-tooltip": { backgroundColor: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink)", borderRadius: "8px", boxShadow: "var(--shadow)" },
     ".cm-tooltip-autocomplete > ul > li": { padding: "3px 10px !important", fontFamily: "var(--f-mono)" },
+    ".cm-math-glyph": { marginLeft: "12px", color: "var(--ink)", fontSize: "0.95em", pointerEvents: "none" },
+    ".cm-math-glyph .katex": { fontSize: "1em" },
+    ".cm-completionInfo": { padding: "8px 12px", borderRadius: "var(--r)" },
+    ".cm-math-info": { display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start", minWidth: "90px" },
+    ".cm-math-info .katex-display": { margin: "0" },
+    ".cm-math-info code": { fontSize: "11px", color: "var(--muted)" },
     ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "var(--accent-soft)", color: "var(--ink)" },
     ".cm-panels": { backgroundColor: "var(--surface-2)", color: "var(--ink)", borderColor: "var(--border)" },
     ".cm-panel.cm-search input, .cm-panel.cm-search button": { fontFamily: "var(--f-body)" },
@@ -169,6 +177,21 @@
       lspFor && /\.(tex|bib|sty|cls)$/.test(path) ? lspFor(path) : [],
       tex && settings.autocomplete
         ? autocompletion({
+            // A small rendered glyph next to every maths item.
+            addToOptions: [
+              {
+                position: 55,
+                render(c) {
+                  const tex = previews.get(c);
+                  const html = tex && renderTex(tex);
+                  if (!html) return null;
+                  const span = document.createElement("span");
+                  span.className = "cm-math-glyph";
+                  span.innerHTML = html;
+                  return span;
+                },
+              },
+            ],
             override: [
               latexCompletions(
                 () => providers,

@@ -1,6 +1,6 @@
 <script lang="ts">
   // Maths symbols rendered with KaTeX; click one to insert it.
-  import katex from "katex";
+  import { renderTex } from "./writing/katexRender";
   import Modal from "./ui/Modal.svelte";
   import { SYMBOLS, GROUP_NAMES, type Symbol } from "./writing/symbols";
 
@@ -16,13 +16,7 @@
     SYMBOLS.filter((s) => (group === "All" || s.group === group) && (!query || s.tex.toLowerCase().includes(query.toLowerCase().replace(/^\\/, "")))),
   );
 
-  function html(s: Symbol): string | null {
-    try {
-      return katex.renderToString(s.tex, { throwOnError: true, strict: "ignore", trust: false });
-    } catch {
-      return null;
-    }
-  }
+  const html = (s: Symbol) => renderTex(s.tex);
 
   function pick(s: Symbol, keep: boolean) {
     onInsert(s.tex, s.pkg ?? undefined);

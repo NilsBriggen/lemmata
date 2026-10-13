@@ -85,6 +85,41 @@ jobs:
       - name: Compile fixtures and compare diagnostics
         run: scripts/check-fixtures.sh target/debug/lemmata
 
+  templates:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: TeX-Live/setup-texlive-action@v4
+        with:
+          packages: |
+            scheme-basic
+            latexmk
+            synctex
+            biber
+            biblatex
+            amsmath
+            amsfonts
+            amscls
+            tools
+            float
+            colortbl
+            booktabs
+            fancyhdr
+            geometry
+            enumitem
+            mdframed
+            cleveref
+            koma-script
+            beamer
+            beamertheme-metropolis
+            collection-fontsrecommended
+      - name: Build the CLI
+        run: cargo build -p lemmata-cli
+      - name: Build every template
+        run: scripts/check-templates.sh target/debug/lemmata
+
   e2e:
     runs-on: ubuntu-22.04
     steps:

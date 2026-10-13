@@ -253,7 +253,8 @@ button:disabled { opacity: 0.5; cursor: default; }
   border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow);
   max-width: 70vw; overflow-x: auto; font-size: 1.1em;
 }
-.cm-math-preview.error { color: var(--error); font: 12px var(--f-mono); }
+.cm-math-preview.error .msg { color: var(--error); font: 12px var(--f-mono); margin-top: 4px; }
+.cm-math-preview .stale { opacity: 0.45; }
 .cm-math-preview .katex-display { margin: 0; }
 
 /* ── Motion ───────────────────────────────────────────────────────────── */

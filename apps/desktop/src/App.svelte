@@ -26,6 +26,7 @@
   import Shortcuts from "./lib/Shortcuts.svelte";
   import EditorToolbar from "./lib/EditorToolbar.svelte";
   import TabStrip from "./lib/TabStrip.svelte";
+  import { templateOf } from "./lib/editor/mathCommands";
   import DropMenu from "./lib/ui/DropMenu.svelte";
   import Bell from "@lucide/svelte/icons/bell";
   import FileViewer from "./lib/FileViewer.svelte";
@@ -64,6 +65,8 @@
   let active = $state<string | null>(null);
   let dirty = $state<Record<string, boolean>>({});
   const contents = new Map<string, string>();
+  /** What each file held when we last read or wrote it: disk content equal to this is not an outside change. */
+  const lastSaved = new Map<string, string>();
   const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /** Shown when several files could be the main file and none is chosen. */
@@ -264,6 +267,7 @@
         return;
       }
       contents.set(path, text);
+      lastSaved.set(path, text);
     }
     if (!tabs.includes(path)) tabs = [...tabs, path];
     active = path;
@@ -271,10 +275,13 @@
     editor?.showDiagnostics(diagnostics);
   }
 
-  function closeTab(path: string) {
-    if (dirty[path]) save(path);
+  function closeTab(path: string, saveFirst = true) {
+    if (saveFirst && dirty[path]) save(path);
+    clearTimeout(saveTimers.get(path));
     tabs = tabs.filter((t) => t !== path);
     contents.delete(path);
+    lastSaved.delete(path);
+    dirty[path] = false;
     editor?.forget(path);
     if (active === path) {
       const next = tabs.at(-1);
@@ -297,7 +304,10 @@
     if (text === undefined || !dirty[path]) return;
     try {
       await api.writeText(path, text);
-      dirty[path] = false;
+      lastSaved.set(path, text);
+      // Typing continued while the write was in flight: those edits aren't saved yet.
+      if (contents.get(path) === text) dirty[path] = false;
+      else if (settings.autosaveMs > 0) saveTimers.set(path, setTimeout(() => save(path), settings.autosaveMs));
       if (build) runBuild();
       if (path.endsWith(".tex")) refreshOutline();
       if (path === project?.main) setMathMacros(text);
@@ -750,13 +760,20 @@
   }
 
   /** Reloads files changed by another program, unless they have unsaved edits here. */
-  async function onFilesChanged(paths: string[]) {
+  async function onFilesChanged(change: { changed: string[]; removed: string[] }) {
     if (!project) return;
     await refreshTree();
-    for (const path of paths) {
+    if (change.removed.length) await onRemovedOutside(change.removed);
+    for (const path of change.changed) {
       if (!contents.has(path)) continue;
       const disk = await api.readText(path).catch(() => null);
-      if (disk === null || disk === contents.get(path)) continue; // our own save, or deleted
+      if (disk === null) continue;
+      // What we last read or wrote (our own autosave), or what's in the editor, isn't an outside change.
+      if (disk === lastSaved.get(path)) continue;
+      if (disk === contents.get(path)) {
+        lastSaved.set(path, disk);
+        continue;
+      }
       if (dirty[path]) {
         showNotice(`${path} changed on disk.`, { label: "Load the new version", run: () => reloadFromDisk(path) });
       } else {
@@ -766,8 +783,44 @@
     refreshOutline();
   }
 
+  /** Files or folders deleted by another program: close their tabs quietly, without saving. */
+  async function onRemovedOutside(removed: string[]) {
+    const gone = (p: string) => removed.some((r) => p === r || p.startsWith(r + "/"));
+    const closing = tabs.filter(gone);
+    const cached = [...contents.keys()].filter(gone);
+    for (const p of cached) {
+      clearTimeout(saveTimers.get(p));
+      contents.delete(p);
+      lastSaved.delete(p);
+      dirty[p] = false;
+      editor?.forget(p);
+    }
+    const wasActive = active;
+    if (closing.length) {
+      tabs = tabs.filter((t) => !gone(t));
+      if (wasActive && gone(wasActive)) {
+        active = null;
+        const next = tabs.at(-1);
+        if (next) await openFile(next);
+      }
+    }
+    // Deleting or moving files inside Lemmata reports here too, after the tabs are already gone.
+    if (closing.length || cached.length) {
+      showNotice(removed.length === 1 ? `${removed[0]} was removed outside Lemmata.` : `${removed.length} files or folders were removed outside Lemmata.`, { tone: "info" });
+    }
+    if (project && gone(project.main)) {
+      try {
+        project = await api.openProject(project.root);
+      } catch (e) {
+        showNotice(`The main document was removed. ${errorMessage(e)}`);
+      }
+    }
+    openError = null;
+  }
+
   async function reloadFromDisk(path: string) {
     contents.delete(path);
+    lastSaved.delete(path);
     editor?.forget(path);
     dirty[path] = false;
     if (active === path) await openFile(path);
@@ -885,7 +938,7 @@
     setInterval(() => {
       if (project && editedSinceSnapshot && Date.now() - lastSnapshot > AUTO_SNAPSHOT_MS) takeSnapshot("Automatic snapshot");
     }, 60_000);
-    listen<string[]>("files-changed", (e) => onFilesChanged(e.payload)).catch(() => {});
+    listen<{ changed: string[]; removed: string[] }>("files-changed", (e) => onFilesChanged(e.payload)).catch(() => {});
     await loadSettings();
     appliedEditor = "";
     await recheck(settings.texDir ?? undefined);
@@ -1224,7 +1277,7 @@
 {:else if dialog === "symbols"}
   <SymbolPalette
     onInsert={(tex, needs) => {
-      editor?.insertText(tex);
+      editor?.insertTemplate(templateOf(tex));
       if (needs) needsPackage(needs);
     }}
     onClose={() => ((dialog = null), editor?.getView()?.focus())}

@@ -38,6 +38,8 @@ pub(crate) struct AppState {
     pub(crate) update: tokio::sync::Mutex<Option<tauri_plugin_updater::Update>>,
     /// Stops when dropped, i.e. when another project opens.
     watcher: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
+    /// What the app last wrote to each file, so its own saves aren't reported as outside edits.
+    written: files::Written,
 }
 
 pub(crate) type CmdResult<T> = Result<T, String>;
@@ -113,8 +115,13 @@ fn open_project(
     let project = Project::open(&path).map_err(err)?;
     let info = project_info(&project);
     // Without a watcher the app still works; it just won't notice outside edits.
-    *state.watcher.lock().unwrap() =
-        files::watch(app, project.root.clone(), project.config.outdir.clone()).ok();
+    *state.watcher.lock().unwrap() = files::watch(
+        app,
+        project.root.clone(),
+        project.config.outdir.clone(),
+        state.written.clone(),
+    )
+    .ok();
     *state.project.lock().unwrap() = Some(project);
     Ok(info)
 }
@@ -164,10 +171,26 @@ fn read_text(state: State<AppState>, path: String) -> CmdResult<String> {
 #[tauri::command]
 fn write_text(state: State<AppState>, path: String, content: String) -> CmdResult<()> {
     let abs = resolve(&state, &path)?;
-    // Write to a sibling temp file first so a crash never leaves a half-written source file.
-    let tmp = abs.with_extension("lemmata-tmp");
-    std::fs::write(&tmp, content).map_err(|e| format!("Could not save {path}: {e}"))?;
-    std::fs::rename(&tmp, &abs).map_err(|e| format!("Could not save {path}: {e}"))
+    // Write to a hidden sibling first so a crash never leaves a half-written
+    // source file; the watcher ignores hidden files. The name keeps the full
+    // file name, so main.tex and main.bib can't share a temp file.
+    let name = abs
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = abs.with_file_name(format!(".{name}.lemmata-tmp"));
+    std::fs::write(&tmp, &content).map_err(|e| format!("Could not save {path}: {e}"))?;
+    std::fs::rename(&tmp, &abs).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("Could not save {path}: {e}")
+    })?;
+    // From here on, an event for this exact content is our own doing.
+    state
+        .written
+        .lock()
+        .unwrap()
+        .insert(abs, files::hash_bytes(content.as_bytes()));
+    Ok(())
 }
 
 fn cancel_running(state: &State<AppState>) {
