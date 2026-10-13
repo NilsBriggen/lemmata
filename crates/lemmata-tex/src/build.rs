@@ -82,7 +82,7 @@ pub async fn build(
     }
     let started = Instant::now();
     let started_at = SystemTime::now();
-    let _ = std::fs::create_dir_all(project.outdir_abs());
+    prepare_outdir(project);
 
     let mut cmd = Command::new(opts.latexmk);
     cmd.args(latexmk_args(project))
@@ -159,6 +159,23 @@ pub async fn build(
     })
 }
 
+/// `\include{chapters/x}` writes `chapters/x.aux` inside the output folder,
+/// and TeX can't create folders, so mirror the project's folders there.
+fn prepare_outdir(project: &Project) {
+    fn mirror(entries: &[lemmata_project::Entry], outdir: &Path) {
+        for e in entries.iter().filter(|e| e.is_dir) {
+            let _ = std::fs::create_dir_all(outdir.join(&e.path));
+            mirror(&e.children, outdir);
+        }
+    }
+    let outdir = project.outdir_abs();
+    let _ = std::fs::create_dir_all(&outdir);
+    mirror(
+        &lemmata_project::tree(&project.root, &project.config.outdir),
+        &outdir,
+    );
+}
+
 fn prepend_path(dir: &Path) -> OsString {
     let mut paths = vec![dir.to_path_buf()];
     if let Some(existing) = std::env::var_os("PATH") {
@@ -188,6 +205,17 @@ fn kill_tree(pid: Option<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outdir_mirrors_project_folders() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{report}").unwrap();
+        std::fs::create_dir_all(d.path().join("chapters/appendix")).unwrap();
+        let p = Project::open(d.path()).unwrap();
+        prepare_outdir(&p);
+        assert!(p.outdir_abs().join("chapters/appendix").is_dir());
+        assert!(!p.outdir_abs().join(".lemmata").exists());
+    }
 
     #[test]
     fn args_respect_config() {
