@@ -9,6 +9,16 @@
   }
   let { headings, current, onJump }: Props = $props();
   const minLevel = $derived(Math.min(...headings.map((h) => h.level), 4));
+
+  /** Words in each heading including its subsections. */
+  const totals = $derived(
+    headings.map((h, i) => {
+      let sum = h.words;
+      for (let j = i + 1; j < headings.length && headings[j].level > h.level; j++) sum += headings[j].words;
+      return sum;
+    }),
+  );
+  const fmt = new Intl.NumberFormat();
 </script>
 
 {#if headings.length === 0}
@@ -23,7 +33,8 @@
           title="{h.file}:{h.line}"
           onclick={() => onJump(h.file, h.line)}
         >
-          {h.title || "(untitled)"}
+          <span class="t">{h.title || "(untitled)"}</span>
+          <span class="n">{fmt.format(totals[i])}</span>
         </button>
       </li>
     {/each}
@@ -33,10 +44,12 @@
 <style>
   ul { list-style: none; margin: 0; padding: 0 0 8px; }
   button {
-    display: block; width: 100%; border: none; border-radius: 0; background: none; text-align: left;
+    width: 100%; border: none; border-radius: 0; background: none; text-align: left;
     font: 12px var(--f-body); color: var(--ink); padding-block: 3px; padding-right: 10px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: flex; gap: 8px;
   }
+  .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .n { font: 10.5px var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
   button:hover { background: color-mix(in srgb, var(--blue) 8%, transparent); }
   button.on { color: var(--blue); box-shadow: inset 2px 0 var(--blue); background: var(--blue-soft); }
   .empty { color: var(--muted); margin: 0; padding: 4px 14px 8px; font-size: 12px; }

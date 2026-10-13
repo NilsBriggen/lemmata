@@ -71,6 +71,8 @@ export interface Config {
   bib: "biber" | "bibtex";
   shell_escape: boolean;
   outdir: string;
+  spellcheck?: string | null;
+  words?: string[];
 }
 
 export interface Entry { name: string; path: string; is_dir: boolean; children: Entry[] }
@@ -84,7 +86,8 @@ export interface ProjectInfo {
   tree: Entry[];
 }
 
-export interface Heading { level: number; title: string; file: string; line: number }
+export interface Heading { level: number; title: string; file: string; line: number; words: number }
+export interface OutlineData { headings: Heading[]; total_words: number }
 
 export type HistoryStatus = { state: "on" } | { state: "not-a-repo" } | { state: "no-git"; message: string };
 export interface Snapshot {
@@ -112,7 +115,7 @@ export const api = {
     invoke<PdfBox[]>("synctex_forward", { path, line, column }),
   synctexBackward: (page: number, x: number, y: number) =>
     invoke<SourceHit | null>("synctex_backward", { page, x, y }),
-  outline: () => invoke<Heading[]>("outline"),
+  outline: () => invoke<OutlineData>("outline"),
   historyStatus: () => invoke<HistoryStatus>("history_status"),
   historyEnable: () => invoke<void>("history_enable"),
   historySnapshot: (label: string) => invoke<string | null>("history_snapshot", { label }),

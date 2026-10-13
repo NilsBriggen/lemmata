@@ -2,6 +2,7 @@
   // Edits lemmata.toml for the open project.
   import { untrack } from "svelte";
   import type { Config, ProjectInfo } from "./api";
+  import { LANGUAGES } from "./spell/service";
 
   interface Props {
     project: ProjectInfo;
@@ -43,6 +44,16 @@
       <option value="bibtex">BibTeX (for natbib and classic .bst styles)</option>
     </select>
 
+    <label for="ps-spell">Spell check</label>
+    <select id="ps-spell" bind:value={config.spellcheck}>
+      <option value={null}>Guess from babel or polyglossia</option>
+      {#each Object.entries(LANGUAGES) as [code, l] (code)}<option value={code}>{l.label}</option>{/each}
+      <option value="off">Off</option>
+    </select>
+    {#if config.words?.length}
+      <p class="muted small">{config.words.length} word{config.words.length === 1 ? "" : "s"} added to this project's dictionary.</p>
+    {/if}
+
     <label class="check" for="ps-shell">
       <input id="ps-shell" type="checkbox" bind:checked={config.shell_escape} />
       Allow the document to run programs (shell escape)
@@ -72,6 +83,7 @@
   label { font: 500 11px var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
   label.check { display: flex; gap: 8px; align-items: center; text-transform: none; letter-spacing: 0; font: 13px var(--f-body); color: var(--ink); margin-top: 14px; }
   select { padding: 6px 8px; font-size: 13px; }
+  .small { font-size: 12px; margin: 2px 0 0; }
   .warn { margin: 4px 0 0; padding: 8px 10px; border-radius: 5px; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
   .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 </style>

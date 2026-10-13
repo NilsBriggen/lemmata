@@ -4,6 +4,7 @@
 mod history;
 mod lsp;
 mod projects;
+mod spell;
 mod terminal;
 
 use lemmata_project::{Config, Entry, Project};
@@ -28,6 +29,7 @@ pub(crate) struct AppState {
     cancel_build: Mutex<Option<oneshot::Sender<()>>>,
     lsp: tokio::sync::Mutex<Option<lsp::Server>>,
     lsp_generation: std::sync::atomic::AtomicU64,
+    pub(crate) speller: Mutex<Option<lemmata_spell::Speller>>,
 }
 
 pub(crate) type CmdResult<T> = Result<T, String>;
@@ -333,7 +335,7 @@ fn load_thumbnail(app: tauri::AppHandle, root: String) -> CmdResult<Response> {
 }
 
 #[tauri::command]
-fn outline(state: State<AppState>) -> CmdResult<Vec<lemmata_project::Heading>> {
+fn outline(state: State<AppState>) -> CmdResult<lemmata_project::Outline> {
     let guard = state.project.lock().unwrap();
     Ok(lemmata_project::outline(
         guard.as_ref().ok_or("No project is open.")?,
@@ -450,6 +452,10 @@ pub fn run() {
             history::history_list,
             history::history_file,
             history::history_restore,
+            spell::spell_set_language,
+            spell::spell_check,
+            spell::spell_suggest,
+            spell::spell_add,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lemmata");

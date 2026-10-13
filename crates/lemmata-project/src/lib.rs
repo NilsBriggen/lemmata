@@ -6,6 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+pub mod prose;
+
 pub const CONFIG_FILE: &str = "lemmata.toml";
 
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +75,13 @@ pub struct Config {
     /// someone else's project must never run their code.
     pub shell_escape: bool,
     pub outdir: String,
+    /// Spell-check language ("en", "en-GB", "de", "de-CH", "fr" or "off").
+    /// None means: guess from babel or polyglossia.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spellcheck: Option<String>,
+    /// Words the spell checker should accept in this project.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<String>,
 }
 
 impl Default for Config {
@@ -83,6 +92,8 @@ impl Default for Config {
             bib: Bib::default(),
             shell_escape: false,
             outdir: ".lemmata/build".into(),
+            spellcheck: None,
+            words: Vec::new(),
         }
     }
 }
@@ -252,6 +263,15 @@ pub struct Heading {
     pub file: String,
     /// 1-based.
     pub line: u32,
+    /// Prose words from this heading up to the next one (of any level).
+    pub words: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Outline {
+    pub headings: Vec<Heading>,
+    /// Prose words in the whole document body.
+    pub total_words: u32,
 }
 
 const HEADINGS: &[(&str, u8)] = &[
@@ -262,30 +282,50 @@ const HEADINGS: &[(&str, u8)] = &[
     ("subsubsection", 4),
 ];
 
-/// The document's headings in reading order, following `\input`,
-/// `\include` and `\subfile` from the main file.
-pub fn outline(project: &Project) -> Vec<Heading> {
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    walk_outline(&project.root, &project.main, &mut out, &mut seen, 0);
-    out
+/// The document's headings in reading order with word counts, following
+/// `\input`, `\include` and `\subfile` from the main file.
+pub fn outline(project: &Project) -> Outline {
+    let mut walk = Walk::default();
+    walk.file(&project.root, &project.main, 0, true);
+    walk.out
 }
 
-fn walk_outline(
-    root: &Path,
-    rel: &Path,
-    out: &mut Vec<Heading>,
-    seen: &mut std::collections::HashSet<PathBuf>,
-    depth: usize,
-) {
-    if depth > 16 || !seen.insert(rel.to_path_buf()) {
-        return;
+#[derive(Default)]
+struct Walk {
+    out: Outline,
+    seen: std::collections::HashSet<PathBuf>,
+    prose: prose::State,
+}
+
+impl Walk {
+    fn count(&mut self, line: &str) {
+        let n = prose::words(line, &mut self.prose).len() as u32;
+        self.out.total_words += n;
+        if let Some(h) = self.out.headings.last_mut() {
+            h.words += n;
+        }
     }
-    let Ok(text) = fs::read_to_string(root.join(rel)) else {
-        return;
-    };
-    let file = rel.to_string_lossy().replace('\\', "/");
-    for (i, raw) in text.lines().enumerate() {
+
+    /// In the main file, words count only after `\begin{document}`.
+    fn file(&mut self, root: &Path, rel: &Path, depth: usize, is_main: bool) {
+        if depth > 16 || !self.seen.insert(rel.to_path_buf()) {
+            return;
+        }
+        let Ok(text) = fs::read_to_string(root.join(rel)) else {
+            return;
+        };
+        let file = rel.to_string_lossy().replace('\\', "/");
+        let mut in_body = !is_main || !text.contains("\\begin{document}");
+        for (i, raw) in text.lines().enumerate() {
+            if !in_body {
+                in_body = strip_comment(raw).contains("\\begin{document}");
+                continue;
+            }
+            self.line(root, &file, i, raw, depth);
+        }
+    }
+
+    fn line(&mut self, root: &Path, file: &str, i: usize, raw: &str, depth: usize) {
         let code = strip_comment(raw);
         let mut rest = code;
         while let Some(pos) = rest.find('\\') {
@@ -297,11 +337,12 @@ fn walk_outline(
             let after = rest[name.len()..].trim_start_matches('*');
             if let Some(&(_, level)) = HEADINGS.iter().find(|(h, _)| *h == name) {
                 if let Some(title) = braced(skip_optional(after)) {
-                    out.push(Heading {
+                    self.out.headings.push(Heading {
                         level,
                         title: clean_title(&title),
-                        file: file.clone(),
+                        file: file.to_string(),
                         line: i as u32 + 1,
+                        words: 0,
                     });
                 }
             } else if matches!(name.as_str(), "input" | "include" | "subfile")
@@ -311,9 +352,13 @@ fn walk_outline(
                 if child.extension().is_none() {
                     child.set_extension("tex");
                 }
-                walk_outline(root, &child, out, seen, depth + 1);
+                // This line's own text counts before the included file's.
+                self.count(raw);
+                self.file(root, &child, depth + 1, false);
+                return;
             }
         }
+        self.count(raw);
     }
 }
 
@@ -458,7 +503,7 @@ mod tests {
             "\\section[Short]{Method $x$}\\label{sec:m}\n\\subsection{Setup}\n\\input{chapters/method}\n",
         );
         let p = Project::open(d.path()).unwrap();
-        let o = outline(&p);
+        let o = outline(&p).headings;
         let got: Vec<_> = o
             .iter()
             .map(|h| (h.level, h.title.as_str(), h.file.as_str(), h.line))
@@ -472,5 +517,25 @@ mod tests {
                 (2, "Coda with style", "main.tex", 6),
             ]
         );
+    }
+
+    #[test]
+    fn counts_words_per_section_in_the_body() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "main.tex",
+            "\\documentclass{article}\n\\title{Not counted}\n\\begin{document}\nTwo words.\n\\section{Intro}\nThree more words~\\cite{k}.\n\\input{b}\n\\end{document}\n",
+        );
+        write(d.path(), "b.tex", "\\subsection{Sub}\nFour words in b.\n");
+        let o = outline(&Project::open(d.path()).unwrap());
+        let counts: Vec<_> = o
+            .headings
+            .iter()
+            .map(|h| (h.title.as_str(), h.words))
+            .collect();
+        // Heading titles count as words of their section.
+        assert_eq!(counts, [("Intro", 4), ("Sub", 5)]);
+        assert_eq!(o.total_words, 11);
     }
 }

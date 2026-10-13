@@ -1,0 +1,10 @@
+[package]
+name = "lemmata-spell"
+description = "Hunspell-compatible spell checking for LaTeX prose"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+spellbook = "0.4"

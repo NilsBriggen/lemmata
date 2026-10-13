@@ -11,6 +11,7 @@
   import ProjectSettings from "./lib/ProjectSettings.svelte";
   import HistoryPanel from "./lib/HistoryPanel.svelte";
   import { startLanguageServer, type LanguageServer } from "./lib/lsp";
+  import { detectLanguage, spell } from "./lib/spell/service";
   import { forgetProject, recentProjects, rememberProject } from "./lib/recent";
 
   /** Edits are saved this long after the last keystroke, which starts a build. */
@@ -47,6 +48,7 @@
   let buildSeq = 0;
 
   let headings = $state<Heading[]>([]);
+  let totalWords = $state(0);
   let cursor = $state<{ file: string; line: number }>({ file: "", line: 1 });
   let lsp: LanguageServer | null = null;
   let lspAvailable = $state(true);
@@ -93,6 +95,7 @@
     headings = [];
     await startLsp(project.root);
     await openFile(project.main);
+    applySpellLanguage();
     refreshOutline();
     lastThumbnail = 0;
     lastSnapshot = 0; // the first save of a session takes a snapshot
@@ -112,13 +115,28 @@
     editor?.setLanguageServer(lsp ? lsp.extensions : null);
   }
 
+  function applySpellLanguage() {
+    if (!project) return;
+    const lang = project.config.spellcheck ?? detectLanguage(contents.get(project.main) ?? "");
+    spell.setLanguage(lang, project.config.words ?? []);
+  }
+
+  async function addWord(word: string) {
+    if (!project) return;
+    const words = Array.from(new Set([...(project.config.words ?? []), word])).sort();
+    project = await api.setConfig({ ...project.config, main: project.main, words });
+  }
+
   function refreshOutline() {
     clearTimeout(outlineTimer);
     outlineTimer = setTimeout(async () => {
       try {
-        headings = await api.outline();
+        const o = await api.outline();
+        headings = o.headings;
+        totalWords = o.total_words;
       } catch {
         headings = [];
+        totalWords = 0;
       }
     }, 150);
   }
@@ -247,6 +265,7 @@
     const mainChanged = config.main !== project.main;
     project = await api.setConfig(config);
     if (mainChanged) await openFile(project.main);
+    applySpellLanguage();
     refreshOutline();
     runBuild();
   }
@@ -340,6 +359,7 @@
       <span class="crumbs">{project.name}{active ? ` / ${active}` : ""}</span>
       <div class="right">
         {#if tex.detection.outdated}<span class="pill warn" title="Some packages may lack newer features">old TeX Live</span>{/if}
+        {#if totalWords}<span class="words" title="Words in the document body, without commands, maths or comments">{totalWords.toLocaleString()} words</span>{/if}
         {#if statusPill}<span class="pill {statusPill.cls}">{statusPill.text}</span>{/if}
         <select aria-label="Engine" value={project.config.engine} onchange={(e) => setEngine(e.currentTarget.value as Engine)}>
           <option value="pdflatex">pdfLaTeX</option>
@@ -375,7 +395,7 @@
             </div>
           {/each}
         </div>
-        <div class="cm"><Editor bind:this={editor} {onChange} onSyncRequest={syncForward} onCursor={(file, line) => (cursor = { file, line })} /></div>
+        <div class="cm"><Editor bind:this={editor} {onChange} onSyncRequest={syncForward} onCursor={(file, line) => (cursor = { file, line })} onAddWord={addWord} /></div>
         {#if openError}<div class="err-bar">{openError} <button onclick={() => (openError = null)}>Dismiss</button></div>{/if}
       </section>
 
@@ -471,5 +491,6 @@
   .dialog p { color: var(--muted); margin: 0 0 12px; }
   .dialog ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .dialog li button { width: 100%; text-align: left; font: 13px var(--f-mono); padding: 8px 12px; }
+  .words { font: 11px var(--f-mono); color: var(--muted); white-space: nowrap; }
   .ph { display: flex; gap: 8px; align-items: center; border: none; border-radius: 0; background: var(--chrome); padding: 5px 12px; font: 500 12px var(--f-body); color: var(--muted); text-align: left; }
 </style>

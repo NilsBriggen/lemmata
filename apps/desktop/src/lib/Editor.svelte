@@ -15,13 +15,15 @@
   import { stex } from "@codemirror/legacy-modes/mode/stex";
   import { tags as t } from "@lezer/highlight";
   import type { Diagnostic } from "./api";
+  import { spellcheck } from "./spell/extension";
 
   interface Props {
     onChange: (path: string, text: string) => void;
     onSyncRequest: (path: string, line: number, column: number) => void;
     onCursor?: (path: string, line: number) => void;
+    onAddWord?: (word: string) => void;
   }
-  let { onChange, onSyncRequest, onCursor }: Props = $props();
+  let { onChange, onSyncRequest, onCursor, onAddWord }: Props = $props();
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
@@ -71,6 +73,7 @@
       path.endsWith(".tex") || path.endsWith(".sty") || path.endsWith(".cls") ? StreamLanguage.define(stex) : [],
       syntaxHighlighting(texHighlight),
       lspFor && /\.(tex|bib|sty|cls)$/.test(path) ? lspFor(path) : [],
+      path.endsWith(".tex") ? spellcheck((w) => onAddWord?.(w)) : [],
       theme,
       keymap.of([
         {

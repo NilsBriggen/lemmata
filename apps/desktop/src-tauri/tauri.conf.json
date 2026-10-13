@@ -41,7 +41,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../../../templates/": "templates/"
+      "../../../templates/": "templates/",
+      "../../../data/dictionaries/": "dictionaries/"
     }
   }
 }
