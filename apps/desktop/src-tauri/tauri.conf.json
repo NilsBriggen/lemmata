@@ -44,5 +44,13 @@
       "../../../templates/": "templates/",
       "../../../data/dictionaries/": "dictionaries/"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJBNTI5M0JBMzY4N0VDOUQKUldTZDdJYzJ1cE5TdWh4c242bDZqdUxFY1VqclFadHZkTkpXMmJEQUYwdEUwSTRQb1N5eVpIdTIK",
+      "endpoints": [
+        "https://lemmata.briggen.dev/update/latest.json"
+      ]
+    }
   }
 }

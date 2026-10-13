@@ -3,6 +3,7 @@
   // the install itself: it shows the command for this system and checks again.
   import { open } from "@tauri-apps/plugin-dialog";
   import { untrack } from "svelte";
+  import { updateSettings } from "./settings.svelte";
   import type { TexStatus } from "./api";
   import CommandBox from "./CommandBox.svelte";
 
@@ -26,7 +27,10 @@
 
   async function chooseFolder() {
     const dir = await open({ directory: true, title: "Choose the folder that contains pdflatex and latexmk" });
-    if (typeof dir === "string") onRecheck(dir);
+    if (typeof dir === "string") {
+      await updateSettings({ texDir: dir });
+      onRecheck(dir);
+    }
   }
 </script>
 

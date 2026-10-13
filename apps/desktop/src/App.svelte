@@ -10,12 +10,15 @@
   import Outline from "./lib/Outline.svelte";
   import ProjectSettings from "./lib/ProjectSettings.svelte";
   import HistoryPanel from "./lib/HistoryPanel.svelte";
+  import Preferences from "./lib/Preferences.svelte";
+  import { listen } from "@tauri-apps/api/event";
+  import { relaunch } from "@tauri-apps/plugin-process";
+  import { loadSettings, settings } from "./lib/settings.svelte";
   import { startLanguageServer, type LanguageServer } from "./lib/lsp";
   import { detectLanguage, spell } from "./lib/spell/service";
   import { forgetProject, recentProjects, rememberProject } from "./lib/recent";
 
-  /** Edits are saved this long after the last keystroke, which starts a build. */
-  const SAVE_DELAY_MS = 600;
+  const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
   let tex = $state<TexStatus | null>(null);
   let checking = $state(false);
@@ -32,6 +35,8 @@
   /** Shown when several files could be the main file and none is chosen. */
   let choosingMain = $state(false);
   let settingsOpen = $state(false);
+  let prefsOpen = $state(false);
+  let update = $state<{ version: string; progress: number | null; error: string | null } | null>(null);
   let historyOpen = $state(false);
   let historyVersion = $state(0);
   /** Label input for a manual snapshot (Ctrl+Shift+S); null when closed. */
@@ -174,7 +179,8 @@
     contents.set(path, text);
     dirty[path] = true;
     clearTimeout(saveTimers.get(path));
-    saveTimers.set(path, setTimeout(() => save(path), SAVE_DELAY_MS));
+    // A delay of 0 means: only save on Ctrl+S.
+    if (settings.autosaveMs > 0) saveTimers.set(path, setTimeout(() => save(path), settings.autosaveMs));
   }
 
   async function save(path: string) {
@@ -331,8 +337,54 @@
     }
   }
 
+  /** Returns a short message for the Preferences dialog. */
+  async function checkForUpdates(): Promise<string> {
+    try {
+      const found = await api.updateCheck(settings.updateChannel);
+      if (!found) return "Lemmata is up to date.";
+      update = { version: found.version, progress: null, error: null };
+      return `Lemmata ${found.version} is available.`;
+    } catch (e) {
+      return `Couldn't check for updates: ${errorMessage(e)}`;
+    }
+  }
+
+  async function installUpdate() {
+    if (!update) return;
+    update.progress = 0;
+    update.error = null;
+    const unlisten = await listen<number>("update-progress", (e) => update && (update.progress = e.payload));
+    try {
+      await saveAll();
+      await api.updateInstall();
+      await relaunch();
+    } catch (e) {
+      if (update) {
+        update.error = errorMessage(e);
+        update.progress = null;
+      }
+    } finally {
+      unlisten();
+    }
+  }
+
+  // Switching to or from Vim rebuilds the editors.
+  let appliedKeymap = settings.keymap;
+  $effect(() => {
+    if (settings.keymap !== appliedKeymap) {
+      appliedKeymap = settings.keymap;
+      editor?.refreshExtensions();
+    }
+  });
+
   onMount(async () => {
-    await recheck();
+    await loadSettings();
+    appliedKeymap = settings.keymap;
+    await recheck(settings.texDir ?? undefined);
+    if (settings.checkForUpdates) {
+      checkForUpdates();
+      setInterval(() => settings.checkForUpdates && !update && checkForUpdates(), UPDATE_INTERVAL_MS);
+    }
     if (tex?.detection.ready && recent[0]) openProject(recent[0]);
   });
 
@@ -351,7 +403,7 @@
 {:else if !tex.detection.ready}
   <Onboarding status={tex} {checking} onRecheck={recheck} />
 {:else if !project}
-  <Library {recent} error={openError} onOpen={openProject} onForget={(p) => (recent = forgetProject(p))} />
+  <Library {recent} error={openError} onOpen={openProject} onForget={(p) => (recent = forgetProject(p))} onPreferences={() => (prefsOpen = true)} />
 {:else}
   <div class="shell">
     <header>
@@ -368,7 +420,8 @@
         </select>
         {#if !lspAvailable}<span class="pill warn" title="texlab wasn't found, so completion and hover are off">no completion</span>{/if}
         <button class:on={historyOpen} onclick={() => (historyOpen = !historyOpen)}>History</button>
-        <button onclick={() => (settingsOpen = true)}>Settings</button>
+        <button onclick={() => (settingsOpen = true)}>Project</button>
+        <button onclick={() => (prefsOpen = true)} aria-label="Preferences" title="Preferences">Preferences</button>
         <button onclick={closeProject}>Close project</button>
         <button class="primary" onclick={() => saveAll().then(runBuild)} title="Ctrl+Enter">Recompile</button>
       </div>
@@ -414,6 +467,31 @@
         </div>
       </section>
     </div>
+  </div>
+{/if}
+
+{#if prefsOpen}
+  <Preferences
+    detection={tex?.detection ?? null}
+    onTexDir={(dir) => recheck(dir ?? undefined)}
+    onCheckUpdates={checkForUpdates}
+    onClose={() => (prefsOpen = false)}
+  />
+{/if}
+
+{#if update}
+  <div class="update" role="status">
+    {#if update.error}
+      <span>The update failed: {update.error}</span>
+    {:else if update.progress !== null}
+      <span>Downloading Lemmata {update.version}… {Math.round(update.progress * 100)}%</span>
+    {:else}
+      <span>Lemmata {update.version} is available.</span>
+    {/if}
+    {#if update.progress === null}
+      <button onclick={() => (update = null)}>Later</button>
+      <button class="primary" onclick={installUpdate}>Install and restart</button>
+    {/if}
   </div>
 {/if}
 
@@ -491,6 +569,11 @@
   .dialog p { color: var(--muted); margin: 0 0 12px; }
   .dialog ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .dialog li button { width: 100%; text-align: left; font: 13px var(--f-mono); padding: 8px 12px; }
+  .update {
+    position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; gap: 10px; align-items: center;
+    background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px;
+    box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.4);
+  }
   .words { font: 11px var(--f-mono); color: var(--muted); white-space: nowrap; }
   .ph { display: flex; gap: 8px; align-items: center; border: none; border-radius: 0; background: var(--chrome); padding: 5px 12px; font: 500 12px var(--f-body); color: var(--muted); text-align: left; }
 </style>

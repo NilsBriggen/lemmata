@@ -11,8 +11,9 @@
     error: string | null;
     onOpen: (path: string) => void;
     onForget: (path: string) => void;
+    onPreferences: () => void;
   }
-  let { recent, error, onOpen, onForget }: Props = $props();
+  let { recent, error, onOpen, onForget, onPreferences }: Props = $props();
 
   let query = $state("");
   let thumbs = $state<Record<string, string>>({});
@@ -94,6 +95,7 @@
     <button onclick={pickFolder}>Open folder…</button>
     <button onclick={startImport}>Import Overleaf .zip…</button>
     <button class="primary" onclick={startNew}>New project</button>
+    <button onclick={onPreferences}>Preferences</button>
   </header>
 
   {#if error}<p class="error">{error}</p>{/if}

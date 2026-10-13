@@ -17,10 +17,12 @@
   --f-display: "Young Serif", Georgia, serif;
   --f-body: "IBM Plex Sans", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --editor-font-size: 13px;
+  --atom: #9a5b14;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper: #12171c;
     --sheet: #1a2027;
     --ink: #e4e8ec;
@@ -35,8 +37,27 @@
     --chrome-2: #29313a;
     --code-bg: #161b21;
     --pdf-ground: #0e1216;
+    --atom: #e0a85a;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --paper: #12171c;
+  --sheet: #1a2027;
+  --ink: #e4e8ec;
+  --muted: #97a3ae;
+  --rule: #2c343d;
+  --blue: #6fb3e3;
+  --blue-soft: #1d2f3f;
+  --mark: #e9765f;
+  --warn: #e0b04f;
+  --ok: #5fbf8a;
+  --chrome: #20272f;
+  --chrome-2: #29313a;
+  --code-bg: #161b21;
+  --pdf-ground: #0e1216;
+  --atom: #e0a85a;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }

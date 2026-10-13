@@ -130,6 +130,9 @@ export const api = {
   saveThumbnail: (root: string, png: Uint8Array) =>
     invoke<void>("save_thumbnail", png, { headers: { "x-project-root": encodeURIComponent(root) } }),
   loadThumbnail: async (root: string) => new Uint8Array(await invoke<ArrayBuffer>("load_thumbnail", { root })),
+  updateCheck: (channel: string) =>
+    invoke<{ version: string; current: string; notes: string | null } | null>("update_check", { channel }),
+  updateInstall: () => invoke<void>("update_install"),
   openInstallTerminal: (request: InstallRequest) => invoke<void>("open_install_terminal", { request }),
 };
 

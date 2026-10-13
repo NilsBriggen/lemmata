@@ -16,6 +16,8 @@
   import { tags as t } from "@lezer/highlight";
   import type { Diagnostic } from "./api";
   import { spellcheck } from "./spell/extension";
+  import { vim } from "@replit/codemirror-vim";
+  import { settings } from "./settings.svelte";
 
   interface Props {
     onChange: (path: string, text: string) => void;
@@ -42,7 +44,7 @@
   ]);
 
   const theme = EditorView.theme({
-    "&": { height: "100%", backgroundColor: "var(--code-bg)", color: "var(--ink)", fontSize: "13px" },
+    "&": { height: "100%", backgroundColor: "var(--code-bg)", color: "var(--ink)", fontSize: "var(--editor-font-size)" },
     ".cm-scroller": { fontFamily: "var(--f-mono)", lineHeight: "1.6" },
     ".cm-content": { caretColor: "var(--blue)", padding: "10px 0" },
     ".cm-gutters": { backgroundColor: "var(--code-bg)", color: "var(--muted)", border: "none" },
@@ -58,6 +60,8 @@
 
   function extensions(path: string): Extension[] {
     return [
+      // Vim must come first so its keys take precedence.
+      settings.keymap === "vim" ? vim() : [],
       lineNumbers(),
       highlightActiveLineGutter(),
       highlightSpecialChars(),
@@ -124,6 +128,11 @@
     }
   }
 
+  /** Rebuilds every open file's editor setup, e.g. after the keymap changes. */
+  export function refreshExtensions() {
+    setLanguageServer(lspFor);
+  }
+
   export function getView(): EditorView | undefined {
     return view;
   }
@@ -173,8 +182,7 @@
 <div class="editor" bind:this={host}></div>
 
 <style>
-  .editor { height: 100%; overflow: hidden; --atom: #9a5b14; }
-  @media (prefers-color-scheme: dark) { .editor { --atom: #e0a85a; } }
+  .editor { height: 100%; overflow: hidden; }
   .editor :global(.cm-editor) { height: 100%; }
   .editor :global(.cm-editor.cm-focused) { outline: none; }
 </style>

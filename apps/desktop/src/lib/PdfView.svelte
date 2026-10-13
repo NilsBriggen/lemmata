@@ -6,6 +6,7 @@
   import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
   import type { PDFDocumentProxy } from "pdfjs-dist";
   import type { PdfBox } from "./api";
+  import { settings } from "./settings.svelte";
 
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -143,7 +144,7 @@
   onDestroy(() => doc?.loadingTask.destroy());
 </script>
 
-<div class="pdf">
+<div class="pdf" class:dark-pages={settings.pdfDark}>
   <div class="bar">
     <span>{pageCount ? `page ${currentPage} / ${pageCount}` : "no PDF yet"}</span>
     <div class="zoom">
@@ -187,6 +188,11 @@
   .pages { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 20px 24px 40px; }
   .pages :global(.page) { position: relative; background: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22); flex: none; }
   .pages :global(.page canvas) { width: 100%; height: 100%; display: block; }
+  /* Dark pages only while the app itself is dark. */
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme="light"])) .dark-pages :global(.page canvas) { filter: invert(0.92) hue-rotate(180deg); }
+  }
+  :global(:root[data-theme="dark"]) .dark-pages :global(.page canvas) { filter: invert(0.92) hue-rotate(180deg); }
   .sync {
     position: absolute; pointer-events: none; border-radius: 3px;
     background: color-mix(in srgb, var(--blue) 22%, transparent);

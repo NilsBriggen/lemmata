@@ -6,6 +6,7 @@ mod lsp;
 mod projects;
 mod spell;
 mod terminal;
+mod updates;
 
 use lemmata_project::{Config, Entry, Project};
 use lemmata_tex::detect::Detection;
@@ -30,6 +31,7 @@ pub(crate) struct AppState {
     lsp: tokio::sync::Mutex<Option<lsp::Server>>,
     lsp_generation: std::sync::atomic::AtomicU64,
     pub(crate) speller: Mutex<Option<lemmata_spell::Speller>>,
+    pub(crate) update: tokio::sync::Mutex<Option<tauri_plugin_updater::Update>>,
 }
 
 pub(crate) type CmdResult<T> = Result<T, String>;
@@ -425,6 +427,9 @@ fn open_install_terminal(state: State<AppState>, request: InstallRequest) -> Cmd
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             tex_status,
@@ -456,6 +461,8 @@ pub fn run() {
             spell::spell_check,
             spell::spell_suggest,
             spell::spell_add,
+            updates::update_check,
+            updates::update_install,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lemmata");
