@@ -66,13 +66,13 @@ def test_stable_release() -> None:
     assert "Lemmata_0.3.0_linux_x86_64.deb" in sums
 
 
-def test_prerelease_writes_beta_manifest() -> None:
+def test_suffixed_version_still_writes_latest_manifest() -> None:
     out = run("0.3.0-beta.1", "v0.3.0-beta.1")
-    assert (out / "beta.json").exists()
-    assert not (out / "latest.json").exists()
+    assert (out / "latest.json").exists()
+    assert not (out / "beta.json").exists()
 
 
 if __name__ == "__main__":
     test_stable_release()
-    test_prerelease_writes_beta_manifest()
+    test_suffixed_version_still_writes_latest_manifest()
     print("ok")

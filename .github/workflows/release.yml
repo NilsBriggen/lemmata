@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag made by scripts/release.sh (vX.Y.Z or vX.Y.Z-beta.N).
+# Push a tag made by scripts/release.sh (vX.Y.Z or vX.Y.Z-rc.N). Every tag is published as a production release.
 on:
   push:
     tags: ["v*"]
@@ -108,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
-      prerelease: ${{ steps.meta.outputs.prerelease }}
+      plain: ${{ steps.meta.outputs.plain }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -120,7 +120,8 @@ jobs:
         run: |
           version=${GITHUB_REF_NAME#v}
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [[ "$version" == *-* ]]; then echo "prerelease=true"; else echo "prerelease=false"; fi >> "$GITHUB_OUTPUT"
+          # Every release is a production release. Only the package managers need a plain X.Y.Z version.
+          if [[ "$version" == *-* ]]; then echo "plain=false"; else echo "plain=true"; fi >> "$GITHUB_OUTPUT"
       - name: Rename assets, write checksums and updater manifest
         run: python3 -I scripts/finalize-release.py artifacts dist "${{ steps.meta.outputs.version }}" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
       - name: Release notes
@@ -134,13 +135,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          flags=()
-          if [[ "${{ steps.meta.outputs.prerelease }}" == true ]]; then flags+=(--prerelease); else flags+=(--latest); fi
-          gh release create "$GITHUB_REF_NAME" dist/* --title "Lemmata ${{ steps.meta.outputs.version }}" --notes-file notes.md "${flags[@]}"
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Lemmata ${{ steps.meta.outputs.version }}" --notes-file notes.md --latest
 
   aur:
     needs: publish
-    if: needs.publish.outputs.prerelease == 'false'
+    if: needs.publish.outputs.plain == 'true'
     runs-on: ubuntu-latest
     env:
       AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
@@ -170,7 +169,7 @@ jobs:
 
   homebrew:
     needs: publish
-    if: needs.publish.outputs.prerelease == 'false'
+    if: needs.publish.outputs.plain == 'true'
     runs-on: ubuntu-latest
     env:
       TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
@@ -196,7 +195,7 @@ jobs:
 
   winget:
     needs: publish
-    if: needs.publish.outputs.prerelease == 'false'
+    if: needs.publish.outputs.plain == 'true'
     runs-on: windows-latest
     env:
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}

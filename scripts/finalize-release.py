@@ -93,7 +93,8 @@ def main() -> None:
             "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "platforms": platforms,
         }
-        name = "beta.json" if "-" in version else "latest.json"
+        # Every release is a production release, so there is one manifest.
+        name = "latest.json"
         (out / name).write_text(json.dumps(manifest, indent=2) + "\n")
         print(f"wrote {name} for {', '.join(platforms)}")
     else:

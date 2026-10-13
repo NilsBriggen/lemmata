@@ -209,7 +209,7 @@ The weeks assume one developer working full time. The release pipeline skeleton 
   3. Commits `chore(release): v0.3.0`.
   4. Creates the tag `v0.3.0`.
 - `git push --follow-tags` starts the release.
-- A tag with a suffix (`v0.3.0-beta.1`) becomes a GitHub pre-release, publishes to the beta update channel, and skips the package-manager jobs.
+- Every tag is a production release (`--latest`, `latest.json`); nothing is published that isn't meant to be used. A tag with a suffix (`v1.0.0-rc.1`) skips the package-manager jobs, which need a plain `X.Y.Z`, and ships the NSIS installer only (WiX can't version an MSI with a suffix).
 
 ### `ci.yml`: every pull request and push to `main`
 
@@ -254,7 +254,7 @@ The weeks assume one developer working full time. The release pipeline skeleton 
    Lemmata_0.3.0_windows_x86_64.msi
    ```
 
-2. Rewrite `latest.json` so its URLs point at the renamed files. For pre-releases, upload it as `beta.json` instead.
+2. Rewrite `latest.json` so its URLs point at the renamed files. 
 3. Write `SHA256SUMS.txt` covering every asset.
 4. Set the release notes to the matching `CHANGELOG.md` section.
 5. Publish the draft.
@@ -273,7 +273,7 @@ The weeks assume one developer working full time. The release pipeline skeleton 
 - `tauri-plugin-updater` checks `https://lemmata.briggen.dev/update/latest.json` (stable) or `.../update/beta.json` (beta, chosen in settings).
 - The website answers both with a 302 redirect to the GitHub asset:
   - `latest.json` → `https://github.com/NilsBriggen/lemmata/releases/latest/download/latest.json`
-  - `beta.json` → the newest pre-release's `beta.json`, which the website resolves at build time
+  - `beta.json` → the same file as `latest.json`: there are no separate beta builds any more
 - Installed copies only know the briggen.dev URL, so the repo can move without breaking updates.
 - The app checks on start and every 6 hours. It downloads in the background and asks to restart; it never restarts on its own.
 

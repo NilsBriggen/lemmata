@@ -46,7 +46,7 @@ Every release has these assets (version `0.3.0` as an example):
 | `Lemmata_0.3.0_windows_x86_64.msi` | Windows MSI, for managed installs |
 | `SHA256SUMS.txt` | Checksums for all of the above |
 
-Ignore `.sig`, `.app.tar.gz`, `latest.json` and `beta.json`; they're for the auto-updater. Releases marked `prerelease` are betas: show them only on the changelog, labelled "Beta".
+Ignore `.sig`, `.app.tar.gz` and `latest.json`; they're for the auto-updater. Every release is a production release; show them all, newest first.
 
 **Rebuilds:** the release workflow sends a GitHub `repository_dispatch` event of type `release-published` to the website repo. Trigger a rebuild and deploy on that event. Also rebuild daily as a fallback.
 
@@ -57,7 +57,7 @@ Installed copies of Lemmata check these URLs for updates. They must work from th
 | Path | Response |
 |---|---|
 | `/update/latest.json` | `302` to `https://github.com/NilsBriggen/lemmata/releases/latest/download/latest.json` |
-| `/update/beta.json` | `302` to the `beta.json` asset of the newest pre-release, resolved at build time. If there is none, use the same target as `latest.json` |
+| `/update/beta.json` | The same `302` as `latest.json`. Older app versions have a beta channel setting; there are no separate beta builds any more |
 
 Don't cache these redirects for longer than 5 minutes.
 
