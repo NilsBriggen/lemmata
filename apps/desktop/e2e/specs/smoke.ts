@@ -3,10 +3,13 @@
 // environment completes its \end, and a click in the PDF finds the source.
 import { browser, $, expect } from "@wdio/globals";
 import path from "node:path";
+import { execSync } from "node:child_process";
 
 const fixtures = path.resolve(import.meta.dirname, "../../../../tests/fixtures");
 
 async function openProject(dir: string) {
+  // A build still running when the page reloads is cancelled; let it finish first.
+  await browser.waitUntil(async () => !(await $("button.compile, .compile .main").getText().catch(() => "")).includes("Compiling"), { timeout: 60_000 }).catch(() => {});
   // The app reopens the most recent project on start.
   await browser.execute((d) => localStorage.setItem("lemmata.recent", JSON.stringify([d])), dir);
   await browser.refresh();
@@ -15,8 +18,15 @@ async function openProject(dir: string) {
 
 describe("Lemmata", () => {
   // The spec reporter only prints at the end, so say where we are as we go.
+  const processes = () => {
+    try {
+      return execSync("ps -eo pid,pgid,ppid,etimes,args --sort=pid | grep -E 'latexmk|pdflatex|biber|lemmata-app|wdio|tauri-driver|WebKit' | grep -v grep", { encoding: "utf8" });
+    } catch {
+      return "(none)";
+    }
+  };
   beforeEach(function () {
-    console.log(`[e2e] start: ${this.currentTest?.title}`);
+    console.log(`[e2e] start: ${this.currentTest?.title}\n${processes()}`);
   });
   afterEach(function () {
     console.log(`[e2e] ${this.currentTest?.state}: ${this.currentTest?.title}`);
