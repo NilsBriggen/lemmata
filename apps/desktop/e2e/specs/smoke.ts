@@ -51,6 +51,8 @@ describe("Lemmata", () => {
     await browser.keys(["Control"]); // release
     await browser.keys("\\begin{itemiz");
     await $(".cm-tooltip-autocomplete").waitForExist({ timeout: 15_000 });
+    // CodeMirror ignores Enter for a moment after the list opens.
+    await browser.pause(500);
     await browser.keys("Enter");
     await expect($(".cm-content")).toHaveText(expect.stringContaining("\\end{itemize}"));
     // Put the fixture back as it was (autosave writes it to disk).
@@ -64,17 +66,20 @@ describe("Lemmata", () => {
 
   it("jumps from the PDF to the source", async () => {
     await openProject(path.join(fixtures, "article"));
-    const page = $(".pages .page");
     await $(".pages .page canvas").waitForExist({ timeout: 90_000 });
-    await $(".cm-content").click();
-    await browser.keys(["Control", "Home"]);
-    await browser.keys(["Control"]);
-    // The title block sits near the top centre of the first page.
-    const height = await page.getSize("height");
-    await page.doubleClick({ x: 0, y: -Math.round(height * 0.38) });
-    await browser.waitUntil(async () => /Line (?:[2-9]|\d\d)\b/.test(await $(".status").getText()), {
+    // The first page's body text comes from chapters/method.tex. The point is
+    // given as a share of the page, so the click works however the pane is sized.
+    await browser.execute(() => {
+      const page = document.querySelector(".pages .page") as HTMLElement;
+      page.scrollIntoView({ block: "start" });
+      const r = page.getBoundingClientRect();
+      page.dispatchEvent(
+        new MouseEvent("dblclick", { bubbles: true, clientX: r.left + r.width * 0.3, clientY: r.top + r.height * 0.144 }),
+      );
+    });
+    await browser.waitUntil(async () => (await $(".tab.on .name").getText()).includes("method.tex"), {
       timeout: 15_000,
-      timeoutMsg: "the editor didn't move to the source line",
+      timeoutMsg: "the editor didn't open the source file",
     });
   });
 });

@@ -240,6 +240,12 @@
     }, 150);
   }
 
+  /** A list with one empty item; `${}` is the tab stop CodeMirror's snippets use. */
+  const listTemplate = (ordered: boolean) => {
+    const env = ordered ? "enumerate" : "itemize";
+    return "\\begin{" + env + "}\n\t\\item ${}\n\\end{" + env + "}";
+  };
+
   const isViewer = (p: string) => /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(p);
   const viewerActive = $derived(!!active && isViewer(active));
 
@@ -1041,7 +1047,7 @@
           onFigure={() => (dialog = "figure")}
           onTable={() => (dialog = "table")}
           onCite={() => (citeOpen = true)}
-          onList={(ordered) => editor?.insertTemplate(`\\begin{${ordered ? "enumerate" : "itemize"}}\n\t\\item \${"{}"}\n\\end{${ordered ? "enumerate" : "itemize"}}`)}
+          onList={(ordered) => editor?.insertTemplate(listTemplate(ordered))}
         />
         {#if openError}
           <div class="err-bar" role="alert">

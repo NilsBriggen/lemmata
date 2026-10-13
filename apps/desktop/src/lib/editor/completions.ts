@@ -3,6 +3,7 @@
 // doesn't handle goes to texlab.
 import { snippet, type Completion, type CompletionContext, type CompletionResult, type CompletionSource } from "@codemirror/autocomplete";
 import { ENVIRONMENTS, COMMANDS } from "./data";
+import { tokens } from "./environments";
 import type { BibEntry, LabelInfo } from "../api";
 
 /** What the editor can look up about the open project. */
@@ -45,6 +46,8 @@ export function latexCompletions(
       const [, kind, typed] = m;
       const from = ctx.pos - typed.length;
       const closing = after.startsWith("}");
+      // Renaming an environment that already has its \end: only the name changes.
+      const paired = kind === "begin" && tokens(ctx.state.doc).some((t) => t.kind === "begin" && t.partner != null && ctx.pos >= t.from && ctx.pos <= t.to);
       const to = closing ? ctx.pos + 1 : ctx.pos;
       const options: Completion[] = ENVIRONMENTS.map((e) => ({
         label: e.name,
@@ -52,7 +55,7 @@ export function latexCompletions(
         type: "class",
         boost: 10,
         apply:
-          kind === "end"
+          kind === "end" || paired
             ? `${e.name}}`
             : snippet(`${e.name}}\n\t${e.body}\n\\end{${e.name}}`),
       }));
@@ -61,7 +64,7 @@ export function latexCompletions(
       for (const x of ctx.state.doc.toString().matchAll(/\\begin\{([A-Za-z*]+)\}/g)) {
         if (!used.has(x[1])) {
           used.add(x[1]);
-          options.push({ label: x[1], type: "class", detail: "used here", apply: kind === "end" ? `${x[1]}}` : snippet(`${x[1]}}\n\t\${}\n\\end{${x[1]}}`) });
+          options.push({ label: x[1], type: "class", detail: "used here", apply: kind === "end" || paired ? `${x[1]}}` : snippet(`${x[1]}}\n\t\${}\n\\end{${x[1]}}`) });
         }
       }
       return { from, to, options, filter: true, validFor: /^[A-Za-z*]*$/ };
