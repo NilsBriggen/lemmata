@@ -6,7 +6,7 @@ Lemmata is a LaTeX editor that builds your document as you write and shows the P
 
 Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't find one, it shows the install command for your system. **Open terminal** shows that command in a terminal and waits for you to press Enter; Lemmata never installs anything by itself. Afterwards click **Check again**. If TeX is installed somewhere unusual, choose its `bin` folder.
 
-**Windows with MiKTeX:** MiKTeX does not include Perl, and `latexmk` is a Perl script. Also run `winget install StrawberryPerl.StrawberryPerl` and restart Lemmata. The first build downloads the packages your document needs, which can take a minute. If a build fails before TeX starts, the Problems panel shows what `latexmk` printed.
+**Windows with MiKTeX:** MiKTeX does not include Perl, and `latexmk` is a Perl script. Also run `winget install StrawberryPerl.StrawberryPerl` and restart Lemmata. The first build downloads the packages your document needs, which can take a minute. If MiKTeX refuses to run because it hasn't checked for updates (in any language, "major issue"), open MiKTeX Console, choose Updates and check for updates, or run `miktex packages update-package-database`; Lemmata shows this command when it happens. If a build fails before TeX starts, the Problems panel shows what `latexmk` printed.
 
 ## Projects
 

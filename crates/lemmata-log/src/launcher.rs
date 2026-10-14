@@ -19,16 +19,15 @@ pub fn launcher_failure(output: &str) -> Diagnostic {
                 package: None,
             }),
         )
-    } else if lower.contains("miktex update required")
-        || lower.contains("you have not checked for miktex updates")
-    {
+    } else if mentions_miktex_updates(&lower) {
         (
-            "MiKTeX asks for an update before it will run.".to_string(),
-            Some(
-                "Open MiKTeX Console, choose Updates, and install them. Then compile again."
-                    .to_string(),
-            ),
-            None,
+            "MiKTeX refuses to run until it has checked for updates.".to_string(),
+            Some("MiKTeX stops its tools until its package database has been refreshed. Open MiKTeX Console, choose Updates, and check for updates (installing them is optional). Then compile again.".to_string()),
+            Some(Fix {
+                explanation: "Refresh MiKTeX's package database from a terminal (the same as Check for updates in MiKTeX Console).".into(),
+                command: Some("miktex packages update-package-database".into()),
+                package: None,
+            }),
         )
     } else if lower.contains("miktex")
         && (lower.contains("install missing")
@@ -68,10 +67,23 @@ pub fn launcher_failure(output: &str) -> Diagnostic {
     }
 }
 
+/// MiKTeX's "you have not checked for updates" stop, in the language of the
+/// user's Windows ("MiKTeX-Updates" in German, "mises à jour" in French, ...).
+/// The marker "major issue" next to MiKTeX stays English in every language.
+fn mentions_miktex_updates(lower: &str) -> bool {
+    lower.contains("miktex")
+        && (lower.contains("major issue")
+            || lower.contains("update required")
+            || lower.contains("updates")
+            || lower.contains("mises à jour"))
+}
+
 fn mentions_perl(lower: &str) -> bool {
     lower.contains("perl")
         && (lower.contains("not found")
             || lower.contains("not recognized")
+            || lower.contains("nicht gefunden")
+            || lower.contains("introuvable")
             || lower.contains("cannot find")
             || lower.contains("can't find")
             || lower.contains("script engine")
@@ -102,6 +114,17 @@ mod tests {
     fn miktex_update_prompt_points_at_the_console() {
         let d = launcher_failure("major issue: So far, you have not checked for MiKTeX updates.");
         assert!(d.hint.unwrap().contains("MiKTeX Console"));
+    }
+
+    #[test]
+    fn the_german_update_prompt_from_the_bug_report_is_recognised() {
+        let text = "Entschuldigung, aber latexmk.exe schlug fehl.\n\nlatexmk: major issue: Bis jetzt haben Sie noch nicht nach MiKTeX-Updates gesucht.";
+        let d = launcher_failure(text);
+        assert!(d.message.contains("checked for updates"));
+        assert_eq!(
+            d.fix.unwrap().command.as_deref(),
+            Some("miktex packages update-package-database")
+        );
     }
 
     #[test]
