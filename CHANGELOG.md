@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.2.0 (2026-10-14)
+
+### Added
+- Presenter view with speaker notes
+
+### Fixed
+- Presenting no longer uses the browser's Fullscreen API
 ## 1.1.4 (2026-10-14)
 
 ### Fixed
