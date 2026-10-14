@@ -1093,7 +1093,7 @@
   // Editor options that change the extension list rebuild the editors.
   let appliedEditor = "";
   $effect(() => {
-    const key = [settings.keymap, settings.autoClose, settings.autocomplete, settings.envSync, settings.folding, settings.wordWrap].join();
+    const key = [settings.keymap, settings.autoClose, settings.autocomplete, settings.envSync, settings.folding, settings.wordWrap, settings.indent].join();
     if (appliedEditor && key !== appliedEditor) editor?.refreshExtensions();
     appliedEditor = key;
   });

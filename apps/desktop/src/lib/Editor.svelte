@@ -8,7 +8,7 @@
     drawSelection, highlightSpecialChars, rectangularSelection, crosshairCursor,
   } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-  import { StreamLanguage, HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput } from "@codemirror/language";
+  import { StreamLanguage, HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput, indentUnit } from "@codemirror/language";
   import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
   import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap, snippet } from "@codemirror/autocomplete";
   import { setDiagnostics, lintGutter, lintKeymap, nextDiagnostic, previousDiagnostic, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
@@ -19,6 +19,7 @@
   import { renderTex } from "./writing/katexRender";
   import { folding, foldKeymap, foldRange } from "./editor/folding";
   import { snippetCompletions } from "./editor/snippets";
+  import { reindent, tabSizeOf, unitOf } from "./editor/indent";
   import { symbolAt } from "./writing/symbolAt";
   import { foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
   import { formattingKeymap, toggleWrap } from "./editor/shortcuts";
@@ -119,8 +120,9 @@
         return true;
       }
       const text = e.clipboardData?.getData("text/plain") ?? "";
-      const table = tsvToTabular(text);
-      if (!table) return false;
+      const generated = tsvToTabular(text);
+      if (!generated) return false;
+      const table = reindent(generated, unitOf(settings.indent));
       e.preventDefault();
       const from = v.state.selection.main.from;
       v.dispatch(v.state.replaceSelection(table));
@@ -141,8 +143,12 @@
     const line = view.state.doc.lineAt(pos);
     // Figures go on their own lines.
     const prefix = line.text.slice(0, pos - line.from).trim() ? "\n" : "";
-    const insert = prefix + snippet.text + "\n";
-    view.dispatch({ changes: { from: pos, insert }, selection: { anchor: pos + prefix.length + snippet.cursor } });
+    // Blocks are written with two spaces per level; use the indentation the user chose.
+    const unit = unitOf(settings.indent);
+    const text = reindent(snippet.text, unit);
+    const cursor = reindent(snippet.text.slice(0, snippet.cursor), unit).length;
+    const insert = prefix + text + "\n";
+    view.dispatch({ changes: { from: pos, insert }, selection: { anchor: pos + prefix.length + cursor } });
     view.focus();
     if (needs) onNeedsPackage?.(needs);
   }
@@ -157,6 +163,8 @@
   function extensions(path: string): Extension[] {
     const tex = isTex(path);
     return [
+      indentUnit.of(unitOf(settings.indent)),
+      EditorState.tabSize.of(tabSizeOf(settings.indent)),
       // Vim must come first so its keys take precedence.
       settings.keymap === "vim" ? vim() : [],
       lineNumbers(),
@@ -256,7 +264,7 @@
   export function insertTemplate(template: string) {
     if (!view) return;
     const { from, to } = view.state.selection.main;
-    snippet(template)(view, null, from, to);
+    snippet(reindent(template, unitOf(settings.indent)))(view, null, from, to);
     view.focus();
   }
 

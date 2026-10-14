@@ -39,6 +39,7 @@ Errors and warnings appear in the **Problems** panel in plain language, with a f
 ## The editor
 
 - **Environments stay paired.** Type `\begin{itemize` and accept the suggestion: Lemmata adds the body and the matching `\end{itemize}`. Rename either half and the other follows. After a `\begin{name}` with no `\end`, **Enter** adds it.
+- **Indentation** is 4 spaces per level by default. Choose 2, 4 or 8 spaces, or a Tab character, under *Preferences → Indentation*; Tab, Enter after `\begin`, and the figures and tables Lemmata inserts all follow it. Existing files are not reformatted.
 - **Completion** suggests environments, commands, `\ref` labels from every file, `\cite` keys (with author and title), file names for `\input` and `\includegraphics`, and package names for `\usepackage`. texlab adds more when it's installed.
 - **Maths**: inside `$…$`, `\[…\]` or an equation environment, typing `\` suggests symbols and structures first (`\alpha`, `\frac`, `\sum`), each with a rendered preview and a larger one for the highlighted entry; Tab moves between the fields of a template like `\frac{}{}`. In prose, text commands come first. The rendered formula above the cursor works for `$…$`, `$$…$$`, `\[…\]` and the maths environments, also while you're still typing, and keeps the last good version when an expression is incomplete.
 - **Folding**: click the arrow in the gutter to fold a section, environment or block of comments.

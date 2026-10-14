@@ -8,6 +8,7 @@
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import Modal from "./ui/Modal.svelte";
   import SnippetsDialog from "./SnippetsDialog.svelte";
+  import { INDENTS, validIndent } from "./editor/indent";
   import { settings, updateSettings, DEFAULTS, type Settings } from "./settings.svelte";
   import { LANGUAGES } from "./spell/service";
   import type { Detection } from "./api";
@@ -133,6 +134,12 @@
       <input id="pref-fold" type="checkbox" checked={settings.folding} onchange={(e) => set("folding", e.currentTarget.checked)} />
       Code folding for sections and environments
     </label>
+    <div class="row">
+      <label for="pref-indent">Indentation</label>
+      <select id="pref-indent" class="input" value={String(settings.indent)} onchange={(e) => set("indent", validIndent(e.currentTarget.value === "tab" ? "tab" : Number(e.currentTarget.value)))}>
+        {#each INDENTS as [value, label] (value)}<option value={String(value)}>{label}</option>{/each}
+      </select>
+    </div>
     <label class="check" for="pref-wrap">
       <input id="pref-wrap" type="checkbox" checked={settings.wordWrap} onchange={(e) => set("wordWrap", e.currentTarget.checked)} />
       Wrap long lines

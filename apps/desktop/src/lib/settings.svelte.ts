@@ -2,6 +2,7 @@
 // folder. Project-specific options live in lemmata.toml instead.
 import { load, type Store } from "@tauri-apps/plugin-store";
 import type { Snippet } from "./editor/snippets";
+import { validIndent, type Indent } from "./editor/indent";
 
 export interface Settings {
   theme: "system" | "light" | "dark";
@@ -16,6 +17,8 @@ export interface Settings {
   envSync: boolean;
   folding: boolean;
   wordWrap: boolean;
+  /** One indentation level: that many spaces, or a tab character. */
+  indent: Indent;
   /** "plex" (bundled look), "system" or a font family name. */
   fontFamily: string;
   lineHeight: number;
@@ -54,6 +57,7 @@ export const DEFAULTS: Settings = {
   envSync: true,
   folding: true,
   wordWrap: true,
+  indent: 4,
   fontFamily: "plex",
   lineHeight: 1.65,
   keymap: "default",
@@ -84,7 +88,7 @@ export async function loadSettings() {
     const saved = (await store.get<Partial<Settings>>("settings")) ?? {};
     // Before 1.0, "compile as I type" and "save as I type" were one switch.
     if (saved.autoCompile === undefined && saved.autosaveMs === 0) saved.autoCompile = false;
-    Object.assign(settings, { ...DEFAULTS, ...saved });
+    Object.assign(settings, { ...DEFAULTS, ...saved, indent: validIndent(saved.indent ?? DEFAULTS.indent) });
   } catch (e) {
     console.warn("settings unavailable:", e);
   }
