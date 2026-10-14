@@ -25,6 +25,38 @@ struct TemplateMeta {
     order: u32,
 }
 
+/// Checks that `path` may be moved to the trash as a whole project: a folder
+/// with a .tex file or lemmata.toml directly inside, and not the home folder
+/// or a folder above it (a stray .tex file there must not take it all).
+pub fn deletable_project(path: &Path, home: Option<&Path>) -> Result<PathBuf, String> {
+    let dir = path
+        .canonicalize()
+        .map_err(|e| format!("Could not find {}: {e}", path.display()))?;
+    let refuse = || {
+        format!(
+            "{} doesn't look like a project folder, so Lemmata won't delete it.",
+            dir.display()
+        )
+    };
+    let above_home = home
+        .and_then(|h| h.canonicalize().ok())
+        .is_some_and(|h| h.starts_with(&dir));
+    if !dir.is_dir() || dir.parent().is_none() || above_home {
+        return Err(refuse());
+    }
+    let project = fs::read_dir(&dir)
+        .map_err(|e| format!("Could not read {}: {e}", dir.display()))?
+        .flatten()
+        .any(|e| {
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            name == "lemmata.toml" || name.ends_with(".tex")
+        });
+    if !project {
+        return Err(refuse());
+    }
+    Ok(dir)
+}
+
 /// Metadata file inside each template folder; not copied into projects.
 const META: &str = "template.toml";
 pub const EXAMPLE: &str = "example";
@@ -406,6 +438,25 @@ fn common_top_folder(paths: &[PathBuf]) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn only_project_folders_can_be_deleted() {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("thesis");
+        fs::create_dir_all(project.join("chapters")).unwrap();
+        fs::write(project.join("main.tex"), "").unwrap();
+        assert!(deletable_project(&project, Some(home.path())).is_ok());
+        // A folder with .tex files only further down is not a project.
+        let docs = home.path().join("Documents");
+        fs::create_dir_all(docs.join("x")).unwrap();
+        fs::write(docs.join("x/a.tex"), "").unwrap();
+        assert!(deletable_project(&docs, Some(home.path())).is_err());
+        // Never the home folder or a folder above it, even with a .tex inside.
+        fs::write(home.path().join("stray.tex"), "").unwrap();
+        assert!(deletable_project(home.path(), Some(home.path())).is_err());
+        assert!(deletable_project(&project, Some(&project.join("chapters"))).is_err());
+        assert!(deletable_project(&home.path().join("missing"), None).is_err());
+    }
 
     fn make_zip(path: &Path, files: &[(&str, &str)]) {
         let mut w = zip::ZipWriter::new(fs::File::create(path).unwrap());

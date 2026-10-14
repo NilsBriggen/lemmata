@@ -527,6 +527,28 @@ fn load_thumbnail(app: tauri::AppHandle, root: String) -> CmdResult<Response> {
     Ok(Response::new(bytes))
 }
 
+/// Moves a whole project folder to the system trash, from the library.
+#[tauri::command]
+fn trash_project(app: tauri::AppHandle, state: State<AppState>, path: String) -> CmdResult<()> {
+    let dir = projects::deletable_project(Path::new(&path), app.path().home_dir().ok().as_deref())?;
+    if state
+        .project
+        .lock_safe()
+        .as_ref()
+        .is_some_and(|p| p.root == dir)
+    {
+        cancel_running(&state);
+        *state.watcher.lock_safe() = None;
+        *state.project.lock_safe() = None;
+    }
+    trash::delete(&dir)
+        .map_err(|e| format!("Could not move {} to the trash: {e}", dir.display()))?;
+    if let Ok(thumb) = thumbnail_path(&app, &path) {
+        let _ = std::fs::remove_file(thumb);
+    }
+    Ok(())
+}
+
 /// Adds `\usepackage{name}` to the main file's preamble, after the last
 /// \usepackage (or after \documentclass).
 #[tauri::command]
@@ -721,6 +743,7 @@ pub fn run() {
             add_files,
             save_thumbnail,
             load_thumbnail,
+            trash_project,
             history::history_status,
             history::git_status,
             history::history_enable,

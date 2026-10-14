@@ -15,16 +15,19 @@
   import FileText from "@lucide/svelte/icons/file-text";
   import FolderSearch from "@lucide/svelte/icons/folder-search";
   import X from "@lucide/svelte/icons/x";
+  import Ellipsis from "@lucide/svelte/icons/ellipsis";
+  import ExternalLink from "@lucide/svelte/icons/external-link";
   import Folder from "@lucide/svelte/icons/folder";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import SquarePen from "@lucide/svelte/icons/square-pen";
   import Trash2 from "@lucide/svelte/icons/trash";
   import Check from "@lucide/svelte/icons/check";
   import DropMenu from "./ui/DropMenu.svelte";
+  import Modal from "./ui/Modal.svelte";
   import { countIn, createGroup, deleteGroup, forgetPath, inView, moveProject, nameProblem, readGroups, renameGroup, writeGroups, type Groups, type View } from "./groups";
   import NewProjectDialog from "./NewProjectDialog.svelte";
   import ImportDialog from "./ImportDialog.svelte";
-  import { api } from "./api";
+  import { api, errorMessage } from "./api";
   import type { Recent } from "./recent";
   import { settings, updateSettings } from "./settings.svelte";
 
@@ -49,7 +52,9 @@
   let view = $state<View>("all");
   /** The folder being created ("") or renamed (its id), with the text typed so far. */
   let editing = $state<{ id: string | null; name: string; error: string | null } | null>(null);
-  let folderMenu = $state<{ path: string; anchor: HTMLElement } | null>(null);
+  /** The menu of one project: open, show, folder, remove, delete. */
+  let projectMenu = $state<{ path: string; anchor: HTMLElement } | null>(null);
+  let deleting = $state<{ path: string; busy: boolean; error: string | null } | null>(null);
   const activeGroup = $derived(groups.groups.find((g) => g.id === view));
   const unfiled = $derived(p.recent.filter((r) => !(r.path in groups.members)).length);
 
@@ -136,6 +141,29 @@
     p.onForget(path);
   }
 
+  /** Right-clicking a project opens the same menu as its ⋯ button. */
+  function contextMenu(e: MouseEvent, path: string) {
+    const more = (e.currentTarget as HTMLElement).querySelector<HTMLElement>(".more");
+    if (!more) return;
+    e.preventDefault();
+    projectMenu = { path, anchor: more };
+  }
+
+  async function deleteProject() {
+    if (!deleting) return;
+    const { path } = deleting;
+    deleting = { path, busy: true, error: null };
+    try {
+      await api.trashProject(path);
+      if (thumbs[path]) URL.revokeObjectURL(thumbs[path]);
+      delete thumbs[path];
+      forget(path);
+      deleting = null;
+    } catch (e) {
+      deleting = { path, busy: false, error: errorMessage(e) };
+    }
+  }
+
   async function importZip() {
     const zip = await open({ title: "Choose a zip downloaded from Overleaf", filters: [{ name: "Zip", extensions: ["zip"] }] });
     if (typeof zip === "string") dialog = { zip };
@@ -209,7 +237,7 @@
       {#if query.trim()}
         <p class="none">No project matches “{query}”.</p>
       {:else if activeGroup}
-        <p class="none">No projects in this folder yet. Use the folder button on a project to add it, or create a new project here.</p>
+        <p class="none">No projects in this folder yet. Right-click a project (or use its ⋯ button) to put it here, or create a new project here.</p>
       {:else}
         <p class="none">Every project is in a folder.</p>
       {/if}
@@ -222,7 +250,8 @@
           <span></span>
         </div>
         {#each shown as r (r.path)}
-          <div class="tr" role="row">
+          <!-- svelte-ignore a11y_interactive_supports_focus (right-click is a shortcut; the ⋯ button is the keyboard way) -->
+          <div class="tr" role="row" oncontextmenu={(e) => contextMenu(e, r.path)}>
             <button class="name" role="cell" onclick={() => p.onOpen(r.path)}>
               <span class="mini">{#if thumbs[r.path]}<img src={thumbs[r.path]} alt="" />{:else}<FileText size={16} />{/if}</span>
               <span class="n">{nameOf(r.path)}</span>
@@ -231,9 +260,7 @@
             <span class="loc" role="cell" title={r.path}>{home(folderOf(r.path))}</span>
             <span class="when" role="cell">{ago(r.lastOpened)}</span>
             <span class="acts" role="cell">
-              <button class="btn ghost icon sm" title="Put in a folder" aria-label="Put {nameOf(r.path)} in a folder" aria-haspopup="menu" onclick={(e) => (folderMenu = { path: r.path, anchor: e.currentTarget })}><Folder size={15} /></button>
-              <button class="btn ghost icon sm" title="Show in file manager" aria-label="Show {nameOf(r.path)} in file manager" onclick={() => revealItemInDir(r.path).catch(() => {})}><FolderSearch size={15} /></button>
-              <button class="btn ghost icon sm" title="Remove from this list (the folder stays on disk)" aria-label="Remove {nameOf(r.path)} from the list" onclick={() => forget(r.path)}><X size={15} /></button>
+              <button class="btn ghost icon sm more" title="More actions" aria-label="Actions for {nameOf(r.path)}" aria-haspopup="menu" onclick={(e) => (projectMenu = { path: r.path, anchor: e.currentTarget })}><Ellipsis size={16} /></button>
             </span>
           </div>
         {/each}
@@ -241,15 +268,14 @@
     {:else}
       <div class="grid">
         {#each shown as r (r.path)}
-          <div class="card">
+          <div class="card" role="presentation" oncontextmenu={(e) => contextMenu(e, r.path)}>
             <button class="open" onclick={() => p.onOpen(r.path)}>
               <div class="thumb">
                 {#if thumbs[r.path]}<img src={thumbs[r.path]} alt="" />{:else}<div class="blank"><i></i><i></i><i></i><i></i><i></i></div>{/if}
               </div>
               <div class="info"><b>{nameOf(r.path)}</b><span>{ago(r.lastOpened)}</span></div>
             </button>
-            <button class="btn icon sm forget" aria-label="Remove {nameOf(r.path)} from the list" title="Remove from this list" onclick={() => forget(r.path)}><X size={14} /></button>
-            <button class="btn icon sm putin" aria-label="Put {nameOf(r.path)} in a folder" title="Put in a folder" aria-haspopup="menu" onclick={(e) => (folderMenu = { path: r.path, anchor: e.currentTarget })}><Folder size={14} /></button>
+            <button class="btn icon sm more" title="More actions" aria-label="Actions for {nameOf(r.path)}" aria-haspopup="menu" onclick={(e) => (projectMenu = { path: r.path, anchor: e.currentTarget })}><Ellipsis size={15} /></button>
           </div>
         {/each}
       </div>
@@ -265,22 +291,39 @@
   </form>
 {/snippet}
 
-{#if folderMenu}
-  {@const path = folderMenu.path}
-  <DropMenu anchor={folderMenu.anchor} align="end" onClose={() => (folderMenu = null)}>
+{#if projectMenu}
+  {@const path = projectMenu.path}
+  <DropMenu anchor={projectMenu.anchor} align="end" onClose={() => (projectMenu = null)}>
+    <button role="menuitem" onclick={() => p.onOpen(path)}><ExternalLink size={15} /> Open</button>
+    <button role="menuitem" onclick={() => revealItemInDir(path).catch(() => {})}><FolderSearch size={15} /> Show in file manager</button>
+    <hr />
     <div class="heading">Put in folder</div>
     {#each groups.groups as g (g.id)}
-      <button role="menuitemradio" aria-checked={groups.members[path] === g.id} onclick={() => (commit(moveProject(groups, path, g.id)), (folderMenu = null))}>
-        <span class="tick">{#if groups.members[path] === g.id}<Check size={14} />{/if}</span> {g.name}
+      <button role="menuitemradio" aria-checked={groups.members[path] === g.id} onclick={() => commit(moveProject(groups, path, g.id))}>
+        <span class="tick">{#if groups.members[path] === g.id}<Check size={14} />{:else}<Folder size={14} />{/if}</span> {g.name}
       </button>
     {/each}
     {#if groups.members[path]}
-      <hr />
-      <button role="menuitem" onclick={() => (commit(moveProject(groups, path, null)), (folderMenu = null))}><span class="tick"></span> Take out of its folder</button>
+      <button role="menuitem" onclick={() => commit(moveProject(groups, path, null))}><span class="tick"></span> Take out of its folder</button>
     {/if}
+    <button role="menuitem" onclick={() => startEdit(null)}><span class="tick"><FolderPlus size={14} /></span> New folder…</button>
     <hr />
-    <button role="menuitem" onclick={() => { folderMenu = null; startEdit(null); }}><span class="tick"></span> New folder…</button>
+    <button role="menuitem" onclick={() => forget(path)}><X size={15} /> Remove from list <span class="hint">keeps files</span></button>
+    <button role="menuitem" class="danger" onclick={() => (deleting = { path, busy: false, error: null })}><Trash2 size={15} /> Delete project…</button>
   </DropMenu>
+{/if}
+
+{#if deleting}
+  {@const name = nameOf(deleting.path)}
+  <Modal title="Delete {name}?" width={460} onClose={() => !deleting?.busy && (deleting = null)}>
+    <p class="dmsg">This moves the folder and everything in it to your system's trash. You can restore it from there.</p>
+    <code class="dpath">{deleting.path}</code>
+    {#if deleting.error}<p class="derr" role="alert">{deleting.error}</p>{/if}
+    {#snippet footer()}
+      <button class="btn" disabled={deleting?.busy} onclick={() => (deleting = null)}>Cancel</button>
+      <button class="btn primary danger-btn" disabled={deleting?.busy} onclick={deleteProject}>Move to trash</button>
+    {/snippet}
+  </Modal>
 {/if}
 
 {#if dialog === "new"}
@@ -315,7 +358,7 @@
   .none { color: var(--muted); }
 
   .table { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
-  .tr { display: grid; grid-template-columns: minmax(200px, 2fr) minmax(160px, 2fr) 130px 76px; align-items: center; border-top: 1px solid var(--border); }
+  .tr { display: grid; grid-template-columns: minmax(200px, 2fr) minmax(160px, 2fr) 130px 48px; align-items: center; border-top: 1px solid var(--border); }
   .tr:first-child { border-top: none; }
   .tr:not(.th):hover { background: var(--surface-2); }
   .th { height: 34px; font: 600 11px var(--f-body); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); }
@@ -327,7 +370,7 @@
   .n { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .loc { padding: 0 14px; color: var(--muted); font: 12px var(--f-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .when { padding: 0 14px; color: var(--muted); }
-  .acts { display: flex; gap: 2px; padding-right: 8px; justify-content: flex-end; opacity: 0; }
+  .acts { display: flex; padding-right: 8px; justify-content: flex-end; opacity: 0.45; }
   .tr:hover .acts, .acts:focus-within { opacity: 1; }
 
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 18px; }
@@ -341,8 +384,8 @@
   .blank i:first-child { width: 55%; height: 6px; margin: 0 auto 6px; background: #a6aeb6; }
   .info { padding: 10px 12px; display: flex; flex-direction: column; gap: 1px; }
   .info span { color: var(--muted); font-size: 12px; }
-  .forget { position: absolute; top: 8px; right: 8px; opacity: 0; }
-  .card:hover .forget, .forget:focus-visible { opacity: 1; }
+  .card .more { position: absolute; top: 8px; right: 8px; opacity: 0; }
+  .card:hover .more, .card .more:focus-visible { opacity: 1; }
 
   .empty { max-width: 460px; margin: 10vh auto 0; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--faint); }
   .empty h2 { font: 400 22px var(--f-display); color: var(--ink); margin: 6px 0 0; }
@@ -364,7 +407,10 @@
   .fedit .input { height: 30px; }
   .ferr { color: var(--error); font-size: 11.5px; padding-left: 4px; }
   .chip { margin-left: 8px; padding: 0 7px; border-radius: 9px; background: var(--surface-3); color: var(--muted); font-size: 11px; line-height: 18px; flex: none; }
-  .putin { position: absolute; top: 8px; right: 40px; opacity: 0; }
-  .card:hover .putin, .putin:focus-visible { opacity: 1; }
+  :global(.menu) .danger, :global(.menu) .danger :global(svg) { color: var(--error); }
+  .dmsg { margin: 0 0 10px; color: var(--muted); }
+  .dpath { display: block; padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r); font: 12px var(--f-mono); overflow-wrap: anywhere; }
+  .derr { color: var(--error); margin: 10px 0 0; }
+  .danger-btn { background: var(--error) !important; border-color: var(--error) !important; }
   .tick { display: inline-flex; width: 16px; justify-content: center; }
 </style>

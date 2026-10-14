@@ -173,6 +173,8 @@ export const api = {
   addFiles: (paths: string[], folder: string) => invoke<string[]>("add_files", { paths, folder }),
   saveThumbnail: (root: string, png: Uint8Array) =>
     invoke<void>("save_thumbnail", png, { headers: { "x-project-root": encodeURIComponent(root) } }),
+  /** Moves a project folder to the system trash. */
+  trashProject: (path: string) => invoke<void>("trash_project", { path }),
   loadThumbnail: async (root: string) => new Uint8Array(await invoke<ArrayBuffer>("load_thumbnail", { root })),
   updateCheck: (channel: string) =>
     invoke<{ version: string; current: string; notes: string | null } | null>("update_check", { channel }),

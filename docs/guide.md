@@ -10,7 +10,9 @@ Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't f
 
 ## Projects
 
-**Folders on the start screen.** The **Folders** section on the left of the start screen lets you group projects: *New folder* creates one, and the folder button on a project (hover it) puts it in a folder, takes it out, or makes a new folder. Click a folder to see only its projects. New and imported projects land in the folder you are looking at. Deleting a folder doesn't delete anything; its projects go back to *No folder* and stay in *All projects*. Folders are only a way to arrange the list: the project folders on disk don't move. The list now remembers up to 200 projects.
+**Folders on the start screen.** The **Folders** section on the left of the start screen lets you group projects: *New folder* creates one, and a project's menu (its ⋯ button, or right-click it) puts it in a folder, takes it out, or makes a new folder. Click a folder to see only its projects. New and imported projects land in the folder you are looking at. Deleting a folder doesn't delete anything; its projects go back to *No folder* and stay in *All projects*. Folders are only a way to arrange the list: the project folders on disk don't move. The list now remembers up to 200 projects.
+
+**Project menu.** Right-click a project on the start screen, or use its ⋯ button, to open it, show it in your file manager, put it in a folder, remove it from the list (the files stay on disk), or *Delete project…*, which moves the whole project folder to your system's trash after asking. Lemmata only deletes folders that hold a `.tex` file or `lemmata.toml` directly, never your home folder or a folder above it.
 
 - **New project** starts from a template: article, thesis, slides, CV, letter or homework (exercise sheets with problem boxes and a name-and-course header).
 - **Open folder** works with any folder containing a `.tex` file with `\documentclass`. If there are several, Lemmata asks which one is the main document.
