@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.1.3 (2026-10-14)
+
+### Added
+- Environment completion fills in tables and offers every \begin block
+- Folders on the start screen
+
+### Fixed
+- Tables ask for booktabs, and the label goes below the table
 ## 1.1.2 (2026-10-14)
 
 ### Added
