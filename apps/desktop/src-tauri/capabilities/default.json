@@ -3,11 +3,18 @@
   "identifier": "default",
   "description": "Permissions for the main window",
   "windows": [
-    "main"
+    "main",
+    "presenter"
   ],
   "permissions": [
     "core:default",
     "core:window:allow-set-fullscreen",
+    "core:window:allow-set-position",
+    "core:window:allow-outer-position",
+    "core:window:allow-current-monitor",
+    "core:window:allow-available-monitors",
+    "core:window:allow-close",
+    "core:webview:allow-create-webview-window",
     "dialog:allow-open",
     "dialog:allow-save",
     "store:default",

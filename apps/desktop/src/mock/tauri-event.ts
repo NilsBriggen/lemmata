@@ -12,6 +12,20 @@ export async function listen<T>(name: string, cb: (e: { payload: T }) => void): 
 
 export function mockEmit(name: string, payload: unknown) {
   handlers.get(name)?.forEach((h) => h({ payload }));
+  // Other tabs of the preview (the presenter window) hear it too.
+  try {
+    new BroadcastChannel("lemmata-mock-events").postMessage({ name, payload });
+  } catch {
+    /* no BroadcastChannel: single tab only */
+  }
+}
+
+export const emit = async (name: string, payload?: unknown) => mockEmit(name, payload);
+
+try {
+  new BroadcastChannel("lemmata-mock-events").onmessage = (e) => handlers.get(e.data.name)?.forEach((h) => h({ payload: e.data.payload }));
+} catch {
+  /* single tab only */
 }
 
 // Lets a person (or a test) in the browser console fire an event, e.g.

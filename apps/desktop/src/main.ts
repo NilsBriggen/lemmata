@@ -7,5 +7,8 @@ import "@fontsource/ibm-plex-mono/500.css";
 import "./app.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
+import PresenterView from "./lib/PresenterView.svelte";
 
-mount(App, { target: document.getElementById("app")! });
+// The presenter window is the same app, opened with ?presenter=1.
+const presenter = new URLSearchParams(location.search).has("presenter");
+mount(presenter ? PresenterView : App, { target: document.getElementById("app")! });

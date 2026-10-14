@@ -58,6 +58,8 @@ Errors and warnings appear in the **Problems** panel in plain language, with a f
 - Links in the PDF work: `\ref`, the table of contents and URLs.
 - The **outline** button lists the PDF's bookmarks (load `hyperref` to get them).
 - **Present full screen** shows one page at a time for Beamer slides: arrow keys, Space or a click move on, Esc leaves.
+- **Presenter view** (press **P** while presenting) opens a second window for you: the current slide, the next slide, your speaker notes, a timer (T pauses it, R resets it) and the clock, while the audience window shows only the slide. Either window can change slide and the other follows. With two screens it opens by itself: the slides go to the other screen and the presenter view stays on this one.
+- **Speaker notes** come from Beamer. Add `\setbeameroption{show notes on second screen=right}` to the preamble and `\note{…}` after a frame. The PDF then has the slide on the left half of each page and the notes on the right; the audience window shows only the slide and the presenter view shows the notes. Without that option the presenter view says how to add them.
 
 ## Shortcuts
 

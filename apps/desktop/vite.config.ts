@@ -15,6 +15,7 @@ const mocks = (mode: string) =>
           "@tauri-apps/api/path": "tauri-path",
           "@tauri-apps/api/webview": "tauri-webview",
           "@tauri-apps/api/window": "tauri-window",
+          "@tauri-apps/api/webviewWindow": "tauri-webviewWindow",
           "@tauri-apps/plugin-dialog": "plugin-dialog",
           "@tauri-apps/plugin-store": "plugin-store",
           "@tauri-apps/plugin-opener": "plugin-opener",
