@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
-import { latexCompletions, type Providers } from "./completions";
+import { envSnippet, latexCompletions, type Providers } from "./completions";
+import { ENVIRONMENTS } from "./data";
 
 const providers: Providers = {
   labels: async () => [{ label: "sec:intro", file: "main.tex", line: 3, context: "\\section{Intro}" }],
@@ -36,6 +37,33 @@ describe("latex completions", () => {
     const r = await complete("\\end{al", 7);
     expect(labels(r)).toContain("align");
     expect(typeof r!.options.find((o) => o.label === "align")!.apply).toBe("string");
+  });
+
+  it("offers whole \\begin{…} blocks while typing \\beg", async () => {
+    const r = await complete("\\beg");
+    expect(labels(r)).toContain("\\begin{itemize}");
+    expect(labels(r)).toContain("\\begin{align*}");
+    expect(labels(r)).toContain("\\begin{table}");
+  });
+
+  it("suggests closing the innermost open environment after \\en", async () => {
+    const r = await complete("\\begin{document}\n\\begin{itemize}\n\\item a\n\\en");
+    expect(labels(r)).toContain("\\end{itemize}");
+    expect(labels(r)).not.toContain("\\end{document}");
+    // Nothing open: nothing to suggest.
+    expect(labels(await complete("\\begin{a}\\end{a}\n\\en")).some((l) => l.startsWith("\\end{"))).toBe(false);
+  });
+
+  it("starts tables with a header, sample rows and a column spec", () => {
+    const table = envSnippet(ENVIRONMENTS.find((e) => e.name === "table")!);
+    expect(table).toContain("table}[${htbp}]");
+    expect(table).toContain("\t\\caption{${Caption}}");
+    expect(table).toContain("\t\t${Header 1} & ${Header 2} & ${Header 3}");
+    expect(table).toContain("\t\t${Cell 2.1} & ${Cell 2.2} & ${Cell 2.3}");
+    expect(table.endsWith("\\end{table}")).toBe(true);
+    const tabular = envSnippet(ENVIRONMENTS.find((e) => e.name === "tabular")!);
+    expect(tabular).toContain("tabular}{${lll}}");
+    expect(tabular).toContain("\t${Cell 1.1} & ${Cell 1.2} & ${Cell 1.3}");
   });
 
   it("offers names used in the document", async () => {

@@ -38,6 +38,7 @@ Errors and warnings appear in the **Problems** panel in plain language, with a f
 
 ## The editor
 
+- **Environments from `\beg`.** Start typing `\beg` and the list offers every environment as a whole block, the common ones first (`\begin{itemize}`, `\begin{align*}`, `\begin{table}`, …). Choosing `table` or `tabular` (also after typing `\begin{`) inserts a small sample table, header and cells included, and Tab steps through the placeholders. Typing `\en` offers `\end{…}` for the innermost environment that is still open.
 - **Environments stay paired.** Type `\begin{itemize` and accept the suggestion: Lemmata adds the body and the matching `\end{itemize}`. Rename either half and the other follows. After a `\begin{name}` with no `\end`, **Enter** adds it.
 - **Indentation** is 4 spaces per level by default. Choose 2, 4 or 8 spaces, or a Tab character, under *Preferences → Indentation*; Tab, Enter after `\begin`, and the figures and tables Lemmata inserts all follow it. Existing files are not reformatted.
 - **Completion** suggests environments, commands, `\ref` labels from every file, `\cite` keys (with author and title), file names for `\input` and `\includegraphics`, and package names for `\usepackage`. texlab adds more when it's installed.

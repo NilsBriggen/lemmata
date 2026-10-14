@@ -2,7 +2,7 @@
 // commands, labels, citation keys, file paths and packages. Anything it
 // doesn't handle goes to texlab.
 import { snippet, type Completion, type CompletionContext, type CompletionResult, type CompletionSource } from "@codemirror/autocomplete";
-import { ENVIRONMENTS, COMMANDS } from "./data";
+import { ENVIRONMENTS, COMMANDS, type Env } from "./data";
 import { tokens } from "./environments";
 import { inMath } from "./mathContext";
 import { mathCompletions, mathLabels } from "./mathCommands";
@@ -33,6 +33,35 @@ function listItem(before: string, inner: string, pos: number) {
   return { from: pos - word.length + lead, typed: word.trimStart() };
 }
 
+/** The snippet after `\begin{`: the name, any arguments, the body (indented one level) and the \end. */
+export function envSnippet(e: Pick<Env, "name" | "body" | "args">): string {
+  const body = e.body.split("\n").map((l) => `\t${l}`).join("\n");
+  return `${e.name}}${e.args ?? ""}\n${body}\n\\end{${e.name}}`;
+}
+
+/** The environments most documents use come first in the list. */
+const COMMON = new Set(["itemize", "enumerate", "figure", "table", "equation", "align", "align*", "tabular", "theorem", "proof", "abstract"]);
+
+/** Overleaf-style: typing \beg offers every environment as a whole \begin{…}…\end{…} block. */
+function beginBlocks(): Completion[] {
+  return ENVIRONMENTS.map((e) => ({
+    label: `\\begin{${e.name}}`,
+    detail: e.detail,
+    type: "class",
+    boost: COMMON.has(e.name) ? 16 : 12,
+    apply: snippet(`\\begin{${envSnippet(e)}`),
+  }));
+}
+
+/** `\end{name}` for the innermost environment that is still open before `pos`. */
+function endForOpenEnvironment(state: CompletionContext["state"], pos: number): Completion[] {
+  const open = tokens(state.doc).filter((t) => t.kind === "begin" && t.partner == null && t.to <= pos);
+  const last = open.at(-1);
+  if (!last) return [];
+  const name = state.doc.sliceString(last.from, last.to);
+  return [{ label: `\\end{${name}}`, detail: "close the open environment", type: "class", boost: 30, apply: `\\end{${name}}` }];
+}
+
 export function latexCompletions(
   getProviders: () => Providers | null,
   fallback: (ctx: CompletionContext) => Promise<CompletionResult | null> | CompletionResult | null,
@@ -59,7 +88,7 @@ export function latexCompletions(
         apply:
           kind === "end" || paired
             ? `${e.name}}`
-            : snippet(`${e.name}}\n\t${e.body}\n\\end{${e.name}}`),
+            : snippet(envSnippet(e)),
       }));
       // Also offer names already used in this document.
       const used = new Set(ENVIRONMENTS.map((e) => e.name));
@@ -138,7 +167,7 @@ export function latexCompletions(
         boost: math ? -10 : 5,
         apply: snippet(x.apply),
       }));
-      const ours = [...mathItems, ...text];
+      const ours = [...mathItems, ...text, ...beginBlocks(), ...endForOpenEnvironment(ctx.state, ctx.pos)];
       let merged = ours;
       try {
         const theirs = await fallback(ctx);

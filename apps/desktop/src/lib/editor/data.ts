@@ -1,15 +1,21 @@
 // Curated LaTeX vocabulary for completions. Snippet syntax is CodeMirror's:
 // ${} is a tab stop, ${name} a named one.
 
-export interface Env { name: string; body: string; detail?: string; pkg?: string }
+/** `args` follows `\begin{name}` (e.g. the column spec of a tabular). Body lines after the first are indented with tabs by the completion. */
+export interface Env { name: string; body: string; detail?: string; pkg?: string; args?: string }
+
+/** A small table to start from, like the Insert table dialog makes: placeholders Tab steps through. */
+const TABLE_ROWS =
+  "\\toprule\n${Header 1} & ${Header 2} & ${Header 3} \\\\\n\\midrule\n${Cell 1.1} & ${Cell 1.2} & ${Cell 1.3} \\\\\n${Cell 2.1} & ${Cell 2.2} & ${Cell 2.3} \\\\\n\\bottomrule";
+const indent = (text: string) => text.split("\n").map((l) => `\t${l}`).join("\n");
 
 export const ENVIRONMENTS: Env[] = [
   { name: "itemize", body: "\\item ${}", detail: "bulleted list" },
   { name: "enumerate", body: "\\item ${}", detail: "numbered list" },
   { name: "description", body: "\\item[${}] ", detail: "term list" },
   { name: "figure", body: "\\centering\n\\includegraphics[width=0.8\\linewidth]{${}}\n\\caption{${}}\n\\label{fig:${}}", detail: "float with caption", pkg: "graphicx" },
-  { name: "table", body: "\\centering\n\\caption{${}}\n\\label{tab:${}}\n\\begin{tabular}{${}}\n\\toprule\n${}\n\\bottomrule\n\\end{tabular}", detail: "float with tabular", pkg: "booktabs" },
-  { name: "tabular", body: "${}", detail: "table body" },
+  { name: "table", args: "[${htbp}]", body: `\\centering\n\\caption{\${Caption}}\n\\label{tab:\${label}}\n\\begin{tabular}{\${lll}}\n${indent(TABLE_ROWS)}\n\\end{tabular}`, detail: "float with a sample table", pkg: "booktabs" },
+  { name: "tabular", args: "{${lll}}", body: TABLE_ROWS, detail: "a sample table", pkg: "booktabs" },
   { name: "equation", body: "${}", detail: "numbered equation", pkg: "amsmath" },
   { name: "equation*", body: "${}", detail: "unnumbered equation", pkg: "amsmath" },
   { name: "align", body: "${} &= ${} \\\\", detail: "aligned equations", pkg: "amsmath" },
@@ -29,7 +35,7 @@ export const ENVIRONMENTS: Env[] = [
   { name: "center", body: "${}", detail: "centered block" },
   { name: "quote", body: "${}", detail: "indented quote" },
   { name: "verbatim", body: "${}", detail: "literal text" },
-  { name: "minipage", body: "${}", detail: "box of fixed width" },
+  { name: "minipage", args: "{${0.5\\linewidth}}", body: "${}", detail: "box of fixed width" },
   { name: "frame", body: "\\frametitle{${}}\n${}", detail: "beamer slide" },
   { name: "columns", body: "\\column{0.5\\textwidth}\n${}", detail: "beamer columns" },
   { name: "tikzpicture", body: "${}", detail: "TikZ drawing", pkg: "tikz" },
@@ -43,7 +49,7 @@ export interface Cmd { label: string; apply: string; detail?: string }
 const c = (label: string, apply: string, detail?: string): Cmd => ({ label, apply, detail });
 
 export const COMMANDS: Cmd[] = [
-  c("\\begin", "\\begin{${}}\n\t${}\n\\end{${}}", "environment"),
+  c("\\begin", "\\begin{${name}}\n\t${}\n\\end{${name}}", "environment"),
   c("\\section", "\\section{${}}"),
   c("\\subsection", "\\subsection{${}}"),
   c("\\subsubsection", "\\subsubsection{${}}"),
