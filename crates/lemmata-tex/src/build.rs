@@ -276,29 +276,107 @@ fn tail_of(text: &str, max: usize) -> String {
     text[start..].to_string()
 }
 
-/// Deletes the build folder's contents (aux files, logs, synctex data) except
-/// the PDF, so the next build starts from scratch. Returns how many entries
-/// were removed.
-pub fn clean(project: &Project) -> std::io::Result<usize> {
-    let outdir = project.outdir_abs();
-    let keep = project.pdf_path();
+/// File types TeX and its helpers write next to the PDF. "Clear cached
+/// files" removes only these, so a build folder that was ever pointed at a
+/// source folder can't take sources with it.
+const ARTEFACTS: &[&str] = &[
+    "aux",
+    "log",
+    "toc",
+    "lof",
+    "lot",
+    "out",
+    "bbl",
+    "blg",
+    "bcf",
+    "fls",
+    "fdb_latexmk",
+    "gz",
+    "xml",
+    "nav",
+    "snm",
+    "vrb",
+    "xdv",
+    "idx",
+    "ind",
+    "ilg",
+    "glo",
+    "gls",
+    "glg",
+    "ist",
+    "acn",
+    "acr",
+    "alg",
+    "thm",
+    "tdo",
+    "spl",
+    "pyg",
+    "cut",
+    "dvi",
+    "run",
+    "synctex",
+    "bak",
+    "mw",
+    "loa",
+    "lol",
+    "brf",
+];
+
+fn is_artefact(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| {
+            name.ends_with(".synctex.gz")
+                || name.ends_with(".run.xml")
+                || name.ends_with("-blx.bib")
+                || path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| ARTEFACTS.contains(&e))
+        })
+        // The PDF is what the preview shows; it is kept.
+        && path.extension().is_none_or(|e| e != "pdf")
+}
+
+fn clean_dir(dir: &Path, keep: &Path) -> std::io::Result<usize> {
     let mut removed = 0;
-    let Ok(entries) = std::fs::read_dir(&outdir) else {
-        return Ok(0);
-    };
-    for e in entries.flatten() {
+    for e in std::fs::read_dir(dir)?.flatten() {
         let path = e.path();
-        if path == keep {
+        // Never follow links out of the build folder.
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
             continue;
-        }
-        if path.is_dir() {
-            std::fs::remove_dir_all(&path)?;
-        } else {
+        };
+        if meta.is_dir() {
+            removed += clean_dir(&path, keep)?;
+            // Mirrored folders are kept for the next build; drop them only when they are empty.
+            if std::fs::read_dir(&path).is_ok_and(|mut d| d.next().is_none())
+                && std::fs::remove_dir(&path).is_ok()
+            {
+                removed += 1;
+            }
+        } else if path != keep && meta.is_file() && is_artefact(&path) {
             std::fs::remove_file(&path)?;
+            removed += 1;
         }
-        removed += 1;
     }
     Ok(removed)
+}
+
+/// Deletes the TeX byproducts in the build folder (aux files, logs, synctex
+/// data) except the PDF, so the next build starts from scratch. Returns how
+/// many entries were removed. Refuses to touch a folder that contains the
+/// project itself.
+pub fn clean(project: &Project) -> std::io::Result<usize> {
+    let outdir = project.outdir_abs();
+    if !lemmata_project::valid_outdir(&project.config.outdir) || project.root.starts_with(&outdir) {
+        return Err(std::io::Error::other(
+            "the build folder is not a folder inside the project",
+        ));
+    }
+    if !outdir.is_dir() {
+        return Ok(0);
+    }
+    clean_dir(&outdir, &project.pdf_path())
 }
 
 /// `\include{chapters/x}` writes `chapters/x.aux` inside the output folder,
@@ -450,19 +528,30 @@ mod tests {
     }
 
     #[test]
-    fn clean_keeps_the_pdf() {
+    fn clean_keeps_the_pdf_and_never_removes_sources() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
-        let p = Project::open(d.path()).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
         prepare_outdir(&p);
         let out = p.outdir_abs();
         std::fs::write(out.join("main.aux"), "").unwrap();
         std::fs::write(out.join("main.log"), "").unwrap();
+        std::fs::write(out.join("notes.tex"), "a source that ended up here").unwrap();
         std::fs::create_dir_all(out.join("chapters")).unwrap();
         std::fs::write(p.pdf_path(), "pdf").unwrap();
-        assert_eq!(clean(&p).unwrap(), 3);
+        assert_eq!(
+            clean(&p).unwrap(),
+            3,
+            "aux, log and the now-empty mirror folder"
+        );
         assert!(p.pdf_path().exists());
+        assert!(out.join("notes.tex").exists());
         assert!(!out.join("main.aux").exists());
         assert!(!out.join("chapters").exists());
+
+        // A build folder that is the project itself is refused outright.
+        p.config.outdir = ".".into();
+        assert!(clean(&p).is_err());
+        assert!(d.path().join("main.tex").exists());
     }
 }

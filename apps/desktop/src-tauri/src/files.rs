@@ -1,7 +1,7 @@
 //! Project file operations: search and replace, create, rename, move to
 //! the trash, and a watcher for changes made outside Lemmata.
 
-use crate::{AppState, CmdResult, err};
+use crate::{AppState, CmdResult, LockSafe, err};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
@@ -485,7 +485,7 @@ fn rename_one(
         }
     }
     // Keep lemmata.toml's main file pointing at the right place.
-    let mut guard = state.project.lock().unwrap();
+    let mut guard = state.project.lock_safe();
     if let Some(proj) = guard.as_mut()
         && proj.main == Path::new(from)
     {
@@ -803,7 +803,7 @@ pub fn classify(root: &Path, outdir: &str, written: &Written, paths: &[PathBuf])
             continue;
         }
         if abs.is_file()
-            && let Some(&known) = written.lock().unwrap().get(abs)
+            && let Some(&known) = written.lock_safe().get(abs)
             && std::fs::read(abs).is_ok_and(|b| hash_bytes(&b) == known)
         {
             continue;
@@ -1087,7 +1087,7 @@ mod tests {
         let f = root.join("main.tex");
         std::fs::write(&f, "ours").unwrap();
         let w = written();
-        w.lock().unwrap().insert(f.clone(), hash_bytes(b"ours"));
+        w.lock_safe().insert(f.clone(), hash_bytes(b"ours"));
         assert_eq!(
             classify(&root, ".lemmata/build", &w, std::slice::from_ref(&f)),
             Changes::default()

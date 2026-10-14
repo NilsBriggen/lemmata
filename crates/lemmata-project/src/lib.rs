@@ -113,6 +113,24 @@ pub struct Config {
 }
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
+pub const DEFAULT_OUTDIR: &str = ".lemmata/build";
+
+/// Is `outdir` a folder strictly inside the project? A project can come from
+/// anywhere, and the build folder gets cleaned, so "." or "../x" or an
+/// absolute path must never be honoured.
+pub fn valid_outdir(outdir: &str) -> bool {
+    let p = Path::new(outdir);
+    !outdir.trim().is_empty()
+        && p.is_relative()
+        && !p.components().any(|c| {
+            !matches!(
+                c,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+        && p.components()
+            .any(|c| matches!(c, std::path::Component::Normal(_)))
+}
 
 fn is_false(b: &bool) -> bool {
     !*b
@@ -129,7 +147,7 @@ impl Default for Config {
             engine: Engine::default(),
             bib: Bib::default(),
             shell_escape: false,
-            outdir: ".lemmata/build".into(),
+            outdir: DEFAULT_OUTDIR.into(),
             spellcheck: None,
             words: Vec::new(),
             figures_dir: "figures".into(),
@@ -161,7 +179,11 @@ impl Project {
             path: root.into(),
             source,
         })?;
-        let config = read_config(&root)?;
+        let mut config = read_config(&root)?;
+        // An unsafe build folder (".", "..", absolute) falls back to the default.
+        if !valid_outdir(&config.outdir) {
+            config.outdir = DEFAULT_OUTDIR.into();
+        }
         let main_candidates = find_main_candidates(&root, &config.outdir);
         let main = match &config.main {
             Some(m) => PathBuf::from(m),
@@ -586,6 +608,23 @@ mod tests {
         assert_eq!(p.main, PathBuf::from("a.tex"));
         assert_eq!(p.config.engine, Engine::Xelatex);
         assert!(!p.config.shell_escape);
+    }
+
+    #[test]
+    fn unsafe_build_folders_fall_back_to_the_default() {
+        for bad in [".", "./", "..", "../out", "/tmp/x", "", "a/../.."] {
+            assert!(!valid_outdir(bad), "{bad:?}");
+        }
+        for good in [".lemmata/build", "build", "out/pdf", "./build"] {
+            assert!(valid_outdir(good), "{good:?}");
+        }
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "main.tex", "\\documentclass{article}");
+        write(d.path(), "lemmata.toml", "outdir = \".\"\n");
+        assert_eq!(
+            Project::open(d.path()).unwrap().config.outdir,
+            DEFAULT_OUTDIR
+        );
     }
 
     #[test]

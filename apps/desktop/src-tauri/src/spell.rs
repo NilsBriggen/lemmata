@@ -1,7 +1,7 @@
 //! Spell-check commands. The dictionary loads in milliseconds, so it's
 //! loaded on demand when the language changes.
 
-use crate::{AppState, CmdResult};
+use crate::{AppState, CmdResult, LockSafe};
 use lemmata_spell::Speller;
 use tauri::{AppHandle, Manager, State};
 
@@ -12,7 +12,7 @@ pub fn spell_set_language(
     lang: String,
     words: Vec<String>,
 ) -> CmdResult<()> {
-    let mut slot = state.speller.lock().unwrap();
+    let mut slot = state.speller.lock_safe();
     if lang == "off" {
         *slot = None;
         return Ok(());
@@ -33,7 +33,7 @@ pub fn spell_set_language(
 /// The words from `words` that are misspelled.
 #[tauri::command]
 pub fn spell_check(state: State<AppState>, words: Vec<String>) -> Vec<String> {
-    let slot = state.speller.lock().unwrap();
+    let slot = state.speller.lock_safe();
     let Some(speller) = slot.as_ref() else {
         return Vec::new();
     };
@@ -42,13 +42,13 @@ pub fn spell_check(state: State<AppState>, words: Vec<String>) -> Vec<String> {
 
 #[tauri::command]
 pub fn spell_suggest(state: State<AppState>, word: String) -> Vec<String> {
-    let slot = state.speller.lock().unwrap();
+    let slot = state.speller.lock_safe();
     slot.as_ref().map(|s| s.suggest(&word)).unwrap_or_default()
 }
 
 #[tauri::command]
 pub fn spell_add(state: State<AppState>, word: String) {
-    if let Some(s) = state.speller.lock().unwrap().as_mut() {
+    if let Some(s) = state.speller.lock_safe().as_mut() {
         s.add(&word);
     }
 }

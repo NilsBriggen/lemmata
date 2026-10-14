@@ -24,8 +24,25 @@ use tauri::ipc::Response;
 use tauri::{Emitter, Manager, State};
 use tokio::sync::oneshot;
 
+/// Locking that survives a poisoned mutex. One panicking thread would
+/// otherwise make every later command that touches the same state panic too,
+/// leaving the app unusable; the guarded values are plain data, so carrying
+/// on with what is there is the better outcome.
+pub(crate) trait LockSafe<T> {
+    fn lock_safe(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockSafe<T> for Mutex<T> {
+    fn lock_safe(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct AppState {
+    /// Held for the whole length of a build, so a new build starts only after
+    /// the one it replaced (and its child processes) has fully stopped.
+    build_lock: tokio::sync::Mutex<()>,
     detection: Mutex<Option<Detection>>,
     /// Folders the user pointed us at in onboarding.
     extra_tex_dirs: Mutex<Vec<PathBuf>>,
@@ -60,15 +77,15 @@ struct TexStatus {
 #[tauri::command]
 fn tex_status(state: State<AppState>, extra_dir: Option<String>) -> TexStatus {
     if let Some(dir) = extra_dir {
-        let mut extra = state.extra_tex_dirs.lock().unwrap();
+        let mut extra = state.extra_tex_dirs.lock_safe();
         let dir = PathBuf::from(dir);
         if !extra.contains(&dir) {
             extra.insert(0, dir);
         }
     }
-    let extra = state.extra_tex_dirs.lock().unwrap().clone();
+    let extra = state.extra_tex_dirs.lock_safe().clone();
     let detection = lemmata_tex::detect(&extra);
-    *state.detection.lock().unwrap() = Some(detection.clone());
+    *state.detection.lock_safe() = Some(detection.clone());
     TexStatus {
         detection,
         os: lemmata_tex::os::detect(),
@@ -115,20 +132,20 @@ fn open_project(
     let project = Project::open(&path).map_err(err)?;
     let info = project_info(&project);
     // Without a watcher the app still works; it just won't notice outside edits.
-    *state.watcher.lock().unwrap() = files::watch(
+    *state.watcher.lock_safe() = files::watch(
         app,
         project.root.clone(),
         project.config.outdir.clone(),
         state.written.clone(),
     )
     .ok();
-    *state.project.lock().unwrap() = Some(project);
+    *state.project.lock_safe() = Some(project);
     Ok(info)
 }
 
 #[tauri::command]
 fn project_info_cmd(state: State<AppState>) -> CmdResult<ProjectInfo> {
-    let guard = state.project.lock().unwrap();
+    let guard = state.project.lock_safe();
     guard
         .as_ref()
         .map(project_info)
@@ -137,7 +154,7 @@ fn project_info_cmd(state: State<AppState>) -> CmdResult<ProjectInfo> {
 
 #[tauri::command]
 fn set_config(state: State<AppState>, config: Config) -> CmdResult<ProjectInfo> {
-    let mut guard = state.project.lock().unwrap();
+    let mut guard = state.project.lock_safe();
     let p = guard.as_mut().ok_or("No project is open.")?;
     if let Some(main) = &config.main {
         p.main = PathBuf::from(main);
@@ -149,7 +166,7 @@ fn set_config(state: State<AppState>, config: Config) -> CmdResult<ProjectInfo> 
 
 /// Resolves a project-relative path and refuses anything outside the project.
 fn resolve(state: &State<AppState>, rel: &str) -> CmdResult<PathBuf> {
-    let guard = state.project.lock().unwrap();
+    let guard = state.project.lock_safe();
     let root = &guard.as_ref().ok_or("No project is open.")?.root;
     let rel = Path::new(rel);
     if rel.is_absolute()
@@ -194,7 +211,7 @@ fn write_text(state: State<AppState>, path: String, content: String) -> CmdResul
 }
 
 fn cancel_running(state: &State<AppState>) {
-    if let Some(tx) = state.cancel_build.lock().unwrap().take() {
+    if let Some(tx) = state.cancel_build.lock_safe().take() {
         let _ = tx.send(());
     }
 }
@@ -202,8 +219,10 @@ fn cancel_running(state: &State<AppState>) {
 #[tauri::command]
 async fn build(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<Outcome> {
     cancel_running(&state);
+    // Wait for the cancelled build to kill latexmk and its children before starting another in the same folder.
+    let _running = state.build_lock.lock().await;
     let (tx, rx) = oneshot::channel();
-    *state.cancel_build.lock().unwrap() = Some(tx);
+    *state.cancel_build.lock_safe() = Some(tx);
 
     let project = state
         .project
@@ -211,9 +230,9 @@ async fn build(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<O
         .unwrap()
         .clone()
         .ok_or("No project is open.")?;
-    let detection = match state.detection.lock().unwrap().clone() {
+    let detection = match state.detection.lock_safe().clone() {
         Some(d) => d,
-        None => lemmata_tex::detect(&state.extra_tex_dirs.lock().unwrap()),
+        None => lemmata_tex::detect(&state.extra_tex_dirs.lock_safe()),
     };
     let latexmk = detection
         .tool("latexmk")
@@ -238,7 +257,7 @@ async fn build(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<O
 #[tauri::command]
 fn clean_build(state: State<AppState>) -> CmdResult<usize> {
     cancel_running(&state);
-    let guard = state.project.lock().unwrap();
+    let guard = state.project.lock_safe();
     let project = guard.as_ref().ok_or("No project is open.")?;
     lemmata_tex::clean(project).map_err(err)
 }
@@ -246,7 +265,7 @@ fn clean_build(state: State<AppState>) -> CmdResult<usize> {
 #[tauri::command]
 fn read_pdf(state: State<AppState>) -> CmdResult<Response> {
     let pdf = {
-        let guard = state.project.lock().unwrap();
+        let guard = state.project.lock_safe();
         guard.as_ref().ok_or("No project is open.")?.pdf_path()
     };
     let bytes =
@@ -262,7 +281,7 @@ fn synctex_and_pdf(state: &State<AppState>) -> CmdResult<(PathBuf, PathBuf, Path
         .as_ref()
         .and_then(|d| d.tool("synctex").map(Path::to_path_buf))
         .ok_or("synctex was not found.")?;
-    let guard = state.project.lock().unwrap();
+    let guard = state.project.lock_safe();
     let p = guard.as_ref().ok_or("No project is open.")?;
     Ok((synctex, p.pdf_path(), p.root.clone()))
 }
@@ -551,7 +570,7 @@ fn add_package(state: State<AppState>, package: String) -> CmdResult<()> {
 
 #[tauri::command]
 fn outline(state: State<AppState>) -> CmdResult<lemmata_project::Outline> {
-    let guard = state.project.lock().unwrap();
+    let guard = state.project.lock_safe();
     Ok(lemmata_project::outline(
         guard.as_ref().ok_or("No project is open.")?,
     ))
@@ -559,7 +578,7 @@ fn outline(state: State<AppState>) -> CmdResult<lemmata_project::Outline> {
 
 #[tauri::command]
 fn labels(state: State<AppState>) -> CmdResult<Vec<lemmata_project::extras::Label>> {
-    let guard = state.project.lock().unwrap();
+    let guard = state.project.lock_safe();
     Ok(lemmata_project::extras::labels(
         guard.as_ref().ok_or("No project is open.")?,
     ))
@@ -567,7 +586,7 @@ fn labels(state: State<AppState>) -> CmdResult<Vec<lemmata_project::extras::Labe
 
 #[tauri::command]
 fn word_count(state: State<AppState>) -> CmdResult<lemmata_project::extras::Counts> {
-    let guard = state.project.lock().unwrap();
+    let guard = state.project.lock_safe();
     Ok(lemmata_project::extras::counts(
         guard.as_ref().ok_or("No project is open.")?,
     ))
@@ -746,8 +765,15 @@ pub fn run() {
             export::export_arxiv,
             export::export_zip,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Lemmata");
+        .build(tauri::generate_context!())
+        .expect("error while building Lemmata")
+        .run(|app, event| {
+            // Quitting mid-build must not leave latexmk, pdflatex and biber running.
+            if let tauri::RunEvent::Exit = event {
+                cancel_running(&app.state::<AppState>());
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            }
+        });
 }
 
 #[cfg(test)]

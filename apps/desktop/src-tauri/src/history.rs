@@ -1,6 +1,6 @@
 //! History commands: thin wrappers around lemmata-history for the open project.
 
-use crate::{AppState, CmdResult, err};
+use crate::{AppState, CmdResult, LockSafe, err};
 use lemmata_history::{Error, History, Snapshot};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -19,7 +19,7 @@ pub enum HistoryStatus {
 }
 
 fn root(state: &State<AppState>) -> CmdResult<PathBuf> {
-    let guard = state.project.lock().unwrap();
+    let guard = state.project.lock_safe();
     Ok(guard.as_ref().ok_or("No project is open.")?.root.clone())
 }
 
