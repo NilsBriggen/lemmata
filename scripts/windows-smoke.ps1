@@ -33,8 +33,8 @@ function Build([string]$dir, [string]$scenario, [string]$step, [bool]$expectFall
     Write-Host "::group::$scenario / $step ($([math]::Round($sw.Elapsed.TotalSeconds, 1)) s)"
     Write-Host $text
     Write-Host "::endgroup::"
-    if (-not $pdf) { $script:failures += "$scenario / $step: no PDF was written" }
-    if ($fellBack -ne $expectFallback) { $script:failures += "$scenario / $step: expected fallback=$expectFallback, got $fellBack" }
+    if (-not $pdf) { $script:failures += "${scenario} / ${step}: no PDF was written" }
+    if ($fellBack -ne $expectFallback) { $script:failures += "${scenario} / ${step}: expected fallback=$expectFallback, got $fellBack" }
     $script:results += [pscustomobject]@{ Scenario = $scenario; Step = $step; Seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1); Pdf = $pdf; Direct = $fellBack }
 }
 
