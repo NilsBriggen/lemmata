@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.1.4 (2026-10-14)
+
+### Fixed
+- Recognise MiKTeX's update prompt in any language
 ## 1.1.3 (2026-10-14)
 
 ### Added
