@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.2.3 (2026-10-14)
+
+### Added
+- One menu per project on the start screen, with Delete project
+
+### Fixed
+- File tree menu actions did nothing
+- Table templates put the caption below the table
 ## 1.2.2 (2026-10-14)
 
 ### Fixed
