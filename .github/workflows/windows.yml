@@ -1,0 +1,44 @@
+name: Windows
+
+# Builds a document on Windows with a real MiKTeX in the situations that have
+# broken for users (Perl missing, Perl failing to start) and reports timings.
+# Run it by hand when touching the build code: Actions → Windows → Run workflow.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crates/lemmata-tex/**"
+      - "crates/lemmata-cli/**"
+      - "crates/lemmata-log/**"
+      - "crates/lemmata-project/**"
+      - "scripts/windows-smoke.ps1"
+      - ".github/workflows/windows.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the command-line tool
+        run: cargo build --release -p lemmata-cli
+      - name: Install MiKTeX
+        shell: pwsh
+        run: |
+          choco install miktex --no-progress -y
+          $bin = "C:\Program Files\MiKTeX\miktex\bin\x64"
+          if (-not (Test-Path "$bin\pdflatex.exe")) { throw "MiKTeX was not installed where expected" }
+          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          & "$bin\initexmf.exe" --admin --set-config-value "[MPM]AutoInstall=1"
+      - name: Build documents in each scenario
+        shell: pwsh
+        run: pwsh scripts/windows-smoke.ps1 target/release/lemmata.exe
