@@ -1,6 +1,7 @@
 <script lang="ts">
   // Full-screen slide mode for beamer PDFs: one page at a time.
   import { onMount } from "svelte";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import type { PDFDocumentProxy } from "pdfjs-dist";
 
   interface Props {
@@ -57,18 +58,16 @@
     else if (e.key === "End") page = doc.numPages;
   }
 
+  // Full screen comes from the app window, not from the web page's Fullscreen
+  // API: WebKitGTK aborts the whole app in that API on some Linux setups
+  // (the AppImage's bundled WebKit on Wayland), taking the editor with it.
   onMount(() => {
-    root?.requestFullscreen?.().catch(() => {});
-    const onFs = () => {
-      if (!document.fullscreenElement) onClose();
-      else draw();
-    };
-    document.addEventListener("fullscreenchange", onFs);
+    const win = getCurrentWindow();
+    win.setFullscreen(true).catch(() => {});
     window.addEventListener("resize", draw);
     return () => {
-      document.removeEventListener("fullscreenchange", onFs);
       window.removeEventListener("resize", draw);
-      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      win.setFullscreen(false).catch(() => {});
     };
   });
 </script>
