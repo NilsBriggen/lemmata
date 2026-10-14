@@ -89,14 +89,13 @@ export function tableBlock(o: TableOptions, fields = false): string {
   const row = (r: number) => "    " + Array.from({ length: o.cols }, (_, c) => cell(r, c)).join(" & ") + " \\\\";
   const [top, mid, bottom] = o.booktabs ? ["\\toprule", "\\midrule", "\\bottomrule"] : ["\\hline", "\\hline", "\\hline"];
   const lines = ["\\begin{table}[htbp]", "  \\centering"];
-  lines.push(`  \\caption{${o.caption.trim() || ph("Caption")}}`);
   const label = o.label.trim() || (o.caption.trim() ? slug(o.caption).slice(0, 30) : "");
   lines.push(`  \\begin{tabular}{${o.booktabs ? "l".repeat(o.cols) : "|" + "l|".repeat(o.cols)}}`, `    ${top}`);
   for (let r = 0; r < o.rows; r++) {
     lines.push(row(r));
     if (r === 0 && o.header && o.rows > 1) lines.push(`    ${mid}`);
   }
-  // The label goes below the table, after the caption it refers to and the content.
-  lines.push(`    ${bottom}`, "  \\end{tabular}", `  \\label{tab:${label ? label.replace(/^tab:/, "") : ph("label")}}`, "\\end{table}");
+  // Caption and label go below the table, as is standard for floats.
+  lines.push(`    ${bottom}`, "  \\end{tabular}", `  \\caption{${o.caption.trim() || ph("Caption")}}`, `  \\label{tab:${label ? label.replace(/^tab:/, "") : ph("label")}}`, "\\end{table}");
   return lines.join("\n");
 }

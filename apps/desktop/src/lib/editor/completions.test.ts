@@ -58,7 +58,7 @@ describe("latex completions", () => {
     const table = envSnippet(ENVIRONMENTS.find((e) => e.name === "table")!);
     expect(table).toContain("table}[${htbp}]");
     expect(table).toContain("\t\\caption{${Caption}}");
-    expect(table.indexOf("\\label{tab:${label}}")).toBeGreaterThan(table.indexOf("\\end{tabular}"));
+    expect(table).toContain("\\end{tabular}\n\t\\caption{${Caption}}\n\t\\label{tab:${label}}");
     expect(table).toContain("\t\t${Header 1} & ${Header 2} & ${Header 3}");
     expect(table).toContain("\t\t${Cell 2.1} & ${Cell 2.2} & ${Cell 2.3}");
     expect(table.endsWith("\\end{table}")).toBe(true);

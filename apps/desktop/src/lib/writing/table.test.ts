@@ -52,8 +52,8 @@ describe("insert dialogs", () => {
     expect(t).toContain("Cell 2.1 & Cell 2.2 \\\\");
     expect(t).toContain("\\midrule");
     expect(t).toContain("\\label{tab:results}");
-    // The label sits below the tabular, not above it.
-    expect(t.indexOf("\\label{tab:results}")).toBeGreaterThan(t.indexOf("\\end{tabular}"));
+    // Caption, then label, below the tabular.
+    expect(t).toContain("\\end{tabular}\n  \\caption{Results}\n  \\label{tab:results}\n\\end{table}");
   });
   it("fills in placeholders when there is no header, and for a missing caption", () => {
     const t = tableBlock({ rows: 2, cols: 2, header: false, booktabs: true, caption: "", label: "" });

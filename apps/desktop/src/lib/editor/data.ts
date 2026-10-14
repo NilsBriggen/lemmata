@@ -14,7 +14,7 @@ export const ENVIRONMENTS: Env[] = [
   { name: "enumerate", body: "\\item ${}", detail: "numbered list" },
   { name: "description", body: "\\item[${}] ", detail: "term list" },
   { name: "figure", body: "\\centering\n\\includegraphics[width=0.8\\linewidth]{${}}\n\\caption{${}}\n\\label{fig:${}}", detail: "float with caption", pkg: "graphicx" },
-  { name: "table", args: "[${htbp}]", body: `\\centering\n\\caption{\${Caption}}\n\\begin{tabular}{\${lll}}\n${indent(TABLE_ROWS)}\n\\end{tabular}\n\\label{tab:\${label}}`, detail: "float with a sample table", pkg: "booktabs" },
+  { name: "table", args: "[${htbp}]", body: `\\centering\n\\begin{tabular}{\${lll}}\n${indent(TABLE_ROWS)}\n\\end{tabular}\n\\caption{\${Caption}}\n\\label{tab:\${label}}`, detail: "float with a sample table", pkg: "booktabs" },
   { name: "tabular", args: "{${lll}}", body: TABLE_ROWS, detail: "a sample table", pkg: "booktabs" },
   { name: "equation", body: "${}", detail: "numbered equation", pkg: "amsmath" },
   { name: "equation*", body: "${}", detail: "unnumbered equation", pkg: "amsmath" },
