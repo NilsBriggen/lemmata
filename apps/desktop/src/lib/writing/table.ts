@@ -91,12 +91,12 @@ export function tableBlock(o: TableOptions, fields = false): string {
   const lines = ["\\begin{table}[htbp]", "  \\centering"];
   lines.push(`  \\caption{${o.caption.trim() || ph("Caption")}}`);
   const label = o.label.trim() || (o.caption.trim() ? slug(o.caption).slice(0, 30) : "");
-  lines.push(`  \\label{tab:${label ? label.replace(/^tab:/, "") : ph("label")}}`);
   lines.push(`  \\begin{tabular}{${o.booktabs ? "l".repeat(o.cols) : "|" + "l|".repeat(o.cols)}}`, `    ${top}`);
   for (let r = 0; r < o.rows; r++) {
     lines.push(row(r));
     if (r === 0 && o.header && o.rows > 1) lines.push(`    ${mid}`);
   }
-  lines.push(`    ${bottom}`, "  \\end{tabular}", "\\end{table}");
+  // The label goes below the table, after the caption it refers to and the content.
+  lines.push(`    ${bottom}`, "  \\end{tabular}", `  \\label{tab:${label ? label.replace(/^tab:/, "") : ph("label")}}`, "\\end{table}");
   return lines.join("\n");
 }

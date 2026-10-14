@@ -15,6 +15,8 @@ export interface Providers {
   /** Project-relative file paths. */
   files(): string[];
   packages(): Promise<string[]>;
+  /** An environment that needs this package was inserted: offer to load it if the document doesn't. */
+  needsPackage?(pkg: string): void;
 }
 
 const REF = /\\[a-zA-Z]*ref[a-zA-Z]*\*?\{([^{}\n]*)$/;
@@ -42,14 +44,23 @@ export function envSnippet(e: Pick<Env, "name" | "body" | "args">): string {
 /** The environments most documents use come first in the list. */
 const COMMON = new Set(["itemize", "enumerate", "figure", "table", "equation", "align", "align*", "tabular", "theorem", "proof", "abstract"]);
 
+/** Runs `apply`, then asks the app whether the document loads `pkg` (an inserted table needs booktabs). */
+export function withPackage(apply: Completion["apply"], pkg: string | undefined, getProviders: () => Providers | null): Completion["apply"] {
+  if (!pkg || typeof apply !== "function") return apply;
+  return (view, completion, from, to) => {
+    apply(view, completion, from, to);
+    getProviders()?.needsPackage?.(pkg);
+  };
+}
+
 /** Overleaf-style: typing \beg offers every environment as a whole \begin{…}…\end{…} block. */
-function beginBlocks(): Completion[] {
+function beginBlocks(getProviders: () => Providers | null): Completion[] {
   return ENVIRONMENTS.map((e) => ({
     label: `\\begin{${e.name}}`,
     detail: e.detail,
     type: "class",
     boost: COMMON.has(e.name) ? 16 : 12,
-    apply: snippet(`\\begin{${envSnippet(e)}`),
+    apply: withPackage(snippet(`\\begin{${envSnippet(e)}`), e.pkg, getProviders),
   }));
 }
 
@@ -88,7 +99,7 @@ export function latexCompletions(
         apply:
           kind === "end" || paired
             ? `${e.name}}`
-            : snippet(envSnippet(e)),
+            : withPackage(snippet(envSnippet(e)), e.pkg, getProviders),
       }));
       // Also offer names already used in this document.
       const used = new Set(ENVIRONMENTS.map((e) => e.name));
@@ -167,7 +178,7 @@ export function latexCompletions(
         boost: math ? -10 : 5,
         apply: snippet(x.apply),
       }));
-      const ours = [...mathItems, ...text, ...beginBlocks(), ...endForOpenEnvironment(ctx.state, ctx.pos)];
+      const ours = [...mathItems, ...text, ...beginBlocks(getProviders), ...endForOpenEnvironment(ctx.state, ctx.pos)];
       let merged = ours;
       try {
         const theirs = await fallback(ctx);

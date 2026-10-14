@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
-import { envSnippet, latexCompletions, type Providers } from "./completions";
+import { envSnippet, latexCompletions, withPackage, type Providers } from "./completions";
 import { ENVIRONMENTS } from "./data";
 
 const providers: Providers = {
@@ -58,12 +58,24 @@ describe("latex completions", () => {
     const table = envSnippet(ENVIRONMENTS.find((e) => e.name === "table")!);
     expect(table).toContain("table}[${htbp}]");
     expect(table).toContain("\t\\caption{${Caption}}");
+    expect(table.indexOf("\\label{tab:${label}}")).toBeGreaterThan(table.indexOf("\\end{tabular}"));
     expect(table).toContain("\t\t${Header 1} & ${Header 2} & ${Header 3}");
     expect(table).toContain("\t\t${Cell 2.1} & ${Cell 2.2} & ${Cell 2.3}");
     expect(table.endsWith("\\end{table}")).toBe(true);
     const tabular = envSnippet(ENVIRONMENTS.find((e) => e.name === "tabular")!);
     expect(tabular).toContain("tabular}{${lll}}");
     expect(tabular).toContain("\t${Cell 1.1} & ${Cell 1.2} & ${Cell 1.3}");
+  });
+
+  it("asks for the package after inserting an environment that needs one", () => {
+    const calls: string[] = [];
+    const apply = withPackage(() => void calls.push("insert"), "booktabs", () => ({ ...providers, needsPackage: (p) => void calls.push(`needs ${p}`) }));
+    (apply as (...a: unknown[]) => void)({}, {}, 0, 0);
+    expect(calls).toEqual(["insert", "needs booktabs"]);
+    // Without a package, or with plain text to insert, nothing is wrapped.
+    const plain = () => {};
+    expect(withPackage(plain, undefined, () => null)).toBe(plain);
+    expect(withPackage("itemize}", "amsmath", () => null)).toBe("itemize}");
   });
 
   it("offers names used in the document", async () => {

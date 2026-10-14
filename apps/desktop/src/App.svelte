@@ -222,6 +222,7 @@
     cites: cached(async () => (await api.bibEntries()).entries, 3000),
     files: () => (project ? allFiles(project.tree) : []),
     packages: cached(() => api.packageNames(), 3_600_000),
+    needsPackage: (pkg) => void needsPackage(pkg),
   };
   $effect(() => {
     editor?.setProviders(project ? providers : null);
