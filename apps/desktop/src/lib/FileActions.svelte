@@ -262,9 +262,16 @@
   };
 
   function choose(action: () => unknown) {
-    menu = null;
     error = null;
-    Promise.resolve(action()).catch(failure);
+    // The action reads `target` and `picked`, which are derived from `menu`: start it before closing.
+    let run: Promise<unknown>;
+    try {
+      run = Promise.resolve(action());
+    } catch (e) {
+      run = Promise.reject(e);
+    }
+    menu = null;
+    run.catch(failure);
   }
 
   async function submit(e?: SubmitEvent) {
