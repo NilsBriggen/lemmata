@@ -44,8 +44,8 @@ pub fn launcher_failure(output: &str) -> Diagnostic {
         )
     } else if mentions_miktex_updates(&lower) {
         (
-            "MiKTeX refuses to run until it has checked for updates.".to_string(),
-            Some("MiKTeX stops its tools until its package database has been refreshed. Open MiKTeX Console, choose Updates, and check for updates (installing them is optional). Then compile again.".to_string()),
+            "MiKTeX says it has not checked for updates, which can stop its tools.".to_string(),
+            Some("MiKTeX may stop its tools until its package database has been refreshed (it prints this line on every run, so it is not always the cause). Open MiKTeX Console, choose Updates, and check for updates (installing them is optional). Then compile again.".to_string()),
             Some(Fix {
                 explanation: "Refresh MiKTeX's package database from a terminal (the same as Check for updates in MiKTeX Console).".into(),
                 command: Some("miktex packages update-package-database".into()),

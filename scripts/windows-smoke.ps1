@@ -60,11 +60,20 @@ $dir = Fresh "with-perl"
 Build $dir "latexmk with Perl" "first build" $false
 Rebuild $dir "latexmk with Perl" $false
 
-# 2. No Perl anywhere.
-$env:PATH = (($original -split ";") | Where-Object { $_ -notmatch "Strawberry|perl|\\Git\\usr|msys" }) -join ";"
-$dir = Fresh "no-perl"
-Build $dir "Perl missing" "first build" $true
-Rebuild $dir "Perl missing" $true
+# 2. No Perl anywhere. Lemmata also looks in Strawberry's and Git's default folders, so hide those too.
+$hidden = @()
+foreach ($p in @("C:\Strawberry", "C:\Program Files\Git\usr\bin\perl.exe")) {
+    if (Test-Path $p) { Rename-Item $p ((Split-Path $p -Leaf) + ".off"); $hidden += $p }
+}
+try {
+    $env:PATH = (($original -split ";") | Where-Object { $_ -notmatch "Strawberry|perl|\\Git\\usr|msys" }) -join ";"
+    $dir = Fresh "no-perl"
+    Build $dir "Perl missing" "first build" $true
+    Rebuild $dir "Perl missing" $true
+} finally {
+    foreach ($p in $hidden) { Rename-Item ($p + ".off") (Split-Path $p -Leaf) -ErrorAction Continue }
+    $env:PATH = $original
+}
 
 # 3. A Perl that starts and fails, first on the PATH.
 $fake = Join-Path $work "fake-perl"
