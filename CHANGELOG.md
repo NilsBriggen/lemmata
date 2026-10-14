@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.1.1 (2026-10-14)
+
+### Added
+- Choose the indentation width, 4 spaces by default
+
+### Fixed
+- The PDF comes back after switching to Editor only and back
 ## 1.1.0 (2026-10-14)
 
 ### Added
