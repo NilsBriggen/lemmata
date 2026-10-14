@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { api, errorMessage, type Target, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
   import Onboarding from "./lib/Onboarding.svelte";
   import Library from "./lib/Library.svelte";
@@ -1163,6 +1163,27 @@
 
   const showEditor = $derived(settings.layout !== "pdf" || focusMode);
   const showPdf = $derived(settings.layout !== "editor" && !focusMode);
+
+  /** Where the PDF was scrolled and zoomed when its pane was last hidden. */
+  let hiddenPdfPosition: { fit: "width" | "page" | number; scroll: number } | null = null;
+
+  // Switching to "Editor only" (or focus mode) removes the PDF pane, and its
+  // viewer starts empty when it comes back: remember its place, then load the
+  // PDF on disk again as soon as the new viewer exists.
+  $effect.pre(() => {
+    if (!showPdf && pdf) hiddenPdfPosition = untrack(() => pdf?.getPosition() ?? null);
+  });
+  $effect(() => {
+    if (!pdf || !project) return;
+    untrack(async () => {
+      await showExistingPdf();
+      if (hiddenPdfPosition) {
+        pdf?.setPosition(hiddenPdfPosition);
+        hiddenPdfPosition = null;
+      }
+    });
+  });
+
   const showSidebar = $derived(settings.sidebarOpen && !focusMode && settings.layout !== "pdf");
   const words = new Intl.NumberFormat();
 
