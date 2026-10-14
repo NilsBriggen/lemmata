@@ -10,6 +10,8 @@ Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't f
 
 ## Projects
 
+**Folders on the start screen.** The **Folders** section on the left of the start screen lets you group projects: *New folder* creates one, and the folder button on a project (hover it) puts it in a folder, takes it out, or makes a new folder. Click a folder to see only its projects. New and imported projects land in the folder you are looking at. Deleting a folder doesn't delete anything; its projects go back to *No folder* and stay in *All projects*. Folders are only a way to arrange the list: the project folders on disk don't move. The list now remembers up to 200 projects.
+
 - **New project** starts from a template: article, thesis, slides, CV, letter or homework (exercise sheets with problem boxes and a name-and-course header).
 - **Open folder** works with any folder containing a `.tex` file with `\documentclass`. If there are several, Lemmata asks which one is the main document.
 - **Import Overleaf .zip** takes the zip from Overleaf's *Menu → Download → Source*.

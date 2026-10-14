@@ -1,7 +1,7 @@
 // Recently opened project folders, newest first, with when they were last
 // opened. Older versions stored plain paths; those still load.
 const KEY = "lemmata.recent";
-const MAX = 30;
+const MAX = 200;
 
 export interface Recent {
   path: string;

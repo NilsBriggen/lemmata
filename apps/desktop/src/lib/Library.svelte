@@ -15,6 +15,13 @@
   import FileText from "@lucide/svelte/icons/file-text";
   import FolderSearch from "@lucide/svelte/icons/folder-search";
   import X from "@lucide/svelte/icons/x";
+  import Folder from "@lucide/svelte/icons/folder";
+  import FolderPlus from "@lucide/svelte/icons/folder-plus";
+  import SquarePen from "@lucide/svelte/icons/square-pen";
+  import Trash2 from "@lucide/svelte/icons/trash";
+  import Check from "@lucide/svelte/icons/check";
+  import DropMenu from "./ui/DropMenu.svelte";
+  import { countIn, createGroup, deleteGroup, forgetPath, inView, moveProject, nameProblem, readGroups, renameGroup, writeGroups, type Groups, type View } from "./groups";
   import NewProjectDialog from "./NewProjectDialog.svelte";
   import ImportDialog from "./ImportDialog.svelte";
   import { api } from "./api";
@@ -37,13 +44,63 @@
   let thumbs = $state<Record<string, string>>({});
   let dialog = $state<null | "new" | { zip: string }>(null);
 
+  // Folders: named groups of projects. They only organise this list.
+  let groups = $state<Groups>(readGroups());
+  let view = $state<View>("all");
+  /** The folder being created ("") or renamed (its id), with the text typed so far. */
+  let editing = $state<{ id: string | null; name: string; error: string | null } | null>(null);
+  let folderMenu = $state<{ path: string; anchor: HTMLElement } | null>(null);
+  const activeGroup = $derived(groups.groups.find((g) => g.id === view));
+  const unfiled = $derived(p.recent.filter((r) => !(r.path in groups.members)).length);
+
+  function commit(next: Groups) {
+    groups = next;
+    writeGroups(next);
+  }
+
+  function startEdit(id: string | null) {
+    editing = { id, name: id ? (groups.groups.find((g) => g.id === id)?.name ?? "") : "", error: null };
+  }
+
+  function finishEdit(e?: SubmitEvent) {
+    e?.preventDefault();
+    if (!editing) return;
+    const problem = nameProblem(groups, editing.name, editing.id ?? undefined);
+    if (problem) {
+      editing.error = problem;
+      return;
+    }
+    if (editing.id) commit(renameGroup(groups, editing.id, editing.name)!);
+    else {
+      const made = createGroup(groups, editing.name)!;
+      commit(made.state);
+      view = made.id;
+    }
+    editing = null;
+  }
+
+  function removeGroup(id: string) {
+    commit(deleteGroup(groups, id));
+    if (view === id) view = "all";
+  }
+
+  /** New and imported projects land in the folder being looked at. */
+  function filed(paths: string[]) {
+    if (!activeGroup) return;
+    let next = groups;
+    for (const path of paths) next = moveProject(next, path, activeGroup.id);
+    commit(next);
+  }
+
+  const folderName = (path: string) => groups.groups.find((g) => g.id === groups.members[path])?.name;
+
   const nameOf = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
   const folderOf = (path: string) => path.replace(/[\\/][^\\/]+[\\/]?$/, "");
   const home = (path: string) => path.replace(/^\/home\/[^/]+|^\/Users\/[^/]+|^[A-Z]:\\Users\\[^\\]+/, "~");
   const defaultParent = $derived(p.recent[0] ? folderOf(p.recent[0].path) : "");
 
   const shown = $derived(
-    p.recent.filter((r) => !query.trim() || r.path.toLowerCase().includes(query.trim().toLowerCase())),
+    p.recent.filter((r) => inView(groups, r.path, view) && (!query.trim() || r.path.toLowerCase().includes(query.trim().toLowerCase()))),
   );
 
   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -67,7 +124,16 @@
 
   async function openFolder() {
     const dir = await open({ directory: true, title: "Open a LaTeX project folder" });
-    if (typeof dir === "string") p.onOpen(dir);
+    if (typeof dir === "string") {
+      filed([dir]);
+      p.onOpen(dir);
+    }
+  }
+
+  /** Removing a project from the list also takes it out of its folder. */
+  function forget(path: string) {
+    commit(forgetPath(groups, path));
+    p.onForget(path);
   }
 
   async function importZip() {
@@ -85,6 +151,27 @@
       <button class="nav" onclick={importZip}><FileArchive size={16} /> Import from Overleaf…</button>
       <button class="nav" onclick={p.onExample}><Sparkles size={16} /> Example document</button>
     </nav>
+    <div class="folders" role="group" aria-label="Folders">
+      <div class="fhead"><span>Folders</span><button class="btn ghost icon sm" aria-label="New folder" title="New folder" onclick={() => startEdit(null)}><FolderPlus size={14} /></button></div>
+      <button class="nav" class:on={view === "all"} aria-pressed={view === "all"} onclick={() => (view = "all")}><FileText size={16} /> All projects <i>{p.recent.length}</i></button>
+      {#each groups.groups as g (g.id)}
+        {#if editing?.id === g.id}
+          {@render editor()}
+        {:else}
+          <div class="frow" class:on={view === g.id}>
+            <button class="nav" aria-pressed={view === g.id} onclick={() => (view = g.id)}><Folder size={16} /> <span class="fname">{g.name}</span> <i>{countIn(groups, g.id)}</i></button>
+            <span class="facts">
+              <button class="btn ghost icon sm" aria-label="Rename {g.name}" title="Rename" onclick={() => startEdit(g.id)}><SquarePen size={13} /></button>
+              <button class="btn ghost icon sm" aria-label="Delete {g.name}" title="Delete the folder (its projects stay in All projects)" onclick={() => removeGroup(g.id)}><Trash2 size={13} /></button>
+            </span>
+          </div>
+        {/if}
+      {/each}
+      {#if groups.groups.length && unfiled !== p.recent.length}
+        <button class="nav" class:on={view === "none"} aria-pressed={view === "none"} onclick={() => (view = "none")}><FolderOpen size={16} /> No folder <i>{unfiled}</i></button>
+      {/if}
+      {#if editing && editing.id === null}{@render editor()}{/if}
+    </div>
     <div class="foot">
       <button class="nav" onclick={p.onPreferences}><Settings size={16} /> Preferences</button>
       <button class="nav subtle" onclick={p.onWelcome}>Show welcome screen</button>
@@ -93,7 +180,7 @@
 
   <main>
     <header>
-      <h1>Your projects</h1>
+      <h1>{activeGroup ? activeGroup.name : view === "none" ? "No folder" : "Your projects"}</h1>
       <div class="tools">
         <div class="search">
           <Search size={15} />
@@ -119,7 +206,13 @@
         </div>
       </div>
     {:else if shown.length === 0}
-      <p class="none">No project matches “{query}”.</p>
+      {#if query.trim()}
+        <p class="none">No project matches “{query}”.</p>
+      {:else if activeGroup}
+        <p class="none">No projects in this folder yet. Use the folder button on a project to add it, or create a new project here.</p>
+      {:else}
+        <p class="none">Every project is in a folder.</p>
+      {/if}
     {:else if settings.libraryView === "list"}
       <div class="table" role="table" aria-label="Projects">
         <div class="tr th" role="row">
@@ -133,12 +226,14 @@
             <button class="name" role="cell" onclick={() => p.onOpen(r.path)}>
               <span class="mini">{#if thumbs[r.path]}<img src={thumbs[r.path]} alt="" />{:else}<FileText size={16} />{/if}</span>
               <span class="n">{nameOf(r.path)}</span>
+              {#if view === "all" && folderName(r.path)}<span class="chip">{folderName(r.path)}</span>{/if}
             </button>
             <span class="loc" role="cell" title={r.path}>{home(folderOf(r.path))}</span>
             <span class="when" role="cell">{ago(r.lastOpened)}</span>
             <span class="acts" role="cell">
+              <button class="btn ghost icon sm" title="Put in a folder" aria-label="Put {nameOf(r.path)} in a folder" aria-haspopup="menu" onclick={(e) => (folderMenu = { path: r.path, anchor: e.currentTarget })}><Folder size={15} /></button>
               <button class="btn ghost icon sm" title="Show in file manager" aria-label="Show {nameOf(r.path)} in file manager" onclick={() => revealItemInDir(r.path).catch(() => {})}><FolderSearch size={15} /></button>
-              <button class="btn ghost icon sm" title="Remove from this list (the folder stays on disk)" aria-label="Remove {nameOf(r.path)} from the list" onclick={() => p.onForget(r.path)}><X size={15} /></button>
+              <button class="btn ghost icon sm" title="Remove from this list (the folder stays on disk)" aria-label="Remove {nameOf(r.path)} from the list" onclick={() => forget(r.path)}><X size={15} /></button>
             </span>
           </div>
         {/each}
@@ -153,7 +248,8 @@
               </div>
               <div class="info"><b>{nameOf(r.path)}</b><span>{ago(r.lastOpened)}</span></div>
             </button>
-            <button class="btn icon sm forget" aria-label="Remove {nameOf(r.path)} from the list" title="Remove from this list" onclick={() => p.onForget(r.path)}><X size={14} /></button>
+            <button class="btn icon sm forget" aria-label="Remove {nameOf(r.path)} from the list" title="Remove from this list" onclick={() => forget(r.path)}><X size={14} /></button>
+            <button class="btn icon sm putin" aria-label="Put {nameOf(r.path)} in a folder" title="Put in a folder" aria-haspopup="menu" onclick={(e) => (folderMenu = { path: r.path, anchor: e.currentTarget })}><Folder size={14} /></button>
           </div>
         {/each}
       </div>
@@ -161,10 +257,36 @@
   </main>
 </div>
 
+{#snippet editor()}
+  <form class="fedit" onsubmit={finishEdit}>
+    <!-- svelte-ignore a11y_autofocus -->
+    <input class="input" bind:value={editing!.name} placeholder="Folder name" aria-label="Folder name" autofocus onkeydown={(e) => e.key === "Escape" && (editing = null)} onblur={() => editing && !editing.name.trim() && (editing = null)} />
+    {#if editing?.error}<span class="ferr">{editing.error}</span>{/if}
+  </form>
+{/snippet}
+
+{#if folderMenu}
+  {@const path = folderMenu.path}
+  <DropMenu anchor={folderMenu.anchor} align="end" onClose={() => (folderMenu = null)}>
+    <div class="heading">Put in folder</div>
+    {#each groups.groups as g (g.id)}
+      <button role="menuitemradio" aria-checked={groups.members[path] === g.id} onclick={() => (commit(moveProject(groups, path, g.id)), (folderMenu = null))}>
+        <span class="tick">{#if groups.members[path] === g.id}<Check size={14} />{/if}</span> {g.name}
+      </button>
+    {/each}
+    {#if groups.members[path]}
+      <hr />
+      <button role="menuitem" onclick={() => (commit(moveProject(groups, path, null)), (folderMenu = null))}><span class="tick"></span> Take out of its folder</button>
+    {/if}
+    <hr />
+    <button role="menuitem" onclick={() => { folderMenu = null; startEdit(null); }}><span class="tick"></span> New folder…</button>
+  </DropMenu>
+{/if}
+
 {#if dialog === "new"}
-  <NewProjectDialog {defaultParent} onCreated={(path) => ((dialog = null), p.onOpen(path))} onClose={() => (dialog = null)} />
+  <NewProjectDialog {defaultParent} onCreated={(path) => ((dialog = null), filed([path]), p.onOpen(path))} onClose={() => (dialog = null)} />
 {:else if dialog}
-  <ImportDialog zip={dialog.zip} {defaultParent} onImported={(paths) => ((dialog = null), p.onImported(paths))} onClose={() => (dialog = null)} />
+  <ImportDialog zip={dialog.zip} {defaultParent} onImported={(paths) => ((dialog = null), filed(paths), p.onImported(paths))} onClose={() => (dialog = null)} />
 {/if}
 
 <style>
@@ -226,4 +348,23 @@
   .empty h2 { font: 400 22px var(--f-display); color: var(--ink); margin: 6px 0 0; }
   .empty p { color: var(--muted); margin: 0 0 10px; line-height: 1.6; }
   .row { display: flex; gap: 8px; }
+
+  .folders { display: flex; flex-direction: column; gap: 2px; margin-top: 14px; min-height: 0; overflow: auto; }
+  .fhead { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 0 10px; font: 600 11px var(--f-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--chrome-muted); }
+  .fhead .btn { color: var(--chrome-muted); }
+  .nav i { margin-left: auto; font-style: normal; font-size: 11.5px; color: var(--chrome-muted); }
+  .nav.on, .frow.on > .nav { background: var(--chrome-active); }
+  .frow { display: flex; align-items: center; position: relative; }
+  .frow > .nav { flex: 1; min-width: 0; }
+  .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .facts { position: absolute; right: 4px; display: none; gap: 0; background: var(--chrome-hover); border-radius: var(--r-sm); }
+  .frow:hover .facts, .frow:focus-within .facts { display: flex; }
+  .frow:hover > .nav i, .frow:focus-within > .nav i { visibility: hidden; }
+  .fedit { display: flex; flex-direction: column; gap: 3px; padding: 2px 4px; }
+  .fedit .input { height: 30px; }
+  .ferr { color: var(--error); font-size: 11.5px; padding-left: 4px; }
+  .chip { margin-left: 8px; padding: 0 7px; border-radius: 9px; background: var(--surface-3); color: var(--muted); font-size: 11px; line-height: 18px; flex: none; }
+  .putin { position: absolute; top: 8px; right: 40px; opacity: 0; }
+  .card:hover .putin, .putin:focus-visible { opacity: 1; }
+  .tick { display: inline-flex; width: 16px; justify-content: center; }
 </style>
