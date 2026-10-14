@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.2.2 (2026-10-14)
+
+### Fixed
+- The build without latexmk skips what has not changed
 ## 1.2.1 (2026-10-14)
 
 ### Fixed
