@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.1.0 (2026-10-14)
+
+### Added
+- File manager, project navigation and build targets
+
+### Fixed
+- Explain builds that stop before TeX starts, and MiKTeX without Perl
 ## 1.0.0 (2026-10-13)
 
 ### Fixed
