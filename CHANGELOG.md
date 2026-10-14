@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.2.1 (2026-10-14)
+
+### Fixed
+- Build without latexmk when it cannot start; start without waiting for TeX detection
+- Identify TeX from its install path instead of launching it
 ## 1.2.0 (2026-10-14)
 
 ### Added
