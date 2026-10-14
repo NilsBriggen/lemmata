@@ -2,7 +2,7 @@
 
 A local-first LaTeX editor: write on the left, see the PDF update on the right, double-click the PDF to jump to the source. Projects are plain folders on your disk, and documents build with the TeX Live (or MiKTeX) already on your computer.
 
-Status: 1.0. See the [user guide](docs/guide.md) for what it does, and [docs/PLAN.md](docs/PLAN.md) for how it's built.
+Status: 1.1. See the [user guide](docs/guide.md) for what it does, and [docs/PLAN.md](docs/PLAN.md) for how it's built.
 
 ## Features
 
@@ -11,7 +11,8 @@ Status: 1.0. See the [user guide](docs/guide.md) for what it does, and [docs/PLA
 - Environment pairing (`\begin{x}` and `\end{x}` stay in step), completion for commands, labels, citations, files and packages, folding, formatting shortcuts.
 - A PDF viewer with text selection, search, working links, outline and a presentation mode.
 - Plain-language errors with source excerpts and one-click fixes (add a missing `\usepackage`, install command for a missing package), including bibliography problems.
-- Fast (draft) mode, stop-at-first-error, auto-compile on or off, clear cache.
+- Fast (draft) mode, stop-at-first-error, auto-compile on or off (builds start 1.5 s after you stop typing), clear cache.
+- Several build targets in one project (a paper and its slides), your own templates, a whole-project zip export, git status markers in the file tree, snippets, a choice of indentation, pinned tabs, and renaming a label or citation key everywhere.
 - Snapshots of your project with compare and whole-project restore, spell checking, Zotero and DOI/arXiv references, Overleaf zip import, arXiv export.
 
 ## Requirements
@@ -21,7 +22,7 @@ Status: 1.0. See the [user guide](docs/guide.md) for what it does, and [docs/PLA
 
 ## Developing
 
-You need Rust (stable), Node 22+ and pnpm, plus the [Tauri system libraries](https://v2.tauri.app/start/prerequisites/) for your OS. For completion and hover, have `texlab` on your PATH, or fetch the pinned build with `scripts/fetch-texlab.sh <target-triple>`; release builds bundle it.
+You need Rust (stable), Node 24+ and pnpm, plus the [Tauri system libraries](https://v2.tauri.app/start/prerequisites/) for your OS. For completion and hover, have `texlab` on your PATH, or fetch the pinned build with `scripts/fetch-texlab.sh <target-triple>`; release builds bundle it.
 
 ```bash
 pnpm install
@@ -42,6 +43,10 @@ cargo run -p lemmata-cli -- build tests/fixtures/article
 | `crates/lemmata-log` | Turns TeX logs into diagnostics with plain-language hints |
 | `crates/lemmata-synctex` | PDF ↔ source jumps through the `synctex` CLI |
 | `crates/lemmata-project` | `lemmata.toml`, main-file detection, file tree, outline, labels, word counts |
+| `crates/lemmata-history` | Snapshots on a private git reference, compare and restore, git status for the tree |
+| `crates/lemmata-spell` | Hunspell spell checking |
+| `crates/lemmata-bib` | `.bib` parsing, DOI/arXiv lookup, Zotero |
+| `crates/lemmata-pkgmap` | Which TeX package provides a missing file, and the install command |
 | `crates/lemmata-cli` | `lemmata build`, `lemmata watch` and `lemmata doctor` |
 | `data/install.toml` | TeX install commands per OS and distro |
 | `packaging/` | AUR and Homebrew templates rendered on release |

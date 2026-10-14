@@ -244,6 +244,8 @@
             },
           },
           ...(tex && settings.envSync ? [{ key: "Enter", run: closeEnvironment }] : []),
+          // CodeMirror binds Mod-Enter to "insert blank line"; the app uses it to recompile.
+          { key: "Mod-Enter", run: () => true },
         ]),
       ),
       tex

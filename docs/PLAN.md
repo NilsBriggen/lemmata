@@ -40,6 +40,16 @@ Lemmata is a GPL-3.0 desktop LaTeX editor that gives the Overleaf workflow on yo
 | Updates | Signed auto-update, stable and beta channels |
 | Support | "Report a problem" opens a prefilled GitHub issue the user reviews first |
 
+### Added in 1.1
+
+| Area | Feature |
+|---|---|
+| Files | Multi-select, keyboard control, cut/copy/paste, batch move and delete with Undo (in-project trash), sorting, unused-file finder, git status marks |
+| Editing | Replace preview, snippets, per-file spell language, pinned tabs, reopen closed tab, remembered folds, indentation setting, prefilled tables |
+| Navigation | Go to section, label or citation; rename a label or citation key everywhere |
+| Projects | Build targets, whole-project zip, user templates |
+| Release | Pre-releases (`-rc.N`) are not offered by the updater; publishing waits for CI on the tagged commit |
+
 ### Not in v1
 
 Real-time collaboration, cloud sync, Flathub, a bundled TeX engine, WYSIWYG editing, AI features.

@@ -3,6 +3,7 @@
 import { EditorState, type TransactionSpec, type Transaction } from "@codemirror/state";
 import { EditorView, Decoration, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import type { Text } from "@codemirror/state";
+import { indentUnit } from "@codemirror/language";
 
 export interface Token {
   kind: "begin" | "end";
@@ -65,6 +66,9 @@ export function pairedEdit(tr: Transaction): TransactionSpec | null {
   });
   if (count !== 1 || !single) return null;
   const [fa, ta] = single as [number, number, number, number];
+  // Most keystrokes are nowhere near a \begin or \end: skip tokenizing the whole document for those.
+  const edited = tr.startState.doc.lineAt(fa);
+  if (!/\\(?:begin|end)\s*\{/.test(edited.text) || tr.startState.doc.lineAt(ta).number !== edited.number) return null;
   const before = tokens(tr.startState.doc);
   const i = before.findIndex((t) => fa >= t.from && ta <= t.to);
   if (i < 0) return null;
@@ -100,7 +104,7 @@ export function closeEnvironment(view: { state: EditorState; dispatch: (spec: Tr
   const here = toks.find((t) => t.kind === "begin" && t.from >= line.from && t.to <= line.to);
   if (!here || here.partner != null) return false;
   const indent = m[1];
-  const unit = state.facet(EditorState.tabSize) ? "  " : "  ";
+  const unit = state.facet(indentUnit);
   const body = `\n${indent}${unit}`;
   const insert = `${body}\n${indent}\\end{${m[2]}}`;
   view.dispatch({

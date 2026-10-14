@@ -71,6 +71,8 @@
       e.preventDefault();
     } else if (e.key === "Enter" && results[selected]) {
       e.preventDefault();
+      // Ctrl+Enter also means "Recompile" to the app; here it only toggles the entry.
+      e.stopPropagation();
       // Ctrl+Enter adds to the selection; Enter inserts.
       if (e.ctrlKey || e.metaKey) toggle(results[selected].key);
       else onInsert(picked.length ? [...picked] : [results[selected].key]);

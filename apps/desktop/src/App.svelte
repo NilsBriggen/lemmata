@@ -206,7 +206,13 @@
     return () => {
       if (!value || Date.now() - at > ttl) {
         at = Date.now();
-        value = load().catch(() => [] as unknown as T);
+        value = load().catch((e) => {
+          // Don't remember the failure: the next request tries again.
+          value = null;
+          at = 0;
+          reportOnce("completions", `Completion lists for \\ref and \\cite couldn't be loaded: ${errorMessage(e)}`);
+          return [] as unknown as T;
+        });
       }
       return value;
     };
@@ -234,7 +240,7 @@
     lsp = await startLanguageServer(root, async (rel) => {
       await openFile(rel);
       return editor?.getView() ?? null;
-    });
+    }, (message) => reportOnce("lsp", message));
     lspStarting = false;
     lspAvailable = lsp !== null;
     editor?.setLanguageServer(lsp ? lsp.extensions : null);
@@ -351,10 +357,15 @@
     if (path === active && project && magicLanguage(text) !== fileLanguage) applySpellLanguage();
     clearTimeout(saveTimers.get(path));
     // A delay of 0 means: only save on Ctrl+S.
-    if (settings.autosaveMs > 0) saveTimers.set(path, setTimeout(() => save(path), settings.autosaveMs));
+    if (settings.autosaveMs > 0) saveTimers.set(path, setTimeout(() => save(path, settings.autoCompile, true), settings.autosaveMs));
   }
 
-  async function save(path: string, build = settings.autoCompile) {
+  /** Automatic builds wait this long after the last edit, so a build isn't started and cancelled again while typing. */
+  const AUTO_COMPILE_DELAY_MS = 1500;
+  let buildTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** `auto` marks a save made by the autosave timer: its build is debounced. An explicit save builds at once. */
+  async function save(path: string, build = settings.autoCompile, auto = false) {
     clearTimeout(saveTimers.get(path));
     const text = contents.get(path);
     if (text === undefined || !dirty[path]) return;
@@ -364,8 +375,12 @@
       refreshGit();
       // Typing continued while the write was in flight: those edits aren't saved yet.
       if (contents.get(path) === text) dirty[path] = false;
-      else if (settings.autosaveMs > 0) saveTimers.set(path, setTimeout(() => save(path), settings.autosaveMs));
-      if (build) runBuild();
+      else if (settings.autosaveMs > 0) saveTimers.set(path, setTimeout(() => save(path, settings.autoCompile, true), settings.autosaveMs));
+      if (build) {
+        clearTimeout(buildTimer);
+        if (auto) buildTimer = setTimeout(runBuild, AUTO_COMPILE_DELAY_MS);
+        else runBuild();
+      }
       if (path.endsWith(".tex")) refreshOutline();
       if (path === project?.main) setMathMacros(text);
       editedSinceSnapshot = true;
@@ -381,6 +396,7 @@
   }
 
   async function runBuild() {
+    clearTimeout(buildTimer);
     const seq = ++buildSeq;
     building = true;
     try {
@@ -423,7 +439,7 @@
   async function stopBuild() {
     buildSeq++;
     building = false;
-    await api.stopBuild().catch(() => {});
+    await api.stopBuild().catch((e) => reportOnce("stop", `The build could not be stopped: ${errorMessage(e)}`));
   }
 
   async function uploadFiles(folder = "") {
@@ -437,6 +453,15 @@
     } catch (e) {
       showNotice(errorMessage(e));
     }
+  }
+
+  /** Shows a problem notice once per kind per minute, so a failing background task doesn't flood the screen. */
+  const reported = new Map<string, number>();
+  function reportOnce(kind: string, text: string) {
+    const last = reported.get(kind) ?? 0;
+    if (Date.now() - last < 60_000) return;
+    reported.set(kind, Date.now());
+    showNotice(text);
   }
 
   /** `extra` is either an action button or just a tone. */
@@ -937,7 +962,10 @@
     if (change.removed.length) await onRemovedOutside(change.removed);
     for (const path of change.changed) {
       if (!contents.has(path)) continue;
-      const disk = await api.readText(path).catch(() => null);
+      const disk = await api.readText(path).catch((e) => {
+        reportOnce("read-changed", `${path} changed outside Lemmata but could not be read: ${errorMessage(e)}`);
+        return null;
+      });
       if (disk === null) continue;
       // What we last read or wrote (our own autosave), or what's in the editor, isn't an outside change.
       if (disk === lastSaved.get(path)) continue;
@@ -1122,12 +1150,14 @@
           dragState.external = null;
         }
       })
-      .catch(() => {});
+      .catch((e) => reportOnce("dragdrop", `Dropping files onto Lemmata won't work: ${errorMessage(e)}`));
     // Snapshots on a timer while there are unsnapshotted edits.
     setInterval(() => {
       if (project && editedSinceSnapshot && Date.now() - lastSnapshot > AUTO_SNAPSHOT_MS) takeSnapshot("Automatic snapshot");
     }, 60_000);
-    listen<{ changed: string[]; removed: string[] }>("files-changed", (e) => onFilesChanged(e.payload)).catch(() => {});
+    listen<{ changed: string[]; removed: string[] }>("files-changed", (e) => onFilesChanged(e.payload)).catch((e) =>
+      reportOnce("watch", `Lemmata can't watch for changes made by other programs: ${errorMessage(e)}`),
+    );
     await loadSettings();
     appliedEditor = "";
     await recheck(settings.texDir ?? undefined);
@@ -1152,6 +1182,7 @@
     { label: "Insert citation", hint: hint("cite"), run: () => (citeOpen = true) },
     { label: "Word count", run: () => (dialog = "words") },
     { label: "Save a snapshot", hint: hint("snapshot"), run: () => (snapshotLabel = "") },
+    { label: "Undo last file operation", run: () => fileActions?.undo() },
     { label: "Export PDF…", run: exportPdf, separator: true },
     { label: "Export project (.zip)…", run: exportZip },
     { label: "Export for arXiv…", run: exportArxiv },

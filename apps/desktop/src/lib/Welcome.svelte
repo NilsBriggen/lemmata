@@ -114,7 +114,7 @@
             <span class="label">Compile</span>
             <div class="segmented" role="group" aria-label="When to compile">
               <button aria-pressed={settings.autosaveMs > 0} onclick={() => set("autosaveMs", DEFAULTS.autosaveMs)}>As I type</button>
-              <button aria-pressed={settings.autosaveMs === 0} onclick={() => set("autosaveMs", 0)}>When I save</button>
+              <button aria-pressed={settings.autosaveMs === 0} onclick={() => set("autosaveMs", 0)}>With Ctrl+S</button>
             </div>
           </div>
           <div class="setting">

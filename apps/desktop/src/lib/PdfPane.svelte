@@ -21,6 +21,7 @@
   import DropMenu from "./ui/DropMenu.svelte";
   import { settings, updateSettings } from "./settings.svelte";
   import type { Diagnostic, PdfBox } from "./api";
+  import { display, keysOf } from "./shortcuts";
 
   interface Props {
     diagnostics: Diagnostic[];
@@ -147,7 +148,7 @@
         <button class="btn ghost icon sm optional" aria-label="Zoom in" onclick={() => view?.zoomBy(1.15)}><ZoomIn size={16} /></button>
       </div>
       <div class="group end">
-        <button class="btn ghost icon sm" class:on={searchOpen} aria-pressed={searchOpen} title="Search in the PDF (Ctrl+F)" aria-label="Search in the PDF" onclick={() => (searchOpen ? closeSearch() : openSearch())}><Search size={15} /></button>
+        <button class="btn ghost icon sm" class:on={searchOpen} aria-pressed={searchOpen} title="Search in the PDF ({display(keysOf("pdf-search"))})" aria-label="Search in the PDF" onclick={() => (searchOpen ? closeSearch() : openSearch())}><Search size={15} /></button>
         <button class="btn ghost icon sm optional" class:on={outlineOpen} aria-pressed={outlineOpen} title="Document outline" aria-label="Document outline" onclick={toggleOutline}><ListTree size={15} /></button>
         <button class="btn ghost icon sm optional" title="Present full screen" aria-label="Present full screen" onclick={() => (presenting = true)}><Presentation size={15} /></button>
         <button class="btn ghost icon sm" class:on={settings.pdfDark} aria-pressed={settings.pdfDark} title="Dark pages in dark mode" aria-label="Dark pages" onclick={() => updateSettings({ pdfDark: !settings.pdfDark })}><Moon size={15} /></button>

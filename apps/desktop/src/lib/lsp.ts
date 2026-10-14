@@ -98,10 +98,13 @@ export interface LanguageServer {
 export async function startLanguageServer(
   root: string,
   display: (rel: string) => Promise<EditorView | null>,
+  /** Called once if the server stops accepting messages, so the app can say so. */
+  onProblem?: (message: string) => void,
 ): Promise<LanguageServer | null> {
   const handlers = new Set<(m: string) => void>();
   let generation = -1;
   const pending: { generation: number; body: string }[] = [];
+  let reported = false;
 
   const unlisten: UnlistenFn = await listen<{ generation: number; body: string }>("lsp-message", (e) => {
     if (generation < 0) pending.push(e.payload);
@@ -118,7 +121,13 @@ export async function startLanguageServer(
 
   const transport: Transport = {
     send(message) {
-      invoke("lsp_send", { generation, body: message }).catch(() => {});
+      invoke("lsp_send", { generation, body: message }).catch((e) => {
+        if (!reported) {
+          reported = true;
+          console.warn("language server stopped answering:", e);
+          onProblem?.("The language server (texlab) stopped answering, so completion and hover may be missing. Reopen the project to restart it.");
+        }
+      });
     },
     subscribe(h) {
       handlers.add(h);

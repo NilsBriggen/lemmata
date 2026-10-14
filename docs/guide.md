@@ -20,7 +20,7 @@ Per-project settings (main file, engine, bibliography tool, spell-check language
 
 **Your own templates.** *Save this project as a template…* in the command palette copies the project (without hidden files or build output) so that *New project* offers it next to the built-in ones. Delete your own templates from the same dialog.
 
-**Git.** If the project folder is in a git repository, changed files in the file tree get a letter (M modified, A added, D deleted, ? not tracked) and folders with changes get a dot. Lemmata only reads the repository's status; it never commits or stages anything.
+**Git.** If the project folder is in a git repository, changed files in the file tree get a letter (M modified, A added, D deleted, ? not tracked) and folders with changes get a dot. Lemmata only reads the repository's status to draw these marks; it never commits or stages anything in your repository. (History snapshots live on a private reference of their own and don't touch your branches either.)
 
 ## Writing and building
 
@@ -149,7 +149,7 @@ Some packages (`minted`, `svg`) need to run programs during the build. Because a
 
 ## Updates
 
-Lemmata checks for updates on start and every six hours, and asks before installing. Choose **Betas** in Preferences to get new features sooner.
+Lemmata checks for updates on start and every six hours, and asks before installing. Releases with a suffix such as `-rc.1` are published as pre-releases and are never offered by the updater; the **Betas** setting in Preferences only exists for older versions and currently follows the same releases as the stable channel.
 
 ## Reporting a problem
 
@@ -159,6 +159,6 @@ Run **Report a problem** from the command palette. It shows the details it will 
 
 `lemmata build [dir]` compiles a project once and prints its problems, `lemmata watch [dir]` rebuilds whenever a file changes, and `lemmata doctor` checks your TeX installation.
 
-## Not in 1.0
+## Not in 1.x
 
 Lemmata is a local editor, so there is no real-time collaboration or track changes, no rich-text (visual) editor, and no grammar checker. Open an issue if one of them matters to you.

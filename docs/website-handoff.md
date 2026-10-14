@@ -11,7 +11,7 @@ Lemmata is a free, open-source LaTeX editor for Linux, macOS and Windows. It giv
 - Audience: students and researchers who write in LaTeX and want to work offline or keep their files local.
 - Requirement: a TeX distribution (TeX Live, or MiKTeX on Windows). The app detects it and walks users through installing it, so the site should present this as a step, not a barrier.
 
-Only describe features listed in §1 of PLAN.md and in [guide.md](guide.md). Don't invent features, numbers, testimonials or user counts. Good homepage highlights, in this order: live PDF with click-to-jump; errors explained in plain words with the exact install command for missing packages; citations by DOI, arXiv ID or Zotero; history you can't lose; works offline with your own files. For 1.0 the editor features are also worth a short section: environments that stay paired (`\begin` and `\end`), completion for labels, citations and files, a PDF viewer with search, selectable text and working links, a Fast (draft) build mode, and one-click fixes for undefined commands. The command-line tool (`lemmata build | watch | doctor`) is a small footnote. Lemmata has no real-time collaboration, no visual editor and no grammar checker; say so plainly if the page compares it with Overleaf. Link the user guide from the footer: `https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md`.
+Only describe features listed in [guide.md](guide.md) (the user guide is the source of truth; PLAN.md §1 lists only what 1.0 shipped). Don't invent features, numbers, testimonials or user counts. Good homepage highlights, in this order: live PDF with click-to-jump; errors explained in plain words with the exact install command for missing packages; citations by DOI, arXiv ID or Zotero; history you can't lose; works offline with your own files. For 1.x the editor features are also worth a short section (1.1 added a real file manager with Undo, build targets, snippets, rename-everywhere for labels and citation keys, and templates of your own): environments that stay paired (`\begin` and `\end`), completion for labels, citations and files, a PDF viewer with search, selectable text and working links, a Fast (draft) build mode, and one-click fixes for undefined commands. The command-line tool (`lemmata build | watch | doctor`) is a small footnote. Lemmata has no real-time collaboration, no visual editor and no grammar checker; say so plainly if the page compares it with Overleaf. Link the user guide from the footer: `https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md`.
 
 ## Pages
 
@@ -33,7 +33,7 @@ https://api.github.com/repos/NilsBriggen/lemmata/releases/latest
 https://api.github.com/repos/NilsBriggen/lemmata/releases        (for the changelog)
 ```
 
-Every release has these assets (version `0.3.0` as an example):
+Every plain `X.Y.Z` release has these assets (version `0.3.0` as an example); a suffixed tag such as `0.3.0-rc.1` is a GitHub pre-release with the installers only, no `latest.json`, and no package-manager updates:
 
 | File | Platform |
 |---|---|

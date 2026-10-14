@@ -12,7 +12,7 @@
   import DropMenu from "./ui/DropMenu.svelte";
   import type { Entry, Heading } from "./api";
   import type FileActions from "./FileActions.svelte";
-  import { matches } from "./shortcuts";
+  import { display, keysOf, matches } from "./shortcuts";
   import { settings, updateSettings } from "./settings.svelte";
   import { cursorTo, click, moveCursor, selectAll, select, targets, tree as view, collapseAll, expandAll } from "./treeSelection.svelte";
   import { findEntry, flatten, parentOf, sortEntries, type SortMode } from "./treeModel";
@@ -142,7 +142,7 @@
         <button class="btn icon sm" title="New folder" aria-label="New folder" onclick={p.onNewFolder}><FolderPlus size={15} /></button>
         <button class="btn icon sm" title="Add files to the project" aria-label="Add files" onclick={p.onUpload}><Upload size={15} /></button>
         <button class="btn icon sm" bind:this={sortBtn} title="Sort and view" aria-label="Sort and view" aria-haspopup="menu" onclick={() => (sortMenu = sortMenu ? null : sortBtn!)}><ArrowUpDown size={15} /></button>
-        <button class="btn icon sm" title="Search in project (Ctrl+Shift+F)" aria-label="Search in project" onclick={p.onSearch}><Search size={15} /></button>
+        <button class="btn icon sm" title="Search in project ({display(keysOf("search"))})" aria-label="Search in project" onclick={p.onSearch}><Search size={15} /></button>
       </div>
     </div>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->

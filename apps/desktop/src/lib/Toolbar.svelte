@@ -23,6 +23,7 @@
   import Check from "@lucide/svelte/icons/check";
   import DropMenu from "./ui/DropMenu.svelte";
   import type { Engine, Target } from "./api";
+  import { display, keysOf } from "./shortcuts";
 
   interface Props {
     projectName: string;
@@ -97,7 +98,7 @@
     <button class="btn" class:on={p.historyOpen} aria-pressed={p.historyOpen} onclick={p.onHistory}><History size={16} /> History</button>
     <button class="btn icon" aria-label="Project settings" title="Project settings" onclick={p.onProjectSettings}><Settings size={17} /></button>
     <div class="compile">
-      <button class="btn primary main" onclick={p.building ? p.onStop : p.onRecompile} title={p.building ? "Stop compiling" : "Recompile (Ctrl+Enter)"}>
+      <button class="btn primary main" onclick={p.building ? p.onStop : p.onRecompile} title={p.building ? "Stop compiling" : `Recompile (${display(keysOf("recompile"))})`}>
         <span class:spin={p.building}><RefreshCw size={15} /></span>
         {p.building ? "Compiling…" : "Recompile"}
       </button>

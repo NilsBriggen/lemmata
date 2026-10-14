@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { EditorState, type TransactionSpec, type Transaction } from "@codemirror/state";
+import { indentUnit } from "@codemirror/language";
 import { environmentSync, tokens, closeEnvironment } from "./environments";
 
 /** A minimal stand-in for EditorView, so tests run without a DOM. */
@@ -62,6 +63,13 @@ describe("environment pairing", () => {
     expect(closeEnvironment(v)).toBe(true);
     expect(v.state.doc.toString()).toBe("\\begin{itemize}\n  \n\\end{itemize}");
     expect(v.state.selection.main.head).toBe(18);
+  });
+
+  it("indents the body by the chosen indentation", () => {
+    const v = mk(EditorState.create({ doc: "\\begin{itemize}", extensions: [environmentSync, indentUnit.of("\t")] }));
+    v.dispatch({ selection: { anchor: 15 } });
+    expect(closeEnvironment(v)).toBe(true);
+    expect(v.state.doc.toString()).toBe("\\begin{itemize}\n\t\n\\end{itemize}");
   });
 
   it("does not add a second \\end", () => {
