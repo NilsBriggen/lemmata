@@ -4,7 +4,8 @@
   import { tableBlock } from "./writing/table";
 
   interface Props {
-    onInsert: (text: string, needs?: string) => void;
+    /** The table as a snippet: Tab steps through the placeholder cells. */
+    onInsert: (template: string, needs?: string) => void;
     onClose: () => void;
   }
   let { onInsert, onClose }: Props = $props();
@@ -24,7 +25,7 @@
 
   function submit(e: Event) {
     e.preventDefault();
-    onInsert(tableBlock({ rows, cols, header, booktabs, caption, label }), booktabs ? "booktabs" : undefined);
+    onInsert(tableBlock({ rows, cols, header, booktabs, caption, label }, true), booktabs ? "booktabs" : undefined);
     onClose();
   }
 </script>
@@ -55,7 +56,7 @@
     </div>
     <label class="check" for="tb-header"><input id="tb-header" type="checkbox" bind:checked={header} /> First row is a header</label>
     <label class="check" for="tb-book"><input id="tb-book" type="checkbox" bind:checked={booktabs} /> Clean rules (booktabs)</label>
-    <div class="field"><label for="tb-caption">Caption</label><input id="tb-caption" class="input" bind:value={caption} placeholder="Optional" /></div>
+    <div class="field"><label for="tb-caption">Caption</label><input id="tb-caption" class="input" bind:value={caption} placeholder="Leave empty to type it in the document" /></div>
     <div class="field"><label for="tb-label">Label</label><input id="tb-label" class="input mono" bind:value={label} placeholder="made from the caption" /></div>
   </form>
   {#snippet footer()}

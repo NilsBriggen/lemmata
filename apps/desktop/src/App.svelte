@@ -1537,7 +1537,7 @@
   />
 {:else if dialog === "table"}
   <TableDialog
-    onInsert={(text, needs) => editor?.insertSnippet({ text, cursor: text.length }, needs)}
+    onInsert={(template, needs) => editor?.insertBlock(template, needs)}
     onClose={() => ((dialog = null), editor?.getView()?.focus())}
   />
 {:else if dialog === "symbols"}

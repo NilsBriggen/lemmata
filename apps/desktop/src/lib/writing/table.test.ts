@@ -48,15 +48,32 @@ describe("insert dialogs", () => {
     const t = tableBlock({ rows: 3, cols: 2, header: true, booktabs: true, caption: "Results", label: "", });
     expect(t).toContain("\\begin{tabular}{ll}");
     expect(t).toContain("Header 1 & Header 2 \\\\");
+    expect(t).toContain("Cell 1.1 & Cell 1.2 \\\\");
+    expect(t).toContain("Cell 2.1 & Cell 2.2 \\\\");
     expect(t).toContain("\\midrule");
     expect(t).toContain("\\label{tab:results}");
-    expect(t.match(/ & +\\\\/g)?.length).toBe(2);
+  });
+  it("fills in placeholders when there is no header, and for a missing caption", () => {
+    const t = tableBlock({ rows: 2, cols: 2, header: false, booktabs: true, caption: "", label: "" });
+    expect(t).toContain("Cell 1.1 & Cell 1.2 \\\\");
+    expect(t).not.toContain("Header");
+    expect(t).toContain("\\caption{Caption}");
+    expect(t).toContain("\\label{tab:label}");
+  });
+  it("turns placeholders into tab stops for the editor", () => {
+    const t = tableBlock({ rows: 2, cols: 2, header: true, booktabs: true, caption: "", label: "" }, true);
+    expect(t).toContain("${Header 1} & ${Header 2} \\\\");
+    expect(t).toContain("${Cell 1.1} & ${Cell 1.2} \\\\");
+    expect(t).toContain("\\caption{${Caption}}");
+    // A caption that itself looks like a field stays plain text.
+    const odd = tableBlock({ rows: 1, cols: 1, header: false, booktabs: true, caption: "Cost ${x}", label: "" }, true);
+    expect(odd).not.toContain("${Cell");
   });
   it("builds a ruled table without booktabs", () => {
     const t = tableBlock({ rows: 1, cols: 3, header: false, booktabs: false, caption: "", label: "" });
     expect(t).toContain("{|l|l|l|}");
     expect(t).toContain("\\hline");
-    expect(t).not.toContain("\\caption");
+    expect(t).toContain("\\caption{Caption}");
   });
   it("slugs", () => {
     expect(slug("Hello, World!")).toBe("hello-world");

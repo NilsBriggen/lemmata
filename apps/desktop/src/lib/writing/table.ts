@@ -76,14 +76,22 @@ export function figureBlock(o: FigureOptions): { text: string; cursor: number } 
 
 export interface TableOptions { rows: number; cols: number; header: boolean; booktabs: boolean; caption: string; label: string }
 
-export function tableBlock(o: TableOptions): string {
-  const cell = (r: number, c: number) => (o.header && r === 0 ? `Header ${c + 1}` : "");
+/**
+ * A table to insert. The cells are filled with placeholders ("Header 1",
+ * "Cell 2.3", "Caption") so the result is visible right away; with `fields`,
+ * each placeholder is a tab stop, so Tab selects the next one to type over.
+ */
+export function tableBlock(o: TableOptions, fields = false): string {
+  // Text that looks like a snippet field would be misread as one.
+  const useFields = fields && !/[#$]\{/.test(o.caption + o.label);
+  const ph = (text: string) => (useFields ? `\${${text}}` : text);
+  const cell = (r: number, c: number) => (o.header && r === 0 ? ph(`Header ${c + 1}`) : ph(`Cell ${o.header ? r : r + 1}.${c + 1}`));
   const row = (r: number) => "    " + Array.from({ length: o.cols }, (_, c) => cell(r, c)).join(" & ") + " \\\\";
   const [top, mid, bottom] = o.booktabs ? ["\\toprule", "\\midrule", "\\bottomrule"] : ["\\hline", "\\hline", "\\hline"];
   const lines = ["\\begin{table}[htbp]", "  \\centering"];
-  if (o.caption.trim()) lines.push(`  \\caption{${o.caption.trim()}}`);
+  lines.push(`  \\caption{${o.caption.trim() || ph("Caption")}}`);
   const label = o.label.trim() || (o.caption.trim() ? slug(o.caption).slice(0, 30) : "");
-  if (label) lines.push(`  \\label{tab:${label.replace(/^tab:/, "")}}`);
+  lines.push(`  \\label{tab:${label ? label.replace(/^tab:/, "") : ph("label")}}`);
   lines.push(`  \\begin{tabular}{${o.booktabs ? "l".repeat(o.cols) : "|" + "l|".repeat(o.cols)}}`, `    ${top}`);
   for (let r = 0; r < o.rows; r++) {
     lines.push(row(r));

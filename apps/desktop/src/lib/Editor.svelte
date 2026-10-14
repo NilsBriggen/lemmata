@@ -153,6 +153,20 @@
     if (needs) onNeedsPackage?.(needs);
   }
 
+  /** Inserts a snippet template (`${}` tab stops) on its own lines, like a figure or table. */
+  export function insertBlock(template: string, needs?: string) {
+    if (!view) return;
+    const head = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(head);
+    if (view.state.sliceDoc(line.from, head).trim()) {
+      view.dispatch({ changes: { from: head, insert: "\n" }, selection: { anchor: head + 1 } });
+    }
+    const at = view.state.selection.main.head;
+    snippet(reindent(template, unitOf(settings.indent)) + "\n")(view, null, at, at);
+    view.focus();
+    if (needs) onNeedsPackage?.(needs);
+  }
+
   /** Document position under a window point, for drops. */
   export function posAtPoint(x: number, y: number): number | null {
     return view?.posAtCoords({ x, y }) ?? null;
