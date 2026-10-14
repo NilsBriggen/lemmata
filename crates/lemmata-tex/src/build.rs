@@ -16,6 +16,8 @@ pub enum Error {
     NoLatexmk,
     #[error("could not start latexmk: {0}")]
     Spawn(std::io::Error),
+    #[error("could not start {0}: {1}")]
+    SpawnTool(String, std::io::Error),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -120,42 +122,37 @@ pub async fn build(
         .current_dir(&project.root)
         .stdin(Stdio::null())
         .stdout(out)
-        .stderr(err)
-        .kill_on_drop(true);
-    let mut path_dirs: Vec<&Path> = Vec::new();
-    path_dirs.extend(opts.bin_dir);
-    path_dirs.extend(opts.perl_dir);
-    if !path_dirs.is_empty() {
-        cmd.env("PATH", prepend_paths(&path_dirs));
-    }
-    #[cfg(unix)]
-    cmd.process_group(0);
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-
-    let mut child = cmd.spawn().map_err(Error::Spawn)?;
-    let pid = child.id();
+        .stderr(err);
+    set_path(&mut cmd, opts);
 
     let limit = match project.config.timeout_secs {
         0 => Duration::from_secs(60 * 60 * 24),
         n => Duration::from_secs(n),
     };
-    let status = tokio::select! {
-        res = child.wait() => match res {
-            Ok(s) if s.success() => Status::Success,
-            _ => Status::Failed,
-        },
-        _ = tokio::time::sleep(limit) => {
-            kill_tree(pid);
-            let _ = child.wait().await;
-            Status::Timeout
+    let mut cancel = cancel;
+    let mut status = run_step(cmd, limit, &mut cancel)
+        .await?
+        .ok_or(Error::Spawn(std::io::Error::other("could not start")))?;
+
+    // latexmk can fail to start at all (Perl missing, or blocked by a Windows
+    // application control policy) and then writes no log. Rather than give up,
+    // run the engine ourselves: the same passes, without latexmk.
+    let log_fresh = std::fs::metadata(project.log_path())
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t + Duration::from_secs(1) >= started_at);
+    let mut fell_back = false;
+    if status == Status::Failed
+        && !log_fresh
+        && tool(opts, project.config.engine.binary()).is_some()
+    {
+        match direct_build(project, opts, limit, &mut cancel).await {
+            Ok(s) => {
+                status = s;
+                fell_back = true;
+            }
+            Err(e) => eprintln!("lemmata: building without latexmk failed too: {e}"),
         }
-        _ = cancel => {
-            kill_tree(pid);
-            let _ = child.wait().await;
-            Status::Cancelled
-        }
-    };
+    }
 
     let duration_ms = started.elapsed().as_millis() as u64;
     if status == Status::Cancelled {
@@ -247,6 +244,20 @@ pub async fn build(
         }
     }
 
+    if fell_back {
+        let tail = std::fs::read(&output_path)
+            .map(|b| tail_of(&String::from_utf8_lossy(&b), 4000))
+            .unwrap_or_default();
+        let mut note = lemmata_log::launcher::launcher_failure(&tail);
+        note.severity = lemmata_log::Severity::Info;
+        note.message = format!(
+            "latexmk could not run, so Lemmata built with {} directly. {}",
+            project.config.engine.binary(),
+            note.message
+        );
+        diagnostics.push(note);
+    }
+
     // Failed without a single error in the log: latexmk never got to TeX.
     if status == Status::Failed
         && !diagnostics
@@ -265,6 +276,198 @@ pub async fn build(
         pdf: fresh.then_some(pdf),
         diagnostics,
     })
+}
+
+/// Puts the TeX and Perl folders first on PATH.
+fn set_path(cmd: &mut Command, opts: &BuildOptions<'_>) {
+    let mut path_dirs: Vec<&Path> = Vec::new();
+    path_dirs.extend(opts.bin_dir);
+    path_dirs.extend(opts.perl_dir);
+    if !path_dirs.is_empty() {
+        cmd.env("PATH", prepend_paths(&path_dirs));
+    }
+}
+
+/// Runs one command to the end, killing it and its children on timeout or
+/// cancel. `None` means it could not be started.
+async fn run_step(
+    mut cmd: Command,
+    limit: Duration,
+    cancel: &mut oneshot::Receiver<()>,
+) -> Result<Option<Status>, Error> {
+    cmd.kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return Err(Error::Spawn(e)),
+    };
+    let pid = child.id();
+    Ok(Some(tokio::select! {
+        res = child.wait() => match res {
+            Ok(s) if s.success() => Status::Success,
+            _ => Status::Failed,
+        },
+        _ = tokio::time::sleep(limit) => {
+            kill_tree(pid);
+            let _ = child.wait().await;
+            Status::Timeout
+        }
+        _ = cancel => {
+            kill_tree(pid);
+            let _ = child.wait().await;
+            Status::Cancelled
+        }
+    }))
+}
+
+/// A tool by name from one folder, if it is there.
+fn in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
+    Some(dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))).filter(|p| p.is_file())
+}
+
+/// The engine must be the one TeX was detected with: from its folder, or from
+/// PATH when no folder is known.
+fn tool(opts: &BuildOptions<'_>, name: &str) -> Option<PathBuf> {
+    match opts.bin_dir {
+        Some(dir) => in_dir(dir, name),
+        None => which::which(name).ok(),
+    }
+}
+
+/// biber and bibtex can live elsewhere than the engine (Arch puts biber in
+/// vendor_perl): the TeX folder, the Perl folder, then PATH.
+fn helper(opts: &BuildOptions<'_>, name: &str) -> Option<PathBuf> {
+    opts.bin_dir
+        .and_then(|d| in_dir(d, name))
+        .or_else(|| opts.perl_dir.and_then(|d| in_dir(d, name)))
+        .or_else(|| which::which(name).ok())
+}
+
+const MAX_PASSES: usize = 5;
+
+/// The part of latexmk that matters, without latexmk: run the engine, run
+/// biber or bibtex once when citations need it, and run the engine again
+/// while the log asks for another pass. Returns the status of the last run.
+async fn direct_build(
+    project: &Project,
+    opts: &BuildOptions<'_>,
+    limit: Duration,
+    cancel: &mut oneshot::Receiver<()>,
+) -> Result<Status, Error> {
+    let engine = project.config.engine.binary();
+    let engine_path = tool(opts, engine)
+        .ok_or_else(|| Error::SpawnTool(engine.into(), std::io::Error::other("not found")))?;
+    let outdir = project.outdir_abs();
+    let stem = project
+        .main
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "main".into());
+    let mirror = |ext: &str| outdir.join(project.main.with_extension(ext));
+    let main = project.main.to_string_lossy().replace('\\', "/");
+    let mut bib_done = false;
+    let mut status = Status::Failed;
+
+    for pass in 0..MAX_PASSES {
+        let mut cmd = Command::new(&engine_path);
+        cmd.args(["-interaction=nonstopmode", "-file-line-error", "-synctex=1"]);
+        cmd.arg(if project.config.shell_escape {
+            "-shell-escape"
+        } else {
+            "-no-shell-escape"
+        });
+        if project.config.stop_on_error {
+            cmd.arg("-halt-on-error");
+        }
+        if opts.miktex {
+            cmd.arg("--enable-installer");
+        }
+        cmd.arg(format!("-output-directory={}", project.config.outdir));
+        if project.config.draft {
+            cmd.arg(format!(
+                "\\PassOptionsToPackage{{draft}}{{graphicx}}\\input{{{main}}}"
+            ));
+        } else {
+            cmd.arg(&main);
+        }
+        cmd.current_dir(&project.root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        set_path(&mut cmd, opts);
+        status = run_step(cmd, limit, cancel)
+            .await?
+            .unwrap_or(Status::Failed);
+        if status != Status::Success {
+            return Ok(status);
+        }
+
+        let log = std::fs::read(mirror("log"))
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default();
+        let rerun = [
+            "Rerun to get",
+            "Please rerun LaTeX",
+            "Label(s) may have changed",
+            "Please (re)run Biber",
+        ]
+        .iter()
+        .any(|m| log.contains(m));
+
+        // The bibliography tool runs once, as soon as the first pass has listed the citations.
+        let mut ran_bib = false;
+        if !bib_done && pass < MAX_PASSES - 1 {
+            let bib = match project.config.bib {
+                lemmata_project::Bib::Biber if mirror("bcf").is_file() => Some((
+                    "biber",
+                    vec![
+                        format!("--input-directory={}", project.config.outdir),
+                        format!("--output-directory={}", project.config.outdir),
+                        stem.clone(),
+                    ],
+                )),
+                lemmata_project::Bib::Bibtex
+                    if std::fs::read_to_string(mirror("aux"))
+                        .is_ok_and(|a| a.contains("\\bibdata")) =>
+                {
+                    Some((
+                        "bibtex",
+                        vec![format!(
+                            "{}/{stem}",
+                            project.config.outdir.trim_end_matches('/')
+                        )],
+                    ))
+                }
+                _ => None,
+            };
+            if let Some((name, args)) = bib
+                && let Some(path) = helper(opts, name)
+            {
+                let mut cmd = Command::new(path);
+                cmd.args(args)
+                    .current_dir(&project.root)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                set_path(&mut cmd, opts);
+                // A failing bibliography run shows up in the .blg; the next pass still matters.
+                if let Some(s @ (Status::Cancelled | Status::Timeout)) =
+                    run_step(cmd, limit, cancel).await?
+                {
+                    return Ok(s);
+                }
+                bib_done = true;
+                ran_bib = true;
+            }
+        }
+        if !rerun && !ran_bib {
+            break;
+        }
+    }
+    Ok(status)
 }
 
 /// The last `max` bytes of `text`, cut at a character boundary.
@@ -478,6 +681,118 @@ mod tests {
         assert!(args.contains(&"-usepretex=\\PassOptionsToPackage{draft}{graphicx}".to_string()));
     }
 
+    /// latexmk dies without a log (Perl blocked); the engine is run directly, twice because the first log asks for a rerun.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn builds_without_latexmk_when_it_cannot_start() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let tools = d.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = tools.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let latexmk = script(
+            "latexmk",
+            "echo 'Windows API error 4551: blocked' >&2\nexit 1\n",
+        );
+        script(
+            "pdflatex",
+            "out=.lemmata/build\nfor a in \"$@\"; do case $a in -output-directory=*) out=${a#-output-directory=};; esac; done\nn=$(cat .count 2>/dev/null || echo 0); n=$((n+1)); echo $n > .count\nif [ $n -eq 1 ]; then echo 'LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right.' > $out/main.log; else echo done > $out/main.log; fi\necho pdf > $out/main.pdf\n",
+        );
+        let p = Project::open(d.path()).unwrap();
+        let (_tx, rx) = oneshot::channel();
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: Some(&tools),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let out = build(&p, &opts, rx).await.unwrap();
+        assert_eq!(out.status, Status::Success);
+        assert_eq!(
+            std::fs::read_to_string(d.path().join(".count"))
+                .unwrap()
+                .trim(),
+            "2"
+        );
+        assert!(out.pdf.is_some());
+        let note = out
+            .diagnostics
+            .iter()
+            .find(|x| x.message.contains("built with pdflatex directly"))
+            .expect("a note about the fallback");
+        assert_eq!(note.severity, lemmata_log::Severity::Info);
+        assert!(note.message.contains("blocked"), "{}", note.message);
+    }
+
+    /// With real TeX: the direct build needs biber and a second pass to resolve
+    /// \ref and \cite, and still reports what really is undefined.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn direct_build_resolves_references_and_citations() {
+        use std::os::unix::fs::PermissionsExt;
+        let (Ok(pdflatex), Ok(_), true) = (which::which("pdflatex"), which::which("biber"), true)
+        else {
+            return; // no TeX on this machine: the CI job with TeX runs this
+        };
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/article");
+        let d = tempfile::tempdir().unwrap();
+        fn copy(from: &Path, to: &Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for e in std::fs::read_dir(from).unwrap().flatten() {
+                let (src, dst) = (e.path(), to.join(e.file_name()));
+                if src.is_dir() {
+                    copy(&src, &dst)
+                } else {
+                    std::fs::copy(&src, &dst).map(|_| ()).unwrap()
+                }
+            }
+        }
+        copy(&fixture, d.path());
+        let latexmk = d.path().join("latexmk-fake");
+        std::fs::write(&latexmk, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&latexmk, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let (_tx, rx) = oneshot::channel();
+        let bin = pdflatex.parent().unwrap().to_path_buf();
+        // biber lives elsewhere on some systems (vendor_perl); put its folder on PATH as the app would.
+        let biber_dir = which::which("biber")
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: Some(&bin),
+            installer: None,
+            miktex: false,
+            perl_dir: Some(&biber_dir),
+        };
+        let out = build(&p, &opts, rx).await.unwrap();
+        let messages: Vec<&str> = out.diagnostics.iter().map(|x| x.message.as_str()).collect();
+        assert!(out.pdf.is_some(), "{messages:?}");
+        assert!(
+            messages.iter().any(|m| m.contains("nobody2020")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("sec:missing")),
+            "{messages:?}"
+        );
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.contains("schulman2017ppo") || m.contains("eq:objective")),
+            "{messages:?}"
+        );
+    }
+
     #[test]
     fn miktex_installs_packages_unattended() {
         let d = tempfile::tempdir().unwrap();
@@ -516,7 +831,7 @@ mod tests {
         let (_tx, rx) = oneshot::channel();
         let opts = BuildOptions {
             latexmk: &fake,
-            bin_dir: None,
+            bin_dir: Some(d.path()), // no engine in there: nothing to fall back to
             installer: None,
             miktex: false,
             perl_dir: None,

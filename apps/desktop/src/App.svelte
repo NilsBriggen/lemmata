@@ -41,6 +41,7 @@
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { loadSession, saveSession } from "./lib/session";
   import { magicLanguage } from "./lib/spell/magic";
+  import { loadTexCache, saveTexCache } from "./lib/texCache";
   import { clearSelection, prune, reveal, setGitStatus, tree as treeView } from "./lib/treeSelection.svelte";
   import { dragState } from "./lib/treeDrag.svelte";
   import { findEntry } from "./lib/treeModel";
@@ -153,6 +154,7 @@
     checking = true;
     try {
       tex = await api.texStatus(extraDir);
+      saveTexCache(tex);
     } finally {
       checking = false;
     }
@@ -184,8 +186,9 @@
     diagnostics = [];
     outcome = null;
     headings = [];
-    await startLsp(project.root);
+    // The file first: texlab can take a moment to start, and nothing here needs it.
     await openFile(project.main);
+    await startLsp(project.root);
     applySpellLanguage();
     setMathMacros(contents.get(project.main) ?? "");
     refreshOutline();
@@ -1161,7 +1164,15 @@
     );
     await loadSettings();
     appliedEditor = "";
-    await recheck(settings.texDir ?? undefined);
+    // Detection can take seconds (it runs pdflatex). With a remembered working result the app starts at
+    // once and checks again in the background; without one it has to wait for the answer.
+    const remembered = loadTexCache();
+    if (remembered) {
+      tex = remembered;
+      recheck(settings.texDir ?? undefined).catch((e) => reportOnce("tex", `Could not check the TeX installation: ${errorMessage(e)}`));
+    } else {
+      await recheck(settings.texDir ?? undefined);
+    }
     if (settings.checkForUpdates) {
       checkForUpdates();
       setInterval(() => settings.checkForUpdates && !update && checkForUpdates(), UPDATE_INTERVAL_MS);
