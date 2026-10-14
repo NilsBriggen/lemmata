@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.1.2 (2026-10-14)
+
+### Added
+- New tables come prefilled, with Tab stepping through the cells
+
+### Fixed
+- A build folder can't point outside the project; one build at a time
+- Editor, notices and docs from the review
 ## 1.1.1 (2026-10-14)
 
 ### Added
