@@ -229,11 +229,43 @@ fn probe(source: &Source) -> Vec<Tool> {
         .collect()
 }
 
+/// Names the distribution from where it is installed, without starting a
+/// program. Starting `pdflatex` can take seconds on a Windows setup that checks
+/// every launch, and the answer is in the path for the usual installs.
+pub fn identify_by_path(pdflatex: &Path) -> Option<Distribution> {
+    let path = pdflatex.to_string_lossy().to_lowercase().replace('\\', "/");
+    if path.contains("/miktex/") {
+        return Some(Distribution::Miktex { version: None });
+    }
+    // .../texlive/2025/bin/<platform>/pdflatex
+    let after = &path[path.find("/texlive/")? + "/texlive/".len()..];
+    let year = after.split('/').next()?;
+    (year.len() == 4 && year.chars().all(|c| c.is_ascii_digit())).then(|| Distribution::TexLive {
+        year: year.parse().ok(),
+    })
+}
+
 fn identify(pdflatex: &Path) -> Distribution {
-    let Ok(out) = Command::new(pdflatex).arg("--version").output() else {
-        return Distribution::Unknown;
-    };
-    parse_version(&String::from_utf8_lossy(&out.stdout))
+    if let Some(known) = identify_by_path(pdflatex) {
+        return known;
+    }
+    // Ask the program itself, but not for long: a slow start must not hold up the app.
+    let exe = pdflatex.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut cmd = Command::new(exe);
+        cmd.arg("--version");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let _ = tx.send(cmd.output());
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(4)) {
+        Ok(Ok(out)) => parse_version(&String::from_utf8_lossy(&out.stdout)),
+        _ => Distribution::Unknown,
+    }
 }
 
 pub fn parse_version(text: &str) -> Distribution {
@@ -256,6 +288,25 @@ pub fn parse_version(text: &str) -> Distribution {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identifies_the_usual_installs_from_their_path() {
+        let id = |p: &str| identify_by_path(Path::new(p));
+        assert_eq!(
+            id(r"C:\Users\Jan\AppData\Local\Programs\MiKTeX\miktex\bin\x64\pdflatex.exe"),
+            Some(Distribution::Miktex { version: None })
+        );
+        assert_eq!(
+            id(r"C:\texlive\2025\bin\windows\pdflatex.exe"),
+            Some(Distribution::TexLive { year: Some(2025) })
+        );
+        assert_eq!(
+            id("/usr/local/texlive/2024/bin/x86_64-linux/pdflatex"),
+            Some(Distribution::TexLive { year: Some(2024) })
+        );
+        assert_eq!(id("/usr/bin/pdflatex"), None);
+        assert_eq!(id("/opt/texlive/current/bin/pdflatex"), None);
+    }
 
     #[test]
     fn identifies_distributions() {
