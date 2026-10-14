@@ -8,7 +8,9 @@ label (linux_x86_64, linux_aarch64, macos_universal, windows_x86_64), each
 containing that job's Tauri bundle folder. This script:
 
   * copies every installer to Lemmata_<version>_<label><ext>
-  * writes latest.json for the Tauri updater when .sig files are present
+  * writes latest.json for the Tauri updater when .sig files are present, but
+    only for plain X.Y.Z versions: a release candidate (X.Y.Z-rc.N) must never
+    reach users of the stable channel through the updater
   * writes SHA256SUMS.txt
 
 The names are a contract with the website (docs/website-handoff.md) and the
@@ -79,7 +81,10 @@ def main() -> None:
     if not published:
         sys.exit("no installers found")
 
-    if signatures:
+    prerelease = "-" in version
+    if prerelease:
+        print(f"{version} is a pre-release: skipping the updater manifest so stable users are not offered it")
+    elif signatures:
         base = f"https://github.com/{repo}/releases/download/{tag}"
         platforms = {}
         for label, entries in UPDATER.items():
@@ -93,7 +98,6 @@ def main() -> None:
             "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "platforms": platforms,
         }
-        # Every release is a production release, so there is one manifest.
         name = "latest.json"
         (out / name).write_text(json.dumps(manifest, indent=2) + "\n")
         print(f"wrote {name} for {', '.join(platforms)}")

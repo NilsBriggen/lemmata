@@ -1,6 +1,8 @@
 name: Release
 
-# Push a tag made by scripts/release.sh (vX.Y.Z or vX.Y.Z-rc.N). Every tag is published as a production release.
+# Push a tag made by scripts/release.sh (vX.Y.Z or vX.Y.Z-rc.N). A plain tag is a production release (the
+# "latest" one, with the updater manifest); a tag with a suffix is a GitHub pre-release that the updater and the
+# website's "latest" link never see.
 on:
   push:
     tags: ["v*"]
@@ -12,7 +14,56 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Cheap checks that should fail before 40 minutes of builds: the tag has the
+  # form scripts/release.sh makes, and every version field agrees with it.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the tag and the version fields
+        shell: bash
+        run: |
+          if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::$GITHUB_REF_NAME is not vX.Y.Z or vX.Y.Z-suffix. Use scripts/release.sh."
+            exit 1
+          fi
+          version=${GITHUB_REF_NAME#v}
+          cargo_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          package_version=$(python3 -c 'import json; print(json.load(open("apps/desktop/package.json"))["version"])')
+          for found in "$cargo_version" "$package_version"; do
+            if [[ "$found" != "$version" ]]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match the version in Cargo.toml ($cargo_version) or apps/desktop/package.json ($package_version)."
+              exit 1
+            fi
+          done
+
+  # Publishing waits for CI on the same commit, so a red commit is never released.
+  # The builds run meanwhile; only the publish job needs this.
+  ci-gate:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Wait for CI on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          for i in $(seq 1 90); do
+            result=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --json status,conclusion --jq '[.[]|select(.status=="completed")|.conclusion]|first // "pending"')
+            echo "CI: $result"
+            case "$result" in
+              success) exit 0 ;;
+              pending) sleep 30 ;;
+              *) echo "::error::CI did not pass for $GITHUB_SHA ($result). Fix it and tag again."; exit 1 ;;
+            esac
+          done
+          echo "::error::CI did not finish within 45 minutes."
+          exit 1
+
   build:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -104,7 +155,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: build
+    needs: [build, ci-gate]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
@@ -120,7 +171,6 @@ jobs:
         run: |
           version=${GITHUB_REF_NAME#v}
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          # Every release is a production release. Only the package managers need a plain X.Y.Z version.
           if [[ "$version" == *-* ]]; then echo "plain=false"; else echo "plain=true"; fi >> "$GITHUB_OUTPUT"
       - name: Rename assets, write checksums and updater manifest
         run: python3 -I scripts/finalize-release.py artifacts dist "${{ steps.meta.outputs.version }}" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
@@ -135,7 +185,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* --title "Lemmata ${{ steps.meta.outputs.version }}" --notes-file notes.md --latest
+          if [[ "${{ steps.meta.outputs.plain }}" == "true" ]]; then flag=--latest; else flag=--prerelease; fi
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Lemmata ${{ steps.meta.outputs.version }}" --notes-file notes.md $flag
 
   aur:
     needs: publish
@@ -158,7 +209,7 @@ jobs:
           cat PKGBUILD
       - name: Push to the AUR
         if: env.AUR_SSH_KEY != ''
-        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3 (pinned: this step receives the AUR key)
         with:
           pkgname: lemmata-bin
           pkgbuild: ./PKGBUILD
@@ -202,7 +253,7 @@ jobs:
     steps:
       - name: Open a PR to microsoft/winget-pkgs
         if: env.WINGET_TOKEN != ''
-        uses: vedantmgoyal9/winget-releaser@v2
+        uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2 (pinned: this step receives the winget token)
         with:
           identifier: NilsBriggen.Lemmata
           installers-regex: '_windows_x86_64-setup\.exe$'
