@@ -137,9 +137,10 @@ pub async fn build(
     // latexmk can fail to start at all (Perl missing, or blocked by a Windows
     // application control policy) and then writes no log. Rather than give up,
     // run the engine ourselves: the same passes, without latexmk.
+    // Strictly newer than the start: a log left by the last build must not count, even a second old.
     let log_fresh = std::fs::metadata(project.log_path())
         .and_then(|m| m.modified())
-        .is_ok_and(|t| t + Duration::from_secs(1) >= started_at);
+        .is_ok_and(|t| t >= started_at);
     let mut fell_back = false;
     if status == Status::Failed
         && !log_fresh
@@ -361,14 +362,9 @@ async fn direct_build(
     let engine_path = tool(opts, engine)
         .ok_or_else(|| Error::SpawnTool(engine.into(), std::io::Error::other("not found")))?;
     let outdir = project.outdir_abs();
-    let stem = project
-        .main
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "main".into());
     let mirror = |ext: &str| outdir.join(project.main.with_extension(ext));
     let main = project.main.to_string_lossy().replace('\\', "/");
-    let mut bib_done = false;
+    let mut bib_checked = false;
     let mut status = Status::Failed;
 
     for pass in 0..MAX_PASSES {
@@ -412,62 +408,125 @@ async fn direct_build(
             "Rerun to get",
             "Please rerun LaTeX",
             "Label(s) may have changed",
-            "Please (re)run Biber",
         ]
         .iter()
         .any(|m| log.contains(m));
 
-        // The bibliography tool runs once, as soon as the first pass has listed the citations.
-        let mut ran_bib = false;
-        if !bib_done && pass < MAX_PASSES - 1 {
-            let bib = match project.config.bib {
-                lemmata_project::Bib::Biber if mirror("bcf").is_file() => Some((
-                    "biber",
-                    vec![
-                        format!("--input-directory={}", project.config.outdir),
-                        format!("--output-directory={}", project.config.outdir),
-                        stem.clone(),
-                    ],
-                )),
-                lemmata_project::Bib::Bibtex
-                    if std::fs::read_to_string(mirror("aux"))
-                        .is_ok_and(|a| a.contains("\\bibdata")) =>
-                {
-                    Some((
-                        "bibtex",
-                        vec![format!(
-                            "{}/{stem}",
-                            project.config.outdir.trim_end_matches('/')
-                        )],
-                    ))
-                }
-                _ => None,
-            };
-            if let Some((name, args)) = bib
-                && let Some(path) = helper(opts, name)
-            {
-                let mut cmd = Command::new(path);
-                cmd.args(args)
-                    .current_dir(&project.root)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null());
-                set_path(&mut cmd, opts);
-                // A failing bibliography run shows up in the .blg; the next pass still matters.
-                if let Some(s @ (Status::Cancelled | Status::Timeout)) =
-                    run_step(cmd, limit, cancel).await?
-                {
-                    return Ok(s);
-                }
-                bib_done = true;
-                ran_bib = true;
+        // The bibliography tool runs at most once, and only when what it reads has changed.
+        let mut again = rerun;
+        if !bib_checked && pass < MAX_PASSES - 1 {
+            bib_checked = true;
+            match run_bibliography(project, opts, limit, cancel).await? {
+                Bib::Stopped(s) => return Ok(s),
+                // The new .bbl only matters if it differs from the one the last pass used.
+                Bib::Ran { changed } => again |= changed,
+                Bib::Skipped => {}
             }
         }
-        if !rerun && !ran_bib {
+        if !again {
             break;
         }
     }
     Ok(status)
+}
+
+enum Bib {
+    Skipped,
+    Ran { changed: bool },
+    Stopped(Status),
+}
+
+/// Hash of what the bibliography tool would read: the citations TeX collected
+/// (from the .bcf for biber, the \citation lines of the .aux for bibtex) and the
+/// size and time of every .bib file.
+fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
+    use std::hash::{Hash, Hasher};
+    let mirror = |ext: &str| project.outdir_abs().join(project.main.with_extension(ext));
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    if biber {
+        std::fs::read(mirror("bcf")).ok()?.hash(&mut h);
+    } else {
+        let aux = std::fs::read_to_string(mirror("aux")).ok()?;
+        if !aux.contains("\\bibdata") {
+            return None;
+        }
+        for line in aux.lines().filter(|l| {
+            l.starts_with("\\citation") || l.starts_with("\\bibstyle") || l.starts_with("\\bibdata")
+        }) {
+            line.hash(&mut h);
+        }
+    }
+    let mut bibs = Vec::new();
+    fn walk(entries: &[lemmata_project::Entry], out: &mut Vec<String>) {
+        for e in entries {
+            if e.is_dir {
+                walk(&e.children, out);
+            } else if e.path.ends_with(".bib") {
+                out.push(format!("{}:{}:{}", e.path, e.size, e.modified));
+            }
+        }
+    }
+    walk(
+        &lemmata_project::tree(&project.root, &project.config.outdir),
+        &mut bibs,
+    );
+    bibs.hash(&mut h);
+    Some(format!("{:x}", h.finish()))
+}
+
+/// Runs biber or bibtex when the .bbl is missing or what the tool reads changed since it last ran.
+async fn run_bibliography(
+    project: &Project,
+    opts: &BuildOptions<'_>,
+    limit: Duration,
+    cancel: &mut oneshot::Receiver<()>,
+) -> Result<Bib, Error> {
+    let biber = project.config.bib == lemmata_project::Bib::Biber;
+    let mirror = |ext: &str| project.outdir_abs().join(project.main.with_extension(ext));
+    let Some(fingerprint) = bib_fingerprint(project, biber) else {
+        return Ok(Bib::Skipped);
+    };
+    let (bbl, stamp) = (mirror("bbl"), mirror("lemmata-bib"));
+    if bbl.is_file() && std::fs::read_to_string(&stamp).is_ok_and(|s| s == fingerprint) {
+        return Ok(Bib::Skipped);
+    }
+    let stem = project
+        .main
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "main".into());
+    let outdir = project.config.outdir.trim_end_matches('/');
+    let (name, args) = if biber {
+        (
+            "biber",
+            vec![
+                format!("--input-directory={outdir}"),
+                format!("--output-directory={outdir}"),
+                stem,
+            ],
+        )
+    } else {
+        ("bibtex", vec![format!("{outdir}/{stem}")])
+    };
+    let Some(path) = helper(opts, name) else {
+        return Ok(Bib::Skipped);
+    };
+    let before = std::fs::read(&bbl).ok();
+    let mut cmd = Command::new(path);
+    cmd.args(args)
+        .current_dir(&project.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    set_path(&mut cmd, opts);
+    // A failing bibliography run shows up in the .blg; the next pass still matters.
+    if let Some(s @ (Status::Cancelled | Status::Timeout)) = run_step(cmd, limit, cancel).await? {
+        return Ok(Bib::Stopped(s));
+    }
+    let _ = std::fs::write(&stamp, &fingerprint);
+    Ok(Bib::Ran {
+        changed: std::fs::read(&bbl).ok() != before,
+    })
 }
 
 /// The last `max` bytes of `text`, cut at a character boundary.
@@ -791,6 +850,94 @@ mod tests {
                 .any(|m| m.contains("schulman2017ppo") || m.contains("eq:objective")),
             "{messages:?}"
         );
+    }
+
+    /// With real TeX and programs that count their starts: a fresh build takes the passes latexmk would,
+    /// and an unchanged one starts pdflatex once and biber not at all.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn direct_build_is_incremental() {
+        use std::os::unix::fs::PermissionsExt;
+        let (Ok(pdflatex), Ok(biber)) = (which::which("pdflatex"), which::which("biber")) else {
+            return;
+        };
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/article");
+        let d = tempfile::tempdir().unwrap();
+        fn copy(from: &Path, to: &Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for e in std::fs::read_dir(from).unwrap().flatten() {
+                let (src, dst) = (e.path(), to.join(e.file_name()));
+                if src.is_dir() {
+                    copy(&src, &dst)
+                } else {
+                    std::fs::copy(&src, &dst).map(|_| ()).unwrap()
+                }
+            }
+        }
+        copy(&fixture, d.path());
+        let tools = tempfile::tempdir().unwrap();
+        let calls = tools.path().join("calls");
+        let wrap = |name: &str, real: &Path| {
+            let p = tools.path().join(name);
+            std::fs::write(
+                &p,
+                format!(
+                    "#!/bin/sh\necho {name} >> {}\nexec {} \"$@\"\n",
+                    calls.display(),
+                    real.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        wrap("pdflatex", &pdflatex);
+        wrap("biber", &biber);
+        let latexmk = d.path().join("latexmk-fake");
+        std::fs::write(&latexmk, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&latexmk, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let count = |name: &str| {
+            std::fs::read_to_string(&calls)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| *l == name)
+                .count()
+        };
+        let run = || async {
+            let (_tx, rx) = oneshot::channel();
+            let opts = BuildOptions {
+                latexmk: &latexmk,
+                bin_dir: Some(tools.path()),
+                installer: None,
+                miktex: false,
+                perl_dir: None,
+            };
+            build(&p, &opts, rx).await.unwrap()
+        };
+        let first = run().await;
+        assert!(first.pdf.is_some());
+        let (latex_first, biber_first) = (count("pdflatex"), count("biber"));
+        assert_eq!(biber_first, 1, "biber runs once on a fresh build");
+        assert!(
+            (2..=3).contains(&latex_first),
+            "a fresh build needs two or three passes, not {latex_first}"
+        );
+        run().await;
+        assert_eq!(
+            count("pdflatex") - latex_first,
+            1,
+            "an unchanged build is one pass"
+        );
+        assert_eq!(count("biber"), biber_first, "and biber is not asked again");
+        // A new citation changes what biber reads, so it runs again.
+        let text = std::fs::read_to_string(d.path().join("chapters/method.tex")).unwrap();
+        std::fs::write(
+            d.path().join("chapters/method.tex"),
+            text.replace("schulman2017ppo", "schulman2017ppo,mnih2015human"),
+        )
+        .unwrap();
+        run().await;
+        assert_eq!(count("biber"), biber_first + 1);
     }
 
     #[test]

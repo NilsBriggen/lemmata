@@ -22,7 +22,10 @@ pub fn launcher_failure(output: &str) -> Diagnostic {
     } else if mentions_app_control(&lower) {
         (
             "Windows blocked a program that latexmk needs.".to_string(),
-            Some("An application control policy (Smart App Control, AppLocker or similar) refuses to run it, often Perl. Lemmata then builds with pdflatex directly, without latexmk. To use latexmk, allow the blocked program in Windows Security, or use a Perl that is signed.".to_string()),
+            Some(
+                "An application control policy (Smart App Control, AppLocker or similar) refuses to run it, often Perl. Lemmata builds with pdflatex directly instead, so nothing needs to change. To use latexmk, someone with admin rights has to allow the blocked program; turning Smart App Control off for this is permanent until Windows is reinstalled, so it is not recommended."
+                    .to_string(),
+            ),
             None,
         )
     } else if lower.contains("miktex")
