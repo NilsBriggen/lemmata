@@ -391,6 +391,12 @@
     grammar.configure(settings.grammar, settings.grammarUrl, lang);
   }
 
+  // Turning grammar checking on or off (or changing its server) in Preferences applies at once.
+  $effect(() => {
+    void [settings.grammar, settings.grammarUrl];
+    untrack(applySpellLanguage);
+  });
+
   async function addWord(word: string) {
     if (!project) return;
     const words = Array.from(new Set([...(project.config.words ?? []), word])).sort();
@@ -1469,7 +1475,7 @@
             notice: notice?.text ?? null,
             openError,
             conflicts: [...conflicts],
-            dialogs: Object.entries({ settingsOpen, prefsOpen, citeOpen, historyOpen, searchOpen, choosingMain, savingTemplate, palette, dialog, renaming, welcome })
+            dialogs: Object.entries({ settingsOpen, prefsOpen, citeOpen, historyOpen, searchOpen, choosingMain, savingTemplate, palette, dialog, renaming, welcome, bibManagerOpen, todosOpen, reviewOpen, snippetsOpen })
               .filter(([, v]) => !!v)
               .map(([k, v]) => (typeof v === "string" ? `${k}:${v}` : k)),
           }),

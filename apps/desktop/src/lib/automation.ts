@@ -6,6 +6,8 @@
 import { EditorView } from "@codemirror/view";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
+import { invoke } from "@tauri-apps/api/core";
+import { updateSettings, type Settings } from "./settings.svelte";
 
 /** What App.svelte hands over: read-only views of its state and a few entry points. */
 export interface Host {
@@ -169,6 +171,29 @@ export function install(host: Host) {
       const r = el.getBoundingClientRect();
       el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: r.left + r.width * x, clientY: r.top + r.height * y }));
     },
+    /** Moves the mouse over the first occurrence of `text` in the editor (for hover tooltips). */
+    hoverText: async ({ text }: { text: string }) => {
+      const v = view();
+      const at = v.state.doc.toString().indexOf(text);
+      if (at < 0) throw new Error(`"${text}" is not in the editor`);
+      v.dispatch({ effects: EditorView.scrollIntoView(at, { y: "center" }) });
+      await settle(150); // coordinates are only right once the scroll is drawn
+      const r = v.coordsAtPos(at + Math.floor(text.length / 2));
+      if (!r) throw new Error("the text is not on screen");
+      const init = { bubbles: true, clientX: (r.left + r.right) / 2, clientY: (r.top + r.bottom) / 2 };
+      const target = document.elementFromPoint(init.clientX, init.clientY) ?? v.contentDOM;
+      target.dispatchEvent(new MouseEvent("mouseover", init));
+      // A resting mouse still sends moves; the hover waits for it to settle.
+      for (let i = 0; i < 3; i++) {
+        target.dispatchEvent(new MouseEvent("mousemove", init));
+        await settle(80);
+      }
+      return { x: Math.round(init.clientX), y: Math.round(init.clientY), target: target.tagName.toLowerCase(), text: target.textContent?.slice(0, 40) };
+    },
+    /** Calls a backend command directly, for checking what the app gets. */
+    invoke: ({ cmd, args }: { cmd: string; args?: Record<string, unknown> }) => invoke(cmd, args ?? {}),
+    /** Changes an app setting, as Preferences would. */
+    setting: ({ key, value }: { key: keyof Settings; value: unknown }) => updateSettings({ [key]: value } as Partial<Settings>),
     /** Sets a localStorage value (as tests that reload the page do). */
     storage: ({ key, value }: { key: string; value: string }) => localStorage.setItem(key, value),
     /** Reloads the page; the call returns before the reload. */

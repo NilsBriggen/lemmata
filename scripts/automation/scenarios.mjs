@@ -127,9 +127,41 @@ export const scenarios = {
     await lem("key", { combo: "Control+s" });
     await lem("command", { id: "bib-manager" });
     await until(lem, "the bibliography manager", async () => (await lem("text", { selector: "[role=dialog]" }).catch(() => "")).includes("schulman2017ppo"));
-    await lem("key", { combo: "Escape" });
+    await lem("click", { selector: '[role=dialog] [aria-label="Close"]' });
+    if (await lem("exists", { selector: "[role=dialog]" })) throw new Error("the bibliography manager didn't close");
     await lem("idle", { timeout: 120_000 });
     await check(lem, "after TODOs and the manager");
+  },
+
+  async "shows hover cards for citations and equations"(lem) {
+    await lem("openFile", { path: "chapters/method.tex" });
+    // Hover again on each try: a tooltip that was dismissed (or a panel still closing) needs a new mouse move.
+    await until(lem, "the citation card", async () => {
+      await lem("hoverText", { text: "schulman2017ppo" });
+      return (await lem("text", { selector: ".cm-hover-card" }).catch(() => "")).includes("Proximal Policy");
+    });
+    await lem("key", { combo: "Escape" });
+    // The first "eq:objective" is the \\label itself; hover the \\ref.
+    await until(lem, "the rendered equation", async () => {
+      await lem("hoverText", { text: "ref{eq:objective}" });
+      return lem("exists", { selector: ".cm-hover-card .katex" });
+    });
+    await lem("key", { combo: "Escape" });
+    await lem("openFile", { path: "main.tex" });
+  },
+
+  async "underlines grammar mistakes (when a LanguageTool server runs)"(lem) {
+    const url = "http://localhost:8081";
+    if (await lem("invoke", { cmd: "grammar_status", args: { url } }).then(() => false, () => true)) return; // no server here
+    await lem("setting", { key: "grammar", value: "local" });
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { line: 12 });
+    await lem("type", { text: "This are a sentence with a mistake.\n\n" });
+    await until(lem, "a grammar underline", () => lem("exists", { selector: ".cm-grammar" }), 20_000);
+    for (let i = 0; i < 4; i++) await lem("key", { combo: "Control+z" });
+    await lem("setting", { key: "grammar", value: "off" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
   },
 
   async "keeps the PDF after switching to editor only and back"(lem) {
