@@ -1,5 +1,5 @@
-//! Update checks. The channel picks the manifest on lemmata.briggen.dev,
-//! which redirects to the GitHub release (see docs/website-handoff.md).
+//! Update checks against the manifest on lemmata.briggen.dev, which
+//! redirects to the latest GitHub release (see docs/website-handoff.md).
 
 use crate::{AppState, CmdResult, err};
 use serde::Serialize;
@@ -19,14 +19,8 @@ pub struct UpdateInfo {
 pub async fn update_check(
     app: AppHandle,
     state: State<'_, AppState>,
-    channel: String,
 ) -> CmdResult<Option<UpdateInfo>> {
-    let file = if channel == "beta" {
-        "beta.json"
-    } else {
-        "latest.json"
-    };
-    let url = format!("{BASE}/{file}").parse().map_err(err)?;
+    let url = format!("{BASE}/latest.json").parse().map_err(err)?;
     let updater = app
         .updater_builder()
         .endpoints(vec![url])

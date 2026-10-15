@@ -210,8 +210,7 @@ export const api = {
   /** Moves a project folder to the system trash. */
   trashProject: (path: string) => invoke<void>("trash_project", { path }),
   loadThumbnail: async (root: string) => new Uint8Array(await invoke<ArrayBuffer>("load_thumbnail", { root })),
-  updateCheck: (channel: string) =>
-    invoke<{ version: string; current: string; notes: string | null } | null>("update_check", { channel }),
+  updateCheck: () => invoke<{ version: string; current: string; notes: string | null } | null>("update_check"),
   updateInstall: () => invoke<void>("update_install"),
   bibEntries: () => invoke<{ files: string[]; entries: BibEntry[] }>("bib_entries"),
   bibAddReference: (id: string, file: string) => invoke<{ key: string; file: string }>("bib_add_reference", { id, file }),

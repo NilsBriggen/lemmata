@@ -1410,7 +1410,7 @@
   /** Returns a short message for the Preferences dialog. */
   async function checkForUpdates(): Promise<string> {
     try {
-      const found = await api.updateCheck(settings.updateChannel);
+      const found = await api.updateCheck();
       if (!found) return "Lemmata is up to date.";
       update = { version: found.version, progress: null, error: null };
       return `Lemmata ${found.version} is available.`;

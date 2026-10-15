@@ -222,7 +222,7 @@ A project's `lemmata.toml` can't turn it on by itself. If it does, Lemmata asks 
 
 ## Updates
 
-Lemmata checks for updates on start and every six hours, and asks before installing. You can turn the check off with *Check for updates automatically* in Preferences, or run **Check now** there. After an update, a short **What's new** window lists what the new version lets you do, once; it doesn't appear on a fresh install. Releases with a suffix such as `-rc.1` are published as pre-releases and are never offered by the updater. The *Channel* setting in Preferences offers Beta, but there are no separate beta builds, so it gives you the same releases as Stable.
+Lemmata checks for updates on start and every six hours, and asks before installing. You can turn the check off with *Check for updates automatically* in Preferences, or run **Check now** there. After an update, a short **What's new** window lists what the new version lets you do, once; it doesn't appear on a fresh install. Releases with a suffix such as `-rc.1` are published as pre-releases and are never offered by the updater.
 
 ## Reporting a problem
 

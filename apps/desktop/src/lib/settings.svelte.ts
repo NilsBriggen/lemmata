@@ -23,7 +23,6 @@ export interface Settings {
   fontFamily: string;
   lineHeight: number;
   keymap: "default" | "vim";
-  updateChannel: "stable" | "beta";
   checkForUpdates: boolean;
   /** A TeX bin folder chosen during onboarding. */
   texDir: string | null;
@@ -70,7 +69,6 @@ export const DEFAULTS: Settings = {
   fontFamily: "plex",
   lineHeight: 1.65,
   keymap: "default",
-  updateChannel: "stable",
   checkForUpdates: true,
   texDir: null,
   pdfDark: false,

@@ -235,13 +235,6 @@
       <input id="pref-updates" type="checkbox" checked={settings.checkForUpdates} onchange={(e) => set("checkForUpdates", e.currentTarget.checked)} />
       Check for updates automatically
     </label>
-    <div class="row">
-      <span>Channel</span>
-      <div class="segmented" role="group" aria-label="Update channel">
-        <button aria-pressed={settings.updateChannel === "stable"} onclick={() => set("updateChannel", "stable")}>Stable</button>
-        <button aria-pressed={settings.updateChannel === "beta"} onclick={() => set("updateChannel", "beta")}>Beta</button>
-      </div>
-    </div>
     <div class="buttons">
       <button class="btn" disabled={checking} onclick={checkNow}>{checking ? "Checking…" : "Check now"}</button>
       {#if updateMessage}<span class="muted">{updateMessage}</span>{/if}
