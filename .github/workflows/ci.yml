@@ -59,11 +59,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14, windows-latest]
+        include:
+          - { os: ubuntu-22.04, cli: linux_x86_64, target: x86_64-unknown-linux-gnu }
+          - { os: macos-14, cli: macos_universal, target: universal }
+          - { os: windows-latest, cli: windows_x86_64, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # The command-line tool ships as one binary for both Mac architectures.
+          targets: ${{ matrix.target == 'universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Install Tauri system libraries
         if: runner.os == 'Linux'
@@ -83,6 +89,10 @@ jobs:
       - name: Tectonic installs and builds
         timeout-minutes: 20
         run: cargo test -p lemmata-tex -- --ignored --test-threads=1 --nocapture installs_the_pinned_release builds_a_project_with_bibtex_and_reports_errors fixture_with_biber_reports_the_limitation
+      # The release's packaging, run here so it is tested on every push.
+      - name: Package the command-line tool
+        shell: bash
+        run: scripts/package-cli.sh ci ${{ matrix.cli }} ${{ matrix.target }}
       # Release profile on one OS is enough to catch a broken release build; the frontend is already built above.
       - name: Build the app without bundling
         if: runner.os == 'Linux'

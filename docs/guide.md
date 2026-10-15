@@ -230,7 +230,7 @@ Run **Report a problem** from the command palette. It shows the details it will 
 
 ## The command line
 
-`lemmata build [dir]` compiles a project once and prints its problems, `lemmata watch [dir]` rebuilds whenever a file changes, and `lemmata doctor` checks your TeX installation. The other commands check and export a project without the editor, for scripts and CI. The commands that compile (`build`, `watch`, `lint` and `export --arxiv`) use `latexmk` from TeX Live or MiKTeX, or Tectonic when the project's compiler is Tectonic or no TeX is installed (the one Lemmata downloaded, or one on your PATH). The `lemmata` command is not part of the installer; build it from the source repository with `cargo install --path crates/lemmata-cli`.
+`lemmata build [dir]` compiles a project once and prints its problems, `lemmata watch [dir]` rebuilds whenever a file changes, and `lemmata doctor` checks your TeX installation. The other commands check and export a project without the editor, for scripts and CI. The commands that compile (`build`, `watch`, `lint` and `export --arxiv`) use `latexmk` from TeX Live or MiKTeX, or Tectonic when the project's compiler is Tectonic or no TeX is installed (the one Lemmata downloaded, or one on your PATH). The `lemmata` command is not part of the app's installer: each release also has it on its own, as `lemmata-cli_<version>_<platform>` (Linux, macOS, Windows), for scripts and CI. Unpack it and put `lemmata` on your PATH. From the source repository, `cargo install --path crates/lemmata-cli` builds it too.
 
 | Command | What it does |
 |---|---|

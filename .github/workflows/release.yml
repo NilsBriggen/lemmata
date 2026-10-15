@@ -128,8 +128,37 @@ jobs:
           path: target/${{ matrix.target }}/release/bundle/
           if-no-files-found: error
 
+  # The command-line tool, as archives on the release (scripts/package-cli.sh; CI runs it on every push too).
+  cli:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: linux_x86_64, runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { label: linux_aarch64, runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+          - { label: macos_universal, runner: macos-14, target: universal }
+          - { label: windows_x86_64, runner: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target == 'universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
+      - name: Build and pack
+        shell: bash
+        run: scripts/package-cli.sh "${GITHUB_REF_NAME#v}" ${{ matrix.label }} ${{ matrix.target }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli_${{ matrix.label }}
+          path: dist/lemmata-cli_*
+          if-no-files-found: error
+
   publish:
-    needs: [build, ci]
+    needs: [build, cli, ci]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
