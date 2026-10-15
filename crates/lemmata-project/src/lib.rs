@@ -106,6 +106,9 @@ pub struct Config {
     /// Words the spell checker should accept in this project.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub words: Vec<String>,
+    /// Grammar rules (LanguageTool rule ids) the author chose to ignore in this project.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub grammar_ignore: Vec<String>,
     /// Where dropped and pasted images go.
     pub figures_dir: String,
     /// Fast mode: images are drawn as empty boxes so big figures don't slow
@@ -169,6 +172,7 @@ impl Default for Config {
             outdir: DEFAULT_OUTDIR.into(),
             spellcheck: None,
             words: Vec::new(),
+            grammar_ignore: Vec::new(),
             figures_dir: "figures".into(),
             draft: false,
             stop_on_error: false,
@@ -303,6 +307,7 @@ const CONFIG_KEYS: &[&str] = &[
     "outdir",
     "spellcheck",
     "words",
+    "grammar_ignore",
     "figures_dir",
     "draft",
     "stop_on_error",
@@ -1023,6 +1028,24 @@ mod tests {
             text.contains("engine = \"lualatex\" # for the font"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn ignored_grammar_rules_and_words_round_trip_and_can_be_removed() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "main.tex", "\\documentclass{article}");
+        let mut p = Project::open(d.path()).unwrap();
+        p.config.words = vec!["lemmata".into(), "synctex".into()];
+        p.config.grammar_ignore = vec!["EN_QUOTES".into()];
+        p.save_config().unwrap();
+        let mut again = Project::open(d.path()).unwrap();
+        assert_eq!(again.config.grammar_ignore, ["EN_QUOTES"]);
+        // Removing them in Project settings takes the keys out of the file.
+        again.config.words.retain(|w| w != "lemmata");
+        again.config.grammar_ignore.clear();
+        again.save_config().unwrap();
+        let text = fs::read_to_string(d.path().join(CONFIG_FILE)).unwrap();
+        assert!(text.contains("synctex") && !text.contains("lemmata\"") && !text.contains("grammar_ignore"), "{text}");
     }
 
     #[test]

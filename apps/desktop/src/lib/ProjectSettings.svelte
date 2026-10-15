@@ -5,15 +5,18 @@
   import Modal from "./ui/Modal.svelte";
   import Plus from "@lucide/svelte/icons/plus";
   import Trash2 from "@lucide/svelte/icons/trash";
+  import X from "@lucide/svelte/icons/x";
   import type { Config, ProjectInfo } from "./api";
   import { LANGUAGES } from "./spell/service";
 
   interface Props {
     project: ProjectInfo;
+    /** Shell escape was allowed for this project on this computer. */
+    trusted: boolean;
     onSave: (config: Config) => void;
     onClose: () => void;
   }
-  let { project, onSave, onClose }: Props = $props();
+  let { project, trusted, onSave, onClose }: Props = $props();
 
   // A working copy; nothing changes until Save.
   let config = $state<Config>(untrack(() => ({ ...project.config, main: project.config.main ?? project.main })));
@@ -88,7 +91,24 @@
         <option value="off">Off</option>
       </select>
       {#if config.words?.length}
-        <p class="hint">{config.words.length} word{config.words.length === 1 ? "" : "s"} added to this project's dictionary.</p>
+        <details class="list">
+          <summary>{config.words.length} word{config.words.length === 1 ? "" : "s"} added to this project's dictionary</summary>
+          <ul>
+            {#each config.words as w (w)}
+              <li>{w}<button type="button" class="btn ghost icon sm" aria-label="Remove {w}" title="Remove from the dictionary" onclick={() => (config.words = config.words!.filter((x) => x !== w))}><X size={13} /></button></li>
+            {/each}
+          </ul>
+        </details>
+      {/if}
+      {#if config.grammar_ignore?.length}
+        <details class="list">
+          <summary>{config.grammar_ignore.length} grammar rule{config.grammar_ignore.length === 1 ? "" : "s"} ignored</summary>
+          <ul>
+            {#each config.grammar_ignore as r (r)}
+              <li><code>{r}</code><button type="button" class="btn ghost sm" title="Underline mistakes of this kind again" onclick={() => (config.grammar_ignore = config.grammar_ignore!.filter((x) => x !== r))}>Check again</button></li>
+            {/each}
+          </ul>
+        </details>
       {/if}
     </div>
 
@@ -118,6 +138,9 @@
       <input id="ps-shell" type="checkbox" bind:checked={config.shell_escape} />
       Allow the document to run programs (shell escape)
     </label>
+    {#if config.shell_escape && project.config.shell_escape && !trusted}
+      <p class="hint">The project's lemmata.toml turns this on, but it isn't allowed on this computer yet, so builds run without it. Save to allow it.</p>
+    {/if}
     {#if config.shell_escape}
       <div class="warn">
         <TriangleAlert size={16} />
@@ -138,6 +161,9 @@
   .add { align-self: flex-start; }
   .hint { margin: -6px 0 0; color: var(--muted); font-size: 12px; }
   .field .hint { margin: 2px 0 0; }
+  .list summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .list ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; max-height: 140px; overflow: auto; }
+  .list li { display: inline-flex; align-items: center; gap: 2px; padding: 0 0 0 8px; border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 12.5px; }
   .err { margin: 2px 0 0; color: var(--error); font-size: 12px; }
   .warn { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--r); color: var(--warn); background: var(--warn-soft); }
   .warn p { margin: 0; color: var(--ink-2); }

@@ -12,6 +12,10 @@ export interface HoverProviders extends Providers {
   readBinary?(path: string): Promise<Uint8Array>;
   /** Text of a project file (\input'd .tex). */
   readText?(path: string): Promise<string>;
+  /** Looks a citation key up online (the citation picker). */
+  searchCitation?(key: string): void;
+  /** Searches the project for some text. */
+  searchProject?(text: string): void;
 }
 
 /** `extras::labels` fields beyond `LabelInfo`; optional so an older backend still works. */
@@ -155,8 +159,20 @@ interface Card {
   start?: (alive: () => boolean, own: (url: string) => void) => void;
 }
 
-function note(text: string): Card {
-  return { dom: el("div", "cm-hover-card cm-hover-note", text) };
+/** A message, with buttons that offer a way forward when there are any. */
+function note(text: string, actions: [string, (() => void) | undefined][] = []): Card {
+  const dom = el("div", "cm-hover-card cm-hover-note", text);
+  const usable = actions.filter((a): a is [string, () => void] => !!a[1]);
+  if (usable.length) {
+    const row = el("div", "cm-hover-actions");
+    for (const [label, run] of usable) {
+      const b = el("button", "cm-hover-action", label);
+      b.onclick = run;
+      row.append(b);
+    }
+    dom.append(row);
+  }
+  return { dom };
 }
 
 function image(card: HTMLElement, path: string, p: HoverProviders): Card["start"] {
@@ -186,7 +202,7 @@ function fileLine(path: string) {
 async function refCard(name: string, p: HoverProviders): Promise<Card> {
   const labels = (await p.labels()) as HoverLabel[];
   const l = labels.find((x) => x.label === name);
-  if (!l) return note(`No \\label{${name}} in the project.`);
+  if (!l) return note(`No \\label{${name}} in the project.`, [["Search the project", p.searchProject && (() => p.searchProject!(name))]]);
   const env = l.env ?? "";
   const base = env.replace(/\*$/, "");
   const dom = el("div", "cm-hover-card");
@@ -218,7 +234,7 @@ async function refCard(name: string, p: HoverProviders): Promise<Card> {
 
 async function citeCard(key: string, p: HoverProviders): Promise<Card> {
   const e = ((await p.cites()) as HoverEntry[]).find((x) => x.key === key);
-  if (!e) return note("Not in any .bib file.");
+  if (!e) return note("Not in any .bib file.", [["Search online", p.searchCitation && (() => p.searchCitation!(key))]]);
   const dom = el("div", "cm-hover-card");
   dom.append(el("div", "cm-hover-title", e.title || e.key));
   const who = [e.authors, e.year].filter(Boolean).join(", ");
@@ -279,6 +295,8 @@ export function referenceHovers(getProviders: () => HoverProviders | null): Exte
     EditorView.baseTheme({
       ".cm-hover-card": { padding: "8px 12px", maxWidth: "min(460px, 70vw)", maxHeight: "50vh", overflow: "auto", fontSize: "13px", lineHeight: "1.45", backgroundColor: "var(--surface)", color: "var(--ink)" },
       ".cm-hover-note": { color: "var(--muted)" },
+      ".cm-hover-actions": { display: "flex", gap: "6px", marginTop: "6px" },
+      ".cm-hover-action": { font: "inherit", fontSize: "12px", padding: "2px 8px", borderRadius: "var(--r-sm)", border: "1px solid var(--border-strong)", background: "var(--surface)", color: "var(--ink)", cursor: "pointer" },
       ".cm-hover-head": { color: "var(--muted)", fontSize: "11px", marginBottom: "4px" },
       ".cm-hover-card > .cm-hover-title + .cm-hover-text + .cm-hover-head": { marginTop: "4px", marginBottom: "0" },
       ".cm-hover-title": { fontWeight: "600" },

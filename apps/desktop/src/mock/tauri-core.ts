@@ -329,6 +329,7 @@ const handlers: Record<string, (a: Args) => unknown> = {
   },
   trash_path: (a) => handlers.trash_paths({ paths: [a.path] }),
   purge_trash: () => 0,
+  trash_batches: () => [],
   symbol_defs: () => [
     { kind: "label", role: "def", name: "sec:intro", file: "main.tex", line: 11, col: 7, text: "\\section{Introduction}\\label{sec:intro}" },
     { kind: "label", role: "def", name: "eq:policy", file: "chapters/method.tex", line: 5, col: 6, text: "\\label{eq:policy}" },

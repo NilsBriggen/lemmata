@@ -11,10 +11,13 @@
     /** Saves open files and takes a snapshot; false when History is off, so the replace can't be undone. */
     beforeReplace: () => Promise<boolean>;
     onClose: () => void;
+    /** Text to search for at once, e.g. from a hover card. */
+    initialQuery?: string;
   }
-  let { onOpen, onReplaced, beforeReplace, onClose }: Props = $props();
+  let { onOpen, onReplaced, beforeReplace, onClose, initialQuery = "" }: Props = $props();
 
-  let query = $state("");
+  // svelte-ignore state_referenced_locally
+  let query = $state(initialQuery);
   let replacement = $state("");
   let showReplace = $state(false);
   let regex = $state(false);
@@ -36,7 +39,10 @@
   );
   const chosenCount = $derived(chosen.reduce((n, c) => n + c.n, 0));
 
-  onMount(() => input?.focus());
+  onMount(() => {
+    input?.focus();
+    if (query) search();
+  });
 
   export function focus() {
     input?.focus();

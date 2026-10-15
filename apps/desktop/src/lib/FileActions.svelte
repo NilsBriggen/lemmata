@@ -18,11 +18,12 @@
   import ChevronsUpDown from "@lucide/svelte/icons/chevrons-up-down";
   import ScanSearch from "@lucide/svelte/icons/scan-search";
   import Undo2 from "@lucide/svelte/icons/undo-2";
+  import History from "@lucide/svelte/icons/history";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { tick } from "svelte";
   import Modal from "./ui/Modal.svelte";
   import { menuNav } from "./ui/DropMenu.svelte";
-  import { api, errorMessage, type Entry } from "./api";
+  import { api, errorMessage, type Entry, type TrashBatch } from "./api";
   import { UndoLog } from "./fileUndo";
   import { baseName, copyName, findEntry, joinPath, namesIn, parentOf, topLevel } from "./treeModel";
   import { collapseAll, expandAll, tree as view, targets } from "./treeSelection.svelte";
@@ -254,6 +255,27 @@
   export const canUndo = () => log.size > 0;
   export const forgetHistory = () => log.clear();
 
+  /** "Recently deleted": what Delete kept in the project for a week, restorable also after a restart. */
+  let deleted = $state<TrashBatch[] | null>(null);
+  export async function showDeleted() {
+    try {
+      deleted = await api.trashBatches();
+    } catch (e) {
+      failure(e);
+    }
+  }
+  async function restoreDeleted(b: TrashBatch) {
+    try {
+      await api.restoreTrash(b.id);
+      deleted = deleted?.filter((x) => x.id !== b.id) ?? null;
+      onChanged();
+      onNotice(`Restored ${describe(b.paths)}.`);
+    } catch (e) {
+      failure(e);
+    }
+  }
+  const when = (id: string) => new Date(Number(id)).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+
   export async function showUnused() {
     dialog = { kind: "unused", files: [], picked: [], loading: true };
     try {
@@ -382,12 +404,31 @@
     {#if target}
       <button role="menuitem" class="danger" onclick={() => choose(() => trash(picked))}><Trash2 size={15} /> {settings.trashMode === "system" ? "Move to trash…" : "Delete"}</button>
     {:else}
-      <button role="menuitem" onclick={() => choose(() => collapseAll(entries))}><ChevronsDownUp size={15} /> Collapse all</button>
-      <button role="menuitem" onclick={() => choose(() => expandAll())}><ChevronsUpDown size={15} /> Expand all</button>
+      <button role="menuitem" onclick={() => choose(() => collapseAll(entries))}><ChevronsDownUp size={15} /> Collapse all folders</button>
+      <button role="menuitem" onclick={() => choose(() => expandAll())}><ChevronsUpDown size={15} /> Expand all folders</button>
       <button role="menuitem" onclick={() => choose(() => showUnused())}><ScanSearch size={15} /> Find unused files…</button>
       {#if log.size}<button role="menuitem" onclick={() => choose(() => undo())}><Undo2 size={15} /> Undo {log.last?.label.toLowerCase()}</button>{/if}
+      <button role="menuitem" onclick={() => choose(() => showDeleted())}><History size={15} /> Recently deleted…</button>
     {/if}
   </div>
+{/if}
+
+{#if deleted}
+  <Modal title="Recently deleted" subtitle="Files deleted in this project stay here for a week." width={480} onClose={() => (deleted = null)}>
+    {#if deleted.length}
+      <ul class="deleted">
+        {#each deleted as b (b.id)}
+          <li>
+            <span><code>{b.paths.join(", ")}</code><small>{when(b.id)}</small></span>
+            <button class="btn sm" onclick={() => restoreDeleted(b)}>Restore</button>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="none">Nothing was deleted in the last week{settings.trashMode === "system" ? " (deleted files go to the system trash)" : ""}.</p>
+    {/if}
+    {#snippet footer()}<button class="btn" onclick={() => (deleted = null)}>Close</button>{/snippet}
+  </Modal>
 {/if}
 
 {#if dialog}
@@ -471,6 +512,11 @@
   .refs, .unused { list-style: none; margin: 0; padding: 8px 10px; max-height: 190px; overflow: auto; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r); font: 11.5px var(--f-mono); }
   .refs li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .unused li { padding: 2px 0; }
+  .deleted { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
+  .deleted li { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r); }
+  .deleted li > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .deleted code { font-size: 12px; overflow-wrap: anywhere; }
+  .deleted small, .none { color: var(--muted); }
   .unused label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
   .menu :global(.danger) { color: var(--error); }
   .menu :global(.danger svg) { color: var(--error); }

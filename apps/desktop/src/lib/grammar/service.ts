@@ -129,18 +129,21 @@ class GrammarService {
     await Promise.all(Array.from({ length: MAX_IN_FLIGHT }, worker));
   }
 
-  /** Hides a rule for this session. */
+  /** Called when the author ignores a rule, so the app can keep it in the project's settings. */
+  onIgnore: ((id: string) => void) | null = null;
+
+  /** Hides a rule in this project. */
   ignoreRule(id: string) {
     this.ignored.add(id);
+    this.onIgnore?.(id);
     this.emit();
   }
 
-  /** Forget ignored rules, e.g. when another project opens. */
-  resetIgnored() {
-    if (this.ignored.size) {
-      this.ignored.clear();
-      this.emit();
-    }
+  /** The rules the open project ignores (from its settings); replaces the previous project's. */
+  setIgnored(ids: string[]) {
+    if (ids.length === this.ignored.size && ids.every((id) => this.ignored.has(id))) return;
+    this.ignored = new Set(ids);
+    this.emit();
   }
 
   /** Quick ping for Preferences: null when a server answers, else the reason it doesn't. */

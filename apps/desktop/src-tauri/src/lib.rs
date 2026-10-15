@@ -1039,6 +1039,7 @@ pub fn run() {
             files::move_paths,
             files::trash_paths,
             files::restore_trash,
+            files::trash_batches,
             files::purge_trash,
             files::unused_files,
             files::symbol_defs,

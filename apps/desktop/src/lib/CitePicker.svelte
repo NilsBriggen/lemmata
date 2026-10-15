@@ -14,13 +14,16 @@
     beforeBibChange: () => Promise<void>;
     onBibChanged: (file: string) => void;
     onZotero: () => void;
+    /** Opened from a hover card for a key that isn't in any .bib file: look it up online at once. */
+    searchOnlineFor?: string;
   }
-  let { onInsert, onClose, beforeBibChange, onBibChanged, onZotero }: Props = $props();
+  let { onInsert, onClose, beforeBibChange, onBibChanged, onZotero, searchOnlineFor = "" }: Props = $props();
   let zotero = $state<"ready" | "starting" | "unavailable">("unavailable");
 
   let entries = $state<BibEntry[]>([]);
   let files = $state<string[]>([]);
-  let query = $state("");
+  // svelte-ignore state_referenced_locally
+  let query = $state(searchOnlineFor);
   let selected = $state(0);
   let picked = $state<string[]>([]);
   let loading = $state(true);
@@ -60,6 +63,7 @@
     load();
     api.zoteroStatus().then((z) => (zotero = z)).catch(() => {});
     searchEl?.focus();
+    if (searchOnlineFor) searchOnline();
   });
 
   async function scrollToSelected() {

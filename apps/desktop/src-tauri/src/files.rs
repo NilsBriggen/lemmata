@@ -813,6 +813,23 @@ pub fn restore_from(root: &Path, id: &str) -> CmdResult<Vec<String>> {
     Ok(manifest.paths)
 }
 
+/// What is in the project's trash, newest first, for "Recently deleted".
+#[tauri::command(async)]
+pub fn trash_batches(state: State<AppState>) -> CmdResult<Vec<TrashBatch>> {
+    Ok(batches_in(&project(&state)?.root))
+}
+
+pub fn batches_in(root: &Path) -> Vec<TrashBatch> {
+    let mut list: Vec<TrashBatch> = std::fs::read_dir(root.join(TRASH_DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| serde_json::from_slice(&std::fs::read(e.path().join(MANIFEST)).ok()?).ok())
+        .collect();
+    list.sort_by_key(|b: &TrashBatch| std::cmp::Reverse(b.id.parse::<u128>().unwrap_or(0)));
+    list
+}
+
 /// Deletes trash batches older than `days`. Called when a project opens.
 #[tauri::command(async)]
 pub fn purge_trash(state: State<AppState>, days: u64) -> CmdResult<usize> {
@@ -1144,7 +1161,10 @@ mod tests {
         assert_eq!(batch.paths, v(&["chapters", "refs.bib"]));
         assert!(!d.path().join("chapters").exists());
         assert!(!d.path().join("refs.bib").exists());
+        // Listed for "Recently deleted" until it's restored, also after a restart (it's on disk).
+        assert_eq!(batches_in(d.path()), vec![batch.clone()]);
         let back = restore_from(d.path(), &batch.id).unwrap();
+        assert!(batches_in(d.path()).is_empty());
         assert_eq!(back, v(&["chapters", "refs.bib"]));
         assert_eq!(
             std::fs::read_to_string(d.path().join("chapters/two.tex")).unwrap(),

@@ -78,6 +78,8 @@ export interface Config {
   outdir: string;
   spellcheck?: string | null;
   words?: string[];
+  /** LanguageTool rule ids ignored in this project. */
+  grammar_ignore?: string[];
   /** Fast mode: figures are drawn as boxes. */
   draft?: boolean;
   stop_on_error?: boolean;
@@ -232,6 +234,7 @@ export const api = {
     invoke<Moved[]>("move_paths", { paths, folder, updateReferences }),
   trashPaths: (paths: string[]) => invoke<TrashBatch>("trash_paths", { paths }),
   restoreTrash: (id: string) => invoke<string[]>("restore_trash", { id }),
+  trashBatches: () => invoke<TrashBatch[]>("trash_batches"),
   purgeTrash: (days: number) => invoke<number>("purge_trash", { days }),
   unusedFiles: () => invoke<string[]>("unused_files"),
   symbolDefs: () => invoke<Occurrence[]>("symbol_defs"),

@@ -12,7 +12,7 @@ describe("grammar service", () => {
     invoke.mockReset();
     invoke.mockImplementation(async (_c: string, a: { text: string }) => (a.text.startsWith("bad") ? [m("A"), m("WHITESPACE_RULE")] : []));
     grammar.configure("off", "", "en");
-    grammar.resetIgnored();
+    grammar.setIgnored([]);
     grammar.configure("local", "", "en");
   });
 
