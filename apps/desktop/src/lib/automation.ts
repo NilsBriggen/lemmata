@@ -84,6 +84,11 @@ async function check(host: Host): Promise<string[]> {
   if (s.active && !s.tabs.includes(s.active)) problems.push(`the active file ${s.active} has no tab`);
   const editable = document.querySelector<HTMLElement>('.cm-content[contenteditable="true"]');
   if (s.project && !s.active && editable && editable.offsetParent !== null) problems.push("no file is open but an editable editor is still shown");
+  // CodeMirror's own styles are applied: the line numbers sit beside the text, not above it.
+  const gutters = document.querySelector<HTMLElement>(".cm-editor .cm-gutters");
+  const content = gutters?.parentElement?.querySelector<HTMLElement>(".cm-content");
+  if (gutters && content && gutters.offsetParent !== null && gutters.getBoundingClientRect().right > content.getBoundingClientRect().left + 1)
+    problems.push("the editor lost its styles: line numbers are not beside the text");
   // Saved files match the disk.
   const buffers = host.buffers();
   for (const path of s.tabs) {
@@ -152,7 +157,20 @@ export function install(host: Host) {
         class: el.className && typeof el.className === "string" ? el.className : undefined,
         label: el.getAttribute("aria-label") ?? el.getAttribute("title") ?? undefined,
         text: el.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) || undefined,
+        display: getComputedStyle(el).display,
+        rect: (({ x, y, width, height }) => [x, y, width, height].map(Math.round))(el.getBoundingClientRect()),
       })),
+    /** The page's style sheets: where each comes from, whether it applies, and how many rules the browser kept. */
+    sheets: () =>
+      [...document.styleSheets].map((sh) => {
+        let rules: number | string;
+        try {
+          rules = sh.cssRules.length;
+        } catch (e) {
+          rules = String(e);
+        }
+        return { owner: sh.ownerNode?.nodeName ?? "adopted", href: sh.href, disabled: sh.disabled, media: sh.media.mediaText, rules };
+      }),
     /** Waits until no build runs and pending saves have settled. */
     idle: async ({ timeout = 60_000 }: { timeout?: number } = {}) => {
       const end = Date.now() + timeout;

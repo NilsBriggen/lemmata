@@ -4,9 +4,16 @@ import { fitScale, regionSize, type Region } from "./layout";
 
 let lib: Promise<typeof import("pdfjs-dist")> | undefined;
 
-/** pdf.js and its worker, fetched on first use so they stay out of the startup bundle. */
+/**
+ * pdf.js and its worker, fetched on first use so they stay out of the startup bundle.
+ * The legacy build: the modern one needs the newest engines (Uint8Array.toHex), which
+ * older WebView2 and macOS WebKit versions lack.
+ */
 export function loadPdfjs() {
-  return (lib ??= Promise.all([import("pdfjs-dist"), import("pdfjs-dist/build/pdf.worker.min.mjs?url")]).then(([pdfjs, worker]) => {
+  return (lib ??= Promise.all([
+    import("pdfjs-dist/legacy/build/pdf.mjs") as Promise<typeof import("pdfjs-dist")>,
+    import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url"),
+  ]).then(([pdfjs, worker]) => {
     pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
     return pdfjs;
   }));
