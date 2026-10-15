@@ -2,7 +2,7 @@
 # for users, and prints how long each took. Run by .github/workflows/windows.yml
 # after MiKTeX is installed:
 #
-#   pwsh scripts/windows-smoke.ps1 target/release/lemmata.exe
+#   pwsh scripts/windows-smoke.ps1 target/debug/lemmata.exe
 #
 # Scenarios (each builds a fresh copy, then rebuilds it after an edit):
 #   latexmk with Perl      the normal path
@@ -51,9 +51,14 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 $sw.Stop()
 $results += [pscustomobject]@{ Scenario = "lemmata doctor"; Step = "TeX detection"; Seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1); Pdf = $null; Direct = $null }
 
-# The first build installs packages on the fly; keep that out of the comparison.
+# The first build installs packages on the fly; keep that out of the comparison. MiKTeX's mirrors time out
+# now and then, so it gets a few tries.
 $warm = Fresh "warmup"
-Build $warm "warm-up (installs packages)" "first build" $false
+foreach ($i in 1..3) {
+    & $Cli build $warm 2>&1 | Out-String | Write-Host
+    if (Test-Path (Join-Path $warm ".lemmata/build/main.pdf")) { break }
+}
+if (-not (Test-Path (Join-Path $warm ".lemmata/build/main.pdf"))) { $failures += "warm-up: no PDF after 3 tries (MiKTeX could not install the packages)" }
 
 $original = $env:PATH
 

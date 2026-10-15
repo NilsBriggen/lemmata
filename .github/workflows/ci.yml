@@ -1,8 +1,9 @@
 name: CI
 
-# Docs-only changes skip CI. CHANGELOG.md is not ignored, and a release commit also touches Cargo.toml, so the
-# run that release.yml's ci-gate waits for always exists. Tag a code commit, not a docs-only one.
+# Docs-only changes skip CI (CHANGELOG.md is not ignored). release.yml also runs this workflow on the tagged
+# commit and publishes only if it passes.
 on:
+  workflow_call:
   pull_request:
     paths-ignore:
       - "docs/**"
@@ -15,12 +16,14 @@ on:
       - "**/*.md"
       - "!CHANGELOG.md"
 
-# A newer push to a pull request makes its older run pointless. On main every commit gets its own group:
-# a release waits for CI on the tagged commit, and cancelling that run (or a later push replacing it while
-# it waits) fails the release.
+# A newer push to a pull request makes its older run pointless. On main every commit gets its own group, so a
+# later push never cancels a run. Called from release.yml, github.workflow is "Release": its own group too.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always

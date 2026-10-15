@@ -26,50 +26,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  # One job, so MiKTeX is installed once: the end-to-end tests first, then the build scenarios.
+  windows:
     # The version bump of a release changes nothing the tests cover; its code was tested on the commit before.
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
-    runs-on: windows-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build the command-line tool
-        run: cargo build --release -p lemmata-cli
-      # Not cached: the choco install writes to Program Files, ProgramData and the registry, so restoring only
-      # the install dir would give a broken MiKTeX. The install is also not the slow part worth risking that for.
-      - name: Install MiKTeX
-        shell: pwsh
-        run: |
-          # MiKTeX's servers time out now and then; try a few times.
-          foreach ($i in 1..3) { choco install miktex --no-progress -y; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 30 }
-          $bin = "C:\Program Files\MiKTeX\miktex\bin\x64"
-          if (-not (Test-Path "$bin\pdflatex.exe")) { throw "MiKTeX was not installed where expected" }
-          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-          & "$bin\initexmf.exe" --admin --set-config-value "[MPM]AutoInstall=1"
-      - name: Build documents in each scenario
-        shell: pwsh
-        run: pwsh scripts/windows-smoke.ps1 target/release/lemmata.exe
-
-  e2e:
     if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
     # windows-latest (Server 2025) breaks msedgedriver with WebView2 apps ("DevToolsActivePort file
     # doesn't exist"); 2022 works. https://github.com/actions/runner-images/issues/14738
     runs-on: windows-2022
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: e2e
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Not cached: the choco install writes to Program Files, ProgramData and the registry, so restoring only
+      # the install dir would give a broken MiKTeX. The install is also not the slow part worth risking that for.
       - name: Install MiKTeX
         shell: pwsh
         run: |
@@ -108,3 +84,11 @@ jobs:
           VITE_LEMMATA_TEST: "1"
       - name: Run end-to-end tests
         run: pnpm --filter lemmata-desktop e2e
+      # Debug build: it reuses the app build's dependencies, and the timings are TeX's anyway.
+      - name: Build the command-line tool
+        if: ${{ !cancelled() }}
+        run: cargo build -p lemmata-cli
+      - name: Build documents in each scenario
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: pwsh scripts/windows-smoke.ps1 target/debug/lemmata.exe

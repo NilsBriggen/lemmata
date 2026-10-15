@@ -37,30 +37,10 @@ jobs:
             fi
           done
 
-  # Publishing waits for CI on the same commit, so a red commit is never released.
-  # The builds run meanwhile; only the publish job needs this.
-  ci-gate:
+  # The full CI on the tagged commit: nothing is published unless it passes. The builds run meanwhile.
+  ci:
     needs: verify
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-    steps:
-      - name: Wait for CI on this commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          for i in $(seq 1 90); do
-            result=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --json status,conclusion --jq '[.[]|select(.status=="completed")|.conclusion]|first // "pending"')
-            echo "CI: $result"
-            case "$result" in
-              success) exit 0 ;;
-              pending) sleep 30 ;;
-              *) echo "::error::CI did not pass for $GITHUB_SHA ($result). Fix it and tag again."; exit 1 ;;
-            esac
-          done
-          echo "::error::CI did not finish within 45 minutes."
-          exit 1
+    uses: ./.github/workflows/ci.yml
 
   build:
     needs: verify
@@ -100,15 +80,6 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Check the tag matches the app version
-        shell: bash
-        run: |
-          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          if [[ "v$version" != "$GITHUB_REF_NAME" ]]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version. Use scripts/release.sh."
-            exit 1
-          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -158,7 +129,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [build, ci-gate]
+    needs: [build, ci]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
