@@ -214,6 +214,23 @@ export const scenarios = {
     await check(lem, "after loading theirs");
   },
 
+  async "shows an image from the project"(lem, dir) {
+    // A 4 × 3 red PNG. It used to stay at "Loading…" for good.
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAEElEQVR4nGO4o6EBRww4OQAa3g4RLYR9sQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    fs.writeFileSync(path.join(dir, "red.png"), png);
+    // Retried: the file appears in the project once the watcher has seen it.
+    await until(lem, "the image to show", async () => {
+      await lem("openFile", { path: "red.png" }).catch(() => {});
+      return (await lem("text", { selector: ".viewer" }).catch(() => "")).includes("4 × 3 px");
+    });
+    await check(lem, "after opening an image");
+    fs.rmSync(path.join(dir, "red.png"));
+    await lem("openFile", { path: "main.tex" });
+  },
+
   async "creates a project from the template gallery and builds it"(lem, dir) {
     const name = `${path.basename(dir)}-gallery`;
     fs.rmSync(path.join(path.dirname(dir), name), { recursive: true, force: true });

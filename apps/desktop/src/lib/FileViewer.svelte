@@ -1,6 +1,5 @@
 <script lang="ts">
   // Read-only viewer for images and PDFs that are part of the project.
-  import { onDestroy } from "svelte";
   import PdfView from "./PdfView.svelte";
   import { api, errorMessage } from "./api";
 
@@ -16,9 +15,11 @@
   let actual = $state(false);
   let pdf = $state<PdfView>();
 
+  // Depends on `path` only: reading `url` here would re-run it whenever the image arrives,
+  // dropping that image and loading it again, forever.
   $effect(() => {
     const current = path;
-    url && URL.revokeObjectURL(url);
+    let made: string | null = null;
     url = null;
     error = null;
     natural = null;
@@ -28,12 +29,11 @@
       .then(async (bytes) => {
         if (current !== path) return;
         if (isPdf) await pdf?.load(bytes);
-        else url = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: MIME[ext] ?? "application/octet-stream" }));
+        else url = made = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: MIME[ext] ?? "application/octet-stream" }));
       })
       .catch((e) => (error = errorMessage(e)));
+    return () => made && URL.revokeObjectURL(made);
   });
-
-  onDestroy(() => url && URL.revokeObjectURL(url));
 </script>
 
 <div class="viewer">
