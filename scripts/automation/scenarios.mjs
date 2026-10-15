@@ -188,23 +188,25 @@ export const scenarios = {
 
   async "never overwrites a change made by another program"(lem, dir) {
     const file = path.join(dir, "main.tex");
+    // Markers unique to this run: an earlier run's are still in the file.
+    const [mine, theirs] = [`% mine ${Date.now()}`, `% theirs ${Date.now()}`];
     await lem("openFile", { path: "main.tex" });
     await lem("idle", { timeout: 90_000 });
     // Unsaved edits here, and another program writes the file before autosave runs.
     await lem("cursor", { at: "end" });
-    await lem("type", { text: "\n% mine" });
-    fs.appendFileSync(file, "% theirs\n");
+    await lem("type", { text: `\n${mine}` });
+    fs.appendFileSync(file, `${theirs}\n`);
     await until(lem, "the conflict dialog", async () => (await lem("state")).conflicts.includes("main.tex"));
     await sleep(lem, 1500); // longer than the autosave delay
-    if (!fs.readFileSync(file, "utf8").includes("% theirs")) throw new Error("autosave overwrote the other program's change");
+    if (!fs.readFileSync(file, "utf8").includes(theirs)) throw new Error("autosave overwrote the other program's change");
     await lem("clickText", { text: "Keep my version" });
     await lem("idle", { timeout: 90_000 });
     const after = fs.readFileSync(file, "utf8");
-    if (!after.includes("% mine") || after.includes("% theirs")) throw new Error("Keep my version did not save the editor's text");
+    if (!after.includes(mine) || after.includes(theirs)) throw new Error("Keep my version did not save the editor's text");
     await check(lem, "after keeping mine");
     // The other way round: the version on disk wins.
-    await lem("type", { text: "\n% mine again" });
-    fs.appendFileSync(file, "% theirs again\n");
+    await lem("type", { text: `\n${mine} again` });
+    fs.appendFileSync(file, `${theirs} again\n`);
     await until(lem, "the conflict dialog", async () => (await lem("state")).conflicts.includes("main.tex"));
     await lem("clickText", { text: "Load the version on disk" });
     await lem("idle", { timeout: 90_000 });
