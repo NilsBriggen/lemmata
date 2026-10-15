@@ -49,7 +49,8 @@ export interface Cmd { label: string; apply: string; detail?: string }
 const c = (label: string, apply: string, detail?: string): Cmd => ({ label, apply, detail });
 
 export const COMMANDS: Cmd[] = [
-  c("\\begin", "\\begin{${name}}\n\t${}\n\\end{${name}}", "environment"),
+  // Only "\begin{": the list of environment names opens next and fills in the rest with its \end.
+  c("\\begin", "\\begin{", "environment"),
   c("\\section", "\\section{${}}"),
   c("\\subsection", "\\subsection{${}}"),
   c("\\subsubsection", "\\subsubsection{${}}"),

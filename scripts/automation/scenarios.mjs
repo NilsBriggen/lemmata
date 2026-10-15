@@ -89,6 +89,39 @@ export const scenarios = {
     await lem("idle", { timeout: 120_000 });
   },
 
+  async "\\begin opens the environment list, and the chosen one is typed once"(lem) {
+    // 1.5.2 inserted \\begin{name}…\\end{name} with a cursor in each, showed no names, and kept both
+    // cursors after leaving the braces, so typing went to two places.
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { at: "start" });
+    const before = await lem("editorText");
+    await lem("type", { text: "\\begin" });
+    await until(lem, "the completion list", () => lem("exists", { selector: ".cm-tooltip-autocomplete" }));
+    await sleep(lem, 400); // CodeMirror ignores Enter for a moment after the list opens
+    const pick = async (test) => {
+      const items = (await lem("query", { selector: ".cm-tooltip-autocomplete li" })).map((o) => o.text ?? "");
+      const at = items.findIndex(test);
+      if (at < 0) throw new Error(`not in the list: ${JSON.stringify(items.slice(0, 8))}`);
+      for (let i = 0; i < at; i++) await lem("key", { combo: "ArrowDown" });
+      await lem("key", { combo: "Enter" });
+    };
+    await pick((t) => t.startsWith("\\begin") && !t.startsWith("\\begin{"));
+    // Only "\\begin{" so far, and the names are offered at once.
+    if ((await lem("editorText")) !== "\\begin{" + before) throw new Error(`expected just \\begin{: ${(await lem("editorText")).slice(0, 40)}`);
+    await until(lem, "the environment names", async () => (await lem("query", { selector: ".cm-tooltip-autocomplete li" })).some((o) => (o.text ?? "").startsWith("itemize")));
+    await lem("type", { text: "itemiz" });
+    await sleep(lem, 400);
+    await pick((t) => t.startsWith("itemize"));
+    const text = await lem("editorText");
+    if (!text.includes("\\begin{itemize}") || !text.includes("\\end{itemize}")) throw new Error(`no itemize environment: ${text.slice(0, 80)}`);
+    await lem("type", { text: "%x" });
+    const after = await lem("editorText");
+    if (after.split("%x").length !== 2) throw new Error(`typing went to more than one place: ${after.slice(0, 80)}`);
+    for (let i = 0; i < 8 && (await lem("editorText")) !== before; i++) await lem("key", { combo: "Control+z" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+  },
+
   async "jumps from the PDF to the source"(lem) {
     await until(lem, "a drawn PDF page", () => lem("exists", { selector: ".pages .page canvas" }), 30_000);
     // On page 1, the text between 31% and 40% of the height comes from chapters/method.tex (checked with `synctex edit`).

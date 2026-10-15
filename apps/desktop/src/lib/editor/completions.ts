@@ -1,7 +1,7 @@
 // One completion source for LaTeX that knows the project: environments,
 // commands, labels, citation keys, file paths and packages. Anything it
 // doesn't handle goes to texlab.
-import { snippet, type Completion, type CompletionContext, type CompletionResult, type CompletionSource } from "@codemirror/autocomplete";
+import { snippet, startCompletion, type Completion, type CompletionContext, type CompletionResult, type CompletionSource } from "@codemirror/autocomplete";
 import { ENVIRONMENTS, COMMANDS, type Env } from "./data";
 import { tokens as scanTokens } from "./environments";
 import { inMath } from "./mathContext";
@@ -68,8 +68,14 @@ const textCommands = (math: boolean): Completion[] =>
     detail: x.detail,
     type: "function",
     boost: math ? -10 : 5,
-    apply: snippet(x.apply),
+    apply: x.label === "\\begin" ? beginThenNames : snippet(x.apply),
   }));
+
+/** \begin: inserts "\begin{" and opens the list of environment names, like after a backslash. */
+const beginThenNames: Completion["apply"] = (view, _completion, from, to) => {
+  view.dispatch({ changes: { from, to, insert: "\\begin{" }, selection: { anchor: from + "\\begin{".length }, userEvent: "input.complete" });
+  startCompletion(view);
+};
 
 // In maths, symbols and maths structures come first; in prose, text commands do.
 const MATH_FIRST = [...mathCompletions(20), ...textCommands(true)];
