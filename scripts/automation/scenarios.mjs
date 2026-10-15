@@ -241,7 +241,11 @@ export const scenarios = {
     await lem("type", { text: "% !TeX spellcheck = es\n" });
     await until(lem, "the offer to download", async () => ((await lem("state")).notice ?? "").includes("needs its dictionary"));
     await lem("clickText", { text: "Download", within: ".toasts" });
-    await until(lem, "spell check in Spanish", async () => ((await lem("state")).notice ?? "").includes("is on"), 60_000);
+    // The dictionary itself, not a notice (a later one can replace it); a failure says why.
+    const installed = async () => (await lem("invoke", { cmd: "spell_available" })).find((d) => d.code === "es")?.installed;
+    await until(lem, "the Spanish dictionary", installed, 90_000).catch(async () => {
+      throw new Error(`the Spanish dictionary wasn't installed; last notice: ${(await lem("state")).notice}`);
+    });
     await lem("key", { combo: "Control+z" });
     await lem("key", { combo: "Control+s" });
     await lem("idle", { timeout: 120_000 });
