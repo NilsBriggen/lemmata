@@ -50,6 +50,7 @@
           <option value="pdflatex">pdfLaTeX</option>
           <option value="xelatex">XeLaTeX</option>
           <option value="lualatex">LuaLaTeX</option>
+          <option value="tectonic">Tectonic (no TeX install)</option>
         </select>
       </div>
       <div class="field">
@@ -61,6 +62,9 @@
       </div>
     </div>
     <p class="hint">pdfLaTeX is fastest. XeLaTeX and LuaLaTeX can use the fonts installed on your computer.</p>
+    {#if config.engine === "tectonic"}
+      <p class="hint">Tectonic downloads the packages a document needs on first use, so it needs an internet connection then. It runs BibTeX itself; biblatex with biber is not supported, so choose BibTeX above.</p>
+    {/if}
 
     <div class="grid">
       <div class="field">
@@ -102,6 +106,7 @@
             <option value="pdflatex">pdfLaTeX</option>
             <option value="xelatex">XeLaTeX</option>
             <option value="lualatex">LuaLaTeX</option>
+            <option value="tectonic">Tectonic</option>
           </select>
           <button type="button" class="btn icon" aria-label="Remove {t.name}" onclick={() => (config.targets = (config.targets ?? []).filter((_, j) => j !== i))}><Trash2 size={15} /></button>
         </div>
