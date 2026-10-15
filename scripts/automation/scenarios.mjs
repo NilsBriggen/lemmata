@@ -245,8 +245,16 @@ export const scenarios = {
     await lem("fill", { selector: "#np-parent", value: path.dirname(dir) });
     await lem("clickText", { text: "Create project" });
     await until(lem, "the new project", async () => (await lem("state")).project?.endsWith(name), 30_000);
-    const s = await lem("idle", { timeout: 120_000 });
-    if (s.status !== "success" || !s.hasPdf) throw new Error(`the new project did not build: ${await describe(lem)}`);
+    const project = path.join(path.dirname(dir), name);
+    await lem("idle", { timeout: 120_000 });
+    await until(lem, "the new project's PDF", async () => (await lem("state")).hasPdf, 30_000).catch(async () => {
+      // What the build left behind says more than the app's state.
+      const out = path.join(project, ".lemmata/build");
+      const log = fs.existsSync(path.join(out, "main.log")) ? fs.readFileSync(path.join(out, "main.log"), "utf8").slice(-1500) : "(no log)";
+      const files = fs.existsSync(out) ? fs.readdirSync(out).join(", ") : "(no build folder)";
+      throw new Error(`the new project did not build: ${await describe(lem)}\nbuild folder: ${files}\nlog tail: ${log}`);
+    });
+    if ((await lem("state")).status !== "success") throw new Error(`the new project's build failed: ${await describe(lem)}`);
     await check(lem, "after creating from a template");
     await lem("openProject", { path: dir });
     await lem("idle", { timeout: 120_000 });
