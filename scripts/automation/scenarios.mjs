@@ -4,6 +4,20 @@
 // Each takes `lem(method, params)` and the open project's folder.
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const fixtures = fileURLToPath(new URL("../../tests/fixtures/", import.meta.url));
+
+/** A fresh copy of a fixture next to the project folder (no earlier build output). */
+function copyFixture(dir, name) {
+  const to = path.join(path.dirname(dir), `${path.basename(dir)}-${name}`);
+  fs.rmSync(to, { recursive: true, force: true });
+  fs.cpSync(path.join(fixtures, name), to, { recursive: true });
+  return to;
+}
+
+/** The app's state in a failure message, so CI logs say what the app was doing. */
+const describe = async (lem) => JSON.stringify(await lem("state"));
 
 const sleep = (lem, ms) => lem("sleep", { ms });
 
@@ -22,6 +36,68 @@ async function until(lem, what, test, timeout = 15_000) {
 }
 
 export const scenarios = {
+  async "builds a project from scratch and shows its PDF"(lem, dir) {
+    fs.rmSync(path.join(dir, ".lemmata"), { recursive: true, force: true });
+    await lem("openProject", { path: dir });
+    const s = await lem("idle", { timeout: 120_000 });
+    if (s.status !== "success" || !s.hasPdf) throw new Error(`the build did not show a PDF: ${await describe(lem)}`);
+    await until(lem, "a drawn PDF page", () => lem("exists", { selector: ".pages .page canvas" }), 30_000);
+    if (!(await lem("editorText")).includes("\\documentclass")) throw new Error("the main file isn't in the editor");
+    await check(lem, "first build");
+  },
+
+  async "lists a new error after an edit, and clears it after undo"(lem) {
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { at: "start" });
+    await lem("type", { text: "\\undefinedcommandxyz\n" });
+    await lem("key", { combo: "Control+s" });
+    await sleep(lem, 300);
+    let s = await lem("idle", { timeout: 120_000 });
+    if (!s.diagnostics.some((d) => d.severity === "error" && /Undefined control sequence/.test(d.message)))
+      throw new Error(`the error wasn't listed: ${await describe(lem)}`);
+    await lem("key", { combo: "Control+z" });
+    await lem("key", { combo: "Control+s" });
+    await sleep(lem, 300);
+    s = await lem("idle", { timeout: 120_000 });
+    if (s.status !== "success") throw new Error(`undoing the error didn't fix the build: ${await describe(lem)}`);
+    await check(lem, "after undo");
+  },
+
+  async "explains a missing package"(lem, dir) {
+    const other = copyFixture(dir, "missing-package");
+    await lem("openProject", { path: other });
+    const s = await lem("idle", { timeout: 120_000 });
+    if (!s.diagnostics.some((d) => d.message.includes("lemmata-does-not-exist.sty")))
+      throw new Error(`the missing package wasn't named: ${await describe(lem)}`);
+    // No PDF, so the logs open by themselves, like Overleaf.
+    if (!s.logsOpen) throw new Error("the logs didn't open for a build without a PDF");
+    await lem("openProject", { path: dir });
+    await lem("idle", { timeout: 120_000 });
+  },
+
+  async "completes an environment together with its \\end"(lem) {
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { at: "start" });
+    const before = await lem("editorText");
+    await lem("type", { text: "\\begin{itemiz" });
+    await until(lem, "the completion list", () => lem("exists", { selector: ".cm-tooltip-autocomplete" }));
+    await sleep(lem, 400); // CodeMirror ignores Enter for a moment after the list opens
+    await lem("key", { combo: "Enter" });
+    if (!(await lem("editorText")).includes("\\end{itemize}")) throw new Error("\\end{itemize} was not added");
+    for (let i = 0; i < 6 && (await lem("editorText")) !== before; i++) await lem("key", { combo: "Control+z" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+  },
+
+  async "jumps from the PDF to the source"(lem) {
+    await until(lem, "a drawn PDF page", () => lem("exists", { selector: ".pages .page canvas" }), 30_000);
+    // On page 1, the text between 31% and 40% of the height comes from chapters/method.tex (checked with `synctex edit`).
+    await lem("dblclickAt", { selector: ".pages .page", x: 0.34, y: 0.36 });
+    await until(lem, "chapters/method.tex to open", async () => (await lem("state")).active === "chapters/method.tex").catch(async (e) => {
+      throw new Error(`${e.message} ${await describe(lem)}`);
+    });
+  },
+
   async "keeps the PDF after switching to editor only and back"(lem) {
     await lem("click", { selector: '[title="Editor only"]' });
     await lem("click", { selector: '[title="Editor and PDF"]' });

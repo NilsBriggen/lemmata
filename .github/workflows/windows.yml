@@ -40,7 +40,8 @@ jobs:
       - name: Install MiKTeX
         shell: pwsh
         run: |
-          choco install miktex --no-progress -y
+          # MiKTeX's servers time out now and then; try a few times.
+          foreach ($i in 1..3) { choco install miktex --no-progress -y; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 30 }
           $bin = "C:\Program Files\MiKTeX\miktex\bin\x64"
           if (-not (Test-Path "$bin\pdflatex.exe")) { throw "MiKTeX was not installed where expected" }
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
@@ -67,7 +68,8 @@ jobs:
       - name: Install MiKTeX
         shell: pwsh
         run: |
-          choco install miktex --no-progress -y
+          # MiKTeX's servers time out now and then; try a few times.
+          foreach ($i in 1..3) { choco install miktex --no-progress -y; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 30 }
           $bin = "C:\Program Files\MiKTeX\miktex\bin\x64"
           if (-not (Test-Path "$bin\pdflatex.exe")) { throw "MiKTeX was not installed where expected" }
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
@@ -84,10 +86,20 @@ jobs:
           exit 0 # the fixture has deliberate warnings; only the package installs matter here
       - name: Install tauri-driver
         run: cargo install tauri-driver --locked --version 2.1.0
+      # The runner's Edge WebDriver follows Edge, not WebView2; this fetches the driver matching the installed WebView2.
+      - name: Get the WebDriver matching WebView2
+        shell: pwsh
+        run: |
+          cargo install --git https://github.com/chippers/msedgedriver-tool
+          $dir = Join-Path $env:RUNNER_TEMP "edgedriver"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Push-Location $dir
+          msedgedriver-tool.exe
+          Pop-Location
+          "MSEDGEDRIVER=$dir\msedgedriver.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Build the app (debug, frontend embedded, with the test automation API)
         run: pnpm --filter lemmata-desktop tauri build --debug --no-bundle
         env:
           VITE_LEMMATA_TEST: "1"
-      # The runner image ships an Edge WebDriver matching its Edge; WebView2 follows the same version.
       - name: Run end-to-end tests
         run: pnpm --filter lemmata-desktop e2e

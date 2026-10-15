@@ -162,6 +162,17 @@ export function install(host: Host) {
       throw new Error("The app did not become idle.");
     },
     sleep: ({ ms }: { ms: number }) => settle(ms),
+    /** Double-clicks inside an element at a point given as fractions of its size (0..1). */
+    dblclickAt: ({ selector, x, y }: { selector: string; x: number; y: number }) => {
+      const el = element(selector);
+      el.scrollIntoView({ block: "start" });
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: r.left + r.width * x, clientY: r.top + r.height * y }));
+    },
+    /** Sets a localStorage value (as tests that reload the page do). */
+    storage: ({ key, value }: { key: string; value: string }) => localStorage.setItem(key, value),
+    /** Reloads the page; the call returns before the reload. */
+    reload: () => void setTimeout(() => location.reload(), 50),
     /** Asks the window to close, as the title bar's close button does. */
     closeWindow: () => void getCurrentWindow().close(),
   };
