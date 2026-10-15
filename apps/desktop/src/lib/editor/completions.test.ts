@@ -39,11 +39,12 @@ describe("latex completions", () => {
     expect(typeof r!.options.find((o) => o.label === "align")!.apply).toBe("string");
   });
 
-  it("offers whole \\begin{…} blocks while typing \\beg", async () => {
-    const r = await complete("\\beg");
-    expect(labels(r)).toContain("\\begin{itemize}");
-    expect(labels(r)).toContain("\\begin{align*}");
-    expect(labels(r)).toContain("\\begin{table}");
+  it("offers \\begin on its own while typing \\be, like Overleaf", async () => {
+    const r = await complete("\\be");
+    expect(labels(r)).toContain("\\begin");
+    expect(labels(r).some((l) => l.startsWith("\\begin{"))).toBe(false);
+    const boost = (l: string) => r!.options.find((o) => o.label === l)?.boost ?? 0;
+    expect(Math.max(...r!.options.filter((o) => o.label.startsWith("\\be")).map((o) => boost(o.label)))).toBe(boost("\\begin"));
   });
 
   it("suggests closing the innermost open environment after \\en", async () => {

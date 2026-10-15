@@ -67,7 +67,8 @@ const textCommands = (math: boolean): Completion[] =>
     label: x.label,
     detail: x.detail,
     type: "function",
-    boost: math ? -10 : 5,
+    // \begin leads every list that starts with \b: environments are the commonest thing typed there.
+    boost: x.label === "\\begin" ? 20 : math ? -10 : 5,
     apply: x.label === "\\begin" ? beginThenNames : snippet(x.apply),
   }));
 
@@ -81,19 +82,9 @@ const beginThenNames: Completion["apply"] = (view, _completion, from, to) => {
 const MATH_FIRST = [...mathCompletions(20), ...textCommands(true)];
 const PROSE_FIRST = [...mathCompletions(-40), ...textCommands(false)];
 
-/** Labels the local source offers for a command; the language server's duplicates are dropped. */
+/** Labels the local source offers for a command; the language server's duplicates are dropped,
+ *  and so are its whole \begin{…} blocks: \begin is one word, the environment list comes after it. */
 const LOCAL_LABELS = new Set([...MATH_FIRST.map((c) => c.label), ...ENVIRONMENTS.map((e) => `\\begin{${e.name}}`)]);
-
-/** Overleaf-style: typing \beg offers every environment as a whole \begin{…}…\end{…} block. */
-function beginBlocks(getProviders: () => Providers | null): Completion[] {
-  return ENVIRONMENTS.map((e) => ({
-    label: `\\begin{${e.name}}`,
-    detail: e.detail,
-    type: "class",
-    boost: COMMON.has(e.name) ? 16 : 12,
-    apply: withPackage(snippet(`\\begin{${envSnippet(e)}`), e.pkg, getProviders),
-  }));
-}
 
 /** `\end{name}` for the innermost environment that is still open before `pos`. */
 function endForOpenEnvironment(state: CompletionContext["state"], pos: number): Completion[] {
@@ -108,9 +99,6 @@ export function latexCompletions(
   getProviders: () => Providers | null,
   fallback: (ctx: CompletionContext) => Promise<CompletionResult | null> | CompletionResult | null,
 ): CompletionSource {
-  const blocks = beginBlocks(getProviders);
-  const MATH_LIST = [...MATH_FIRST, ...blocks];
-  const PROSE_LIST = [...PROSE_FIRST, ...blocks];
   return async (ctx) => {
     const line = ctx.state.doc.lineAt(ctx.pos);
     const before = line.text.slice(0, ctx.pos - line.from);
@@ -129,7 +117,7 @@ export function latexCompletions(
         label: e.name,
         detail: e.detail,
         type: "class",
-        boost: 10,
+        boost: COMMON.has(e.name) ? 12 : 10,
         apply:
           kind === "end" || paired
             ? `${e.name}}`
@@ -204,7 +192,7 @@ export function latexCompletions(
     if (cmd && (cmd[0].length > 1 || ctx.explicit)) {
       const from = ctx.pos - cmd[0].length;
       const end = endForOpenEnvironment(ctx.state, ctx.pos);
-      const base = inMath(ctx.state.doc, ctx.pos) ? MATH_LIST : PROSE_LIST;
+      const base = inMath(ctx.state.doc, ctx.pos) ? MATH_FIRST : PROSE_FIRST;
       return { from, options: end.length ? base.concat(end) : base, validFor: /^\\[A-Za-z]*$/ };
     }
 
