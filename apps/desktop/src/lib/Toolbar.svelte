@@ -11,6 +11,7 @@
 <script lang="ts">
   // The editor's top bar, after Overleaf's: menu, project, layout switch,
   // and one prominent Recompile button with its options.
+  import MessageSquare from "@lucide/svelte/icons/message-square";
   import Menu from "@lucide/svelte/icons/menu";
   import PanelLeft from "@lucide/svelte/icons/panel-left";
   import Columns2 from "@lucide/svelte/icons/columns-2";
@@ -31,6 +32,10 @@
     layout: "split" | "editor" | "pdf";
     sidebarOpen: boolean;
     historyOpen: boolean;
+    /** The comments panel is open; `openComments` is how many threads are unresolved. */
+    reviewOpen: boolean;
+    openComments: number;
+    onReview: () => void;
     autoCompile: boolean;
     engine: Engine;
     menu: MenuAction[];
@@ -95,6 +100,7 @@
   </div>
 
   <div class="right">
+    <button class="btn" class:on={p.reviewOpen} aria-pressed={p.reviewOpen} onclick={p.onReview} title="Review comments"><MessageSquare size={16} /> Comments{#if p.openComments}<span class="pill">{p.openComments}</span>{/if}</button>
     <button class="btn" class:on={p.historyOpen} aria-pressed={p.historyOpen} onclick={p.onHistory}><History size={16} /> History</button>
     <button class="btn icon" aria-label="Project settings" title="Project settings" onclick={p.onProjectSettings}><Settings size={17} /></button>
     <div class="compile">
@@ -194,4 +200,5 @@
   @media (max-width: 1100px) {
     .segmented button { font-size: 0; gap: 0; padding: 0 8px; }
   }
+  .pill { margin-left: 4px; padding: 0 6px; border-radius: 9px; background: rgba(220, 160, 20, 0.85); color: #1b1b1b; font-size: 11px; line-height: 17px; }
 </style>

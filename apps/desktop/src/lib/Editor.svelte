@@ -30,6 +30,10 @@
   import { settings } from "./settings.svelte";
   import { mathPreview } from "./writing/math";
   import { figureSnippet, tsvToTabular } from "./writing/table";
+  import { comments as commentMarks, setCommentRanges } from "./comments/extension";
+  import { referenceHovers, type HoverProviders } from "./editor/hover";
+  import { grammarcheck } from "./grammar/extension";
+  import { locate } from "./comments/model";
 
   interface Props {
     onChange: (path: string, text: string) => void;
@@ -48,12 +52,14 @@
     onSelection?: (text: string) => void;
     /** A section or environment was folded or unfolded. */
     onFoldsChange?: () => void;
+    /** Commented text was clicked. */
+    onCommentClick?: (id: string) => void;
   }
-  let { onChange, onSyncRequest, onCursor, onAddWord, onPasteImage, onNeedsPackage, onPastedTable, onWrapEnvironment, onSelection, onFoldsChange }: Props = $props();
+  let { onChange, onSyncRequest, onCursor, onAddWord, onPasteImage, onNeedsPackage, onPastedTable, onWrapEnvironment, onSelection, onFoldsChange, onCommentClick }: Props = $props();
 
   /** What completions can look up about the project; set by the app. */
-  let providers: Providers | null = null;
-  export function setProviders(p: Providers | null) {
+  let providers: HoverProviders | null = null;
+  export function setProviders(p: HoverProviders | null) {
     providers = p;
   }
 
@@ -255,7 +261,7 @@
         : [],
       tex && settings.envSync ? [environmentSync, unmatchedEnvironments] : [],
       tex && settings.folding ? folding : [],
-      path.endsWith(".tex") ? [spellcheck((w) => onAddWord?.(w)), mathPreview, pasteHandler] : [],
+      path.endsWith(".tex") ? [spellcheck((w) => onAddWord?.(w)), grammarcheck(), mathPreview, pasteHandler, referenceHovers(() => providers)] : [],
       theme,
       Prec.high(
         keymap.of([
@@ -289,6 +295,7 @@
         ...historyKeymap,
         indentWithTab,
       ]),
+      commentMarks((id) => onCommentClick?.(id)),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) onChange(path, u.state.doc.toString());
         if (u.transactions.some((tr) => tr.effects.some((e) => e.is(foldEffect) || e.is(unfoldEffect)))) onFoldsChange?.();
@@ -416,6 +423,26 @@
     if (currentPath) states.set(currentPath, view.state);
     currentPath = null;
     view.setState(EditorState.create({ doc: "", extensions: [EditorState.readOnly.of(true), EditorView.editable.of(false)] }));
+  }
+
+  /** Marks commented text in the open file; `active` is the thread being looked at. */
+  export function showComments(threads: { id: string; line: number; quote: string }[], active: string | null = null) {
+    if (!view || !currentPath) return;
+    const text = view.state.doc.toString();
+    const ranges = threads.flatMap((t) => {
+      const at = locate(text, t);
+      return at && at.to > at.from ? [{ id: t.id, from: at.from, to: at.to, active: t.id === active }] : [];
+    });
+    view.dispatch({ effects: setCommentRanges.of(ranges) });
+  }
+
+  /** The selection to comment on (or the cursor's line), with its line number. */
+  export function commentTarget(): { line: number; quote: string } | null {
+    if (!view || !currentPath) return null;
+    const r = view.state.selection.main;
+    const line = view.state.doc.lineAt(r.from);
+    const quote = r.empty ? line.text : view.state.sliceDoc(r.from, Math.min(r.to, r.from + 2000));
+    return quote.trim() ? { line: line.number, quote } : null;
   }
 
   /** Folds waiting for their file to be opened (restored from the last session). */

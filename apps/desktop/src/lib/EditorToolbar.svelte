@@ -1,5 +1,6 @@
 <script lang="ts">
   // Formatting and insert buttons above the editor, like Overleaf's.
+  import MessageSquarePlus from "@lucide/svelte/icons/message-square-plus";
   import Bold from "@lucide/svelte/icons/bold";
   import Italic from "@lucide/svelte/icons/italic";
   import Heading from "@lucide/svelte/icons/heading";
@@ -30,6 +31,8 @@
     onList: (ordered: boolean) => void;
     /** Shows the line under the cursor in the PDF. The button is hidden without it. */
     onSyncToPdf?: () => void;
+    /** Starts a review comment on the selection. */
+    onComment?: () => void;
   }
   let p: Props = $props();
 
@@ -77,6 +80,7 @@
   {#if p.onSyncToPdf}
     <span class="sep"></span>
     <div class="group">
+      {#if p.onComment}<button class="btn ghost sm" title={tip("Add a comment on the selection", "comment")} disabled={p.disabled} onclick={p.onComment}><MessageSquarePlus size={16} /> Comment</button>{/if}
       <button class="btn ghost sm" title={tip("Go to PDF", "sync")} disabled={p.disabled} onclick={p.onSyncToPdf}><Locate size={16} /> Go to PDF</button>
     </div>
   {/if}
