@@ -150,6 +150,12 @@ pub async fn build_with(
     let engine = tool(opts, project.config.engine.binary());
     let can_go_direct = engine.is_some();
     let warm = !skip_latexmk && can_go_direct && warm_ok(project);
+    // No stamp: the last build failed or was stopped midway, and a killed TeX run may have taken
+    // the log and synctex with it. latexmk's record still says the PDF matches, so it would do
+    // nothing once the text is back to what it last built (undoing a broken edit, say).
+    if !project.outdir_abs().join(OK_STAMP).is_file() {
+        let _ = std::fs::remove_file(out_file(project, "fdb_latexmk"));
+    }
     let _ = std::fs::remove_file(project.outdir_abs().join(OK_STAMP));
     // A warm rebuild can start from the precompiled preamble; an explicit Recompile never does.
     let fmt = match &engine {
@@ -634,6 +640,9 @@ async fn direct_build(
         .ok_or_else(|| Error::SpawnTool(engine.into(), std::io::Error::other("not found")))?;
     let mut bib_checked = false;
     let mut status = Status::Failed;
+    // This writes over latexmk's outputs without latexmk knowing: its record would later call a
+    // stale PDF up to date (e.g. after undoing a broken edit) and skip the build.
+    let _ = std::fs::remove_file(out_file(project, "fdb_latexmk"));
 
     for pass in 0..MAX_PASSES {
         let mut cmd = Command::new(&engine_path);
@@ -1196,6 +1205,46 @@ mod tests {
                 assert!(p.outdir_abs().join(OK_STAMP).is_file());
             }
         }
+    }
+
+    /// A build stopped midway leaves no log, synctex or stamp, and latexmk's record of the last good
+    /// build. Back at that text (an undo), the next build must run, not call the old PDF up to date.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn after_a_stopped_build_undoing_back_still_builds() {
+        let (Ok(pdflatex), Ok(latexmk)) = (which::which("pdflatex"), which::which("latexmk"))
+        else {
+            return;
+        };
+        let d = tempfile::tempdir().unwrap();
+        let good = "\\documentclass{article}\n\\begin{document}\nHello.\n\\end{document}\n";
+        let main = d.path().join("main.tex");
+        std::fs::write(&main, good).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.config.fast_preamble = false;
+        let bin = pdflatex.parent().unwrap().to_path_buf();
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: Some(&bin),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let (_tx, rx) = oneshot::channel();
+        assert_eq!(build(&p, &opts, rx).await.unwrap().status, Status::Success);
+        // What a run killed while building a broken edit leaves behind.
+        let out = p.outdir_abs();
+        for f in ["main.log", "main.synctex.gz", OK_STAMP] {
+            let _ = std::fs::remove_file(out.join(f));
+        }
+        std::thread::sleep(Duration::from_millis(30));
+        std::fs::write(&main, good).unwrap();
+        let (_tx, rx) = oneshot::channel();
+        assert_eq!(build(&p, &opts, rx).await.unwrap().status, Status::Success);
+        assert!(
+            out.join("main.synctex.gz").is_file() && p.log_path().is_file(),
+            "latexmk didn't run"
+        );
     }
 
     #[test]
