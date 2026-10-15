@@ -1,11 +1,12 @@
 [package]
 name = "lemmata-synctex"
-description = "Forward and backward search through the synctex CLI"
+description = "Forward and backward search by reading the .synctex.gz file, with the synctex CLI as fallback"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+flate2 = "1"
 serde.workspace = true
 thiserror.workspace = true
