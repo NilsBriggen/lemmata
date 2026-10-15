@@ -15,6 +15,10 @@ use tokio::sync::oneshot;
 pub enum Error {
     #[error("latexmk was not found. Install TeX Live, or choose its folder in settings.")]
     NoLatexmk,
+    #[error(
+        "Tectonic was not found. Use Tectonic from the start screen, or choose another compiler in the project settings."
+    )]
+    NoTectonic,
     #[error("could not start latexmk: {0}")]
     Spawn(std::io::Error),
     #[error("could not start {0}: {1}")]
@@ -90,6 +94,8 @@ pub fn latexmk_args(project: &Project, miktex: bool) -> Vec<OsString> {
             lemmata_project::Engine::Pdflatex => ("-pdflatex", "pdflatex"),
             lemmata_project::Engine::Xelatex => ("-xelatex", "xelatex"),
             lemmata_project::Engine::Lualatex => ("-lualatex", "lualatex"),
+            // Tectonic builds never come here (see tectonic::build).
+            lemmata_project::Engine::Tectonic => ("-xelatex", "xelatex"),
         };
         args.push(format!("{flag}={bin} --enable-installer %O %S").into());
     }
@@ -125,25 +131,8 @@ pub async fn build_with(
     }
     let started = Instant::now();
     // Nothing changed since the last good build: no TeX run at all, just its result again.
-    if !force && up_to_date(project) {
-        let outdir = project.config.outdir.trim_start_matches("./").to_string();
-        let mut diagnostics = read_log(project);
-        for d in &mut diagnostics {
-            if d.file
-                .as_deref()
-                .is_some_and(|f| f.trim_start_matches("./").starts_with(&outdir))
-            {
-                d.file = None;
-                d.line = None;
-            }
-        }
-        return Ok(Outcome {
-            status: Status::Success,
-            duration_ms: started.elapsed().as_millis() as u64,
-            pdf: None,
-            diagnostics,
-            latexmk_failed: false,
-        });
+    if !force && let Some(o) = cached_outcome(project, started) {
+        return Ok(o);
     }
     let started_at = SystemTime::now();
     prepare_outdir(project);
@@ -261,26 +250,7 @@ pub async fn build_with(
     let pdf = project.pdf_path();
     let fresh = written_since(&pdf, started_at);
     let mut diagnostics = read_log(project);
-    // The bibliography tool's own log explains what the main log can't.
-    let blg_path = out_file(project, "blg");
-    let blg_fresh = written_since(&blg_path, started_at);
-    if blg_fresh && let Ok(bytes) = std::fs::read(&blg_path) {
-        for d in lemmata_log::parse_blg(&String::from_utf8_lossy(&bytes)) {
-            // A missing key is already reported from the main log.
-            if !diagnostics.iter().any(|x| x.kind == d.kind) {
-                diagnostics.push(d);
-            }
-        }
-    } else if diagnostics
-        .iter()
-        .any(|d| matches!(d.kind, lemmata_log::Kind::UndefinedCitation { .. }))
-    {
-        for d in &mut diagnostics {
-            if matches!(d.kind, lemmata_log::Kind::UndefinedCitation { .. }) {
-                d.hint = Some("The bibliography tool did not run, most often because a .bib file named in \\addbibresource{} or \\bibliography{} is missing from the project. Also check that biber (or bibtex) is installed.".into());
-            }
-        }
-    }
+    merge_blg(project, &mut diagnostics, started_at);
     // Files in the build folder (.bbl, .aux) aren't something the user can edit.
     let outdir = project.config.outdir.trim_start_matches("./");
     for d in &mut diagnostics {
@@ -349,9 +319,61 @@ pub async fn build_with(
     })
 }
 
+/// The result of the last good build again, when nothing changed since.
+pub(crate) fn cached_outcome(project: &Project, started: Instant) -> Option<Outcome> {
+    if !up_to_date(project) {
+        return None;
+    }
+    let outdir = project.config.outdir.trim_start_matches("./").to_string();
+    let mut diagnostics = read_log(project);
+    for d in &mut diagnostics {
+        if d.file
+            .as_deref()
+            .is_some_and(|f| f.trim_start_matches("./").starts_with(&outdir))
+        {
+            d.file = None;
+            d.line = None;
+        }
+    }
+    Some(Outcome {
+        status: Status::Success,
+        duration_ms: started.elapsed().as_millis() as u64,
+        pdf: None,
+        diagnostics,
+        latexmk_failed: false,
+    })
+}
+
+/// The bibliography tool's own log explains what the main log can't.
+pub(crate) fn merge_blg(
+    project: &Project,
+    diagnostics: &mut Vec<Diagnostic>,
+    started_at: SystemTime,
+) {
+    let blg_path = out_file(project, "blg");
+    let blg_fresh = written_since(&blg_path, started_at);
+    if blg_fresh && let Ok(bytes) = std::fs::read(&blg_path) {
+        for d in lemmata_log::parse_blg(&String::from_utf8_lossy(&bytes)) {
+            // A missing key is already reported from the main log.
+            if !diagnostics.iter().any(|x| x.kind == d.kind) {
+                diagnostics.push(d);
+            }
+        }
+    } else if diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, lemmata_log::Kind::UndefinedCitation { .. }))
+    {
+        for d in diagnostics.iter_mut() {
+            if matches!(d.kind, lemmata_log::Kind::UndefinedCitation { .. }) {
+                d.hint = Some("The bibliography tool did not run, most often because a .bib file named in \\addbibresource{} or \\bibliography{} is missing from the project. Also check that biber (or bibtex) is installed.".into());
+            }
+        }
+    }
+}
+
 /// Where TeX and its helpers write `ext` output for the main file. They put it
 /// flat in the build folder, so `src/main.tex` gives `main.ext`, not `src/main.ext`.
-fn out_file(project: &Project, ext: &str) -> PathBuf {
+pub(crate) fn out_file(project: &Project, ext: &str) -> PathBuf {
     let stem = project.main.file_stem().unwrap_or_default();
     let mut name = stem.to_os_string();
     name.push(".");
@@ -361,10 +383,13 @@ fn out_file(project: &Project, ext: &str) -> PathBuf {
 
 /// The diagnostics in the main log. A run from the precompiled preamble didn't read the preamble,
 /// so what it said then comes from the log of the run that made the format.
-fn read_log(project: &Project) -> Vec<Diagnostic> {
-    let log = std::fs::read(project.log_path())
+pub(crate) fn read_log(project: &Project) -> Vec<Diagnostic> {
+    let mut log = std::fs::read(project.log_path())
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default();
+    if project.config.engine == lemmata_project::Engine::Tectonic {
+        log = crate::tectonic::normalize_log(&log);
+    }
     let mut d = lemmata_log::parse(&log);
     if format::was_used(&log) {
         let mut pre = lemmata_log::parse(&format::preamble_log(project));
@@ -377,7 +402,7 @@ fn read_log(project: &Project) -> Vec<Diagnostic> {
 
 /// Whether `path` was written by a build that began at `started_at`. Allows 2 s
 /// of slack because FAT/exFAT and network shares round modification times.
-fn written_since(path: &Path, started_at: SystemTime) -> bool {
+pub(crate) fn written_since(path: &Path, started_at: SystemTime) -> bool {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .is_ok_and(|t| t + Duration::from_secs(2) >= started_at)
@@ -457,7 +482,7 @@ const MAX_PASSES: usize = 5;
 
 /// Written into the build folder after a successful build, holding the main
 /// file. Its presence means the folder is in a state the direct build can continue from.
-const OK_STAMP: &str = ".lemmata-ok";
+pub(crate) const OK_STAMP: &str = ".lemmata-ok";
 
 /// Whether the engine can be run directly instead of latexmk: the last build here
 /// succeeded, and nothing configures steps that only latexmk runs.
@@ -538,7 +563,7 @@ fn changed_since(project: &Project, stamp: &Path) -> bool {
 }
 
 /// Records a successful build, and what the bibliography tool read, so the next one can go direct without running it again.
-fn mark_ok(project: &Project) {
+pub(crate) fn mark_ok(project: &Project) {
     let biber = project.config.bib == lemmata_project::Bib::Biber;
     if let Some(fp) = bib_fingerprint(project, biber) {
         let _ = std::fs::write(out_file(project, "lemmata-bib"), fp);
@@ -747,7 +772,7 @@ async fn run_bibliography(
 }
 
 /// The last `max` bytes of `text`, cut at a character boundary.
-fn tail_of(text: &str, max: usize) -> String {
+pub(crate) fn tail_of(text: &str, max: usize) -> String {
     let mut start = text.len().saturating_sub(max);
     while !text.is_char_boundary(start) {
         start += 1;
@@ -872,7 +897,7 @@ pub fn clean(project: &Project) -> std::io::Result<usize> {
 
 /// `\include{chapters/x}` writes `chapters/x.aux` inside the output folder,
 /// and TeX can't create folders, so mirror the project's folders there.
-fn prepare_outdir(project: &Project) {
+pub(crate) fn prepare_outdir(project: &Project) {
     fn mirror(entries: &[lemmata_project::Entry], outdir: &Path) {
         for e in entries.iter().filter(|e| e.is_dir) {
             let _ = std::fs::create_dir_all(outdir.join(&e.path));
