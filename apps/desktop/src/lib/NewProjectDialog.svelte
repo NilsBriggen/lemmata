@@ -4,7 +4,11 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { documentDir } from "@tauri-apps/api/path";
   import FileText from "@lucide/svelte/icons/file-text";
-  import Search from "@lucide/svelte/icons/search";
+  import GraduationCap from "@lucide/svelte/icons/graduation-cap";
+  import BookOpen from "@lucide/svelte/icons/book-open";
+  import Presentation from "@lucide/svelte/icons/presentation";
+  import PanelTop from "@lucide/svelte/icons/layout-panel-top";
+  import Mail from "@lucide/svelte/icons/mail";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Trash2 from "@lucide/svelte/icons/trash";
@@ -31,34 +35,41 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
 
-  let query = $state("");
-  /** Showing the folder of publisher templates instead of the everyday sections. */
-  let inFolder = $state(false);
+  /** The category whose templates are shown; null shows the categories. */
+  let shown = $state<string | null>(null);
   /** The template collection: being fetched, or why it couldn't be. */
   let online = $state<{ loading: boolean; error: string | null }>({ loading: true, error: null });
 
-  // Everyday kinds of document first, a few templates each; the publishers' own templates
-  // (IEEE, ACM, Springer, …) are in one folder, since most people never need them.
-  const ORDER = ["My templates", "Papers", "School", "Theses & reports", "Presentations", "Posters", "Letters & CV"];
+  // A big button per everyday kind of document, a few templates each. The user's own templates
+  // and the publishers' (IEEE, ACM, Springer, …) sit in smaller bars below, keeping the grid at six.
+  const ORDER = ["Papers", "School", "Theses & reports", "Presentations", "Posters", "Letters & CV"];
+  const ICONS: Record<string, typeof FileText> = {
+    Papers: FileText, School: GraduationCap, "Theses & reports": BookOpen,
+    Presentations: Presentation, Posters: PanelTop, "Letters & CV": Mail,
+  };
+  const MINE = "My templates";
   const FOLDER = "Journals & conferences";
-  const catOf = (t: Template) => t.category || "Other";
-  const sections = $derived(
+  const catOf = (t: Template) => (t.user ? MINE : t.category || "Other");
+  const inCat = (c: string) => templates.filter((t) => catOf(t) === c);
+  const categories = $derived(
     [...new Set(templates.map(catOf))]
-      .filter((c) => c !== FOLDER)
-      .sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99))
-      .map((c) => [c, templates.filter((t) => catOf(t) === c)] as const),
+      .filter((c) => c !== FOLDER && c !== MINE)
+      .sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99)),
   );
-  const folder = $derived(templates.filter((t) => catOf(t) === FOLDER));
-  // Every word of the query must appear in the name, description, tags or category.
-  const matches = $derived.by(() => {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return templates.filter((t) => {
-      const hay = [t.name, t.description, catOf(t), ...(t.tags ?? [])].join(" ").toLowerCase();
-      return words.every((w) => hay.includes(w));
-    });
-  });
-  /** A template chosen by a link opens the folder when that's where it is. */
-  const showChosen = () => (inFolder = folder.some((t) => t.id === chosen));
+  const folderCount = $derived(inCat(FOLDER).length);
+  const mineCount = $derived(inCat(MINE).length);
+  /** What's inside, by name: "Article, Preprint, Two-column paper, …". */
+  const summary = (list: Template[]) => list.slice(0, 3).map((t) => t.name).join(", ") + (list.length > 3 ? ", …" : "");
+
+  function show(c: string) {
+    shown = c;
+    if (!inCat(c).some((t) => t.id === chosen)) chosen = inCat(c)[0]?.id ?? chosen;
+  }
+  /** A template chosen by a link opens its category. */
+  const showChosen = () => {
+    const t = templates.find((x) => x.id === chosen);
+    if (t) shown = catOf(t);
+  };
 
   onMount(async () => {
     templates = await api.listTemplates().catch(() => []);
@@ -81,7 +92,8 @@
     try {
       await api.deleteTemplate(t.id);
       templates = templates.filter((x) => x.id !== t.id);
-      if (chosen === t.id) chosen = templates[0]?.id ?? "article";
+      if (shown && !inCat(shown).length) shown = null;
+      if (chosen === t.id) chosen = (shown && inCat(shown)[0]?.id) || "article";
     } catch (err) {
       error = errorMessage(err);
     }
@@ -125,49 +137,52 @@
   </div>
 {/snippet}
 
-<Modal title="New project" subtitle="Start from a template. It's a normal folder you can open in any editor." width={900} {onClose}>
+<Modal title="New project" subtitle="Start from a template. It's a normal folder you can open in any editor." width={720} {onClose}>
   <form id="new-project" onsubmit={create}>
     <div class="gallery">
-      <label class="search">
-        <Search size={15} />
-        <input class="input" type="search" bind:value={query} placeholder="Search templates, e.g. thesis, poster, ieee" aria-label="Search templates" />
-      </label>
-      {#if online.loading}
-        <p class="online">Getting more templates…</p>
-      {:else if online.error}
-        <p class="online" title={online.error}>More templates are online, but they couldn't be loaded right now.</p>
-      {/if}
-      <div class="list" role="radiogroup" aria-label="Template">
-        {#if query.trim()}
-          <div class="templates">
-            {#each matches as t (t.id)}{@render card(t)}{:else}<p class="none">No template matches "{query}".</p>{/each}
-          </div>
-        {:else if inFolder}
-          <button type="button" class="back" onclick={() => (inFolder = false)}><ArrowLeft size={14} /> All templates</button>
-          <h3>{FOLDER}</h3>
-          <p class="hint">Templates with a publisher's own class, for submitting to their journals and conferences.</p>
-          <div class="templates">{#each folder as t (t.id)}{@render card(t)}{/each}</div>
-        {:else}
-          {#each sections as [name, list] (name)}
-            <h3>{name}</h3>
-            <div class="templates">{#each list as t (t.id)}{@render card(t)}{/each}</div>
-          {/each}
-          {#if folder.length}
-            <h3>More</h3>
-            <button type="button" class="folder" onclick={() => (inFolder = true)}>
-              <FolderOpen size={22} />
-              <span><b>{FOLDER}</b><span class="desc">IEEE, ACM, Springer, Elsevier and more: {folder.length} templates with a publisher's own class</span></span>
+      {#if shown === null}
+        <div class="cats">
+          {#each categories as c (c)}
+            {@const Icon = ICONS[c] ?? FileText}
+            <button type="button" class="cat" onclick={() => show(c)}>
+              <span class="ico"><Icon size={20} /></span>
+              <b>{c}</b>
+              <span class="desc">{summary(inCat(c))}</span>
             </button>
-          {/if}
+          {/each}
+        </div>
+        {#if mineCount}
+          <button type="button" class="folder" onclick={() => show(MINE)}>
+            <Star size={18} />
+            <span><b>{MINE}</b><span class="desc">{summary(inCat(MINE))}</span></span>
+          </button>
         {/if}
-      </div>
+        {#if folderCount}
+          <button type="button" class="folder" onclick={() => show(FOLDER)}>
+            <FolderOpen size={18} />
+            <span><b>{FOLDER}</b><span class="desc">IEEE, ACM, Springer, Elsevier and more: {folderCount} templates with a publisher's own class</span></span>
+          </button>
+        {/if}
+        {#if online.loading}
+          <p class="online">Getting more templates…</p>
+        {:else if online.error}
+          <p class="online" title={online.error}>More templates are online, but they couldn't be loaded right now.</p>
+        {/if}
+      {:else}
+        <div class="head">
+          <button type="button" class="back" onclick={() => (shown = null)}><ArrowLeft size={14} /> All categories</button>
+          <h3>{shown}</h3>
+        </div>
+        {#if shown === FOLDER}<p class="hint">Templates with a publisher's own class, for submitting to their journals and conferences.</p>{/if}
+        <div class="templates" role="radiogroup" aria-label="Template">
+          {#each inCat(shown) as t (t.id)}{@render card(t)}{/each}
+        </div>
+      {/if}
     </div>
-    <div class="row">
-      <div class="field grow">
-        <label for="np-name">Folder name</label>
-        <!-- svelte-ignore a11y_autofocus -->
-        <input id="np-name" class="input" bind:value={name} required placeholder="master-thesis" autofocus />
-      </div>
+    <div class="field">
+      <label for="np-name">Folder name</label>
+      <!-- svelte-ignore a11y_autofocus -->
+      <input id="np-name" class="input" bind:value={name} required placeholder="master-thesis" autofocus />
     </div>
     <div class="field">
       <label for="np-parent">Location</label>
@@ -180,29 +195,33 @@
   </form>
   {#snippet footer()}
     <button class="btn" onclick={onClose}>Cancel</button>
-    <button class="btn primary" type="submit" form="new-project" disabled={busy || !name.trim() || !parent}>Create project</button>
+    <button class="btn primary" type="submit" form="new-project" disabled={busy || shown === null || !name.trim() || !parent}>Create project</button>
   {/snippet}
 </Modal>
 
 <style>
   form { display: flex; flex-direction: column; gap: 16px; }
-  .gallery { display: flex; flex-direction: column; gap: 10px; height: min(440px, 54vh); }
-  .list { flex: 1; min-height: 0; overflow-y: auto; padding: 2px; }
-  h3 { margin: 14px 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-  .list > h3:first-child, .back + h3 { margin-top: 2px; }
-  .hint { margin: -4px 0 10px; color: var(--muted); }
-  .back { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 8px; padding: 2px 6px; border: 0; background: none; color: var(--accent); cursor: pointer; border-radius: var(--r-sm); }
-  .back:hover { background: var(--surface-2); }
-  .folder { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; text-align: left; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); color: var(--ink); cursor: pointer; }
+  /* Sized by its content: a fixed height squeezed the fields below on short windows. */
+  .gallery { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 2px; }
+  .cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+  .cat {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px; text-align: left; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); color: var(--ink);
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  .cat:hover { border-color: var(--accent); }
+  .ico { display: inline-flex; color: var(--accent); margin-bottom: 4px; }
+  .folder { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; text-align: left; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); color: var(--ink); cursor: pointer; }
   .folder:hover { border-color: var(--border-strong); }
   .folder :global(svg) { color: var(--accent); flex: none; }
-  .folder > span { display: flex; flex-direction: column; gap: 2px; }
-  .search { position: relative; display: block; }
-  .search :global(svg) { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
-  .search .input { width: 100%; padding-left: 32px; }
+  .folder > span { display: flex; flex-direction: column; gap: 1px; }
+  .head { display: flex; align-items: center; gap: 10px; }
+  h3 { margin: 0; font-size: 14px; font-weight: 600; }
+  .hint { margin: 0; color: var(--muted); }
+  .back { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border: 0; background: none; color: var(--accent); cursor: pointer; border-radius: var(--r-sm); }
+  .back:hover { background: var(--surface-2); }
   .templates { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; padding: 2px; }
-  .none { grid-column: 1 / -1; color: var(--muted); margin: 8px 0; }
-  .online { margin: -4px 0 0; font-size: 12px; color: var(--muted); }
+  .online { margin: 0; font-size: 12px; color: var(--muted); }
   .tpl { position: relative; display: flex; }
   .tpl > button:first-child { flex: 1; }
   .templates .del { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; padding: 0; align-items: center; justify-content: center; border-radius: var(--r-sm); border-color: transparent; background: var(--surface); color: var(--faint); }
@@ -223,7 +242,6 @@
   .thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; background: #fff; }
   .desc { color: var(--muted); font-size: 12px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .row { display: flex; gap: 8px; }
-  .grow { flex: 1; }
   .row .input { flex: 1; min-width: 0; }
   .error { color: var(--error); margin: 0; }
 </style>

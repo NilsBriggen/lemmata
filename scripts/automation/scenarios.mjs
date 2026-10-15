@@ -521,10 +521,10 @@ export const scenarios = {
     await lem("command", { id: "close" });
     await until(lem, "the library", () => lem("exists", { selector: ".library" }));
     await lem("clickText", { text: "New project" });
-    await until(lem, "the gallery", () => lem("exists", { selector: '[aria-label="Search templates"]' }));
-    await lem("fill", { selector: '[aria-label="Search templates"]', value: "homework" });
-    await until(lem, "the search to narrow the list", async () => (await lem("query", { selector: ".templates [role=radio]" })).length === 1);
-    await lem("click", { selector: ".templates [role=radio]" });
+    await until(lem, "the categories", () => lem("exists", { selector: ".cats .cat" }));
+    await lem("clickText", { text: "School", within: ".cats" });
+    await until(lem, "the School templates", () => lem("exists", { selector: ".templates [role=radio]" }));
+    await lem("clickText", { text: "Homework", within: ".templates" });
     await lem("fill", { selector: "#np-name", value: name });
     await lem("fill", { selector: "#np-parent", value: path.dirname(dir) });
     await lem("clickText", { text: "Create project" });

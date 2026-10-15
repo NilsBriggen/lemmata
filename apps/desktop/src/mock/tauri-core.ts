@@ -211,6 +211,7 @@ const handlers: Record<string, (a: Args) => unknown> = {
     { id: "online:poster", name: "Research poster", description: "An A0 conference poster.", category: "Posters" },
     { id: "online:ieee", name: "IEEE conference", description: "A two-column paper with IEEEtran.", category: "Journals & conferences" },
     { id: "online:acm", name: "ACM sigconf", description: "A conference paper with acmart.", category: "Journals & conferences" },
+    { id: "user:course-sheet", name: "Course sheet", description: "", category: "", user: true },
   ],
   create_project: (a) => `${a.parent}/${a.name}`,
   refresh_templates: () => 0,
