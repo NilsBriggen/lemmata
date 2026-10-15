@@ -15,8 +15,11 @@ on:
       - "**/*.md"
       - "!CHANGELOG.md"
 
+# A newer push to a pull request makes its older run pointless. On main every commit gets its own group:
+# a release waits for CI on the tagged commit, and cancelling that run (or a later push replacing it while
+# it waits) fails the release.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 env:
