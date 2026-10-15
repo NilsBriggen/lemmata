@@ -396,6 +396,25 @@ export const scenarios = {
     await check(lem, "after leaving a presentation");
   },
 
+  async "shows What's new once after an update"(lem, dir) {
+    // During a reload the app can't answer, so wait here, not through the app.
+    const reload = async () => {
+      await lem("reload");
+      await new Promise((r) => setTimeout(r, 5000));
+    };
+    await lem("setting", { key: "lastSeenVersion", value: "1.4.0" });
+    await sleep(lem, 600); // settings are written after a short delay
+    await reload();
+    await until(lem, "the What's new window", async () => (await lem("text", { selector: "[role=dialog]" }).catch(() => "")).includes("What's new"));
+    await lem("clickText", { text: "Got it", within: "[role=dialog]" });
+    await until(lem, "the window closed", async () => !(await lem("exists", { selector: "[role=dialog]" })));
+    await sleep(lem, 600);
+    await reload();
+    if (await lem("exists", { selector: "[role=dialog]" })) throw new Error("What's new showed a second time");
+    await lem("openProject", { path: dir });
+    await lem("idle", { timeout: 120_000 });
+  },
+
   async "creates a project from the template gallery and builds it"(lem, dir) {
     const name = `${path.basename(dir)}-gallery`;
     fs.rmSync(path.join(path.dirname(dir), name), { recursive: true, force: true });
