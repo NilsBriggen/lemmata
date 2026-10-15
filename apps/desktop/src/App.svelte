@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import { api, errorMessage, type Target, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
-  import Onboarding from "./lib/Onboarding.svelte";
   import Library from "./lib/Library.svelte";
   import Editor from "./lib/Editor.svelte";
   import PdfPane from "./lib/PdfPane.svelte";
@@ -9,25 +8,14 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import Splitter from "./lib/ui/Splitter.svelte";
   import Modal from "./lib/ui/Modal.svelte";
-  import SnippetsDialog from "./lib/SnippetsDialog.svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { contentHash } from "./lib/contentHash";
   import { closePresenter } from "./lib/presenter/window";
-  import Welcome from "./lib/Welcome.svelte";
   import X from "@lucide/svelte/icons/x";
   import CircleCheck from "@lucide/svelte/icons/circle-check";
   import Info from "@lucide/svelte/icons/info";
   import Package from "@lucide/svelte/icons/package";
   import Sparkles from "@lucide/svelte/icons/sparkles";
-  import ProjectSettings from "./lib/ProjectSettings.svelte";
-  import HistoryPanel from "./lib/HistoryPanel.svelte";
-  import Preferences from "./lib/Preferences.svelte";
-  import CitePicker from "./lib/CitePicker.svelte";
-  import FigureDialog from "./lib/FigureDialog.svelte";
-  import TableDialog from "./lib/TableDialog.svelte";
-  import SymbolPalette from "./lib/SymbolPalette.svelte";
-  import WordCount from "./lib/WordCount.svelte";
-  import Shortcuts from "./lib/Shortcuts.svelte";
   import EditorToolbar from "./lib/EditorToolbar.svelte";
   import TabStrip from "./lib/TabStrip.svelte";
   import { templateOf } from "./lib/editor/mathCommands";
@@ -39,8 +27,6 @@
   import { ENVIRONMENTS } from "./lib/editor/data";
   import type { Providers } from "./lib/editor/completions";
   import SearchPanel from "./lib/SearchPanel.svelte";
-  import RenameSymbol from "./lib/RenameSymbol.svelte";
-  import SaveTemplateDialog from "./lib/SaveTemplateDialog.svelte";
   import FileActions from "./lib/FileActions.svelte";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { loadSession, saveSession } from "./lib/session";
@@ -1483,15 +1469,15 @@
 {#if !tex}
   <div class="loading"><span class="wordmark">Lemmata</span></div>
 {:else if welcome}
-  <Welcome status={tex} {checking} onRecheck={recheck} onFinish={startFromWelcome} onOpen={(path) => { updateSettings({ firstRunDone: true }); openProject(path); }} onImported={(paths) => {
+  {#await import("./lib/Welcome.svelte") then { default: Welcome }}<Welcome status={tex} {checking} onRecheck={recheck} onFinish={startFromWelcome} onOpen={(path) => { updateSettings({ firstRunDone: true }); openProject(path); }} onImported={(paths) => {
       updateSettings({ firstRunDone: true });
       welcome = false;
       recent = rememberProjects(paths);
       if (paths.length === 1) openProject(paths[0]);
       else showNotice(`Imported ${paths.length} projects.`, { tone: "ok" });
-    }} />
+    }} />{/await}
 {:else if !tex.detection.ready && !withoutTex}
-  <Onboarding status={tex} {checking} onRecheck={recheck} onSkip={() => (withoutTex = true)} />
+  {#await import("./lib/Onboarding.svelte") then { default: Onboarding }}<Onboarding status={tex} {checking} onRecheck={recheck} onSkip={() => (withoutTex = true)} />{/await}
 {:else if !project}
   <Library
     {recent}
@@ -1709,7 +1695,7 @@
             />
           </div>
           {#if historyOpen}
-            <div class="fill"><HistoryPanel version={historyVersion} {currentText} {beforeRestore} {onRestored} {onRestoredAll} onClose={() => (historyOpen = false)} /></div>
+            <div class="fill">{#await import("./lib/HistoryPanel.svelte") then { default: HistoryPanel }}<HistoryPanel version={historyVersion} {currentText} {beforeRestore} {onRestored} {onRestoredAll} onClose={() => (historyOpen = false)} />{/await}</div>
           {/if}
         </div>
       {/if}
@@ -1768,7 +1754,7 @@
   onUpload={uploadFiles}
 />
 
-{#if snippetsOpen}<SnippetsDialog onClose={() => (snippetsOpen = false)} />{/if}
+{#if snippetsOpen}{#await import("./lib/SnippetsDialog.svelte") then { default: SnippetsDialog }}<SnippetsDialog onClose={() => (snippetsOpen = false)} />{/await}{/if}
 
 {#if askShellEscape && project}
   <Modal title="Allow this project to run programs?" width={500} onClose={() => allowShellEscape(false)}>
@@ -1831,18 +1817,18 @@
 {/if}
 
 {#if savingTemplate && project}
-  <SaveTemplateDialog
+  {#await import("./lib/SaveTemplateDialog.svelte") then { default: SaveTemplateDialog }}<SaveTemplateDialog
     projectName={project.name}
     onSaved={(name) => {
       savingTemplate = false;
       showNotice(`Saved the template "${name}". It appears when you create a new project.`, { tone: "ok" });
     }}
     onClose={() => (savingTemplate = false)}
-  />
+  />{/await}
 {/if}
 
 {#if renaming && project}
-  <RenameSymbol
+  {#await import("./lib/RenameSymbol.svelte") then { default: RenameSymbol }}<RenameSymbol
     kind={renaming.kind}
     name={renaming.name}
     {historyOn}
@@ -1856,36 +1842,36 @@
       runBuild();
     }}
     onClose={() => (renaming = null)}
-  />
+  />{/await}
 {/if}
 
 {#if dialog === "figure" && project}
-  <FigureDialog
+  {#await import("./lib/FigureDialog.svelte") then { default: FigureDialog }}<FigureDialog
     tree={project.tree}
     onInsert={(snippet) => editor?.insertSnippet(snippet, "graphicx")}
     onClose={() => ((dialog = null), editor?.getView()?.focus())}
-  />
+  />{/await}
 {:else if dialog === "table"}
-  <TableDialog
+  {#await import("./lib/TableDialog.svelte") then { default: TableDialog }}<TableDialog
     onInsert={(template, needs) => editor?.insertBlock(template, needs)}
     onClose={() => ((dialog = null), editor?.getView()?.focus())}
-  />
+  />{/await}
 {:else if dialog === "symbols"}
-  <SymbolPalette
+  {#await import("./lib/SymbolPalette.svelte") then { default: SymbolPalette }}<SymbolPalette
     onInsert={(tex, needs) => {
       editor?.insertTemplate(templateOf(tex));
       if (needs) needsPackage(needs);
     }}
     onClose={() => ((dialog = null), editor?.getView()?.focus())}
-  />
+  />{/await}
 {:else if dialog === "words"}
-  <WordCount onClose={() => (dialog = null)} />
+  {#await import("./lib/WordCount.svelte") then { default: WordCount }}<WordCount onClose={() => (dialog = null)} />{/await}
 {:else if dialog === "shortcuts"}
-  <Shortcuts onClose={() => (dialog = null)} />
+  {#await import("./lib/Shortcuts.svelte") then { default: Shortcuts }}<Shortcuts onClose={() => (dialog = null)} />{/await}
 {/if}
 
 {#if citeOpen}
-  <CitePicker
+  {#await import("./lib/CitePicker.svelte") then { default: CitePicker }}<CitePicker
     onInsert={(keys) => {
       citeOpen = false;
       editor?.insertCitation(keys);
@@ -1901,16 +1887,16 @@
       citeOpen = false;
       editor?.getView()?.focus();
     }}
-  />
+  />{/await}
 {/if}
 
 {#if prefsOpen}
-  <Preferences
+  {#await import("./lib/Preferences.svelte") then { default: Preferences }}<Preferences
     detection={tex?.detection ?? null}
     onTexDir={(dir) => recheck(dir ?? undefined)}
     onCheckUpdates={checkForUpdates}
     onClose={() => (prefsOpen = false)}
-  />
+  />{/await}
 {/if}
 
 {#if update}
@@ -1929,7 +1915,7 @@
 {/if}
 
 {#if settingsOpen && project}
-  <ProjectSettings {project} onSave={saveSettings} onClose={() => (settingsOpen = false)} />
+  {#await import("./lib/ProjectSettings.svelte") then { default: ProjectSettings }}<ProjectSettings {project} onSave={saveSettings} onClose={() => (settingsOpen = false)} />{/await}
 {/if}
 
 {#if snapshotLabel !== null}

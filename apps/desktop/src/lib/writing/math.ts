@@ -1,9 +1,8 @@
 // Live preview of the maths under the cursor, rendered with KaTeX.
 import { StateField, type EditorState, type Text } from "@codemirror/state";
 import { showTooltip, type Tooltip } from "@codemirror/view";
-import "katex/dist/katex.min.css";
 import { mathContextAt, closingOf } from "../editor/mathContext";
-import { renderTexResult, setMacros } from "./katexRender";
+import { katexReady, loadKatex, renderTexResult, setMacros } from "./katexRender";
 
 /** Environments whose content KaTeX renders as plain maths, without the environment around it. */
 const MATH_ONLY = new Set(["equation", "equation*", "displaymath", "math"]);
@@ -100,26 +99,32 @@ function tooltipFor(state: EditorState): Tooltip | null {
     above: true,
     strictSide: false,
     arrow: false,
-    create() {
+    create(view) {
       const dom = document.createElement("div");
       dom.className = "cm-math-preview";
-      const { html, error } = renderTexResult(span.tex, span.display);
-      if (html) {
-        lastGood = html;
-        dom.innerHTML = html;
-      } else {
-        dom.classList.add("error");
-        if (lastGood) {
-          const old = document.createElement("div");
-          old.className = "stale";
-          old.innerHTML = lastGood;
-          dom.append(old);
+      const fill = () => {
+        const { html, error } = renderTexResult(span.tex, span.display);
+        if (html) {
+          lastGood = html;
+          dom.innerHTML = html;
+        } else {
+          dom.classList.add("error");
+          if (lastGood) {
+            const old = document.createElement("div");
+            old.className = "stale";
+            old.innerHTML = lastGood;
+            dom.append(old);
+          }
+          const msg = document.createElement("div");
+          msg.className = "msg";
+          msg.textContent = error ?? "";
+          dom.append(msg);
         }
-        const msg = document.createElement("div");
-        msg.className = "msg";
-        msg.textContent = error ?? "";
-        dom.append(msg);
-      }
+        view.requestMeasure();
+      };
+      // First use: KaTeX loads lazily, so fill the tooltip once it's there.
+      if (katexReady()) fill();
+      else loadKatex().then(fill, () => {});
       return { dom };
     },
   };

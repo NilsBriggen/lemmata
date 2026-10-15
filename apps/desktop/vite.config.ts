@@ -41,7 +41,7 @@ export default defineConfig(({ mode }) => ({
   // Tauri expects a fixed port and doesn't want the screen cleared.
   clearScreen: false,
   server: { port: 1420, strictPort: true, watch: { ignored: ["**/src-tauri/**"] } },
-  // Desktop app loaded from disk, so one big chunk is fine.
+  // Desktop app loaded from disk; pdf.js alone keeps the main chunk above 500 kB.
   build: { target: "es2022", chunkSizeWarningLimit: 2000 },
   test: { environment: "node" },
 }));

@@ -27,7 +27,6 @@
   import { tags as t } from "@lezer/highlight";
   import type { Diagnostic } from "./api";
   import { spellcheck } from "./spell/extension";
-  import { vim } from "@replit/codemirror-vim";
   import { settings } from "./settings.svelte";
   import { mathPreview } from "./writing/math";
   import { figureSnippet, tsvToTabular } from "./writing/table";
@@ -174,13 +173,29 @@
 
   const isTex = (path: string) => /\.(tex|sty|cls)$/.test(path);
 
+  // The Vim keymap is a separate chunk; editors rebuild once it has loaded.
+  let vimMod: typeof import("@replit/codemirror-vim") | null = null;
+  let vimLoading = false;
+  function vimKeys(): Extension {
+    if (settings.keymap !== "vim") return [];
+    if (vimMod) return vimMod.vim();
+    if (!vimLoading) {
+      vimLoading = true;
+      import("@replit/codemirror-vim").then((m) => {
+        vimMod = m;
+        refreshExtensions();
+      }, () => (vimLoading = false));
+    }
+    return [];
+  }
+
   function extensions(path: string): Extension[] {
     const tex = isTex(path);
     return [
       indentUnit.of(unitOf(settings.indent)),
       EditorState.tabSize.of(tabSizeOf(settings.indent)),
       // Vim must come first so its keys take precedence.
-      settings.keymap === "vim" ? vim() : [],
+      vimKeys(),
       lineNumbers(),
       highlightActiveLineGutter(),
       highlightSpecialChars(),

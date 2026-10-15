@@ -145,7 +145,8 @@ describe("latex completions", () => {
 
   it("every maths completion renders", async () => {
     const { mathCompletions, previews } = await import("./mathCommands");
-    const { renderTex } = await import("../writing/katexRender");
+    const { renderTex, loadKatex } = await import("../writing/katexRender");
+    await loadKatex();
     const all = mathCompletions(0);
     expect(all.length).toBeGreaterThan(150);
     const bad = all.filter((c) => !renderTex(previews.get(c)!)).map((c) => c.label);
