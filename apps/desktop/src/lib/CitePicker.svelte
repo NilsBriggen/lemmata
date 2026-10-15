@@ -9,10 +9,12 @@
   interface Props {
     onInsert: (keys: string[]) => void;
     onClose: () => void;
+    /** Saves unsaved edits to .bib files, so adding an entry on disk doesn't lose them. */
+    beforeBibChange: () => Promise<void>;
     onBibChanged: (file: string) => void;
     onZotero: () => void;
   }
-  let { onInsert, onClose, onBibChanged, onZotero }: Props = $props();
+  let { onInsert, onClose, beforeBibChange, onBibChanged, onZotero }: Props = $props();
   let zotero = $state<"ready" | "starting" | "unavailable">("unavailable");
 
   let entries = $state<BibEntry[]>([]);
@@ -90,6 +92,7 @@
     adding = true;
     addMessage = null;
     try {
+      await beforeBibChange();
       const added = await api.bibAddReference(addId, addFile);
       addMessage = { ok: true, text: `Added ${added.key} to ${added.file}.` };
       addId = "";

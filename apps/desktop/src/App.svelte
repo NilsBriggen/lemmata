@@ -103,12 +103,14 @@
   /** A package a just-inserted snippet needs; offered once per package. */
   let packageOffer = $state<string | null>(null);
   const offered = new Set<string>();
-  let notice = $state<{ text: string; tone?: "ok" | "info"; action?: { label: string; run: () => void } } | null>(null);
+  let notice = $state<{ text: string; tone?: "ok" | "info" | "error"; action?: { label: string; run: () => void } } | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let update = $state<{ version: string; progress: number | null; error: string | null } | null>(null);
   let historyOpen = $state(false);
   /** Files changed by another program while they had unsaved edits here: not saved until the user decides. */
   let conflicts = $state<string[]>([]);
+  /** Files whose last save failed: the status bar says so in red. */
+  let failedSaves = $state<string[]>([]);
   /** History works for the open project: git is installed. Off means snapshots (and undoing replaces) aren't possible. */
   let historyOn = $state(false);
   /** Closing the window with edits that couldn't be saved (or autosave is off): ask first. */
@@ -260,10 +262,14 @@
   async function startLsp(root: string) {
     lsp?.stop();
     lspStarting = true;
+    // A language server that fails to start leaves the editor working without it.
     lsp = await startLanguageServer(root, async (rel) => {
       await openFile(rel);
       return editor?.getView() ?? null;
-    }, (message) => reportOnce("lsp", message));
+    }, (message) => reportOnce("lsp", message)).catch((e) => {
+      reportOnce("lsp", `Completion and go-to-definition are off: ${errorMessage(e)}`);
+      return null;
+    });
     lspStarting = false;
     lspAvailable = lsp !== null;
     editor?.setLanguageServer(lsp ? lsp.extensions : null);
@@ -283,7 +289,7 @@
   async function addWord(word: string) {
     if (!project) return;
     const words = Array.from(new Set([...(project.config.words ?? []), word])).sort();
-    project = await api.setConfig({ ...project.config, main: project.main, words });
+    await configure({ ...project.config, main: project.main, words });
   }
 
   function refreshOutline() {
@@ -333,9 +339,21 @@
     if (project && magicLanguage(text) !== fileLanguage) applySpellLanguage();
   }
 
-  function closeTab(path: string, saveFirst = true) {
-    if (saveFirst && dirty[path]) save(path);
+  async function closeTab(path: string, saveFirst = true) {
+    if (saveFirst && dirty[path]) {
+      await save(path);
+      // A failed save keeps the tab and its text, so nothing is lost.
+      if (dirty[path]) {
+        showNotice(
+          conflicts.includes(path)
+            ? `${path} changed on disk: choose which version to keep before closing it.`
+            : `${path} could not be saved, so its tab stays open.${openError ? ` ${openError}` : ""}`,
+        );
+        return;
+      }
+    }
     clearTimeout(saveTimers.get(path));
+    conflicts = conflicts.filter((c) => c !== path);
     if (tabs.includes(path)) closedTabs = [path, ...closedTabs.filter((c) => c !== path)].slice(0, 10);
     pinned = pinned.filter((p) => p !== path);
     delete folds[path];
@@ -397,6 +415,7 @@
     try {
       await api.writeText(path, text, known === undefined ? undefined : contentHash(known));
       lastSaved.set(path, text);
+      failedSaves = failedSaves.filter((f) => f !== path);
       refreshGit();
       // Typing continued while the write was in flight: those edits aren't saved yet.
       if (contents.get(path) === text) dirty[path] = false;
@@ -414,7 +433,11 @@
     } catch (e) {
       const message = errorMessage(e);
       if (message.startsWith("conflict:")) addConflict(path);
-      else openError = message;
+      else {
+        openError = message;
+        if (!failedSaves.includes(path)) failedSaves = [...failedSaves, path];
+        showNotice(`${path} was not saved: ${message}`, { tone: "error" });
+      }
     }
   }
 
@@ -505,11 +528,12 @@
   }
 
   /** `extra` is either an action button or just a tone. */
-  function showNotice(text: string, extra?: { label: string; run: () => void } | { tone: "ok" | "info" }) {
+  function showNotice(text: string, extra?: { label: string; run: () => void } | { tone: "ok" | "info" | "error" }) {
     clearTimeout(noticeTimer);
     notices = [{ text, time: Date.now() }, ...notices].slice(0, 30);
     notice = extra && "label" in extra ? { text, action: extra } : { text, tone: extra?.tone };
-    noticeTimer = setTimeout(() => (notice = null), 8000);
+    // Errors and offers to act stay until dismissed; they're easy to miss in 8 seconds.
+    if (!notice.action && notice.tone !== "error") noticeTimer = setTimeout(() => (notice = null), 8000);
   }
 
   async function needsPackage(pkg: string) {
@@ -521,8 +545,7 @@
 
   async function setBuildOption(patch: Partial<Config>) {
     if (!project) return;
-    project = await api.setConfig({ ...project.config, main: project.main, ...patch });
-    saveAll(false).then(runBuild);
+    if (await configure({ ...project.config, main: project.main, ...patch })) saveAll(false).then(runBuild);
   }
 
   async function cleanCache() {
@@ -637,7 +660,12 @@
   async function refreshTree() {
     if (!project) return;
     refreshGit();
-    project = await api.projectInfo();
+    try {
+      project = await api.projectInfo();
+    } catch (e) {
+      reportOnce("tree", `Could not read the project folder: ${errorMessage(e)}`);
+      return;
+    }
     const tree = project.tree;
     prune((path) => !!findEntry(tree, path));
   }
@@ -764,11 +792,23 @@
     if (png && project) api.saveThumbnail(project.root, png).catch(() => {});
   }
 
+  /** Changes the project's settings (lemmata.toml); false, with a notice, when that fails. */
+  async function configure(config: Config): Promise<boolean> {
+    try {
+      project = await api.setConfig(config);
+      return true;
+    } catch (e) {
+      showNotice(`Could not change the project settings: ${errorMessage(e)}`, { tone: "error" });
+      return false;
+    }
+  }
+
   async function saveSettings(config: Config) {
     if (!project) return;
-    settingsOpen = false;
     const mainChanged = config.main !== project.main;
-    project = await api.setConfig(config);
+    // The dialog stays open when saving fails, so the choices aren't lost.
+    if (!(await configure(config)) || !project) return;
+    settingsOpen = false;
     if (mainChanged) await openFile(project.main);
     applySpellLanguage();
     refreshOutline();
@@ -778,7 +818,7 @@
   /** Switches to a build preset from the project settings. */
   async function setTarget(t: Target) {
     if (!project) return;
-    project = await api.setConfig({ ...project.config, main: t.main, engine: t.engine ?? project.config.engine });
+    if (!(await configure({ ...project.config, main: t.main, engine: t.engine ?? project.config.engine })) || !project) return;
     await openFile(project.main);
     applySpellLanguage();
     setMathMacros(contents.get(project.main) ?? "");
@@ -789,7 +829,7 @@
   async function chooseMain(main: string) {
     if (!project) return;
     choosingMain = false;
-    project = await api.setConfig({ ...project.config, main });
+    if (!(await configure({ ...project.config, main }))) return;
     await openFile(main);
     refreshOutline();
     runBuild();
@@ -821,8 +861,7 @@
 
   async function setEngine(engine: Engine) {
     if (!project) return;
-    project = await api.setConfig({ ...project.config, engine, main: project.main });
-    runBuild();
+    if (await configure({ ...project.config, engine, main: project.main })) runBuild();
   }
 
   async function closeProject() {
@@ -981,6 +1020,8 @@
   function openSearch() {
     focusMode = false;
     searchOpen = true;
+    // The search lives in the sidebar: make sure it can be seen.
+    if (!settings.sidebarOpen || settings.layout === "pdf") updateSettings({ sidebarOpen: true, layout: settings.layout === "pdf" ? "split" : settings.layout });
   }
 
   async function exportPdf() {
@@ -1109,8 +1150,16 @@
         editor?.forget(p);
       }
     }
+    for (const p of [...lastSaved.keys()]) if (p === from || p.startsWith(from + "/")) lastSaved.delete(p);
     const moved = (p: string) => (p === from ? to : p.startsWith(from + "/") ? to + p.slice(from.length) : p);
+    const movedKeys = <T,>(o: Record<string, T>) => Object.fromEntries(Object.entries(o).map(([k, v]) => [moved(k), v]));
     tabs = tabs.map(moved);
+    // Pins, recently closed tabs, folds and unsaved marks follow the file to its new name.
+    pinned = pinned.map(moved);
+    closedTabs = closedTabs.map(moved);
+    conflicts = conflicts.map(moved);
+    folds = movedKeys(folds);
+    dirty = movedKeys(dirty);
     // Several renames can arrive together (moving a selection): follow the active file through all of them.
     if (reopenAfterMove === undefined) reopenAfterMove = active;
     if (reopenAfterMove) reopenAfterMove = moved(reopenAfterMove);
@@ -1126,7 +1175,8 @@
   }
 
   function onTrashed(path: string) {
-    for (const p of [...tabs]) if (p === path || p.startsWith(path + "/")) closeTab(p);
+    // Gone from disk: saving would bring the file back.
+    for (const p of [...tabs]) if (p === path || p.startsWith(path + "/")) closeTab(p, false);
     refreshTree();
     refreshOutline();
   }
@@ -1538,7 +1588,7 @@
         <footer class="status">
           <span>Line {cursor.line}</span>
           {#if selectionWords}<span title="Words in the selection">{selectionWords} selected</span>{/if}
-          {#if active}<span>{dirty[active] ? "Unsaved" : "Saved"}</span>{/if}
+          {#if active}<span class:save-failed={failedSaves.includes(active)}>{failedSaves.includes(active) ? "Not saved" : dirty[active] ? "Unsaved" : "Saved"}</span>{/if}
           <span class="grow"></span>
           {#if lspStarting}<span class="starting" title="The language server is starting"><span class="spin-dot"></span>Starting completion</span>{:else if !lspAvailable}<span title="texlab wasn't found, so completion and hover are off">No completion</span>{/if}
           {#if tex.detection.outdated}<span class="warn" title="Some packages may lack newer features">Old TeX Live</span>{/if}
@@ -1621,7 +1671,7 @@
       </div>
     {/if}
     {#if notice}
-      <div class="toast" role="status">
+      <div class="toast" class:error={notice.tone === "error"} role={notice.tone === "error" ? "alert" : "status"}>
         <span class="t-ico" class:ok={notice.tone === "ok"}>{#if notice.tone === "ok"}<CircleCheck size={16} />{:else}<Info size={16} />{/if}</span>
         <span class="t-text">{notice.text}</span>
         {#if notice.action}<button class="btn sm" onclick={() => { notice?.action?.run(); notice = null; }}>{notice.action.label}</button>{/if}
@@ -1759,6 +1809,7 @@
       citeOpen = false;
       editor?.insertCitation(keys);
     }}
+    beforeBibChange={() => Promise.all(Object.keys(dirty).filter((p) => dirty[p] && p.endsWith(".bib")).map((p) => save(p, false))).then(() => {})}
     onBibChanged={(file) => {
       contents.delete(file);
       editor?.forget(file);
@@ -1857,6 +1908,9 @@
   .close-msg { margin: 0 0 8px; color: var(--muted); }
   .close-files { margin: 0; padding-left: 18px; font: 12.5px var(--f-mono); }
   .danger-btn { background: var(--error) !important; border-color: var(--error) !important; color: #fff !important; }
+  .save-failed { color: var(--error); font-weight: 600; }
+  .toast.error { border-color: var(--error); }
+  .toast.error .t-ico { color: var(--error); }
   .no-file { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: var(--ink); }
   .no-file p { margin: 0; }
   .no-file .muted { color: var(--muted); }
