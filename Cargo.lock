@@ -2205,7 +2205,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-bib"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "biblatex",
  "lemmata-project",
@@ -2220,7 +2220,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-cli"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-desktop"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "lemmata-bib",
  "lemmata-history",
@@ -2268,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-history"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "serde",
  "tempfile",
@@ -2278,7 +2278,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-log"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "regex",
  "serde",
@@ -2286,7 +2286,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-pkgmap"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "flate2",
  "serde",
@@ -2295,7 +2295,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-project"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "regex",
  "serde",
@@ -2309,14 +2309,14 @@ dependencies = [
 
 [[package]]
 name = "lemmata-spell"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "spellbook",
 ]
 
 [[package]]
 name = "lemmata-synctex"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-tex"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "lemmata-log",
  "lemmata-pkgmap",

@@ -1,6 +1,34 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.3.0 (2026-10-15)
+
+### Added
+- History is on for every project; restores keep unsaved edits
+- Open file and tab menus from the keyboard
+- Undo folder delete, sort by name, visible controls on the start screen
+- Searchable shortcut sheet, F1, mouse actions and a Go to PDF button
+- Work without TeX, clearer build state, start a folder with no main file
+
+### Fixed
+- Save before closing, run commands off the UI thread, stricter paths
+- Never overwrite a change another program made to an open file
+- No edits lost when tabs close, and failures say so
+- Builds with the main file in a subfolder, stuck builds stop, safer clean
+- ArXiv export keeps % in verbatim, \verb and URLs
+- Renames follow the config, multi-file edits are all or nothing
+- Lemmata.toml keeps its comments; clear errors for a missing main file
+- Find TinyTeX and MacPorts; no Xcode tools prompt on macOS
+- Presenting survives a rebuild and a quick Esc
+- Readable contrast and proper roles for menus and the palette
+- Stale builds don't run, shell escape needs approval, settings are checked
+- No console window for SyncTeX on Windows; \verb isn't prose
+
+### Faster
+- Load dialogs, KaTeX and Vim when first needed
+
+### Documentation
+- Guide for 1.3
 ## 1.2.3 (2026-10-14)
 
 ### Added
