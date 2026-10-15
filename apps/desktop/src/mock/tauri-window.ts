@@ -13,6 +13,8 @@ export function getCurrentWindow() {
     outerPosition: async () => new PhysicalPosition(0, 0),
     setPosition: async () => {},
     close: async () => window.close(),
+    destroy: async () => window.close(),
+    onCloseRequested: async () => () => {},
   };
 }
 export const availableMonitors = async () => [{ position: new PhysicalPosition(0, 0), scaleFactor: 1 }];

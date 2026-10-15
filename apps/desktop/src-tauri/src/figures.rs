@@ -1,20 +1,11 @@
 //! Bringing images into the project: dropped files are copied, pasted
 //! screenshots are saved, both into the project's figures folder.
 
-use crate::{AppState, CmdResult, err};
+use crate::{AppState, CmdResult, err, project};
 use std::path::{Path, PathBuf};
 use tauri::State;
 
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "pdf", "eps", "svg"];
-
-fn project(state: &State<AppState>) -> CmdResult<lemmata_project::Project> {
-    state
-        .project
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "No project is open.".into())
-}
 
 /// A file name not yet used in `dir`: `name.ext`, `name-2.ext`, ...
 fn unique(dir: &Path, stem: &str, ext: &str) -> PathBuf {
@@ -62,7 +53,7 @@ fn rel(p: &lemmata_project::Project, abs: &Path) -> String {
 
 /// Copies an image into the figures folder, unless it's already inside the
 /// project. Returns its project-relative path.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_figure(state: State<AppState>, path: String) -> CmdResult<String> {
     let p = project(&state)?;
     let src = PathBuf::from(&path);
@@ -91,7 +82,7 @@ pub fn import_figure(state: State<AppState>, path: String) -> CmdResult<String> 
 }
 
 /// Saves a pasted image (PNG bytes in the request body).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_pasted_image(
     state: State<AppState>,
     request: tauri::ipc::Request,
@@ -111,7 +102,7 @@ pub fn save_pasted_image(
 }
 
 /// Whether the main file loads `package` (directly or via a list).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn has_package(state: State<AppState>, package: String) -> CmdResult<bool> {
     let p = project(&state)?;
     let text = std::fs::read_to_string(p.main_abs()).map_err(err)?;

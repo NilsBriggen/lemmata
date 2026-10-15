@@ -176,7 +176,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .btn.lg { height: 38px; padding: 0 18px; font-size: 14px; }
 .btn.icon { width: 30px; padding: 0; }
 .btn.icon.sm { width: 26px; }
-.btn :global(svg), .btn svg { flex: none; }
+.btn svg { flex: none; }
 
 /* Buttons on the dark chrome */
 .chrome .btn:not(.primary) { background: transparent; border-color: transparent; color: var(--chrome-ink); }

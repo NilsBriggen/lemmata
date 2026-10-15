@@ -9,6 +9,8 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import Splitter from "./lib/ui/Splitter.svelte";
   import Modal from "./lib/ui/Modal.svelte";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { closePresenter } from "./lib/presenter/window";
   import Welcome from "./lib/Welcome.svelte";
   import X from "@lucide/svelte/icons/x";
   import CircleCheck from "@lucide/svelte/icons/circle-check";
@@ -104,6 +106,8 @@
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let update = $state<{ version: string; progress: number | null; error: string | null } | null>(null);
   let historyOpen = $state(false);
+  /** Closing the window with edits that couldn't be saved (or autosave is off): ask first. */
+  let closing = $state<{ files: string[]; error: string | null } | null>(null);
   let historyVersion = $state(0);
   /** Label input for a manual snapshot (Ctrl+Shift+S); null when closed. */
   let snapshotLabel = $state<string | null>(null);
@@ -162,6 +166,14 @@
 
   async function openProject(path: string) {
     openError = null;
+    // Edits to the project that is open now are saved first, or it stays open.
+    if (project) {
+      await saveAll(false);
+      if (unsaved().length) {
+        showNotice(`Not switching projects: ${unsaved().join(", ")} could not be saved.`);
+        return;
+      }
+    }
     try {
       project = await api.openProject(path);
     } catch (e) {
@@ -556,20 +568,24 @@
   }
 
   let sessionTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Saves open tabs, folds, pins and positions for the next time the project opens. */
+  function writeSession() {
+    clearTimeout(sessionTimer);
+    if (!project) return;
+    saveSession(project.root, {
+      tabs,
+      active,
+      line: cursor.line,
+      collapsed: Object.keys(treeView.collapsed).filter((k) => treeView.collapsed[k]),
+      pinned: pinned.filter((p) => tabs.includes(p)),
+      folds: currentFolds(),
+      pdf: pdf?.getPosition() ?? null,
+    });
+  }
+
   function rememberSession() {
     clearTimeout(sessionTimer);
-    sessionTimer = setTimeout(() => {
-      if (!project) return;
-      saveSession(project.root, {
-        tabs,
-        active,
-        line: cursor.line,
-        collapsed: Object.keys(treeView.collapsed).filter((k) => treeView.collapsed[k]),
-        pinned: pinned.filter((p) => tabs.includes(p)),
-        folds: currentFolds(),
-        pdf: pdf?.getPosition() ?? null,
-      });
-    }, 1000);
+    sessionTimer = setTimeout(writeSession, 1000);
   }
 
   $effect(() => {
@@ -762,9 +778,14 @@
     runBuild();
   }
 
-  function closeProject() {
-    saveAll();
-    if (project) saveSession(project.root, { tabs, active, line: cursor.line, pdf: pdf?.getPosition() ?? null });
+  async function closeProject() {
+    await saveAll(false);
+    const left = unsaved();
+    if (left.length) {
+      showNotice(`Not closing: ${left.join(", ")} could not be saved.${openError ? ` ${openError}` : ""}`);
+      return;
+    }
+    writeSession();
     lsp?.stop();
     lsp = null;
     editor?.setLanguageServer(null);
@@ -1139,7 +1160,33 @@
     widthTimer = setTimeout(() => updateSettings({}), 400);
   });
 
+  const unsaved = () => Object.keys(dirty).filter((p) => dirty[p]);
+
+  /** Closes the window for good: the presenter window goes with it. */
+  async function quit() {
+    writeSession();
+    await closePresenter();
+    await getCurrentWindow().destroy();
+  }
+
+  async function saveAndQuit() {
+    await saveAll(false);
+    const left = unsaved();
+    if (left.length) closing = { files: left, error: openError ?? "Some files could not be saved." };
+    else await quit();
+  }
+
   onMount(async () => {
+    // Closing the window saves first. With autosave on that is silent; otherwise, or when saving fails, it asks.
+    getCurrentWindow()
+      .onCloseRequested(async (e) => {
+        e.preventDefault();
+        if (unsaved().length && settings.autosaveMs > 0) await saveAll(false);
+        const left = unsaved();
+        if (left.length) closing = { files: left, error: settings.autosaveMs > 0 ? openError : null };
+        else await quit();
+      })
+      .catch((e) => reportOnce("close", `Closing the window won't save first: ${errorMessage(e)}`));
     // Test automation exists only in development and test builds; the flag is replaced at build time, so a release build drops it.
     if (import.meta.env.DEV || import.meta.env.VITE_LEMMATA_TEST === "1") {
       import("./lib/automation").then((m) =>
@@ -1554,6 +1601,18 @@
   onUpload={uploadFiles}
 />
 
+{#if closing}
+  <Modal title="Close Lemmata?" width={480} onClose={() => (closing = null)}>
+    <p class="close-msg">{closing.error ? `These files could not be saved: ${closing.error}` : "These files have changes that aren't saved:"}</p>
+    <ul class="close-files">{#each closing.files as f (f)}<li><code>{f}</code></li>{/each}</ul>
+    {#snippet footer()}
+      <button class="btn" onclick={() => (closing = null)}>Cancel</button>
+      <button class="btn danger-btn" onclick={quit}>Close without saving</button>
+      {#if !closing?.error}<button class="btn primary" onclick={saveAndQuit}>Save and close</button>{/if}
+    {/snippet}
+  </Modal>
+{/if}
+
 {#if report}
   <Modal title="Report a problem" subtitle="Opens a new GitHub issue with these details. You can edit everything before submitting; file paths are left out." width={560} onClose={() => (report = null)}>
     <pre class="report">{report.system}{report.log ? `\n\n${report.log}` : ""}</pre>
@@ -1735,6 +1794,9 @@
   /* Focus mode: only the editor, as a centred column. */
   .panes.focus .tabstrip { display: none; }
   .cm.hidden { display: none; }
+  .close-msg { margin: 0 0 8px; color: var(--muted); }
+  .close-files { margin: 0; padding-left: 18px; font: 12.5px var(--f-mono); }
+  .danger-btn { background: var(--error) !important; border-color: var(--error) !important; color: #fff !important; }
   .no-file { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: var(--ink); }
   .no-file p { margin: 0; }
   .no-file .muted { color: var(--muted); }

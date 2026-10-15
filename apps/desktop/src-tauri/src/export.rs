@@ -1,21 +1,12 @@
 //! Exporting the PDF, and an arXiv-ready source zip.
 
-use crate::{AppState, CmdResult, err};
+use crate::{AppState, CmdResult, err, project};
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri::State;
 
-fn project(state: &State<AppState>) -> CmdResult<lemmata_project::Project> {
-    state
-        .project
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "No project is open.".into())
-}
-
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_pdf(state: State<AppState>, dest: String) -> CmdResult<()> {
     let p = project(&state)?;
     std::fs::copy(p.pdf_path(), &dest)
@@ -90,7 +81,7 @@ pub fn project_files(root: &Path, outdir: &str) -> Vec<String> {
 
 /// Zips the whole project (not hidden files or the build folder), for a
 /// backup or to share it. With `with_pdf`, the latest PDF is added too.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_zip(state: State<AppState>, dest: String, with_pdf: bool) -> CmdResult<usize> {
     let p = project(&state)?;
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&dest).map_err(err)?);
@@ -118,7 +109,7 @@ pub fn export_zip(state: State<AppState>, dest: String, with_pdf: bool) -> CmdRe
 
 /// Zips the files the last build used, plus the .bbl (arXiv doesn't run
 /// biber), ready to upload to arXiv.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_arxiv(state: State<AppState>, dest: String, strip: bool) -> CmdResult<usize> {
     let p = project(&state)?;
     let stem = p

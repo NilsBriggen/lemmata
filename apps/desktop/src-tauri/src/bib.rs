@@ -1,18 +1,9 @@
 //! Citation picker and "Add reference" commands.
 
-use crate::{AppState, CmdResult};
+use crate::{AppState, CmdResult, project};
 use lemmata_bib::Entry;
 use serde::Serialize;
 use tauri::State;
-
-fn project(state: &State<AppState>) -> CmdResult<lemmata_project::Project> {
-    state
-        .project
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "No project is open.".into())
-}
 
 #[derive(Serialize)]
 pub struct Bibliography {
@@ -20,7 +11,7 @@ pub struct Bibliography {
     entries: Vec<Entry>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bib_entries(state: State<AppState>) -> CmdResult<Bibliography> {
     let p = project(&state)?;
     let files = lemmata_bib::bib_files(&p);
@@ -121,7 +112,7 @@ pub async fn zotero_sync(state: State<'_, AppState>) -> CmdResult<ZoteroSync> {
 }
 
 /// Adds `\addbibresource{zotero.bib}` (biblatex) or extends `\bibliography{}`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn zotero_link(state: State<AppState>) -> CmdResult<()> {
     let p = project(&state)?;
     let main = p.main_abs();

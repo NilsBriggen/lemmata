@@ -1,7 +1,7 @@
 //! Project file operations: search and replace, create, rename, move to
 //! the trash, and a watcher for changes made outside Lemmata.
 
-use crate::{AppState, CmdResult, LockSafe, err};
+use crate::{AppState, CmdResult, LockSafe, err, project};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
@@ -13,17 +13,8 @@ const TEXT_EXTS: &[&str] = &[
 ];
 const MAX_MATCHES: usize = 2000;
 
-fn project(state: &State<AppState>) -> CmdResult<lemmata_project::Project> {
-    state
-        .project
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "No project is open.".into())
-}
-
 /// A project-relative path that can't escape the project.
-fn safe_rel(rel: &str) -> CmdResult<PathBuf> {
+pub(crate) fn safe_rel(rel: &str) -> CmdResult<PathBuf> {
     let p = PathBuf::from(rel);
     if rel.is_empty()
         || p.is_absolute()
@@ -154,7 +145,7 @@ pub fn replace_on_lines(
     (out, count)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_project(
     state: State<AppState>,
     options: SearchOptions,
@@ -198,7 +189,7 @@ pub struct ReplaceTarget {
 
 /// Replaces matches on the chosen lines of the given files on disk. Files
 /// open with unsaved edits are saved by the frontend first.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn replace_in_files(
     state: State<AppState>,
     options: SearchOptions,
@@ -222,7 +213,7 @@ pub fn replace_in_files(
 }
 
 /// Where labels and citation keys are defined, for "Go to label or citation".
-#[tauri::command]
+#[tauri::command(async)]
 pub fn symbol_defs(state: State<AppState>) -> CmdResult<Vec<lemmata_project::symbols::Occurrence>> {
     let p = project(&state)?;
     Ok(lemmata_project::symbols::scan(&p)
@@ -232,7 +223,7 @@ pub fn symbol_defs(state: State<AppState>) -> CmdResult<Vec<lemmata_project::sym
 }
 
 /// Every mention of a label or key, to preview a rename or list its uses.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn symbol_uses(
     state: State<AppState>,
     kind: lemmata_project::symbols::Kind,
@@ -247,7 +238,7 @@ pub fn symbol_uses(
 
 /// Renames a label or citation key in every .tex and .bib file. Returns the
 /// files that changed. The caller saves open files first and reloads after.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_symbol(
     state: State<AppState>,
     kind: lemmata_project::symbols::Kind,
@@ -289,7 +280,7 @@ pub fn rename_symbol(
     Ok(changed)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_path(state: State<AppState>, path: String, dir: bool) -> CmdResult<()> {
     let p = project(&state)?;
     let full = p.root.join(safe_rel(&path)?);
@@ -321,7 +312,7 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// Copies a file or folder inside the project.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn copy_path(state: State<AppState>, from: String, to: String) -> CmdResult<()> {
     let p = project(&state)?;
     let (src, dest) = (p.root.join(safe_rel(&from)?), p.root.join(safe_rel(&to)?));
@@ -344,7 +335,7 @@ pub fn copy_path(state: State<AppState>, from: String, to: String) -> CmdResult<
 const MAX_BINARY: u64 = 64 * 1024 * 1024;
 
 /// A project file's bytes, for the image and PDF viewers.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_binary(state: State<AppState>, path: String) -> CmdResult<tauri::ipc::Response> {
     let p = project(&state)?;
     let full = p.root.join(safe_rel(&path)?);
@@ -360,7 +351,7 @@ pub fn read_binary(state: State<AppState>, path: String) -> CmdResult<tauri::ipc
 }
 
 /// Moves a file or folder to the system trash, so it can be recovered.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn trash_path(state: State<AppState>, path: String) -> CmdResult<()> {
     let p = project(&state)?;
     let full = p.root.join(safe_rel(&path)?);
@@ -403,7 +394,7 @@ fn reference_regex(rel: &str) -> Regex {
 }
 
 /// Lines that refer to `path` by name, so a rename can offer to update them.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn find_references(state: State<AppState>, path: String) -> CmdResult<Vec<Reference>> {
     let p = project(&state)?;
     let re = reference_regex(&path);
@@ -498,7 +489,7 @@ fn rename_one(
 
 /// Renames a file or folder; with `update_references`, also rewrites
 /// `\input{...}` and friends that name it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_path(
     state: State<AppState>,
     from: String,
@@ -540,7 +531,7 @@ fn join_rel(folder: &str, name: &str) -> String {
 
 /// Moves files and folders into `folder` ("" is the project root), all or
 /// nothing: every move is checked before the first one happens.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn move_paths(
     state: State<AppState>,
     paths: Vec<String>,
@@ -591,7 +582,7 @@ pub struct TrashBatch {
 
 /// Moves files and folders into `.lemmata/trash/<id>/`, keeping their
 /// project-relative paths, so "Undo" can put them back exactly.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn trash_paths(state: State<AppState>, paths: Vec<String>) -> CmdResult<TrashBatch> {
     trash_into(&project(&state)?.root, &paths)
 }
@@ -628,7 +619,7 @@ pub fn trash_into(root: &Path, paths: &[String]) -> CmdResult<TrashBatch> {
 
 /// Puts a trashed batch back where it came from. Nothing is restored if any
 /// of the original paths is taken again.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restore_trash(state: State<AppState>, id: String) -> CmdResult<Vec<String>> {
     restore_from(&project(&state)?.root, &id)
 }
@@ -661,7 +652,7 @@ pub fn restore_from(root: &Path, id: &str) -> CmdResult<Vec<String>> {
 }
 
 /// Deletes trash batches older than `days`. Called when a project opens.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn purge_trash(state: State<AppState>, days: u64) -> CmdResult<usize> {
     Ok(purge_in(&project(&state)?.root, days, now_ms()))
 }
@@ -693,7 +684,7 @@ pub fn purge_in(root: &Path, days: u64, now: u128) -> usize {
 
 /// Files nothing in the project refers to by name: images, `.tex` parts,
 /// bibliographies and packages left behind. The main file never counts.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn unused_files(state: State<AppState>) -> CmdResult<Vec<String>> {
     let p = project(&state)?;
     let sources: Vec<String> = text_files(&p)

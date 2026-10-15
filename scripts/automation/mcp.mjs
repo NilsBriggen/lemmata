@@ -9,7 +9,7 @@ const tools = [
   {
     name: "lemmata_call",
     description:
-      "Run one automation method in the running Lemmata app. Methods: state, check, errors, methods, commands, command {id}, openProject {path}, openFile {path}, click {selector}, contextmenu {selector}, clickText {text, within?}, fill {selector, value}, key {combo}, type {text}, cursor {line|at}, editorText, text {selector}, exists {selector}, query {selector}, idle {timeout?}, sleep {ms}.",
+      "Run one automation method in the running Lemmata app. Methods: state, check, errors, methods, commands, command {id}, openProject {path}, openFile {path}, click {selector}, contextmenu {selector}, clickText {text, within?}, fill {selector, value}, key {combo}, type {text}, cursor {line|at}, editorText, text {selector}, exists {selector}, query {selector}, idle {timeout?}, sleep {ms}, closeWindow, closeWindow.",
     inputSchema: {
       type: "object",
       properties: { method: { type: "string" }, params: { type: "object" } },

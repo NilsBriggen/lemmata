@@ -4,7 +4,11 @@ use crate::{AppState, CmdResult, LockSafe, err};
 use lemmata_history::{Error, History, Snapshot};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tauri::State;
+
+/// Commands run in parallel now; two git commands on one repository at once fail on its index lock.
+static GIT: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
@@ -23,13 +27,30 @@ fn root(state: &State<AppState>) -> CmdResult<PathBuf> {
     Ok(guard.as_ref().ok_or("No project is open.")?.root.clone())
 }
 
-fn open(state: &State<AppState>) -> CmdResult<History> {
-    History::open(&root(state)?).map_err(err)
+/// Runs `f` on the project's history, one git operation at a time.
+fn with<T>(
+    state: &State<AppState>,
+    f: impl FnOnce(&History) -> lemmata_history::Result<T>,
+) -> CmdResult<T> {
+    let root = root(state)?;
+    let _one_at_a_time = GIT.lock_safe();
+    f(&History::open(&root).map_err(err)?).map_err(err)
 }
 
-#[tauri::command]
+/// Snapshot ids are commit hashes; anything else (an option such as `--help`) is refused.
+fn snapshot_id(id: &str) -> CmdResult<&str> {
+    if id.len() >= 4 && id.len() <= 64 && id.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(id)
+    } else {
+        Err(format!("{id} is not a snapshot."))
+    }
+}
+
+#[tauri::command(async)]
 pub fn history_status(state: State<AppState>) -> CmdResult<HistoryStatus> {
-    Ok(match History::open(&root(&state)?) {
+    let root = root(&state)?;
+    let _one_at_a_time = GIT.lock_safe();
+    Ok(match History::open(&root) {
         Ok(_) => HistoryStatus::On,
         Err(Error::NotARepo(_)) => HistoryStatus::NotARepo,
         Err(e @ Error::NoGit) => HistoryStatus::NoGit {
@@ -40,53 +61,62 @@ pub fn history_status(state: State<AppState>) -> CmdResult<HistoryStatus> {
 }
 
 /// Files that differ from the last commit in the user's own git repository.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_status(state: State<AppState>) -> CmdResult<Vec<lemmata_history::FileStatus>> {
     Ok(lemmata_history::working_status(&root(&state)?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_enable(state: State<AppState>) -> CmdResult<()> {
-    let h = History::init(&root(&state)?).map_err(err)?;
+    let root = root(&state)?;
+    let _one_at_a_time = GIT.lock_safe();
+    let h = History::init(&root).map_err(err)?;
     h.snapshot("History turned on").map_err(err)?;
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_snapshot(state: State<AppState>, label: String) -> CmdResult<Option<String>> {
-    open(&state)?.snapshot(&label).map_err(err)
+    with(&state, |h| h.snapshot(&label))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_list(state: State<AppState>) -> CmdResult<Vec<Snapshot>> {
-    open(&state)?.list(200).map_err(err)
+    with(&state, |h| h.list(200))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_file(state: State<AppState>, id: String, path: String) -> CmdResult<Option<String>> {
-    open(&state)?.file_at(&id, &path).map_err(err)
+    crate::files::safe_rel(&path)?;
+    let id = snapshot_id(&id)?;
+    with(&state, |h| h.file_at(id, &path))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_restore(state: State<AppState>, id: String, path: String) -> CmdResult<()> {
-    open(&state)?.restore_file(&id, &path).map_err(err)
+    crate::files::safe_rel(&path)?;
+    let id = snapshot_id(&id)?;
+    with(&state, |h| h.restore_file(id, &path))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_restore_all(state: State<AppState>, id: String) -> CmdResult<usize> {
-    open(&state)?.restore_all(&id).map_err(err)
+    let id = snapshot_id(&id)?;
+    with(&state, |h| h.restore_all(id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_compare(
     state: State<AppState>,
     a: String,
     b: String,
 ) -> CmdResult<Vec<lemmata_history::Change>> {
-    open(&state)?.compare(&a, &b).map_err(err)
+    let (a, b) = (snapshot_id(&a)?, snapshot_id(&b)?);
+    with(&state, |h| h.compare(a, b))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_relabel(state: State<AppState>, id: String, label: String) -> CmdResult<()> {
-    open(&state)?.relabel(&id, &label).map_err(err)
+    let id = snapshot_id(&id)?;
+    with(&state, |h| h.relabel(id, &label))
 }

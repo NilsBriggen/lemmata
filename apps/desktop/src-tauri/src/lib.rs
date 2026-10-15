@@ -76,7 +76,7 @@ struct TexStatus {
     instructions: BTreeMap<String, Instructions>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tex_status(state: State<AppState>, extra_dir: Option<String>) -> TexStatus {
     if let Some(dir) = extra_dir {
         let mut extra = state.extra_tex_dirs.lock_safe();
@@ -124,7 +124,7 @@ fn project_info(p: &Project) -> ProjectInfo {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_project(
     app: tauri::AppHandle,
     state: State<AppState>,
@@ -145,7 +145,7 @@ fn open_project(
     Ok(info)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn project_info_cmd(state: State<AppState>) -> CmdResult<ProjectInfo> {
     let guard = state.project.lock_safe();
     guard
@@ -154,7 +154,7 @@ fn project_info_cmd(state: State<AppState>) -> CmdResult<ProjectInfo> {
         .ok_or_else(|| "No project is open.".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_config(state: State<AppState>, config: Config) -> CmdResult<ProjectInfo> {
     let mut guard = state.project.lock_safe();
     let p = guard.as_mut().ok_or("No project is open.")?;
@@ -167,27 +167,28 @@ fn set_config(state: State<AppState>, config: Config) -> CmdResult<ProjectInfo> 
 }
 
 /// Resolves a project-relative path and refuses anything outside the project.
+/// The open project, cloned so the lock is released before any slow work.
+pub(crate) fn project(state: &State<AppState>) -> CmdResult<Project> {
+    state
+        .project
+        .lock_safe()
+        .clone()
+        .ok_or_else(|| "No project is open.".into())
+}
+
 fn resolve(state: &State<AppState>, rel: &str) -> CmdResult<PathBuf> {
     let guard = state.project.lock_safe();
     let root = &guard.as_ref().ok_or("No project is open.")?.root;
-    let rel = Path::new(rel);
-    if rel.is_absolute()
-        || rel
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(format!("{} is outside the project.", rel.display()));
-    }
-    Ok(root.join(rel))
+    Ok(root.join(files::safe_rel(rel)?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_text(state: State<AppState>, path: String) -> CmdResult<String> {
     let abs = resolve(&state, &path)?;
     std::fs::read_to_string(&abs).map_err(|e| format!("Could not open {path}: {e}"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn write_text(state: State<AppState>, path: String, content: String) -> CmdResult<()> {
     let abs = resolve(&state, &path)?;
     // Write to a hidden sibling first so a crash never leaves a half-written
@@ -206,8 +207,7 @@ fn write_text(state: State<AppState>, path: String, content: String) -> CmdResul
     // From here on, an event for this exact content is our own doing.
     state
         .written
-        .lock()
-        .unwrap()
+        .lock_safe()
         .insert(abs, files::hash_bytes(content.as_bytes()));
     Ok(())
 }
@@ -228,8 +228,7 @@ async fn build(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<O
 
     let project = state
         .project
-        .lock()
-        .unwrap()
+        .lock_safe()
         .clone()
         .ok_or("No project is open.")?;
     let detection = match state.detection.lock_safe().clone() {
@@ -256,7 +255,7 @@ async fn build(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<O
 }
 
 /// "Clear cached files": removes aux files and logs so the next build starts clean.
-#[tauri::command]
+#[tauri::command(async)]
 fn clean_build(state: State<AppState>) -> CmdResult<usize> {
     cancel_running(&state);
     let guard = state.project.lock_safe();
@@ -264,7 +263,7 @@ fn clean_build(state: State<AppState>) -> CmdResult<usize> {
     lemmata_tex::clean(project).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_pdf(state: State<AppState>) -> CmdResult<Response> {
     let pdf = {
         let guard = state.project.lock_safe();
@@ -278,8 +277,7 @@ fn read_pdf(state: State<AppState>) -> CmdResult<Response> {
 fn synctex_and_pdf(state: &State<AppState>) -> CmdResult<(PathBuf, PathBuf, PathBuf)> {
     let synctex = state
         .detection
-        .lock()
-        .unwrap()
+        .lock_safe()
         .as_ref()
         .and_then(|d| d.tool("synctex").map(Path::to_path_buf))
         .ok_or("synctex was not found.")?;
@@ -288,7 +286,7 @@ fn synctex_and_pdf(state: &State<AppState>) -> CmdResult<(PathBuf, PathBuf, Path
     Ok((synctex, p.pdf_path(), p.root.clone()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn synctex_forward(
     state: State<AppState>,
     path: String,
@@ -308,7 +306,7 @@ struct SourceHit {
     inside_project: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn synctex_backward(
     state: State<AppState>,
     page: u32,
@@ -340,7 +338,7 @@ fn user_templates_dir(app: &tauri::AppHandle) -> CmdResult<PathBuf> {
     Ok(app.path().app_data_dir().map_err(err)?.join("templates"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_templates(app: tauri::AppHandle) -> CmdResult<Vec<projects::Template>> {
     Ok(projects::list_all(
         &templates_dir(&app)?,
@@ -349,7 +347,7 @@ fn list_templates(app: tauri::AppHandle) -> CmdResult<Vec<projects::Template>> {
 }
 
 /// Saves the open project as a template for new projects.
-#[tauri::command]
+#[tauri::command(async)]
 fn save_as_template(
     app: tauri::AppHandle,
     state: State<AppState>,
@@ -358,8 +356,7 @@ fn save_as_template(
 ) -> CmdResult<String> {
     let p = state
         .project
-        .lock()
-        .unwrap()
+        .lock_safe()
         .clone()
         .ok_or("No project is open.")?;
     projects::save_as_template(
@@ -371,12 +368,12 @@ fn save_as_template(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_template(app: tauri::AppHandle, id: String) -> CmdResult<()> {
     projects::delete_user_template(&user_templates_dir(&app)?, &id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_project(
     app: tauri::AppHandle,
     template: String,
@@ -393,7 +390,7 @@ fn create_project(
 }
 
 /// The example document, created in Lemmata's data folder on first use.
-#[tauri::command]
+#[tauri::command(async)]
 fn create_example(app: tauri::AppHandle) -> CmdResult<PathBuf> {
     let dir = app
         .path()
@@ -404,18 +401,17 @@ fn create_example(app: tauri::AppHandle) -> CmdResult<PathBuf> {
 }
 
 /// Stops the build in progress, if any.
-#[tauri::command]
+#[tauri::command(async)]
 fn stop_build(state: State<AppState>) {
     cancel_running(&state);
 }
 
 /// The full TeX log of the last build, for the "Raw log" view.
-#[tauri::command]
+#[tauri::command(async)]
 fn read_log(state: State<AppState>) -> CmdResult<String> {
     let path = state
         .project
-        .lock()
-        .unwrap()
+        .lock_safe()
         .as_ref()
         .map(|p| p.log_path())
         .ok_or("No project is open.")?;
@@ -426,12 +422,11 @@ fn read_log(state: State<AppState>) -> CmdResult<String> {
 
 /// Copies files chosen by the user into a project folder (`folder` is
 /// project-relative; empty for the root). Returns the new relative paths.
-#[tauri::command]
+#[tauri::command(async)]
 fn add_files(state: State<AppState>, paths: Vec<String>, folder: String) -> CmdResult<Vec<String>> {
     let root = state
         .project
-        .lock()
-        .unwrap()
+        .lock_safe()
         .as_ref()
         .map(|p| p.root.clone())
         .ok_or("No project is open.")?;
@@ -467,12 +462,12 @@ fn add_files(state: State<AppState>, paths: Vec<String>, folder: String) -> CmdR
     Ok(added)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn import_overleaf_zip(zip: String, parent: String, name: String) -> CmdResult<Vec<PathBuf>> {
     projects::import_zip(Path::new(&zip), Path::new(&parent), &name)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn inspect_zip(zip: String) -> CmdResult<projects::ZipInfo> {
     projects::inspect_zip(Path::new(&zip))
 }
@@ -508,7 +503,7 @@ fn thumbnail_path(app: &tauri::AppHandle, root: &str) -> CmdResult<PathBuf> {
 }
 
 /// Stores page 1 of a project's PDF, rendered by the frontend, for the library.
-#[tauri::command]
+#[tauri::command(async)]
 fn save_thumbnail(app: tauri::AppHandle, request: tauri::ipc::Request) -> CmdResult<()> {
     let root = request
         .headers()
@@ -522,7 +517,7 @@ fn save_thumbnail(app: tauri::AppHandle, request: tauri::ipc::Request) -> CmdRes
     std::fs::write(thumbnail_path(&app, &root)?, bytes).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn load_thumbnail(app: tauri::AppHandle, root: String) -> CmdResult<Response> {
     let bytes =
         std::fs::read(thumbnail_path(&app, &root)?).map_err(|_| "No thumbnail yet.".to_string())?;
@@ -530,7 +525,7 @@ fn load_thumbnail(app: tauri::AppHandle, root: String) -> CmdResult<Response> {
 }
 
 /// Moves a whole project folder to the system trash, from the library.
-#[tauri::command]
+#[tauri::command(async)]
 fn trash_project(app: tauri::AppHandle, state: State<AppState>, path: String) -> CmdResult<()> {
     let dir = projects::deletable_project(Path::new(&path), app.path().home_dir().ok().as_deref())?;
     if state
@@ -553,7 +548,7 @@ fn trash_project(app: tauri::AppHandle, state: State<AppState>, path: String) ->
 
 /// Adds `\usepackage{name}` to the main file's preamble, after the last
 /// \usepackage (or after \documentclass).
-#[tauri::command]
+#[tauri::command(async)]
 fn add_package(state: State<AppState>, package: String) -> CmdResult<()> {
     if !package
         .chars()
@@ -563,8 +558,7 @@ fn add_package(state: State<AppState>, package: String) -> CmdResult<()> {
     }
     let main = state
         .project
-        .lock()
-        .unwrap()
+        .lock_safe()
         .as_ref()
         .map(|p| p.main_abs())
         .ok_or("No project is open.")?;
@@ -592,31 +586,22 @@ fn add_package(state: State<AppState>, package: String) -> CmdResult<()> {
     std::fs::write(&main, joined).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn outline(state: State<AppState>) -> CmdResult<lemmata_project::Outline> {
-    let guard = state.project.lock_safe();
-    Ok(lemmata_project::outline(
-        guard.as_ref().ok_or("No project is open.")?,
-    ))
+    Ok(lemmata_project::outline(&project(&state)?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn labels(state: State<AppState>) -> CmdResult<Vec<lemmata_project::extras::Label>> {
-    let guard = state.project.lock_safe();
-    Ok(lemmata_project::extras::labels(
-        guard.as_ref().ok_or("No project is open.")?,
-    ))
+    Ok(lemmata_project::extras::labels(&project(&state)?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn word_count(state: State<AppState>) -> CmdResult<lemmata_project::extras::Counts> {
-    let guard = state.project.lock_safe();
-    Ok(lemmata_project::extras::counts(
-        guard.as_ref().ok_or("No project is open.")?,
-    ))
+    Ok(lemmata_project::extras::counts(&project(&state)?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn package_names() -> Vec<String> {
     lemmata_pkgmap::package_names().to_vec()
 }
@@ -627,15 +612,13 @@ fn package_names() -> Vec<String> {
 async fn lsp_start(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<u64> {
     let root = state
         .project
-        .lock()
-        .unwrap()
+        .lock_safe()
         .as_ref()
         .map(|p| p.root.clone())
         .ok_or("No project is open.")?;
     let bin = state
         .detection
-        .lock()
-        .unwrap()
+        .lock_safe()
         .as_ref()
         .and_then(|d| d.bin_dir.clone());
     let generation = state
@@ -670,7 +653,7 @@ enum InstallRequest {
     Package { file: String },
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_install_terminal(state: State<AppState>, request: InstallRequest) -> CmdResult<()> {
     let command = match request {
         InstallRequest::Tex { platform, full } => {
@@ -687,8 +670,7 @@ fn open_install_terminal(state: State<AppState>, request: InstallRequest) -> Cmd
         InstallRequest::Package { file } => {
             let detection = state
                 .detection
-                .lock()
-                .unwrap()
+                .lock_safe()
                 .clone()
                 .ok_or("TeX hasn't been detected yet.")?;
             let installer = detection.installer(lemmata_tex::os::detect().family);
@@ -702,7 +684,17 @@ fn open_install_terminal(state: State<AppState>, request: InstallRequest) -> Cmd
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // A second launch focuses the running app instead of fighting over its settings. Not in debug
+    // builds, so a test build can run next to an installed Lemmata.
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+    }));
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())

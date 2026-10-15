@@ -4,6 +4,7 @@
 // `window.__lemmata`, using the same paths a person would: DOM clicks and
 // keys, typing into CodeMirror, and the command palette's own commands.
 import { EditorView } from "@codemirror/view";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
 
 /** What App.svelte hands over: read-only views of its state and a few entry points. */
@@ -159,6 +160,8 @@ export function install(host: Host) {
       throw new Error("The app did not become idle.");
     },
     sleep: ({ ms }: { ms: number }) => settle(ms),
+    /** Asks the window to close, as the title bar's close button does. */
+    closeWindow: () => void getCurrentWindow().close(),
   };
 
   methods.methods = () => Object.keys(methods);
