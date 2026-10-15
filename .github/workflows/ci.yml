@@ -135,7 +135,15 @@ jobs:
             siunitx
             microtype
             parskip
-            # What the publisher templates load beyond the classes (found by building each with an empty cache).
+            # What the templates load beyond their classes: the files each build reads (Tectonic with an empty
+            # cache, and pdfLaTeX's .fls), mapped to TeX Live 2026 packages.
+            cmap
+            figureversions
+            footmisc
+            mmap
+            sansmathaccent
+            translations
+            upquote
             a0poster
             aliascnt
             caption
