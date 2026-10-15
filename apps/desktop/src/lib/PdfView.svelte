@@ -1,5 +1,27 @@
 <script lang="ts" module>
+  import type { PDFDocumentProxy } from "pdfjs-dist";
   export type Fit = "width" | "page" | number;
+
+  // A running presentation keeps rendering from a document a rebuild has replaced,
+  // so destroying it waits until the presentation lets go.
+  const holds = new Map<object, number>();
+  const retired = new Set<PDFDocumentProxy>();
+
+  function retire(d: PDFDocumentProxy) {
+    if (holds.has(d)) retired.add(d);
+    else d.loadingTask.destroy();
+  }
+
+  /** Keeps `d` alive until the returned function is called. */
+  export function holdDocument(d: PDFDocumentProxy): () => void {
+    holds.set(d, (holds.get(d) ?? 0) + 1);
+    return () => {
+      const n = (holds.get(d) ?? 1) - 1;
+      if (n > 0) return void holds.set(d, n);
+      holds.delete(d);
+      if (retired.delete(d)) d.loadingTask.destroy();
+    };
+  }
 </script>
 
 <script lang="ts">
@@ -8,7 +30,7 @@
   import { onDestroy, onMount } from "svelte";
   import * as pdfjs from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-  import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
+  import type { PDFPageProxy, RenderTask } from "pdfjs-dist";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import type { PdfBox } from "./api";
   import { settings } from "./settings.svelte";
@@ -126,7 +148,7 @@
     textCache.clear();
     pageCount = next.numPages;
     if (await layout(seq)) for (const n of near) renderSlot(n);
-    old?.loadingTask.destroy();
+    if (old) retire(old);
     if (pendingScroll !== null) {
       scroller.scrollTop = pendingScroll * scroller.scrollHeight;
       pendingScroll = null;
@@ -470,13 +492,13 @@
 
   onDestroy(() => {
     io?.disconnect();
-    doc?.loadingTask.destroy();
+    if (doc) retire(doc);
   });
 </script>
 
 <div class="pdf" class:dark-pages={settings.pdfDark}>
-  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div class="scroller" tabindex="-1" bind:this={scroller} onscroll={onScroll} onclick={handleClick} ondblclick={handleClick} onwheel={onWheel}>
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events, a11y_no_noninteractive_tabindex -->
+  <div class="scroller" tabindex="0" bind:this={scroller} onscroll={onScroll} onclick={handleClick} ondblclick={handleClick} onwheel={onWheel}>
     <div class="pages" bind:this={pagesEl}></div>
     {#if highlight}
       {@const wrap = pagesEl.children[highlight.page - 1] as HTMLElement | undefined}
@@ -526,7 +548,8 @@
 
 <style>
   .pdf { display: flex; flex-direction: column; height: 100%; background: var(--pdf-ground); min-width: 0; }
-  .scroller { flex: 1; overflow: auto; position: relative; outline: none; }
+  .scroller { flex: 1; overflow: auto; position: relative; }
+  .scroller:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .pages { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 18px 24px 40px; }
   .pages :global(.page) { position: relative; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 6px 18px -6px rgba(0, 0, 0, 0.25); flex: none; }
   .pages :global(.page canvas) { width: 100%; height: 100%; display: block; }
