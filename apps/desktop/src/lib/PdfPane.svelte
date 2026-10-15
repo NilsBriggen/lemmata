@@ -7,7 +7,7 @@
   import ZoomIn from "@lucide/svelte/icons/zoom-in";
   import ZoomOut from "@lucide/svelte/icons/zoom-out";
   import Download from "@lucide/svelte/icons/download";
-  import Moon from "@lucide/svelte/icons/moon";
+  import Ellipsis from "@lucide/svelte/icons/ellipsis";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import Search from "@lucide/svelte/icons/search";
   import ListTree from "@lucide/svelte/icons/list-tree";
@@ -23,7 +23,6 @@
   import PresentationMode from "./Presentation.svelte";
   import Problems from "./Problems.svelte";
   import DropMenu from "./ui/DropMenu.svelte";
-  import { settings, updateSettings } from "./settings.svelte";
   import type { Diagnostic, PdfBox } from "./api";
   import { display, keysOf } from "./shortcuts";
 
@@ -81,6 +80,10 @@
   let thumbDoc = $state.raw<PDFDocumentProxy | null>(null);
   let outline = $state<OutlineNode[]>([]);
   let presenting = $state(false);
+  /** Full screen, from the button or the command palette (once a PDF is shown). */
+  export const present = () => pageCount > 0 && (presenting = true);
+  let moreBtn = $state<HTMLButtonElement>();
+  let moreMenu = $state(false);
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
   const errors = $derived(p.diagnostics.filter((d) => d.severity === "error").length);
@@ -177,11 +180,12 @@
         <button class="btn ghost icon sm optional" class:on={side === "outline"} aria-pressed={side === "outline"} title="Document outline" aria-label="Document outline" onclick={() => toggleSide("outline")}><ListTree size={15} /></button>
         <button class="btn ghost icon sm optional" class:on={side === "thumbs"} aria-pressed={side === "thumbs"} title="Page thumbnails" aria-label="Page thumbnails" onclick={() => toggleSide("thumbs")}><PanelLeft size={15} /></button>
         <button class="btn ghost icon sm optional" title="Present full screen" aria-label="Present full screen" onclick={() => (presenting = true)}><Presentation size={15} /></button>
-        <button class="btn ghost icon sm" class:on={settings.pdfDark} aria-pressed={settings.pdfDark} title="Dark pages in dark mode" aria-label="Dark pages" onclick={() => updateSettings({ pdfDark: !settings.pdfDark })}><Moon size={15} /></button>
         {#if p.onOpenExternally}
           <button class="btn ghost icon sm optional" title="Open in the system's PDF viewer" aria-label="Open in external viewer" onclick={p.onOpenExternally}><ExternalLink size={15} /></button>
         {/if}
         <button class="btn ghost icon sm" title="Export PDF" aria-label="Export PDF" onclick={p.onExport}><Download size={15} /></button>
+        <!-- In a narrow pane the buttons marked optional move in here instead of disappearing. -->
+        <button class="btn ghost icon sm more" bind:this={moreBtn} title="More" aria-label="More" aria-haspopup="menu" aria-expanded={moreMenu} onclick={() => (moreMenu = !moreMenu)}><Ellipsis size={15} /></button>
       </div>
     {/if}
   </div>
@@ -232,6 +236,17 @@
   <PresentationMode doc={view.getDocument()!} start={currentPage} onClose={() => (presenting = false)} />
 {/if}
 
+{#if moreMenu && moreBtn}
+  <DropMenu anchor={moreBtn} align="end" onClose={() => (moreMenu = false)}>
+    <button role="menuitem" onclick={() => view?.zoomBy(1.15)}><ZoomIn size={15} /> Zoom in</button>
+    <button role="menuitem" onclick={() => view?.zoomBy(1 / 1.15)}><ZoomOut size={15} /> Zoom out</button>
+    <button role="menuitemcheckbox" aria-checked={side === "outline"} onclick={() => toggleSide("outline")}><ListTree size={15} /> Document outline</button>
+    <button role="menuitemcheckbox" aria-checked={side === "thumbs"} onclick={() => toggleSide("thumbs")}><PanelLeft size={15} /> Page thumbnails</button>
+    <button role="menuitem" onclick={() => (presenting = true)}><Presentation size={15} /> Present full screen</button>
+    {#if p.onOpenExternally}<button role="menuitem" onclick={p.onOpenExternally}><ExternalLink size={15} /> Open in external viewer</button>{/if}
+  </DropMenu>
+{/if}
+
 {#if zoomMenu && zoomBtn}
   <DropMenu anchor={zoomBtn} onClose={() => (zoomMenu = false)}>
     <button role="menuitem" onclick={() => fit("width")}>Fit width</button>
@@ -267,7 +282,8 @@
   .page-input:focus::placeholder { color: var(--faint); }
   .of { color: var(--muted); font-size: 12px; margin-right: 2px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .bar { overflow: hidden; }
-  @container (max-width: 560px) { .optional { display: none; } }
+  .more { display: none; }
+  @container (max-width: 560px) { .optional { display: none; } .more { display: inline-flex; } }
   @container (max-width: 420px) { .pages { display: none; } }
   .zoom { min-width: 64px; gap: 2px; font-variant-numeric: tabular-nums; }
   .progress { height: 2px; background: transparent; flex: none; overflow: hidden; position: relative; }

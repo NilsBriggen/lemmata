@@ -80,6 +80,10 @@
     const { grammar } = await import("./grammar/service");
     grammarStatus = (await grammar.ping(settings.grammar, settings.grammarUrl)) ?? "connected";
   }
+
+  /** Dark PDF pages only show in a dark theme (or the system's dark mode). */
+  const systemDark = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches;
+  const appDark = $derived(settings.theme === "dark" || (settings.theme === "system" && systemDark));
 </script>
 
 <Modal title="Preferences" subtitle="These apply to every project." width={600} {onClose}>
@@ -94,14 +98,31 @@
       </div>
     </div>
     <div class="row">
+      <label for="pref-family">Font</label>
+      <select id="pref-family" class="input" value={settings.fontFamily} onchange={(e) => set("fontFamily", e.currentTarget.value)}>
+        <option value="plex">IBM Plex Mono</option>
+        <option value="system">System monospace</option>
+        {#if !["plex", "system"].includes(settings.fontFamily)}<option value={settings.fontFamily}>{settings.fontFamily}</option>{/if}
+        {#each ["JetBrains Mono", "Fira Code", "Cascadia Code", "Source Code Pro", "Menlo", "Consolas"] as f (f)}
+          <option value={f}>{f} (if installed)</option>
+        {/each}
+      </select>
+    </div>
+    <div class="row">
       <label for="pref-font">Editor text size</label>
       <select id="pref-font" class="input" value={String(settings.fontSize)} onchange={(e) => set("fontSize", Number(e.currentTarget.value))}>
         {#each [11, 12, 13, 14, 15, 16, 18, 20] as n (n)}<option value={String(n)}>{n} px</option>{/each}
       </select>
     </div>
-    <label class="check" for="pref-pdfdark">
-      <input id="pref-pdfdark" type="checkbox" checked={settings.pdfDark} onchange={(e) => set("pdfDark", e.currentTarget.checked)} />
-      Dark PDF pages when the app is dark
+    <div class="row">
+      <label for="pref-lh">Line height</label>
+      <select id="pref-lh" class="input" value={String(settings.lineHeight)} onchange={(e) => set("lineHeight", Number(e.currentTarget.value))}>
+        {#each [1.4, 1.5, 1.65, 1.8, 2] as n (n)}<option value={String(n)}>{n}</option>{/each}
+      </select>
+    </div>
+    <label class="check" for="pref-pdfdark" title={appDark ? undefined : "Only in a dark theme"}>
+      <input id="pref-pdfdark" type="checkbox" checked={settings.pdfDark} disabled={!appDark} onchange={(e) => set("pdfDark", e.currentTarget.checked)} />
+      Dark PDF pages {#if !appDark}<span class="muted">(only in a dark theme)</span>{/if}
     </label>
   </section>
 
@@ -119,23 +140,46 @@
       Compile after every save
     </label>
     <div class="row">
-      <span>Snippets</span>
-      <button class="btn" onclick={() => (snippetsOpen = true)}>{settings.snippets.length ? `Edit ${settings.snippets.length}…` : "Add…"}</button>
-    </div>
-    <div class="row">
-      <span>Deleted files</span>
-      <div class="segmented" role="group" aria-label="Where deleted files go">
-        <button aria-pressed={settings.trashMode === "project"} title="Kept inside the project for a week, so Undo can bring them back" onclick={() => set("trashMode", "project")}>Keep for Undo</button>
-        <button aria-pressed={settings.trashMode === "system"} title="Sent to your computer's trash" onclick={() => set("trashMode", "system")}>System trash</button>
-      </div>
-    </div>
-    <div class="row">
       <span>Keyboard</span>
       <div class="segmented" role="group" aria-label="Keyboard">
         <button aria-pressed={settings.keymap === "default"} onclick={() => set("keymap", "default")}>Standard</button>
         <button aria-pressed={settings.keymap === "vim"} onclick={() => set("keymap", "vim")}>Vim</button>
       </div>
     </div>
+    <label class="check" for="pref-complete">
+      <input id="pref-complete" type="checkbox" checked={settings.autocomplete} onchange={(e) => set("autocomplete", e.currentTarget.checked)} />
+      Suggest commands, environments, labels and citations while typing
+    </label>
+    <div class="row">
+      <span>Snippets</span>
+      <button class="btn" disabled={!settings.autocomplete} title={settings.autocomplete ? undefined : "Snippets are offered by the suggestions, which are off"} onclick={() => (snippetsOpen = true)}>{settings.snippets.length ? `Edit ${settings.snippets.length}…` : "Add…"}</button>
+    </div>
+    <label class="check" for="pref-env">
+      <input id="pref-env" type="checkbox" checked={settings.envSync} onchange={(e) => set("envSync", e.currentTarget.checked)} />
+      Rename \end{"{…}"} when \begin{"{…}"} changes, and the other way round
+    </label>
+    <label class="check" for="pref-close">
+      <input id="pref-close" type="checkbox" checked={settings.autoClose} onchange={(e) => set("autoClose", e.currentTarget.checked)} />
+      Close brackets and dollar signs automatically
+    </label>
+    <label class="check" for="pref-fold">
+      <input id="pref-fold" type="checkbox" checked={settings.folding} onchange={(e) => set("folding", e.currentTarget.checked)} />
+      Code folding for sections and environments
+    </label>
+    <div class="row">
+      <label for="pref-indent">Indentation</label>
+      <select id="pref-indent" class="input" value={String(settings.indent)} onchange={(e) => set("indent", validIndent(e.currentTarget.value === "tab" ? "tab" : Number(e.currentTarget.value)))}>
+        {#each INDENTS as [value, label] (value)}<option value={String(value)}>{label}</option>{/each}
+      </select>
+    </div>
+    <label class="check" for="pref-wrap">
+      <input id="pref-wrap" type="checkbox" checked={settings.wordWrap} onchange={(e) => set("wordWrap", e.currentTarget.checked)} />
+      Wrap long lines
+    </label>
+  </section>
+
+  <section>
+    <h3>Language</h3>
     <div class="row">
       <label for="pref-spell">Spell check</label>
       <select id="pref-spell" class="input" value={settings.spellDefault} disabled={downloading !== null} onchange={(e) => chooseSpell(e.currentTarget)}>
@@ -172,49 +216,13 @@
   </section>
 
   <section>
-    <h3>Editor</h3>
-    <label class="check" for="pref-complete">
-      <input id="pref-complete" type="checkbox" checked={settings.autocomplete} onchange={(e) => set("autocomplete", e.currentTarget.checked)} />
-      Suggest commands, environments, labels and citations while typing
-    </label>
-    <label class="check" for="pref-env">
-      <input id="pref-env" type="checkbox" checked={settings.envSync} onchange={(e) => set("envSync", e.currentTarget.checked)} />
-      Rename \end{"{…}"} when \begin{"{…}"} changes, and the other way round
-    </label>
-    <label class="check" for="pref-close">
-      <input id="pref-close" type="checkbox" checked={settings.autoClose} onchange={(e) => set("autoClose", e.currentTarget.checked)} />
-      Close brackets and dollar signs automatically
-    </label>
-    <label class="check" for="pref-fold">
-      <input id="pref-fold" type="checkbox" checked={settings.folding} onchange={(e) => set("folding", e.currentTarget.checked)} />
-      Code folding for sections and environments
-    </label>
+    <h3>Files</h3>
     <div class="row">
-      <label for="pref-indent">Indentation</label>
-      <select id="pref-indent" class="input" value={String(settings.indent)} onchange={(e) => set("indent", validIndent(e.currentTarget.value === "tab" ? "tab" : Number(e.currentTarget.value)))}>
-        {#each INDENTS as [value, label] (value)}<option value={String(value)}>{label}</option>{/each}
-      </select>
-    </div>
-    <label class="check" for="pref-wrap">
-      <input id="pref-wrap" type="checkbox" checked={settings.wordWrap} onchange={(e) => set("wordWrap", e.currentTarget.checked)} />
-      Wrap long lines
-    </label>
-    <div class="row">
-      <label for="pref-family">Font</label>
-      <select id="pref-family" class="input" value={settings.fontFamily} onchange={(e) => set("fontFamily", e.currentTarget.value)}>
-        <option value="plex">IBM Plex Mono</option>
-        <option value="system">System monospace</option>
-        {#if !["plex", "system"].includes(settings.fontFamily)}<option value={settings.fontFamily}>{settings.fontFamily}</option>{/if}
-        {#each ["JetBrains Mono", "Fira Code", "Cascadia Code", "Source Code Pro", "Menlo", "Consolas"] as f (f)}
-          <option value={f}>{f} (if installed)</option>
-        {/each}
-      </select>
-    </div>
-    <div class="row">
-      <label for="pref-lh">Line height</label>
-      <select id="pref-lh" class="input" value={String(settings.lineHeight)} onchange={(e) => set("lineHeight", Number(e.currentTarget.value))}>
-        {#each [1.4, 1.5, 1.65, 1.8, 2] as n (n)}<option value={String(n)}>{n}</option>{/each}
-      </select>
+      <span>Deleted files</span>
+      <div class="segmented" role="group" aria-label="Where deleted files go">
+        <button aria-pressed={settings.trashMode === "project"} title="Kept inside the project for a week: Undo, or Recently deleted in the file tree's menu, brings them back" onclick={() => set("trashMode", "project")}>Keep for Undo</button>
+        <button aria-pressed={settings.trashMode === "system"} title="Sent to your computer's trash" onclick={() => set("trashMode", "system")}>System trash</button>
+      </div>
     </div>
   </section>
 

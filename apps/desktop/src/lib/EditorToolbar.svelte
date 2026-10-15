@@ -9,7 +9,7 @@
   import Link from "@lucide/svelte/icons/link";
   import ImageIcon from "@lucide/svelte/icons/image";
   import Table from "@lucide/svelte/icons/table";
-  import Quote from "@lucide/svelte/icons/quote";
+  import BookOpenText from "@lucide/svelte/icons/book-open-text";
   import List from "@lucide/svelte/icons/list";
   import ListOrdered from "@lucide/svelte/icons/list-ordered";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
@@ -19,6 +19,8 @@
 
   interface Props {
     disabled: boolean;
+    /** Comments work on any text file, not only TeX. */
+    commentDisabled: boolean;
     onBold: () => void;
     onItalic: () => void;
     onHeading: (command: string) => void;
@@ -70,7 +72,7 @@
     <button class="btn ghost icon sm" title="Link" aria-label="Link" disabled={p.disabled} onclick={p.onLink}><Link size={16} /></button>
     <button class="btn ghost icon sm" title="Figure" aria-label="Figure" disabled={p.disabled} onclick={p.onFigure}><ImageIcon size={16} /></button>
     <button class="btn ghost icon sm" title="Table" aria-label="Table" disabled={p.disabled} onclick={p.onTable}><Table size={16} /></button>
-    <button class="btn ghost icon sm" title={tip("Citation", "cite")} aria-label="Citation" disabled={p.disabled} onclick={p.onCite}><Quote size={16} /></button>
+    <button class="btn ghost sm" title={tip("Insert a citation", "cite")} disabled={p.disabled} onclick={p.onCite}><BookOpenText size={16} /> Cite</button>
   </div>
   <span class="sep"></span>
   <div class="group">
@@ -80,7 +82,7 @@
   {#if p.onSyncToPdf}
     <span class="sep"></span>
     <div class="group">
-      {#if p.onComment}<button class="btn ghost sm" title={tip("Add a comment on the selection", "add-comment")} disabled={p.disabled} onclick={p.onComment}><MessageSquarePlus size={16} /> Comment</button>{/if}
+      {#if p.onComment}<button class="btn ghost sm" title={tip("Add a comment on the selection", "add-comment")} disabled={p.commentDisabled} onclick={p.onComment}><MessageSquarePlus size={16} /> Comment</button>{/if}
       <button class="btn ghost sm" title={tip("Go to PDF", "sync")} disabled={p.disabled} onclick={p.onSyncToPdf}><Locate size={16} /> Go to PDF</button>
     </div>
   {/if}

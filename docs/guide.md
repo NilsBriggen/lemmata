@@ -53,13 +53,13 @@ If a build fails but an older PDF is still there, the PDF pane keeps that PDF an
 
 Errors and warnings appear in the **Problems** panel in plain language, with a few lines of source and a hint where one is known. Click one to jump to its line (**F8** and **Shift+F8** step through problems in the editor). Some come with a one-click fix: **Add `\usepackage{amssymb}`** when a command like `\mathbb` is undefined, or the exact install command when a package is missing from your TeX installation. Problems from the bibliography tool (a missing `.bib` file, a broken entry) are listed too. Many common TeX errors also come with a one-sentence explanation of what went wrong and, where there is one, a fix.
 
-**Show TODOs** in the command palette lists every `% TODO`, `% FIXME` and `% XXX` comment and every `\todo{…}` note in the project, grouped by file. Click one to go to its line.
+**TODOs** (in the main menu ☰ under *Tools*, or the command palette) lists every `% TODO`, `% FIXME` and `% XXX` comment and every `\todo{…}` note in the project, grouped by file. Click one to go to its line.
 
 If a save fails, the tab stays open with your text, the status bar says **Not saved** in red, and the error stays on screen until you dismiss it. With autosave on, closing the window saves unsaved files first. If a file can't be saved, or autosave is off, Lemmata asks before it closes. Switching projects saves first too, and stays where it is if a save fails.
 
 ## The editor
 
-- **Environments from `\beg`.** Start typing `\beg` and the list offers every environment as a whole block, the common ones first (`\begin{itemize}`, `\begin{align*}`, `\begin{table}`, …). Choosing `table` or `tabular` (also after typing `\begin{`) inserts a small sample table, header and cells included, and Tab steps through the placeholders. Typing `\en` offers `\end{…}` for the innermost environment that is still open.
+- **Environments.** Typing `\be` offers `\begin` first; choosing it types `\begin{` and opens the list of environments, the common ones first. Picking one fills in its name, its `\end{…}` and a body to start from. Choosing `table` or `tabular` (also after typing `\begin{`) inserts a small sample table, header and cells included, and Tab steps through the placeholders. Typing `\en` offers `\end{…}` for the innermost environment that is still open.
 - **Environments stay paired.** Type `\begin{itemize` and accept the suggestion: Lemmata adds the body and the matching `\end{itemize}`. Rename either half and the other follows. After a `\begin{name}` with no `\end`, **Enter** adds it.
 - **Indentation** is 4 spaces per level by default. Choose 2, 4 or 8 spaces, or a Tab character, under *Preferences → Indentation*; Tab, Enter after `\begin`, and the figures and tables Lemmata inserts all follow it. Existing files are not reformatted.
 - **Completion** suggests environments, commands, `\ref` labels from every file, `\cite` keys (with author and title), file names for `\input` and `\includegraphics`, and package names for `\usepackage`. texlab, which ships with Lemmata, adds more.
@@ -68,8 +68,8 @@ If a save fails, the tab stays open with your text, the status bar says **Not sa
 - **Formatting**: Ctrl+B and Ctrl+I toggle bold and italic, Ctrl+/ comments lines, Ctrl+] and Ctrl+[ change a heading's level, Ctrl+Shift+E wraps the selection in an environment. The toolbar above the editor has buttons for these, headings, links, figures, tables, lists and citations.
 - **Insert dialogs**: **Figure** (pick an image from the project or your computer, caption, label, width), **Table** (choose the size on a grid) and **Symbols** (about 300 maths symbols, Ctrl+Shift+M).
 - Completion, paired environments, automatic closing of brackets and dollar signs, and folding can be switched off in **Preferences → Editor**, together with the font, line height and line wrapping. *Keyboard* in **Preferences → Editing** offers Vim keys.
-- **Format document** in the command palette re-indents the open file with `tex-fmt` or `latexindent` (part of TeX Live), whichever is installed, using your indentation setting. The change is a single edit, so Ctrl+Z brings the old layout back.
-- **Hover cards.** Hover over `\ref`, `\eqref` or `\cref` to see what it points to: the rendered equation, the figure with its caption and image, the table caption or the section heading. Over `\cite`, you see the entry. Over `\includegraphics` or `\input`, you see the file.
+- **Format document** (main menu or command palette) re-indents the open file with `tex-fmt` or `latexindent` (part of TeX Live), whichever is installed, using your indentation setting. The change is a single edit, so Ctrl+Z brings the old layout back.
+- **Hover cards.** Hover over `\ref`, `\eqref` or `\cref` to see what it points to: the rendered equation, the figure with its caption and image, the table caption or the section heading. Over `\cite`, you see the entry. Over `\includegraphics` or `\input`, you see the file. A citation key that's in no `.bib` file offers **Search online**, and a label that doesn't exist offers **Search the project**.
 - **Review comments.** Select the text, then click **Comment** in the editor toolbar or press Ctrl+Alt+M (**Add a comment** in the palette). The text is highlighted and the Comments panel opens for you to write. The **Comments** button in the top toolbar opens the panel at any time; its badge shows how many comments are open. In the panel you can reply, **Resolve** a thread and **Reopen** it later, or **Delete** it (a second click confirms). **Show resolved** lists the resolved threads too. Comments follow the text as you edit it. They are saved in `.lemmata/comments.json` in the project. Lemmata doesn't change your `.gitignore`, so `.lemmata/` is ignored only if yours lists it. To share the comments through git, commit just that file with `git add -f .lemmata/comments.json`; the force flag adds it even when the folder is ignored.
 
 ## The PDF
@@ -82,8 +82,8 @@ If a save fails, the tab stays open with your text, the status bar says **Not sa
 - The **page thumbnails** button shows a strip of every page beside the document; click one to go to it.
 - The zoom menu (the percentage button) has **Two pages**, which lays pages out side by side with page 1 on its own, like a book, and **Start with two pages**, which pairs pages 1 and 2, 3 and 4, and so on.
 - **Open in external viewer** (in the PDF toolbar) opens the PDF in your system's PDF viewer.
-- The moon button (or *Dark PDF pages when the app is dark* in Preferences) shows the pages dark when the app is dark.
-- **Present full screen** shows one page at a time for Beamer slides: arrow keys, Space or a click move on, Esc leaves.
+- *Dark PDF pages* in Preferences → Appearance shows the pages (and thumbnails) dark. It applies only while the app has a dark theme, so it is greyed out in a light one.
+- **Present full screen** shows one page at a time for Beamer slides: arrow keys, Space or a click move on, Esc leaves. It's also in the command palette. When the PDF pane is narrow, zoom, outline, thumbnails, presenting and the external viewer move into its **⋯** menu.
 - **Presenter view** (press **P** while presenting) opens a second window for you: the current slide, the next slide, your speaker notes, a timer (T pauses it, R resets it) and the clock, while the audience window shows only the slide. Either window can change slide and the other follows. With two screens it opens by itself: the slides go to the other screen and the presenter view stays on this one.
 - **Speaker notes** come from Beamer. Add `\setbeameroption{show notes on second screen=right}` to the preamble and `\note{…}` after a frame. The PDF then has the slide on the left half of each page and the notes on the right; the audience window shows only the slide and the presenter view shows the notes. Without that option the presenter view says how to add them.
 
@@ -115,7 +115,7 @@ On macOS, use Cmd instead of Ctrl.
 
 ## Citations and references
 
-**Ctrl+Shift+C** searches your `.bib` files by author, title, year or key. Inside an open `\cite{` it adds the key; elsewhere it inserts a new `\cite{…}`.
+**Cite** in the editor toolbar, or **Ctrl+Shift+C**, searches your `.bib` files by author, title, year or key. Inside an open `\cite{` it adds the key; elsewhere it inserts a new `\cite{…}`.
 
 To add a reference, paste a DOI (`10.1038/nature14539`) or an arXiv ID (`arXiv:1707.06347`) into the picker. Lemmata looks it up on doi.org, gives it a readable key such as `schulman2017proximal` and appends it to the `.bib` file you choose.
 
@@ -123,7 +123,7 @@ Don't have the DOI? Type a title or author in the picker and click **Search onli
 
 Those two are the only times Lemmata goes online for references. Zotero, below, talks only to Zotero on your computer.
 
-**Bibliography manager…** in the command palette lists every entry in your `.bib` files, with the file each one is in. It marks **Duplicate key**, **Same DOI** and **Same title** entries and **Not cited** ones, and lists keys that are cited but in no `.bib` file at the top. The menu next to the search box shows all entries, only the duplicates or only the uncited ones, and another menu sorts by key, author or year. On each row, **Open** goes to the entry, **Fields** shows its fields and **Delete…** removes it after you confirm. Entries with a duplicate key also have **Rename key…**, which changes the key in the `.bib` file only; to change it in your `.tex` files too, use *Rename label or citation key…*.
+**Bibliography manager…** (main menu or command palette) lists every entry in your `.bib` files, with the file each one is in. It marks **Duplicate key**, **Same DOI** and **Same title** entries and **Not cited** ones, and lists keys that are cited but in no `.bib` file at the top. The menu next to the search box shows all entries, only the duplicates or only the uncited ones, and another menu sorts by key, author or year. On each row, **Open** goes to the entry, **Fields** shows its fields and **Delete…** removes it after you confirm. Entries with a duplicate key also have **Rename key…**, which changes the key in the `.bib` file only; to change it in your `.tex` files too, use *Rename label or citation key…*.
 
 ### Zotero
 
@@ -145,15 +145,15 @@ If one of these needs a package your document doesn't load yet (`graphicx`, `boo
 
 A file can choose its own language with a comment in its first lines, such as `% !TeX spellcheck = de_DE` (or `% !TeX lang = fr`), which beats the project setting for that file.
 
-Misspelled words get a wavy underline. Commands, labels, citation keys, file names, maths and comments are skipped. Right-click a word for suggestions or **Add to dictionary**; added words are saved in `lemmata.toml`.
+Misspelled words get a wavy underline. Commands, labels, citation keys, file names, maths and comments are skipped. Right-click a word for suggestions or **Add to dictionary**; added words are saved in `lemmata.toml`, and **Project settings** lists them with a button to remove each.
 
 Dictionaries: English (US and UK), German, Swiss German (with ss instead of ß) and French come with Lemmata. By default (*Match the document's language* in Preferences) Lemmata guesses the language from `babel` or `polyglossia`. You can choose one in Preferences for every project, set it in project settings for one project, or turn spell check off.
 
 **More languages.** Spanish, Italian, Portuguese (Portugal and Brazil), Dutch, Polish, Swedish, Danish, Norwegian Bokmål, Czech, Russian, Ukrainian, Turkish and Greek are downloaded when you need them. In **Preferences → Spell check**, the languages that still have to be fetched show their download size, for example *(downloads 5 MB)*. Choose one and Lemmata downloads it once; after that it works offline. The language codes for `% !TeX spellcheck` are `es`, `it`, `pt-PT`, `pt-BR`, `nl`, `pl`, `sv`, `da`, `nb`, `cs`, `ru`, `uk`, `tr` and `el`. If a project or a `% !TeX spellcheck` comment asks for a language that isn't downloaded yet, a notice offers **Download** (once per session); until then that language isn't checked.
 
-**Grammar checking** is off by default. Choose a mode under **Preferences → Grammar check**: **LanguageTool on this computer** (a server at `http://localhost:8081`), or **LanguageTool at an address…** for a server you run or trust. Lemmata sends the prose of the document to that server, a paragraph at a time, and nowhere else. Preferences shows where the text goes, and **Test the connection** checks that a server answers. Lemmata doesn't start one for you; to run one for a session, start it in Docker with `docker run -p 8081:8010 erikvl87/languagetool`, or with the standalone jar with `java -cp languagetool-server.jar org.languagetool.server.HTTPServer --port 8081`, and stop it with Ctrl+C when you're done. Findings get a dotted underline. Hover over one to see its suggestions as buttons, or **Ignore this rule**. Grammar checking covers English (US and UK), German (Germany and Switzerland) and French, following the spell-check language; other languages are not grammar-checked.
+**Grammar checking** is off by default. Choose a mode under **Preferences → Grammar check**: **LanguageTool on this computer** (a server at `http://localhost:8081`), or **LanguageTool at an address…** for a server you run or trust. Lemmata sends the prose of the document to that server, a paragraph at a time, and nowhere else. Preferences shows where the text goes, and **Test the connection** checks that a server answers. Lemmata doesn't start one for you; to run one for a session, start it in Docker with `docker run -p 8081:8010 erikvl87/languagetool`, or with the standalone jar with `java -cp languagetool-server.jar org.languagetool.server.HTTPServer --port 8081`, and stop it with Ctrl+C when you're done. Findings get a dotted underline. Hover over one to see its suggestions as buttons, or **Ignore this rule**. Ignored rules are saved with the project; **Project settings** lists them, and **Check again** brings one back. Grammar checking covers English (US and UK), German (Germany and Switzerland) and French, following the spell-check language; other languages are not grammar-checked.
 
-The status bar shows the word count of the document body, and the number of words in your selection. **Word count** in the menu breaks it down by file and counts headings, maths, figures, tables and citations. The outline shows words per section and folds.
+The status bar shows the word count of the document body, and the number of words in your selection. Click the word count in the status bar (or **Word count** in the main menu) for a breakdown by file; it and counts headings, maths, figures, tables and citations. The outline shows words per section and folds.
 
 ## History
 
@@ -167,7 +167,7 @@ History is on for every project; it only needs git to be installed. A project th
 
 ## Git
 
-Lemmata works with the git on your computer; install git first if you don't have it. Open the panel with **Git: commit, pull, push…** in the command palette or **Git…** in the app menu.
+Lemmata works with the git on your computer; install git first if you don't have it. Open the panel with the **Git** button in the top toolbar; its badge counts the files that changed since the last commit. It's also in the main menu and the command palette.
 
 - **Turn this project into a git repository** appears when the project isn't in one. It runs `git init`, adds a `.gitignore` containing `.lemmata/` if there is none, and makes a first commit of everything.
 - **Changes** are listed as *Staged*, *Changes* and *Untracked*. Tick a file to stage it and untick it to unstage it. **Stage all** stages every change in one go. Files with merge conflicts are listed under *Conflicts*; resolve them in a terminal.
@@ -197,7 +197,7 @@ Right-click in the file tree to create, rename, duplicate or delete files and fo
 
 **Keyboard.** Click the tree, then use the arrow keys to move, Left and Right to fold and unfold folders, Enter to open, `F2` to rename, `Delete` to delete, `Ctrl+X`, `Ctrl+C` and `Ctrl+V` to cut, copy and paste, `Ctrl+D` to duplicate, `Ctrl+A` to select all, `Ctrl+N` and `Ctrl+Shift+N` for a new file or folder, and `Ctrl+Z` to undo. Typing a few letters jumps to a matching name. **Shift+F10** or the **Menu** key opens the menu for the selected file or the focused tab.
 
-**Undo.** Moves, renames, deletes, duplicates, pastes and new files can be undone with the *Undo* button in the notice, `Ctrl+Z` in the tree, or *Undo the last file operation* in the command palette. Deleted files wait in `.lemmata/trash` inside the project for a week, then disappear. If you prefer your computer's trash, choose *System trash* under *Deleted files* in Preferences; those deletions can't be undone from Lemmata.
+**Undo.** Moves, renames, deletes, duplicates, pastes and new files can be undone with the *Undo* button in the notice, `Ctrl+Z` in the tree, or *Undo the last file operation* in the command palette. Deleted files wait in `.lemmata/trash` inside the project for a week, then disappear. Until then, *Recently deleted…* (right-click empty space in the file tree, or the command palette) lists them and **Restore** puts them back, also after Lemmata was closed. If you prefer your computer's trash, choose *System trash* under *Deleted files* in Preferences; those deletions can't be undone from Lemmata.
 
 **Sorting and cleaning up.** The sort button above the tree orders files by name, type, last modified or size, with folders first or mixed in, and collapses or expands every folder. Hover a file to see its size and modification time. *Find unused files* lists images, `.tex` parts and bibliographies that no command in the project refers to, so you can delete them in one go. *Show the open file in the file tree* in the command palette scrolls to the file you are editing. Which folders are collapsed is remembered for each project.
 
@@ -210,7 +210,7 @@ Files changed by other programs (another editor, `git pull`) reload automaticall
 ## Exporting
 
 - **Export PDF** saves a copy of the PDF.
-- **Export the whole project (.zip)** packs every file of the project (not hidden files or the build folder) plus the latest PDF, for a backup or to send to someone.
+- **Export project (.zip)** packs every file of the project (not hidden files or the build folder) plus the latest PDF, for a backup or to send to someone.
 - **Export for arXiv** builds the project, then zips exactly the files the build used plus the compiled bibliography (`.bbl`), with comments removed (but not a `%` inside verbatim environments, `\verb` or URLs). If the document doesn't build without errors, Lemmata warns first and offers **Export anyway**. That's ready to upload to arXiv.
 - **Export for arXiv as one .tex file** (in the command palette and the app menu) does the same, but puts the whole document into the main file: `\input`, `\include`, `\subfile` and `\import` are replaced by the text of the file they load, and with BibTeX the `.bbl` text replaces `\bibliography`. The files that were merged are left out of the zip. With biblatex, `\printbibliography` stays and the `.bbl` is in the zip. An input that can't be found, or that lies outside the project, is left as it is.
 

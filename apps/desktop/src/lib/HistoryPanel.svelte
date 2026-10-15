@@ -5,6 +5,7 @@
   import { EditorState } from "@codemirror/state";
   import { EditorView, lineNumbers } from "@codemirror/view";
   import { unifiedMergeView } from "@codemirror/merge";
+  import Plus from "@lucide/svelte/icons/plus";
   import X from "@lucide/svelte/icons/x";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Pencil from "@lucide/svelte/icons/pencil";
@@ -30,10 +31,12 @@
     beforeChange?: () => Promise<void>;
     /** Writes a file through the app's normal save path, so its open buffer, undo and conflict checks apply. Without it, hunks can't be rejected. */
     applyText?: (path: string, text: string) => Promise<void>;
+    /** Asks for a name and takes a snapshot now. */
+    onSnapshot?: () => void;
     /** Opens the PDF of the changes (made by latexdiff). */
     onOpenPdf?: (path: string) => void;
   }
-  let { version, currentText, beforeRestore, onRestored, onRestoredAll, onClose, beforeChange = beforeRestore, applyText, onOpenPdf }: Props = $props();
+  let { version, currentText, beforeRestore, onRestored, onRestoredAll, onClose, beforeChange = beforeRestore, applyText, onOpenPdf, onSnapshot }: Props = $props();
 
   let status = $state<HistoryStatus | null>(null);
   let snapshots = $state<Snapshot[]>([]);
@@ -281,6 +284,7 @@
 <aside class="history">
   <div class="bar">
     <b>History</b>
+    {#if onSnapshot && status && status.state !== "not-a-repo"}<button class="btn sm ghost" onclick={onSnapshot}><Plus size={13} /> Save a snapshot</button>{/if}
     <button class="btn ghost icon sm close" aria-label="Close history" onclick={onClose}><X size={15} /></button>
   </div>
 
@@ -399,6 +403,7 @@
   .bar { display: flex; align-items: center; height: 40px; padding: 0 8px 0 14px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; }
   .bar b { font-weight: 600; }
   .close { margin-left: auto; }
+  .bar > b { margin-right: 10px; }
   .intro { padding: 12px 14px; color: var(--muted); margin: 0; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; max-width: 60ch; }
   .intro p { margin: 0; }
   .error { color: var(--error); padding: 8px 14px; margin: 0; white-space: pre-line; }

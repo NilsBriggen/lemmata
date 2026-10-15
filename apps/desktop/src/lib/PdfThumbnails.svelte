@@ -2,6 +2,7 @@
   // Small renders of every page, drawn as they scroll into view and released
   // when far away. A rebuilt document redraws only the thumbnails in view.
   import { onDestroy } from "svelte";
+  import { settings } from "./settings.svelte";
   import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 
   interface Props {
@@ -107,7 +108,7 @@
   });
 </script>
 
-<div class="thumbs" aria-label="Page thumbnails">
+<div class="thumbs" class:dark-pages={settings.pdfDark} aria-label="Page thumbnails">
   {#each { length: count } as _, i (i)}
     {@const n = i + 1}
     <button bind:this={btns[i]} use:watch class="thumb" class:current={n === current} data-page={n} aria-label="Page {n}" aria-current={n === current ? "page" : undefined} onclick={() => onGo(n)}>
@@ -125,6 +126,11 @@
   }
   .img { display: block; width: 100%; aspect-ratio: 3 / 4; background: #fff; border: 2px solid transparent; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2); border-radius: 2px; }
   .img :global(canvas) { display: block; width: 100%; height: 100%; }
+  /* Like the pages: dark only while the app itself is dark. */
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme="light"])) .dark-pages .img :global(canvas) { filter: invert(0.92) hue-rotate(180deg); }
+  }
+  :global(:root[data-theme="dark"]) .dark-pages .img :global(canvas) { filter: invert(0.92) hue-rotate(180deg); }
   .thumb:hover .img { border-color: var(--border-strong); }
   .thumb.current .img { border-color: var(--accent); }
   .num { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }

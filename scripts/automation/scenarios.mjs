@@ -51,6 +51,12 @@ function grayPng(w, h) {
   ]);
 }
 
+/** On screen: present, displayed and with a size. */
+async function visible(lem, selector) {
+  const found = await lem("query", { selector });
+  return found.some((e) => e.display !== "none" && e.rect[2] > 0 && e.rect[3] > 0);
+}
+
 /** The app's state in a failure message, so CI logs say what the app was doing. */
 const describe = async (lem) => JSON.stringify(await lem("state"));
 
@@ -459,6 +465,121 @@ export const scenarios = {
     await lem("openProject", { path: dir });
     await lem("idle", { timeout: 120_000 });
     fs.rmSync(big, { recursive: true, force: true });
+  },
+
+  async "opens every side panel where it can be seen, in every layout"(lem) {
+    await lem("openFile", { path: "main.tex" });
+    const panels = { git: "aside.git", todos: ".todos", comments: "aside.review", history: "aside.history" };
+    for (const layout of ["editor", "split", "pdf", "focus"]) {
+      for (const [id, selector] of Object.entries(panels)) {
+        await lem("setting", { key: "layout", value: layout === "focus" ? "split" : layout });
+        // Opening a panel leaves focus mode, so this turns it on again each time.
+        if (layout === "focus") await lem("command", { id: "focus" });
+        await lem("command", { id });
+        await until(lem, `${id} to show in ${layout}`, () => visible(lem, selector), 5_000);
+      }
+    }
+    await lem("click", { selector: '[aria-label="Close history"]' });
+    // The file tree from "PDF only": revealing the open file brings the sidebar back.
+    await lem("setting", { key: "layout", value: "pdf" });
+    await lem("command", { id: "reveal" });
+    await until(lem, "the file tree", () => visible(lem, "aside.sidebar"), 5_000);
+    await lem("setting", { key: "layout", value: "split" });
+    await check(lem, "after opening the panels");
+  },
+
+  async "puts controls where people look"(lem) {
+    await lem("openFile", { path: "main.tex" });
+    await lem("idle", { timeout: 120_000 });
+    await until(lem, "the PDF", async () => (await lem("state")).hasPdf, 30_000);
+    if (await lem("exists", { selector: '[aria-label="Dark pages"]' })) throw new Error("the dark-pages button is back in the PDF toolbar");
+    const toolbar = await lem("text", { selector: "header.toolbar" });
+    if (!toolbar.includes("Git")) throw new Error(`no Git button in the toolbar: ${toolbar}`);
+    // The word count in the status bar opens the breakdown.
+    await lem("clickText", { text: " words", within: "footer.status" });
+    await until(lem, "the word count", async () => (await lem("text", { selector: "[role=dialog]" }).catch(() => "")).includes("Word"));
+    await lem("key", { combo: "Escape" });
+    // At the default width the PDF toolbar's extra buttons are in its ⋯ menu, Present among them.
+    // (The toolbar shows only Logs while the logs are open.)
+    if ((await lem("state")).logsOpen) await lem("clickText", { text: "Logs" });
+    await lem("setting", { key: "pdfWidth", value: 560 });
+    await until(lem, "the ⋯ menu", () => visible(lem, '[aria-label="More"]'), 5_000);
+    await lem("click", { selector: '[aria-label="More"]' });
+    await until(lem, "Present in the ⋯ menu", async () => (await lem("text", { selector: ".menu" }).catch(() => "")).includes("Present full screen"));
+    await lem("key", { combo: "Escape" });
+    // Dark PDF pages can't be switched on where they would do nothing.
+    await lem("setting", { key: "theme", value: "light" });
+    await lem("command", { id: "preferences" });
+    await until(lem, "the preference greyed out", () => lem("exists", { selector: "#pref-pdfdark:disabled" }));
+    await lem("key", { combo: "Escape" });
+    await lem("setting", { key: "theme", value: "system" });
+  },
+
+  async "keeps the cursor's indentation when inserting a list or a figure"(lem, dir) {
+    fs.writeFileSync(path.join(dir, "figure.png"), grayPng(8, 8));
+    fs.writeFileSync(path.join(dir, "indent.tex"), "\\begin{itemize}\n    \\item first\n\\end{itemize}\n");
+    await until(lem, "indent.tex in the tree", () => lem("exists", { selector: '.tree-scroll [data-path="indent.tex"]' }));
+    await lem("openFile", { path: "indent.tex" });
+    const inserted = (before, after) => after.split("\n").slice(2, 2 + after.split("\n").length - before.split("\n").length);
+    // After text on an indented line: a new line, and every line of the list indented like it.
+    let before = await lem("editorText");
+    await lem("cursor", { line: 2 });
+    await lem("key", { combo: "End" });
+    await lem("click", { selector: '[aria-label="Bulleted list"]' });
+    let lines = inserted(before, await lem("editorText"));
+    if (!lines.length || lines.some((l) => !l.startsWith("    "))) throw new Error(`the list lost the indentation: ${JSON.stringify(lines)}`);
+    // The figure dialog writes plain text: same rule.
+    before = await lem("editorText");
+    await lem("cursor", { line: 2 });
+    await lem("key", { combo: "End" });
+    await lem("command", { id: "figure" });
+    await until(lem, "the figure dialog", () => lem("exists", { selector: "#figure-form" }));
+    await lem("clickText", { text: "Insert", within: "[role=dialog]" });
+    await until(lem, "the figure", async () => (await lem("editorText")).includes("\\begin{figure}"));
+    lines = inserted(before, await lem("editorText"));
+    if (lines.some((l) => l.trim() && !l.startsWith("    "))) throw new Error(`the figure lost the indentation: ${JSON.stringify(lines)}`);
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+    await lem("openFile", { path: "main.tex" });
+    fs.rmSync(path.join(dir, "indent.tex"));
+    fs.rmSync(path.join(dir, "figure.png"));
+  },
+
+  async "restores a deleted file from Recently deleted after reopening"(lem, dir) {
+    await lem("setting", { key: "trashMode", value: "project" });
+    fs.writeFileSync(path.join(dir, "gone.tex"), "Keep me.\n");
+    await until(lem, "gone.tex in the tree", () => lem("exists", { selector: '.tree-scroll [data-path="gone.tex"]' }));
+    await lem("contextmenu", { selector: '.tree-scroll [data-path="gone.tex"]' });
+    await lem("clickText", { text: "Delete", within: ".tree-menu" });
+    await until(lem, "the file deleted", async () => !fs.existsSync(path.join(dir, "gone.tex")));
+    // Reopening forgets the undo log, like a restart.
+    await lem("openProject", { path: dir });
+    await lem("idle", { timeout: 120_000 });
+    await lem("command", { id: "deleted" });
+    await until(lem, "the list", async () => (await lem("text", { selector: "[role=dialog]" }).catch(() => "")).includes("gone.tex"));
+    await lem("clickText", { text: "Restore", within: "[role=dialog]" });
+    await until(lem, "the file back", async () => fs.existsSync(path.join(dir, "gone.tex")));
+    if (fs.readFileSync(path.join(dir, "gone.tex"), "utf8") !== "Keep me.\n") throw new Error("the restored file differs");
+    await lem("clickText", { text: "Close", within: "[role=dialog]" });
+    fs.rmSync(path.join(dir, "gone.tex"));
+  },
+
+  async "offers a way forward on an unknown citation or label"(lem) {
+    await lem("openFile", { path: "chapters/method.tex" });
+    await until(lem, "Search online on the unknown key", async () => {
+      await lem("hoverText", { text: "nobody2020" });
+      return (await lem("text", { selector: ".cm-hover-card" }).catch(() => "")).includes("Search online");
+    });
+    await lem("clickText", { text: "Search online", within: ".cm-hover-card" });
+    await until(lem, "the citation picker with the key", () => lem("exists", { selector: "[role=dialog]" }));
+    await lem("key", { combo: "Escape" });
+    await until(lem, "Search the project on the unknown label", async () => {
+      await lem("hoverText", { text: "sec:missing" });
+      return (await lem("text", { selector: ".cm-hover-card" }).catch(() => "")).includes("Search the project");
+    });
+    await lem("clickText", { text: "Search the project", within: ".cm-hover-card" });
+    await until(lem, "the search for it", async () => (await lem("query", { selector: ".search-wrap input" })).some((i) => i.value === "sec:missing"));
+    await lem("openFile", { path: "main.tex" });
   },
 
   async "deletes a project from the start screen"(lem, dir) {

@@ -103,6 +103,13 @@
   let renaming = $state<{ kind: "label" | "cite"; name: string } | null>(null);
   let symbolItems = $state<PaletteItem[]>([]);
   let searchOpen = $state(false);
+  /** Text a hover card asked to search for: the project search starts over with it. */
+  let searchSeed = $state("");
+  /** A citation key a hover card asked to look up online; cleared when the picker closes. */
+  let citeSearch = $state("");
+  $effect(() => {
+    if (!citeOpen) citeSearch = "";
+  });
   let focusMode = $state(false);
   let report = $state<{ system: string; log: string } | null>(null);
   let fileActions: FileActions | undefined = $state();
@@ -112,15 +119,20 @@
   let notice = $state<{ text: string; tone?: "ok" | "info" | "error"; action?: { label: string; run: () => void } } | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let update = $state<{ version: string; progress: number | null; error: string | null } | null>(null);
-  let historyOpen = $state(false);
+  /** The panels that take the PDF's place: one at a time. */
+  type Panel = "git" | "todos" | "review" | "history";
+  let panel = $state<Panel | null>(null);
+  const historyOpen = $derived(panel === "history");
+  const todosOpen = $derived(panel === "todos");
+  const gitOpen = $derived(panel === "git");
+  const reviewOpen = $derived(panel === "review");
   let snippetsOpen = $state(false);
   let bibManagerOpen = $state(false);
-  let todosOpen = $state(false);
-  let gitOpen = $state(false);
   let gitVersion = $state(0);
+  /** Files that differ from the last commit, for the Git button. */
+  let gitChanges = $state(0);
   /** Review comments of the open project, and the panel showing them. */
   let threads = $state<Thread[]>([]);
-  let reviewOpen = $state(false);
   let activeComment = $state<string | null>(null);
   let commentDraft = $state<{ file: string; line: number; quote: string } | null>(null);
   /** The project's lemmata.toml turns on shell escape, and the user hasn't said yet whether to allow it. */
@@ -223,7 +235,7 @@
     tabs = [];
     buffers.clear();
     threads = [];
-    grammar.resetIgnored();
+    grammar.setIgnored(project.config.grammar_ignore ?? []);
     commentDraft = null;
     activeComment = null;
     api.readText(COMMENTS_FILE).then((t) => (threads = parseComments(t)), () => {});
@@ -234,6 +246,8 @@
     treeView.clipboard = null;
     treeView.collapsed = {};
     setGitStatus([]);
+    gitChanges = 0;
+    panel = null;
     refreshGit();
     fileActions?.forgetHistory();
     api.purgeTrash(7).catch(() => {});
@@ -284,18 +298,15 @@
     openReview();
   }
 
-  function openReview() {
-    reviewOpen = true;
-    historyOpen = false;
-    // The panel sits where the PDF is.
+  /** Shows a panel where the PDF is, leaving focus mode and "Editor only" so it can be seen. */
+  function openPanel(p: Panel) {
+    panel = p;
+    focusMode = false;
     if (settings.layout === "editor") updateSettings({ layout: "split" });
   }
-
-  function openGit() {
-    gitOpen = true;
-    reviewOpen = historyOpen = todosOpen = false;
-    if (settings.layout === "editor") updateSettings({ layout: "split" });
-  }
+  const togglePanel = (p: Panel) => (panel === p ? (panel = null) : openPanel(p));
+  const openReview = () => openPanel("review");
+  const openGit = () => openPanel("git");
 
   /** After a commit, pull or branch switch: files may differ on disk. */
   async function afterGitChange() {
@@ -401,6 +412,14 @@
     readText: (p) => api.readText(p),
     packages: cached(() => api.packageNames(), 3_600_000),
     needsPackage: (pkg) => void needsPackage(pkg),
+    searchCitation: (key) => {
+      citeSearch = key;
+      citeOpen = true;
+    },
+    searchProject: (text) => {
+      searchSeed = text;
+      openSearch();
+    },
   };
   $effect(() => {
     editor?.setProviders(project ? providers : null);
@@ -469,6 +488,11 @@
     void [settings.grammar, settings.grammarUrl];
     untrack(applySpellLanguage);
   });
+
+  // "Ignore this rule" lasts: it goes into the project's settings, where it can be undone.
+  grammar.onIgnore = (id) => {
+    if (project) configure({ ...project.config, main: project.main, grammar_ignore: Array.from(new Set([...(project.config.grammar_ignore ?? []), id])).sort() });
+  };
 
   async function addWord(word: string) {
     if (!project) return;
@@ -842,7 +866,13 @@
     reveal(active);
     treeView.selected = [active];
     treeView.cursor = active;
-    if (!settings.sidebarOpen) await updateSettings({ sidebarOpen: true });
+    await showFiles();
+  }
+
+  /** Opens the sidebar where it can be seen: not in focus mode, not in "PDF only". */
+  async function showFiles() {
+    focusMode = false;
+    await updateSettings({ sidebarOpen: true, layout: settings.layout === "pdf" ? "split" : settings.layout });
   }
 
   let gitTimer: ReturnType<typeof setTimeout> | undefined;
@@ -850,7 +880,13 @@
   function refreshGit() {
     clearTimeout(gitTimer);
     gitTimer = setTimeout(() => {
-      if (project) api.gitStatus().then(setGitStatus).catch(() => setGitStatus([]));
+      if (project)
+        api.gitStatus()
+          .catch(() => [])
+          .then((list) => {
+            setGitStatus(list);
+            gitChanges = list.length;
+          });
       if (gitOpen) gitVersion++;
     }, 600);
   }
@@ -964,7 +1000,7 @@
     snapshotLabel = null;
     await saveAll();
     await takeSnapshot(label);
-    historyOpen = true;
+    openPanel("history");
   }
 
   async function currentText(path: string) {
@@ -1007,6 +1043,7 @@
     if (!(await configure(config)) || !project) return;
     settingsOpen = false;
     if (mainChanged) await openFile(project.main);
+    grammar.setIgnored(project.config.grammar_ignore ?? []);
     applySpellLanguage();
     refreshOutline();
     runBuild();
@@ -1148,6 +1185,9 @@
     }
   }
 
+  const showEditor = $derived(settings.layout !== "pdf" || focusMode);
+  const showPdf = $derived(settings.layout !== "editor" && !focusMode);
+
   const commandItems = $derived<PaletteItem[]>(
     [
       { id: "recompile", label: "Recompile", detail: hint("recompile"), run: () => saveAll(false).then(() => runBuild(true)) },
@@ -1162,12 +1202,12 @@
       { id: "words", label: "Word count", run: () => (dialog = "words") },
       { id: "shortcuts", label: "Keyboard shortcuts", detail: hint("shortcuts"), run: () => (dialog = "shortcuts") },
       { id: "snapshot", label: "Save a snapshot", detail: hint("snapshot"), run: () => (snapshotLabel = "") },
-      { id: "history", label: "Show history", run: () => (historyOpen = true) },
+      { id: "history", label: "History", run: () => openPanel("history") },
       { id: "comment", label: "Add a comment", detail: hint("add-comment"), run: addComment },
-      { id: "comments", label: "Show comments", run: openReview },
+      { id: "comments", label: "Comments", run: openReview },
       { id: "bib-manager", label: "Bibliography manager…", run: () => (bibManagerOpen = true) },
-      { id: "git", label: "Git: commit, pull, push…", run: openGit },
-      { id: "todos", label: "Show TODOs", run: () => ((todosOpen = true), (reviewOpen = false), (historyOpen = false)) },
+      { id: "git", label: "Git", run: openGit },
+      { id: "todos", label: "TODOs", run: () => openPanel("todos") },
       { id: "format", label: "Format document", run: formatDocument },
       { id: "sync", label: "Show this line in the PDF", detail: hint("sync"), run: () => active && syncForward(active, editor?.currentLine() ?? 1, 0) },
       { id: "focus", label: focusMode ? "Leave focus mode" : "Focus mode", detail: hint("focus"), run: () => (focusMode = !focusMode) },
@@ -1179,18 +1219,22 @@
       { id: "reveal", label: "Show the open file in the file tree", run: revealActive },
       { id: "unused", label: "Find unused files…", run: () => fileActions?.showUnused() },
       { id: "undo-files", label: "Undo the last file operation", run: () => fileActions?.undo() },
+      { id: "deleted", label: "Recently deleted files…", run: () => fileActions?.showDeleted() },
       { id: "zotero-cite", label: "Cite from Zotero…", run: citeFromZotero },
       { id: "zotero-sync", label: "Sync zotero.bib from Zotero", run: () => syncZotero(true) },
       { id: "export-pdf", label: "Export PDF…", run: exportPdf },
-      { id: "save-template", label: "Save this project as a template…", run: saveAsTemplate },
-      { id: "export-zip", label: "Export the whole project (.zip)…", run: exportZip },
+      // Only while the PDF pane is there: presenting needs its loaded document.
+      ...(showPdf ? [{ id: "present", label: "Present full screen", run: () => pdf?.present() }] : []),
+      { id: "open-external", label: "Open the PDF in an external viewer", run: () => api.openPdfExternally().catch((e) => showNotice(errorMessage(e), { tone: "error" })) },
+      { id: "save-template", label: "Save as template…", run: saveAsTemplate },
+      { id: "export-zip", label: "Export project (.zip)…", run: exportZip },
       { id: "export-arxiv", label: "Export for arXiv (.zip)…", run: () => exportArxiv() },
       { id: "export-arxiv-flat", label: "Export for arXiv as one .tex file (.zip)…", run: () => exportArxiv(false, true) },
       { id: "project-settings", label: "Project settings", run: () => (settingsOpen = true) },
       { id: "preferences", label: "Preferences", run: () => (prefsOpen = true) },
-      { id: "guide", label: "Open the user guide", run: () => openGuide() },
+      { id: "guide", label: "User guide", run: () => openGuide() },
       { id: "report", label: "Report a problem…", run: startReport },
-      { id: "close", label: "Close project", run: closeProject },
+      { id: "close", label: "All projects", run: closeProject },
     ].filter(() => project),
   );
 
@@ -1252,10 +1296,9 @@
   }
 
   function openSearch() {
-    focusMode = false;
     searchOpen = true;
     // The search lives in the sidebar: make sure it can be seen.
-    if (!settings.sidebarOpen || settings.layout === "pdf") updateSettings({ sidebarOpen: true, layout: settings.layout === "pdf" ? "split" : settings.layout });
+    void showFiles();
   }
 
   async function exportPdf() {
@@ -1618,29 +1661,21 @@
     if (shown.length) whatsNew = { version, releases: shown };
   }
 
+  // The main menu shows palette commands, so a command has one name wherever it appears.
+  const MENU: [string, string[]][] = [
+    ["Project", ["close", "project-settings", "save-template", "words"]],
+    ["Tools", ["git", "history", "snapshot", "comments", "todos", "bib-manager", "format", "focus"]],
+    ["Export", ["export-pdf", "export-zip", "export-arxiv", "export-arxiv-flat"]],
+    ["Help", ["preferences", "shortcuts", "guide", "report"]],
+  ];
   const menuItems = $derived<MenuAction[]>([
-    { label: "All projects", run: closeProject },
-    { label: "Command palette", hint: hint("palette"), run: () => (palette = "commands"), separator: true },
-    { label: "Open file…", hint: hint("quick-open"), run: () => (palette = "files") },
-    { label: "Search in project", hint: hint("search"), run: openSearch },
-    { label: "Insert citation", hint: hint("cite"), run: () => (citeOpen = true) },
-    { label: "Word count", run: () => (dialog = "words") },
-    { label: "Save as template…", run: saveAsTemplate },
-    { label: "Save a snapshot", hint: hint("snapshot"), run: () => (snapshotLabel = "") },
-    { label: "Undo last file operation", run: () => fileActions?.undo() },
-    { label: "Export PDF…", run: exportPdf, separator: true },
-    { label: "Export project (.zip)…", run: exportZip },
-    { label: "Export for arXiv…", run: () => exportArxiv() },
-    { label: "Export for arXiv as one file…", run: () => exportArxiv(false, true) },
-    { label: "Preferences", run: () => (prefsOpen = true), separator: true },
-    { label: "Keyboard shortcuts", hint: hint("shortcuts"), run: () => (dialog = "shortcuts") },
-    { label: "Git…", run: openGit },
-    { label: "User guide", run: () => openGuide() },
-    { label: "Report a problem…", run: startReport },
+    ...MENU.flatMap(([group, ids]) =>
+      commandItems.filter((c) => ids.includes(c.id)).sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
+        .map((c, i) => ({ label: c.label, hint: c.detail, run: c.run, group: i === 0 ? group : undefined })),
+    ),
+    { label: "Command palette", hint: hint("palette"), run: () => (palette = "commands") },
   ]);
 
-  const showEditor = $derived(settings.layout !== "pdf" || focusMode);
-  const showPdf = $derived(settings.layout !== "editor" && !focusMode);
 
   /** Where the PDF was scrolled and zoomed when its pane was last hidden. */
   let hiddenPdfPosition: { fit: "width" | "page" | number; scroll: number } | null = null;
@@ -1717,11 +1752,14 @@
       projectName={project.name}
       {building}
       layout={settings.layout}
-      sidebarOpen={settings.sidebarOpen}
+      sidebarOpen={showSidebar}
       {historyOpen}
       {reviewOpen}
       openComments={threads.filter((t) => !t.resolved).length}
-      onReview={() => (reviewOpen ? (reviewOpen = false) : openReview())}
+      onReview={() => togglePanel("review")}
+      {gitOpen}
+      {gitChanges}
+      onGit={() => togglePanel("git")}
       autoCompile={settings.autoCompile}
       engine={project.config.engine}
       menu={menuItems}
@@ -1729,8 +1767,8 @@
         focusMode = false;
         updateSettings({ layout: l });
       }}
-      onToggleSidebar={() => updateSettings({ sidebarOpen: !settings.sidebarOpen })}
-      onHistory={() => ((historyOpen = !historyOpen), (reviewOpen = false))}
+      onToggleSidebar={() => (showSidebar ? updateSettings({ sidebarOpen: false }) : showFiles())}
+      onHistory={() => togglePanel("history")}
       onProjectSettings={() => (settingsOpen = true)}
       onRecompile={() => saveAll(false).then(() => runBuild(true))}
       onStop={stopBuild}
@@ -1752,7 +1790,8 @@
         <div class="side" style:width="{settings.sidebarWidth}px">
           {#if searchOpen}
             <div class="search-wrap chrome">
-              <SearchPanel
+              {#key searchSeed}<SearchPanel
+                initialQuery={searchSeed}
                 onOpen={gotoProblem}
                 beforeReplace={async () => {
                   await saveAll();
@@ -1762,8 +1801,8 @@
                   for (const p of paths) await reloadFromDisk(p);
                   runBuild();
                 }}
-                onClose={() => (searchOpen = false)}
-              />
+                onClose={() => ((searchOpen = false), (searchSeed = ""))}
+              />{/key}
             </div>
           {:else}
             <Sidebar
@@ -1810,6 +1849,7 @@
         </div>
         <EditorToolbar
           disabled={!active || !/\.(tex|sty|cls)$/.test(active)}
+          commentDisabled={!active || viewerActive}
           onBold={() => editor?.toggleCommand("textbf")}
           onItalic={() => editor?.toggleCommand("textit")}
           onHeading={(c) => editor?.heading(c)}
@@ -1866,10 +1906,10 @@
           <span class="grow"></span>
           {#if lspStarting}<span class="starting" title="The language server is starting"><span class="spin-dot"></span>Starting completion</span>{:else if !lspAvailable}<button class="status-link" title="Why is completion off?" onclick={() => showNotice("Completion, hover and go to definition come from texlab, which ships with Lemmata but didn't start. Reinstall Lemmata, or install texlab yourself (your package manager, or cargo install texlab), then reopen the project.")}>No completion</button>{/if}
           {#if tex.detection.outdated}<span class="warn" title="Some packages may lack newer features">Old TeX Live</span>{/if}
-          {#if project.config.draft}<span class="warn" title="Figures are drawn as boxes. Switch to Normal in the Recompile menu for the final PDF.">Draft mode</span>{/if}
-          {#if spellLang !== "off"}<span title="Spell-check language">{spellLang}</span>{/if}
-          {#if totalWords}<span title="Words in the document body, without commands, maths or comments">{words.format(totalWords)} words</span>{/if}
-          <span>{{ pdflatex: "pdfLaTeX", xelatex: "XeLaTeX", lualatex: "LuaLaTeX", tectonic: "Tectonic" }[project.config.engine]}</span>
+          {#if project.config.draft}<button class="warn status-link" title="Figures are drawn as boxes. Click to build normally again." onclick={() => setBuildOption({ draft: false })}>Draft mode</button>{/if}
+          {#if spellLang !== "off"}<button class="status-link" title="Spell-check language: change it in Project settings" onclick={() => (settingsOpen = true)}>{spellLang}</button>{/if}
+          {#if totalWords}<button class="status-link" title="Words in the document body, without commands, maths or comments. Click for the count per file." onclick={() => (dialog = "words")}>{words.format(totalWords)} words</button>{/if}
+          <button class="status-link" title="Compiler: change it in Project settings" onclick={() => (settingsOpen = true)}>{{ pdflatex: "pdfLaTeX", xelatex: "XeLaTeX", lualatex: "LuaLaTeX", tectonic: "Tectonic" }[project.config.engine]}</button>
           {#if outcome && !building}
             {#if outcome.status === "success"}
               <span class="ok" title={lastCompiled ? `Finished at ${new Date(lastCompiled).toLocaleTimeString()}` : undefined}>Compiled in {(outcome.duration_ms / 1000).toFixed(1)} s</span>
@@ -1927,13 +1967,13 @@
           {#if gitOpen}
             <div class="fill">
               {#await import("./lib/git/GitPanel.svelte") then { default: GitPanel }}
-                <GitPanel version={gitVersion} beforeGit={() => saveAll(false)} onChanged={afterGitChange} onClose={() => (gitOpen = false)} />
+                <GitPanel version={gitVersion} beforeGit={() => saveAll(false)} onChanged={afterGitChange} onClose={() => (panel = null)} />
               {/await}
             </div>
           {:else if todosOpen}
             <div class="fill">
               {#await import("./lib/Todos.svelte") then { default: Todos }}<Todos onOpen={gotoProblem} />{/await}
-              <button class="btn ghost icon sm close-todos" aria-label="Close TODOs" onclick={() => (todosOpen = false)}><X size={15} /></button>
+              <button class="btn ghost icon sm close-todos" aria-label="Close TODOs" onclick={() => (panel = null)}><X size={15} /></button>
             </div>
           {:else if reviewOpen}
             <div class="fill">
@@ -1953,11 +1993,11 @@
                 onReply={(id, body) => saveComments(threads.map((t) => (t.id === id ? { ...t, replies: [...t.replies, { body, created: Date.now() }] } : t)))}
                 onResolve={(id, resolved) => saveComments(threads.map((t) => (t.id === id ? { ...t, resolved } : t)))}
                 onDelete={(id) => saveComments(threads.filter((t) => t.id !== id))}
-                onClose={() => ((reviewOpen = false), (commentDraft = null))}
+                onClose={() => ((panel = null), (commentDraft = null))}
               />
             </div>
           {:else if historyOpen}
-            <div class="fill">{#await import("./lib/HistoryPanel.svelte") then { default: HistoryPanel }}<HistoryPanel version={historyVersion} {currentText} {beforeRestore} beforeChange={beforeRestore} {applyText} onOpenPdf={(p) => api.openProjectFile(p).catch((e) => showNotice(errorMessage(e), { tone: "error" }))} {onRestored} {onRestoredAll} onClose={() => (historyOpen = false)} />{/await}</div>
+            <div class="fill">{#await import("./lib/HistoryPanel.svelte") then { default: HistoryPanel }}<HistoryPanel version={historyVersion} {currentText} {beforeRestore} beforeChange={beforeRestore} {applyText} onSnapshot={() => (snapshotLabel = "")} onOpenPdf={(p) => api.openProjectFile(p).catch((e) => showNotice(errorMessage(e), { tone: "error" }))} {onRestored} {onRestoredAll} onClose={() => (panel = null)} />{/await}</div>
           {/if}
         </div>
       {/if}
@@ -2147,6 +2187,7 @@
 
 {#if citeOpen}
   {#await import("./lib/CitePicker.svelte") then { default: CitePicker }}<CitePicker
+    searchOnlineFor={citeSearch}
     onInsert={(keys) => {
       citeOpen = false;
       editor?.insertCitation(keys);
@@ -2190,7 +2231,7 @@
 {/if}
 
 {#if settingsOpen && project}
-  {#await import("./lib/ProjectSettings.svelte") then { default: ProjectSettings }}<ProjectSettings {project} onSave={saveSettings} onClose={() => (settingsOpen = false)} />{/await}
+  {#await import("./lib/ProjectSettings.svelte") then { default: ProjectSettings }}<ProjectSettings {project} trusted={settings.shellEscapeProjects.includes(project.root)} onSave={saveSettings} onClose={() => (settingsOpen = false)} />{/await}
 {/if}
 
 {#if snapshotLabel !== null}
@@ -2250,7 +2291,9 @@
   .close-msg { margin: 0 0 8px; color: var(--muted); }
   .close-files { margin: 0; padding-left: 18px; font: 12.5px var(--f-mono); }
   .danger-btn { background: var(--error) !important; border-color: var(--error) !important; color: #fff !important; }
-  .status-link { border: none; background: none; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  /* Status items that do something: plain text until hovered, so the bar stays calm. */
+  .status-link { border: none; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-underline-offset: 2px; }
+  .status-link:hover, .status-link.bad { text-decoration: underline; }
   .close-todos { position: absolute; top: 6px; right: 8px; }
   .save-failed { color: var(--error); font-weight: 600; }
   .toast.error { border-color: var(--error); }

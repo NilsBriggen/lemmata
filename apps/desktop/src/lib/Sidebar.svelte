@@ -208,7 +208,6 @@
       <hr />
       <button role="menuitem" onclick={() => { collapseAll(sorted); sortMenu = null; }}><span class="tick"></span> Collapse all folders</button>
       <button role="menuitem" onclick={() => { expandAll(); sortMenu = null; }}><span class="tick"></span> Expand all folders</button>
-      <button role="menuitem" onclick={() => { sortMenu = null; p.actions?.showUnused(); }}><span class="tick"></span> Find unused files…</button>
     </div>
   </DropMenu>
 {/if}

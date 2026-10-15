@@ -3,8 +3,8 @@
     label: string;
     hint?: string;
     run: () => void;
-    /** Draw a line above this item. */
-    separator?: boolean;
+    /** Starts a group: a line and this heading above the item. */
+    group?: string;
   }
 </script>
 
@@ -18,6 +18,7 @@
   import FileCode from "@lucide/svelte/icons/file-code";
   import FileText from "@lucide/svelte/icons/file-text";
   import History from "@lucide/svelte/icons/rotate-ccw-clock";
+  import GitBranch from "@lucide/svelte/icons/git-branch";
   import Settings from "@lucide/svelte/icons/settings";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
@@ -36,6 +37,10 @@
     reviewOpen: boolean;
     openComments: number;
     onReview: () => void;
+    /** The Git panel is open; `gitChanges` is how many files differ from the last commit. */
+    gitOpen: boolean;
+    gitChanges: number;
+    onGit: () => void;
     autoCompile: boolean;
     engine: Engine;
     menu: MenuAction[];
@@ -70,6 +75,8 @@
     ["pdflatex", "pdfLaTeX"],
     ["xelatex", "XeLaTeX"],
     ["lualatex", "LuaLaTeX"],
+    // Like Project settings: a Tectonic project shows its compiler checked here too.
+    ["tectonic", "Tectonic"],
   ];
 </script>
 
@@ -101,7 +108,8 @@
 
   <div class="right">
     <button class="btn" class:on={p.reviewOpen} aria-pressed={p.reviewOpen} onclick={p.onReview} title="Review comments"><MessageSquare size={16} /> Comments{#if p.openComments}<span class="pill">{p.openComments}</span>{/if}</button>
-    <button class="btn" class:on={p.historyOpen} aria-pressed={p.historyOpen} onclick={p.onHistory}><History size={16} /> History</button>
+    <button class="btn" class:on={p.historyOpen} aria-pressed={p.historyOpen} onclick={p.onHistory} title="Snapshots of the project, to compare and restore"><History size={16} /> History</button>
+    <button class="btn" class:on={p.gitOpen} aria-pressed={p.gitOpen} onclick={p.onGit} title="Commit, pull and push with git"><GitBranch size={16} /> Git{#if p.gitChanges}<span class="pill">{p.gitChanges}</span>{/if}</button>
     <button class="btn icon" aria-label="Project settings" title="Project settings" onclick={p.onProjectSettings}><Settings size={17} /></button>
     <div class="compile">
       <button class="btn primary main" onclick={p.building ? p.onStop : p.onRecompile} title={p.building ? "Stop compiling" : `Recompile (${display(keysOf("recompile"))})`}>
@@ -118,8 +126,8 @@
 
 {#if open === "menu" && menuBtn}
   <DropMenu anchor={menuBtn} onClose={() => (open = null)}>
-    {#each p.menu as item (item.label)}
-      {#if item.separator}<hr />{/if}
+    {#each p.menu as item, i (item.label)}
+      {#if item.group}{#if i > 0}<hr />{/if}<div class="heading">{item.group}</div>{/if}
       <button role="menuitem" onclick={item.run}>{item.label}{#if item.hint}<span class="hint">{item.hint}</span>{/if}</button>
     {/each}
   </DropMenu>

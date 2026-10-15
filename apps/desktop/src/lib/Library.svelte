@@ -70,7 +70,7 @@
   let groups = $state<Groups>(readGroups());
   let view = $state<View>("all");
   /** The folder being created ("") or renamed (its id), with the text typed so far. */
-  let editing = $state<{ id: string | null; name: string; error: string | null } | null>(null);
+  let editing = $state<{ id: string | null; name: string; error: string | null; project?: string } | null>(null);
   /** The menu of one project: open, show, folder, remove, delete. */
   let projectMenu = $state<{ path: string; anchor: HTMLElement } | null>(null);
   let deleting = $state<{ path: string; busy: boolean; error: string | null } | null>(null);
@@ -104,9 +104,10 @@
     writeGroups(next);
   }
 
-  function startEdit(id: string | null) {
+  /** `project`: a new folder made from a project's menu takes that project in. */
+  function startEdit(id: string | null, project?: string) {
     undoable = null;
-    editing = { id, name: id ? (groups.groups.find((g) => g.id === id)?.name ?? "") : "", error: null };
+    editing = { id, name: id ? (groups.groups.find((g) => g.id === id)?.name ?? "") : "", error: null, project };
   }
 
   $effect(() => {
@@ -126,7 +127,7 @@
     if (editing.id) commit(renameGroup(groups, editing.id, editing.name)!);
     else {
       const made = createGroup(groups, editing.name)!;
-      commit(made.state);
+      commit(editing.project ? moveProject(made.state, editing.project, made.id) : made.state);
       view = made.id;
     }
     editing = null;
@@ -457,7 +458,7 @@
     {#if groups.members[path]}
       <button role="menuitem" onclick={() => commit(moveProject(groups, path, null))}><span class="tick"></span> Take out of its folder</button>
     {/if}
-    <button role="menuitem" onclick={() => startEdit(null)}><span class="tick"><FolderPlus size={14} /></span> New folder…</button>
+    <button role="menuitem" onclick={() => startEdit(null, path)}><span class="tick"><FolderPlus size={14} /></span> New folder…</button>
     <hr />
     <button role="menuitem" onclick={() => forget(path)}><X size={15} /> Remove from list <span class="hint">keeps files</span></button>
     <button role="menuitem" class="danger" onclick={() => (deleting = { path, busy: false, error: null })}><Trash2 size={15} /> Delete project…</button>
