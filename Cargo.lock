@@ -2329,6 +2329,7 @@ dependencies = [
  "lemmata-log",
  "lemmata-pkgmap",
  "lemmata-project",
+ "libc",
  "regex",
  "serde",
  "tempfile",

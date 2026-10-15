@@ -706,10 +706,15 @@ fn kill_tree(pid: Option<u32>, force: bool) {
     let Some(pid) = pid else { return };
     #[cfg(unix)]
     {
-        // The child leads its own process group (process_group(0) above).
-        let _ = std::process::Command::new("kill")
-            .args([if force { "-KILL" } else { "-TERM" }, &format!("-{pid}")])
-            .status();
+        // The child leads its own process group (process_group(0) above). Signal the group with the system
+        // call itself: Debian's /usr/bin/kill can read "-<pid>" as a signal number and hit other processes.
+        let Ok(group) = i32::try_from(pid) else {
+            return;
+        };
+        if group > 1 {
+            // SAFETY: kill(2) only sends a signal; a negative pid addresses exactly that process group.
+            unsafe { libc::kill(-group, if force { libc::SIGKILL } else { libc::SIGTERM }) };
+        }
     }
     #[cfg(windows)]
     {

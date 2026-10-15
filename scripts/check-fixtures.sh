@@ -13,7 +13,8 @@ failed=0
 
 for dir in "$root"/tests/fixtures/*/; do
   name=$(basename "$dir")
-  [[ $name == logs ]] && continue
+  # Only projects have an expected.json (logs/ and prose/ hold other test data).
+  [[ -f $dir/expected.json ]] || continue
   # Compile errors are expected for some fixtures; only the diagnostics matter.
   # Keep what the project itself causes: every error, and warnings located
   # in project files. Package chatter, system paths and bad boxes (which
