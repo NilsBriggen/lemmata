@@ -1541,6 +1541,8 @@
       reportOnce("watch", `Lemmata can't watch for changes made by other programs: ${errorMessage(e)}`),
     );
     await loadSettings();
+    // Decided before anything can open a project (and add it to the recent list): a fresh install shows no What's new.
+    const usedBefore = settings.firstRunDone || recent.length > 0;
     appliedEditor = "";
     // Detection can take seconds (it runs pdflatex). With a remembered working result the app starts at
     // once and checks again in the background; without one it has to wait for the answer.
@@ -1555,7 +1557,7 @@
       checkForUpdates();
       setInterval(() => settings.checkForUpdates && !update && checkForUpdates(), UPDATE_INTERVAL_MS);
     }
-    showWhatsNew();
+    showWhatsNew(usedBefore);
     // Existing users (with projects) never see the welcome.
     // A file or folder opened from the OS (double-click, "Open with", a second launch) wins over the last project.
     listen<OpenRequest>("open-request", (e) => handleRequest(e.payload)).catch((e) =>
@@ -1574,13 +1576,13 @@
   });
 
   /** Once after an update, what the new version can do. A fresh install gets the welcome instead. */
-  async function showWhatsNew() {
+  async function showWhatsNew(usedBefore: boolean) {
     const version = await getVersion().catch(() => null);
     const last = settings.lastSeenVersion;
     if (!version || version === last) return;
     updateSettings({ lastSeenVersion: version });
     // Before 2.0 the version wasn't remembered: someone who already used the app is updating to this one.
-    const updated = last !== "" || settings.firstRunDone || recent.length > 0;
+    const updated = last !== "" || usedBefore;
     const releases = updated ? releasesSince(last || "0.0.0", version) : [];
     // Unknown previous version: only this release's news, not the whole history.
     const shown = last ? releases : releases.slice(0, 1);
