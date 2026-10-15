@@ -122,8 +122,30 @@ enum Cmd {
     Doctor,
 }
 
+/// Where the desktop app keeps the Tectonic it downloads: its data folder (Tauri's
+/// app_data_dir for the identifier dev.briggen.lemmata), then `tectonic`.
+fn app_tectonic_dir() -> Option<PathBuf> {
+    let var = |k: &str| {
+        std::env::var_os(k)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    let data = if cfg!(windows) {
+        var("APPDATA")?
+    } else if cfg!(target_os = "macos") {
+        var("HOME")?.join("Library/Application Support")
+    } else {
+        var("XDG_DATA_HOME").or_else(|| var("HOME").map(|h| h.join(".local/share")))?
+    };
+    Some(data.join("dev.briggen.lemmata").join("tectonic"))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // The app's Tectonic counts as installed here too.
+    if let Some(dir) = app_tectonic_dir() {
+        lemmata_tex::tectonic::set_install_dir(dir);
+    }
     let ok = match Cli::parse().command {
         Cmd::Doctor => return doctor(),
         Cmd::Build { dir, json } => build(&dir, json).await?.status == Status::Success,
@@ -263,9 +285,21 @@ async fn build(dir: &Path, json: bool) -> anyhow::Result<Outcome> {
     Ok(outcome)
 }
 
-/// Runs latexmk on the project without printing anything.
+/// Builds the project without printing anything: with latexmk, or with Tectonic when the
+/// project asks for it or no TeX is installed (the app's rule).
 async fn compile(project: &Project) -> anyhow::Result<Outcome> {
     let det = lemmata_tex::detect(&[]);
+    if project.config.engine == lemmata_project::Engine::Tectonic
+        || (det.tool("latexmk").is_none() && det.tectonic.is_some())
+    {
+        let Some(exe) = det.tectonic.as_deref() else {
+            bail!(
+                "This project uses Tectonic, which isn't installed. Install it from Lemmata's start screen, or put tectonic on PATH."
+            );
+        };
+        let (_cancel, rx) = tokio::sync::oneshot::channel();
+        return Ok(lemmata_tex::tectonic::build(project, exe, rx, false, &|_| {}).await?);
+    }
     let Some(latexmk) = det.tool("latexmk") else {
         bail!("latexmk not found. Run `lemmata doctor` for install instructions.");
     };
