@@ -42,6 +42,7 @@
   import { findEntry, isTextFile, isViewerFile } from "./lib/treeModel";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getVersion } from "@tauri-apps/api/app";
+  import { releasesSince, type Release } from "./lib/whatsNew";
   import { errorSummary, issueUrl, systemSummary } from "./lib/report";
   import { listen } from "@tauri-apps/api/event";
   import { relaunch } from "@tauri-apps/plugin-process";
@@ -67,6 +68,8 @@
   let recent = $state<Recent[]>(recentEntries());
   /** First-run welcome: shown once, or when asked for from the library. */
   let welcome = $state(false);
+  /** After an update: the version now running and what it brought. */
+  let whatsNew = $state<{ version: string; releases: Release[] } | null>(null);
 
   let tabs = $state<string[]>([]);
   /** Pinned tabs (always first in `tabs`), recently closed files (newest first) and folds per file. */
@@ -1562,6 +1565,7 @@
       checkForUpdates();
       setInterval(() => settings.checkForUpdates && !update && checkForUpdates(), UPDATE_INTERVAL_MS);
     }
+    showWhatsNew();
     // Existing users (with projects) never see the welcome.
     // A file or folder opened from the OS (double-click, "Open with", a second launch) wins over the last project.
     listen<OpenTarget>("open-request", (e) => openTarget(e.payload)).catch((e) =>
@@ -1578,6 +1582,20 @@
       if (tex?.detection.ready && recent[0]) openProject(recent[0].path);
     }
   });
+
+  /** Once after an update, what the new version can do. A fresh install gets the welcome instead. */
+  async function showWhatsNew() {
+    const version = await getVersion().catch(() => null);
+    const last = settings.lastSeenVersion;
+    if (!version || version === last) return;
+    updateSettings({ lastSeenVersion: version });
+    // Before 2.0 the version wasn't remembered: someone who already used the app is updating to this one.
+    const updated = last !== "" || settings.firstRunDone || recent.length > 0;
+    const releases = updated ? releasesSince(last || "0.0.0", version) : [];
+    // Unknown previous version: only this release's news, not the whole history.
+    const shown = last ? releases : releases.slice(0, 1);
+    if (shown.length) whatsNew = { version, releases: shown };
+  }
 
   const menuItems = $derived<MenuAction[]>([
     { label: "All projects", run: closeProject },
@@ -2098,6 +2116,10 @@
   {#await import("./lib/WordCount.svelte") then { default: WordCount }}<WordCount onClose={() => (dialog = null)} />{/await}
 {:else if dialog === "shortcuts"}
   {#await import("./lib/Shortcuts.svelte") then { default: Shortcuts }}<Shortcuts onClose={() => (dialog = null)} />{/await}
+{/if}
+
+{#if whatsNew && !welcome}
+  {#await import("./lib/WhatsNew.svelte") then { default: WhatsNew }}<WhatsNew {...whatsNew} onClose={() => (whatsNew = null)} />{/await}
 {/if}
 
 {#if citeOpen}

@@ -52,6 +52,8 @@ export interface Settings {
   grammarUrl: string;
   /** PDF pages one by one, or side by side like a book. */
   pdfLayout: "single" | "spread" | "spread-first";
+  /** The app version last started, for the "What's new" window after an update; "" before 2.0. */
+  lastSeenVersion: string;
 }
 
 export const DEFAULTS: Settings = {
@@ -87,6 +89,7 @@ export const DEFAULTS: Settings = {
   grammar: "off",
   grammarUrl: "http://localhost:8081",
   pdfLayout: "single",
+  lastSeenVersion: "",
 };
 
 /** Saved values of the wrong type (a damaged or hand-edited file) fall back to the defaults. */
