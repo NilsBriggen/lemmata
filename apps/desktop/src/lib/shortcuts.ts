@@ -39,7 +39,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "find", keys: "Mod-f", label: "Find in file", group: "Editing" },
   { id: "find-next", keys: "Mod-g", label: "Find next", group: "Editing" },
   { id: "goto-line", keys: "Mod-Alt-g", label: "Go to line", group: "Editing" },
-  { id: "comment", keys: "Mod-Alt-m", label: "Add a comment", group: "Editing" },
+  { id: "add-comment", keys: "Mod-Alt-m", label: "Add a comment", group: "Editing" },
   { id: "move-line-up", keys: "Alt-ArrowUp", label: "Move line up", group: "Editing" },
   { id: "move-line-down", keys: "Alt-ArrowDown", label: "Move line down", group: "Editing" },
   { id: "copy-line-down", keys: "Shift-Alt-ArrowDown", label: "Duplicate line", group: "Editing" },

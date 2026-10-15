@@ -5,6 +5,7 @@ pub mod build;
 pub mod detect;
 mod format;
 pub mod os;
+pub mod tectonic;
 
-pub use build::{BuildOptions, Outcome, Status, build, build_with, clean};
+pub use build::{BuildOptions, Outcome, Status, build, build_with, clean, up_to_date};
 pub use detect::{Detection, Distribution, detect};

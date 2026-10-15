@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/desktop/src-tauri"]
 
 [workspace.package]
-version = "1.5.2"
+version = "2.0.0-rc.1"
 edition = "2024"
 license = "GPL-3.0-only"
 repository = "https://github.com/NilsBriggen/lemmata"
@@ -16,6 +16,7 @@ lemmata-synctex = { path = "crates/lemmata-synctex" }
 lemmata-project = { path = "crates/lemmata-project" }
 lemmata-pkgmap = { path = "crates/lemmata-pkgmap" }
 lemmata-history = { path = "crates/lemmata-history" }
+lemmata-git = { path = "crates/lemmata-git" }
 lemmata-spell = { path = "crates/lemmata-spell" }
 lemmata-bib = { path = "crates/lemmata-bib" }
 lemmata-grammar = { path = "crates/lemmata-grammar" }
@@ -28,6 +29,7 @@ regex = "1"
 which = "8"
 walkdir = "2"
 tempfile = "3"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [profile.release]
 strip = true

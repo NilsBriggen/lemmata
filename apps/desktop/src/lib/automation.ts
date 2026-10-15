@@ -32,7 +32,11 @@ export interface AppState {
   showPdf: boolean;
   hasPdf: boolean;
   logsOpen: boolean;
+  /** An automatic build is waiting for the typing pause before it starts. */
+  buildQueued: boolean;
   notice: string | null;
+  /** The latest notices, newest first (the list under the bell). */
+  notices: string[];
   openError: string | null;
   /** Files changed outside with unsaved edits here, waiting for the user's choice. */
   conflicts: string[];
@@ -133,6 +137,8 @@ export function install(host: Host) {
       const el = element(selector) as HTMLInputElement;
       el.value = value;
       el.dispatchEvent(new Event("input", { bubbles: true }));
+      // A <select> bound with bind:value listens for change.
+      el.dispatchEvent(new Event("change", { bubbles: true }));
     },
     key: ({ combo }: { combo: string }) => key(combo),
     /** Types at the cursor (or replaces the selection) as a user edit. */
@@ -157,6 +163,10 @@ export function install(host: Host) {
         class: el.className && typeof el.className === "string" ? el.className : undefined,
         label: el.getAttribute("aria-label") ?? el.getAttribute("title") ?? undefined,
         text: el.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) || undefined,
+        value:
+          el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || el instanceof HTMLOptionElement
+            ? el.value
+            : undefined,
         display: getComputedStyle(el).display,
         rect: (({ x, y, width, height }) => [x, y, width, height].map(Math.round))(el.getBoundingClientRect()),
       })),
@@ -176,7 +186,7 @@ export function install(host: Host) {
       const end = Date.now() + timeout;
       while (Date.now() < end) {
         const s = host.state();
-        if (!s.building && s.dirty.filter((d) => !s.conflicts.includes(d)).length === 0) return s;
+        if (!s.building && !s.buildQueued && s.dirty.filter((d) => !s.conflicts.includes(d)).length === 0) return s;
         await settle(100);
       }
       throw new Error("The app did not become idle.");
@@ -218,6 +228,8 @@ export function install(host: Host) {
     reload: () => void setTimeout(() => location.reload(), 50),
     /** Asks the window to close, as the title bar's close button does. */
     closeWindow: () => void getCurrentWindow().close(),
+    /** Whether the main window is full screen (a presentation leaves it so only while it runs). */
+    fullscreen: () => getCurrentWindow().isFullscreen(),
   };
 
   methods.methods = () => Object.keys(methods);

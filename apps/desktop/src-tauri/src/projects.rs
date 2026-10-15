@@ -12,25 +12,46 @@ pub struct Template {
     pub description: String,
     /// Saved by the user from one of their projects, so it can be deleted.
     pub user: bool,
+    /// Gallery section; user templates are always "My templates".
+    pub category: String,
+    pub tags: Vec<String>,
+    /// Page 1 as a `data:image/png;base64,` URL, when the template ships a preview.png.
+    pub preview: Option<String>,
 }
+
+pub const USER_CATEGORY: &str = "My templates";
 
 /// Ids of user templates start with this, so they can't clash with bundled ones.
 pub const USER_PREFIX: &str = "user:";
+/// Ids of templates from the template collection (see online_templates.rs).
+pub const ONLINE_PREFIX: &str = "online:";
+
+/// Where a template comes from: shipped with the app, the template collection, or saved by the user.
+#[derive(Clone, Copy, PartialEq)]
+enum Source {
+    Bundled,
+    Online,
+    User,
+}
 
 #[derive(Deserialize, Serialize)]
-struct TemplateMeta {
-    name: String,
-    description: String,
+pub(crate) struct TemplateMeta {
+    pub name: String,
+    pub description: String,
     #[serde(default)]
-    order: u32,
+    pub order: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// Checks that `path` may be moved to the trash as a whole project: a folder
 /// with a .tex file or lemmata.toml directly inside, and not the home folder
 /// or a folder above it (a stray .tex file there must not take it all).
 pub fn deletable_project(path: &Path, home: Option<&Path>) -> Result<PathBuf, String> {
-    let dir = path
-        .canonicalize()
+    // The plain form, like the open project's root: with Windows' \\?\ it would never match it.
+    let dir = lemmata_project::canonical(path)
         .map_err(|e| format!("Could not find {}: {e}", path.display()))?;
     let refuse = || {
         format!(
@@ -39,7 +60,7 @@ pub fn deletable_project(path: &Path, home: Option<&Path>) -> Result<PathBuf, St
         )
     };
     let above_home = home
-        .and_then(|h| h.canonicalize().ok())
+        .and_then(|h| lemmata_project::canonical(h).ok())
         .is_some_and(|h| h.starts_with(&dir));
     if !dir.is_dir() || dir.parent().is_none() || above_home {
         return Err(refuse());
@@ -59,6 +80,8 @@ pub fn deletable_project(path: &Path, home: Option<&Path>) -> Result<PathBuf, St
 
 /// Metadata file inside each template folder; not copied into projects.
 const META: &str = "template.toml";
+/// Gallery thumbnail of a bundled template; not copied into projects either.
+const PREVIEW: &str = "preview.png";
 pub const EXAMPLE: &str = "example";
 
 /// Copies the example document into `dir` (the app's own data folder), or
@@ -73,14 +96,16 @@ pub fn ensure_example(templates: &Path, dir: &Path) -> Result<PathBuf, String> {
     Ok(dir.to_path_buf())
 }
 
-/// Bundled templates in their own order, then the user's, by name.
-pub fn list_all(bundled: &Path, user: &Path) -> Vec<Template> {
-    let mut all = list_templates(bundled, false);
-    all.extend(list_templates(user, true));
+/// Bundled templates in their own order, then the collection's (kept in `online`), then the user's.
+pub fn list_all(bundled: &Path, online: &Path, user: &Path) -> Vec<Template> {
+    let mut all = list_templates(bundled, Source::Bundled);
+    all.extend(list_templates(online, Source::Online));
+    all.extend(list_templates(user, Source::User));
     all
 }
 
-fn list_templates(dir: &Path, user: bool) -> Vec<Template> {
+fn list_templates(dir: &Path, source: Source) -> Vec<Template> {
+    let user = source == Source::User;
     let mut found: Vec<(u32, Template)> = fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -91,11 +116,21 @@ fn list_templates(dir: &Path, user: bool) -> Vec<Template> {
             let text = fs::read_to_string(e.path().join(META)).ok()?;
             let meta: TemplateMeta = toml::from_str(&text).ok()?;
             let folder = e.file_name().to_string_lossy().into_owned();
-            let id = if user {
-                format!("{USER_PREFIX}{folder}")
-            } else {
-                folder
+            let id = match source {
+                Source::User => format!("{USER_PREFIX}{folder}"),
+                Source::Online => format!("{ONLINE_PREFIX}{folder}"),
+                Source::Bundled => folder,
             };
+            let category = match (user, meta.category) {
+                (false, Some(c)) if !c.trim().is_empty() => c,
+                (false, _) => "Other".to_string(),
+                (true, _) => USER_CATEGORY.to_string(),
+            };
+            // Only bundled and collection templates come with a thumbnail: a user's own project may have a preview.png of its own.
+            let preview = (!user)
+                .then(|| fs::read(e.path().join(PREVIEW)).ok())
+                .flatten()
+                .map(|png| format!("data:image/png;base64,{}", base64(&png)));
             Some((
                 meta.order,
                 Template {
@@ -103,12 +138,34 @@ fn list_templates(dir: &Path, user: bool) -> Vec<Template> {
                     name: meta.name,
                     description: meta.description,
                     user,
+                    category,
+                    tags: meta.tags,
+                    preview,
                 },
             ))
         })
         .collect();
     found.sort_by_key(|(order, t)| (*order, t.name.clone()));
     found.into_iter().map(|(_, t)| t).collect()
+}
+
+/// Standard base64; the thumbnails are the only thing that needs it.
+fn base64(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= c.len() {
+                out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// A folder name the user typed: no separators, not empty, not "." or "..".
@@ -131,29 +188,43 @@ fn fresh_target(parent: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-/// The folder a template id names: bundled, or the user's (`user:` prefix).
-fn template_dir(bundled: &Path, user: &Path, id: &str) -> Result<PathBuf, String> {
-    Ok(match id.strip_prefix(USER_PREFIX) {
-        Some(folder) => user.join(check_name(folder)?),
-        None => bundled.join(check_name(id)?),
+/// The folder a template id names: the user's (`user:`), the collection's (`online:`) or bundled.
+fn template_dir(bundled: &Path, online: &Path, user: &Path, id: &str) -> Result<PathBuf, String> {
+    Ok(if let Some(folder) = id.strip_prefix(USER_PREFIX) {
+        user.join(check_name(folder)?)
+    } else if let Some(folder) = id.strip_prefix(ONLINE_PREFIX) {
+        online.join(check_name(folder)?)
+    } else {
+        bundled.join(check_name(id)?)
     })
 }
 
 pub fn create_from_template(
     bundled: &Path,
+    online: &Path,
     user: &Path,
     id: &str,
     parent: &Path,
     name: &str,
 ) -> Result<PathBuf, String> {
-    let source = template_dir(bundled, user, id)?;
+    let source = template_dir(bundled, online, user, id)?;
     if !source.join(META).is_file() {
         return Err(format!("There is no template called {id}."));
     }
     let target = fresh_target(parent, name)?;
     copy_dir(&source, &target).map_err(|e| format!("Could not create the project: {e}"))?;
     let _ = fs::remove_file(target.join(META));
+    if !id.starts_with(USER_PREFIX) {
+        let _ = fs::remove_file(target.join(PREVIEW));
+    }
     Ok(target)
+}
+
+/// Sets a new project's engine to Tectonic, keeping the rest of its lemmata.toml.
+pub fn use_tectonic(project: &Path) -> Result<(), String> {
+    let mut p = lemmata_project::Project::open(project).map_err(|e| e.to_string())?;
+    p.config.engine = lemmata_project::Engine::Tectonic;
+    p.save_config().map_err(|e| e.to_string())
 }
 
 /// A folder name for a template called `name`: letters, digits and dashes.
@@ -223,6 +294,8 @@ pub fn save_as_template(
             name: name.to_string(),
             description: description.trim().to_string(),
             order: 1000,
+            category: None,
+            tags: vec![],
         };
         fs::write(
             dest.join(META),
@@ -514,24 +587,84 @@ mod tests {
     #[test]
     fn creates_from_template_without_metadata() {
         let d = tempfile::tempdir().unwrap();
+        let none = d.path().join("no-online-templates");
         let t = d.path().join("templates/article");
         fs::create_dir_all(&t).unwrap();
-        fs::write(t.join(META), "name = \"Article\"\ndescription = \"x\"\n").unwrap();
+        fs::write(
+            t.join(META),
+            "name = \"Article\"\ndescription = \"x\"\ncategory = \"Papers\"\ntags = [\"a\", \"b\"]\n",
+        )
+        .unwrap();
+        fs::write(t.join(PREVIEW), b"ab").unwrap();
         fs::write(t.join("main.tex"), "\\documentclass{article}").unwrap();
         let (bundled, user) = (d.path().join("templates"), d.path().join("user"));
-        assert_eq!(list_all(&bundled, &user)[0].name, "Article");
+        let listed = &list_all(&bundled, &none, &user)[0];
+        assert_eq!(listed.name, "Article");
+        assert_eq!((listed.category.as_str(), listed.tags.len()), ("Papers", 2));
+        assert_eq!(
+            listed.preview.as_deref(),
+            Some("data:image/png;base64,YWI=")
+        );
 
-        let p = create_from_template(&bundled, &user, "article", d.path(), "My Paper").unwrap();
+        let p =
+            create_from_template(&bundled, &none, &user, "article", d.path(), "My Paper").unwrap();
         assert!(p.join("main.tex").is_file());
         assert!(!p.join(META).exists());
-        assert!(create_from_template(&bundled, &user, "article", d.path(), "My Paper").is_err());
-        assert!(create_from_template(&bundled, &user, "../x", d.path(), "q").is_err());
-        assert!(create_from_template(&bundled, &user, "user:../x", d.path(), "q").is_err());
+        assert!(!p.join(PREVIEW).exists());
+        assert!(
+            create_from_template(&bundled, &none, &user, "article", d.path(), "My Paper").is_err()
+        );
+        assert!(create_from_template(&bundled, &none, &user, "../x", d.path(), "q").is_err());
+        assert!(create_from_template(&bundled, &none, &user, "user:../x", d.path(), "q").is_err());
+        assert!(
+            create_from_template(&bundled, &none, &user, "online:../x", d.path(), "q").is_err()
+        );
+    }
+
+    #[test]
+    fn tectonic_replaces_only_the_engine() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        use_tectonic(d.path()).unwrap();
+        let text = fs::read_to_string(d.path().join("lemmata.toml")).unwrap();
+        assert!(text.contains("engine = \"tectonic\""), "{text}");
+
+        // A template's own settings and comments stay.
+        fs::write(
+            d.path().join("lemmata.toml"),
+            "# my notes\nmain = \"main.tex\"\nengine = \"xelatex\" # for the font\nstop_on_error = true\n",
+        )
+        .unwrap();
+        use_tectonic(d.path()).unwrap();
+        let text = fs::read_to_string(d.path().join("lemmata.toml")).unwrap();
+        assert!(
+            text.starts_with("# my notes\nmain = \"main.tex\"\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("engine = \"tectonic\" # for the font"),
+            "{text}"
+        );
+        assert!(text.contains("stop_on_error = true"), "{text}");
+        assert!(!text.contains("xelatex"), "{text}");
+    }
+
+    #[test]
+    fn encodes_base64() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"a"), "YQ==");
+        assert_eq!(base64(b"ab"), "YWI=");
+        assert_eq!(base64(b"abc"), "YWJj");
+        assert_eq!(
+            base64(b"Many hands make light work."),
+            "TWFueSBoYW5kcyBtYWtlIGxpZ2h0IHdvcmsu"
+        );
     }
 
     #[test]
     fn saves_a_project_as_a_template_and_uses_it() {
         let d = tempfile::tempdir().unwrap();
+        let none = d.path().join("no-online-templates");
         let (bundled, user, proj) = (
             d.path().join("bundled"),
             d.path().join("user"),
@@ -552,17 +685,18 @@ mod tests {
         );
         assert!(save_as_template(&user, &proj, ".lemmata/build", "  ", "").is_err());
 
-        let listed = list_all(&bundled, &user);
+        let listed = list_all(&bundled, &none, &user);
         assert_eq!(listed.len(), 2);
         assert!(listed.iter().all(|t| t.user));
         assert!(listed.iter().any(|t| t.description == "Mine"));
 
-        let made = create_from_template(&bundled, &user, &id, d.path(), "New thesis").unwrap();
+        let made =
+            create_from_template(&bundled, &none, &user, &id, d.path(), "New thesis").unwrap();
         assert!(made.join("chapters/one.tex").is_file());
         assert!(!made.join(".lemmata").exists() && !made.join(META).exists());
 
         delete_user_template(&user, &id).unwrap();
-        assert_eq!(list_all(&bundled, &user).len(), 1);
+        assert_eq!(list_all(&bundled, &none, &user).len(), 1);
         assert!(delete_user_template(&user, "article").is_err());
         assert!(delete_user_template(&user, "user:../../x").is_err());
     }
@@ -640,5 +774,35 @@ mod tests {
             assert_eq!(project.main, PathBuf::from("main.tex"), "{}", p.display());
         }
         assert!(d.path().join("CA_Assignement_4/images").is_dir());
+    }
+
+    #[test]
+    fn templates_from_the_collection_are_listed_and_used_like_bundled_ones() {
+        let d = tempfile::tempdir().unwrap();
+        let online = d.path().join("online");
+        fs::create_dir_all(online.join("ieee")).unwrap();
+        fs::write(
+            online.join("ieee/template.toml"),
+            "name = \"IEEE\"\ndescription = \"d\"\ncategory = \"Papers\"\n",
+        )
+        .unwrap();
+        fs::write(online.join("ieee/main.tex"), "x").unwrap();
+        fs::write(online.join("ieee/preview.png"), "png").unwrap();
+        let none = d.path().join("none");
+        let listed = list_all(&none, &online, &none);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            (
+                listed[0].id.as_str(),
+                listed[0].category.as_str(),
+                listed[0].user
+            ),
+            ("online:ieee", "Papers", false)
+        );
+        assert!(listed[0].preview.is_some());
+        let made =
+            create_from_template(&none, &online, &none, "online:ieee", d.path(), "Paper").unwrap();
+        assert!(made.join("main.tex").is_file());
+        assert!(!made.join("template.toml").exists() && !made.join("preview.png").exists());
     }
 }

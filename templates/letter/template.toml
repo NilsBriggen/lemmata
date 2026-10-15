@@ -1,3 +1,5 @@
 name = "Letter"
 description = "A formal letter with the KOMA-Script scrlttr2 class."
 order = 5
+category = "Letters & CV"
+tags = ["koma", "scrlttr2", "formal"]

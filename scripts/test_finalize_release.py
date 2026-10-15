@@ -28,13 +28,18 @@ TAURI_OUTPUT = {
 }
 
 
-def run(version: str, tag: str) -> Path:
+def run(version: str, tag: str, cli_name: str | None = None) -> Path:
     tmp = Path(tempfile.mkdtemp())
     for label, files in TAURI_OUTPUT.items():
         for rel in files:
             p = tmp / "artifacts" / label / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("sig-" + p.name if p.name.endswith(".sig") else "bin")
+    # The command-line archives, as scripts/package-cli.sh names them.
+    for label, ext in [("linux_x86_64", ".tar.gz"), ("windows_x86_64", ".zip")]:
+        p = tmp / "artifacts" / f"cli_{label}" / (cli_name or f"lemmata-cli_{version}_{label}{ext}")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("cli")
     subprocess.run(
         [sys.executable, SCRIPT, tmp / "artifacts", tmp / "out", version, tag, "NilsBriggen/lemmata"],
         check=True,
@@ -54,6 +59,8 @@ def test_stable_release() -> None:
         "Lemmata_0.3.0_macos_universal.app.tar.gz",
         "Lemmata_0.3.0_windows_x86_64-setup.exe",
         "Lemmata_0.3.0_windows_x86_64.msi",
+        "lemmata-cli_0.3.0_linux_x86_64.tar.gz",
+        "lemmata-cli_0.3.0_windows_x86_64.zip",
         "SHA256SUMS.txt",
         "latest.json",
     ]:
@@ -64,6 +71,15 @@ def test_stable_release() -> None:
     assert manifest["platforms"]["windows-x86_64"]["signature"] == "sig-Lemmata_0.3.0_x64-setup.exe.sig"
     sums = (out / "SHA256SUMS.txt").read_text()
     assert "Lemmata_0.3.0_linux_x86_64.deb" in sums
+    assert "lemmata-cli_0.3.0_windows_x86_64.zip" in sums
+
+
+def test_a_misnamed_command_line_archive_stops_the_release() -> None:
+    try:
+        run("0.3.0", "v0.3.0", cli_name="lemmata-cli_0.2.9_linux_x86_64.tar.gz")
+    except subprocess.CalledProcessError:
+        return
+    raise AssertionError("an archive for another version was published")
 
 
 def test_prerelease_never_writes_the_updater_manifest() -> None:
@@ -76,5 +92,6 @@ def test_prerelease_never_writes_the_updater_manifest() -> None:
 
 if __name__ == "__main__":
     test_stable_release()
+    test_a_misnamed_command_line_archive_stops_the_release()
     test_prerelease_never_writes_the_updater_manifest()
     print("ok")

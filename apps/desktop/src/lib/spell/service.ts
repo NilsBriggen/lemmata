@@ -8,7 +8,36 @@ export const LANGUAGES: Record<string, { label: string }> = {
   de: { label: "Deutsch" },
   "de-CH": { label: "Deutsch (Schweiz)" },
   fr: { label: "Français" },
+  // Downloaded on demand (see lemmata-spell's manifest).
+  es: { label: "Español" },
+  it: { label: "Italiano" },
+  "pt-PT": { label: "Português (Portugal)" },
+  "pt-BR": { label: "Português (Brasil)" },
+  nl: { label: "Nederlands" },
+  pl: { label: "Polski" },
+  sv: { label: "Svenska" },
+  da: { label: "Dansk" },
+  nb: { label: "Norsk bokmål" },
+  cs: { label: "Čeština" },
+  ru: { label: "Русский" },
+  uk: { label: "Українська" },
+  tr: { label: "Türkçe" },
+  el: { label: "Ελληνικά" },
 };
+
+/** What spell_available reports for one language. */
+export interface Dictionary {
+  code: string;
+  label: string;
+  installed: boolean;
+  bundled: boolean;
+  size_kb: number;
+}
+
+/** "(downloads 5 MB)" for a language that still has to be fetched. */
+export function downloadNote(d: Dictionary): string {
+  return d.installed ? "" : ` (downloads ${Math.max(1, Math.round(d.size_kb / 1024))} MB)`;
+}
 
 /** Guesses the language from babel or polyglossia in the preamble. */
 export function detectLanguage(source: string): string {
@@ -20,7 +49,23 @@ export function detectLanguage(source: string): string {
   if (/german|deutsch/.test(main)) return "de";
   if (/french|francais/.test(main)) return "fr";
   if (/british|ukenglish/.test(main)) return "en-GB";
-  return "en";
+  const other: [RegExp, string][] = [
+    [/spanish|espanol/, "es"],
+    [/italian/, "it"],
+    [/brazil/, "pt-BR"],
+    [/portuguese/, "pt-PT"],
+    [/dutch/, "nl"],
+    [/polish/, "pl"],
+    [/swedish/, "sv"],
+    [/danish/, "da"],
+    [/norsk|norwegian|bokmal/, "nb"],
+    [/czech/, "cs"],
+    [/russian/, "ru"],
+    [/ukrainian/, "uk"],
+    [/turkish/, "tr"],
+    [/greek/, "el"],
+  ];
+  return other.find(([re]) => re.test(main))?.[1] ?? "en";
 }
 
 type Listener = () => void;
@@ -68,6 +113,25 @@ class SpellService {
         this.lang = "off";
       })
       .finally(() => this.emit());
+  }
+
+  /** All languages and whether each is installed; empty when the backend can't say. */
+  async dictionaries(): Promise<Dictionary[]> {
+    try {
+      const list = await invoke<Dictionary[]>("spell_available");
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Downloads a dictionary; rejects with a message fit to show. */
+  async download(code: string): Promise<void> {
+    try {
+      await invoke("spell_download", { code });
+    } catch (e) {
+      throw new Error(String(e instanceof Error ? e.message : e));
+    }
   }
 
   status(word: string): boolean | undefined {

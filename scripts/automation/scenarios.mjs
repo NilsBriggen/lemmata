@@ -89,6 +89,39 @@ export const scenarios = {
     await lem("idle", { timeout: 120_000 });
   },
 
+  async "\\begin opens the environment list, and the chosen one is typed once"(lem) {
+    // 1.5.2 inserted \\begin{name}…\\end{name} with a cursor in each, showed no names, and kept both
+    // cursors after leaving the braces, so typing went to two places.
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { at: "start" });
+    const before = await lem("editorText");
+    await lem("type", { text: "\\begin" });
+    await until(lem, "the completion list", () => lem("exists", { selector: ".cm-tooltip-autocomplete" }));
+    await sleep(lem, 400); // CodeMirror ignores Enter for a moment after the list opens
+    const pick = async (test) => {
+      const items = (await lem("query", { selector: ".cm-tooltip-autocomplete li" })).map((o) => o.text ?? "");
+      const at = items.findIndex(test);
+      if (at < 0) throw new Error(`not in the list: ${JSON.stringify(items.slice(0, 8))}`);
+      for (let i = 0; i < at; i++) await lem("key", { combo: "ArrowDown" });
+      await lem("key", { combo: "Enter" });
+    };
+    await pick((t) => t.startsWith("\\begin") && !t.startsWith("\\begin{"));
+    // Only "\\begin{" so far, and the names are offered at once.
+    if ((await lem("editorText")) !== "\\begin{" + before) throw new Error(`expected just \\begin{: ${(await lem("editorText")).slice(0, 40)}`);
+    await until(lem, "the environment names", async () => (await lem("query", { selector: ".cm-tooltip-autocomplete li" })).some((o) => (o.text ?? "").startsWith("itemize")));
+    await lem("type", { text: "itemiz" });
+    await sleep(lem, 400);
+    await pick((t) => t.startsWith("itemize"));
+    const text = await lem("editorText");
+    if (!text.includes("\\begin{itemize}") || !text.includes("\\end{itemize}")) throw new Error(`no itemize environment: ${text.slice(0, 80)}`);
+    await lem("type", { text: "%x" });
+    const after = await lem("editorText");
+    if (after.split("%x").length !== 2) throw new Error(`typing went to more than one place: ${after.slice(0, 80)}`);
+    for (let i = 0; i < 8 && (await lem("editorText")) !== before; i++) await lem("key", { combo: "Control+z" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+  },
+
   async "jumps from the PDF to the source"(lem) {
     await until(lem, "a drawn PDF page", () => lem("exists", { selector: ".pages .page canvas" }), 30_000);
     // On page 1, the text between 31% and 40% of the height comes from chapters/method.tex (checked with `synctex edit`).
@@ -128,7 +161,10 @@ export const scenarios = {
     await lem("command", { id: "bib-manager" });
     await until(lem, "the bibliography manager", async () => (await lem("text", { selector: "[role=dialog]" }).catch(() => "")).includes("schulman2017ppo"));
     await lem("click", { selector: '[role=dialog] [aria-label="Close"]' });
-    if (await lem("exists", { selector: "[role=dialog]" })) throw new Error("the bibliography manager didn't close");
+    // A dialog may take a moment to go; one still open after that names itself in the error.
+    await until(lem, "the bibliography manager to close", async () => !(await lem("exists", { selector: "[role=dialog]" })), 5_000).catch(async () => {
+      throw new Error(`a dialog is still open: ${JSON.stringify(await lem("query", { selector: "[role=dialog]" }))}`);
+    });
     await lem("idle", { timeout: 120_000 });
     await check(lem, "after TODOs and the manager");
   },
@@ -140,6 +176,10 @@ export const scenarios = {
       await lem("hoverText", { text: "schulman2017ppo" });
       return (await lem("text", { selector: ".cm-hover-card" }).catch(() => "")).includes("Proximal Policy");
     });
+    // texlab answers the same hover; its note must not show next to the card.
+    await sleep(lem, 800);
+    const lsp = await lem("query", { selector: ".cm-lsp-hover-tooltip" });
+    if (lsp.some((t) => t.rect[2] > 0)) throw new Error(`texlab's tooltip shows next to the card: ${JSON.stringify(lsp)}`);
     await lem("key", { combo: "Escape" });
     // The first "eq:objective" is the \\label itself; hover the \\ref.
     await until(lem, "the rendered equation", async () => {
@@ -184,28 +224,292 @@ export const scenarios = {
 
   async "never overwrites a change made by another program"(lem, dir) {
     const file = path.join(dir, "main.tex");
+    // Markers unique to this run: an earlier run's are still in the file.
+    const [mine, theirs] = [`% mine ${Date.now()}`, `% theirs ${Date.now()}`];
     await lem("openFile", { path: "main.tex" });
     await lem("idle", { timeout: 90_000 });
     // Unsaved edits here, and another program writes the file before autosave runs.
     await lem("cursor", { at: "end" });
-    await lem("type", { text: "\n% mine" });
-    fs.appendFileSync(file, "% theirs\n");
+    await lem("type", { text: `\n${mine}` });
+    fs.appendFileSync(file, `${theirs}\n`);
     await until(lem, "the conflict dialog", async () => (await lem("state")).conflicts.includes("main.tex"));
     await sleep(lem, 1500); // longer than the autosave delay
-    if (!fs.readFileSync(file, "utf8").includes("% theirs")) throw new Error("autosave overwrote the other program's change");
+    if (!fs.readFileSync(file, "utf8").includes(theirs)) throw new Error("autosave overwrote the other program's change");
     await lem("clickText", { text: "Keep my version" });
     await lem("idle", { timeout: 90_000 });
     const after = fs.readFileSync(file, "utf8");
-    if (!after.includes("% mine") || after.includes("% theirs")) throw new Error("Keep my version did not save the editor's text");
+    if (!after.includes(mine) || after.includes(theirs)) throw new Error("Keep my version did not save the editor's text");
     await check(lem, "after keeping mine");
     // The other way round: the version on disk wins.
-    await lem("type", { text: "\n% mine again" });
-    fs.appendFileSync(file, "% theirs again\n");
+    await lem("type", { text: `\n${mine} again` });
+    fs.appendFileSync(file, `${theirs} again\n`);
     await until(lem, "the conflict dialog", async () => (await lem("state")).conflicts.includes("main.tex"));
     await lem("clickText", { text: "Load the version on disk" });
     await lem("idle", { timeout: 90_000 });
     if ((await lem("editorText")) !== fs.readFileSync(file, "utf8")) throw new Error("Load the version on disk did not load it");
     await check(lem, "after loading theirs");
+  },
+
+  async "shows an image from the project"(lem, dir) {
+    // A 4 × 3 red PNG. It used to stay at "Loading…" for good.
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAEElEQVR4nGO4o6EBRww4OQAa3g4RLYR9sQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    fs.writeFileSync(path.join(dir, "red.png"), png);
+    // Retried: the file appears in the project once the watcher has seen it.
+    await until(lem, "the image to show", async () => {
+      await lem("openFile", { path: "red.png" }).catch(() => {});
+      return (await lem("text", { selector: ".viewer" }).catch(() => "")).includes("4 × 3 px");
+    });
+    await check(lem, "after opening an image");
+    fs.rmSync(path.join(dir, "red.png"));
+    await lem("openFile", { path: "main.tex" });
+  },
+
+  async "offers the dictionary a file asks for, and turns spell check on"(lem) {
+    // Needs the internet: Spanish (about 1 MB) comes from the LibreOffice dictionaries.
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { at: "start" });
+    await lem("type", { text: "% !TeX spellcheck = es\n" });
+    await until(lem, "the offer to download", async () => ((await lem("state")).notice ?? "").includes("needs its dictionary")).catch(async () => {
+      throw new Error(`no offer to download; latest notices: ${JSON.stringify((await lem("state")).notices)}`);
+    });
+    await lem("clickText", { text: "Download", within: ".toasts" });
+    // The dictionary itself, not a notice (a later one can replace it); a failure says why.
+    const installed = async () => (await lem("invoke", { cmd: "spell_available" })).find((d) => d.code === "es")?.installed;
+    await until(lem, "the Spanish dictionary", installed, 90_000).catch(async () => {
+      throw new Error(`the Spanish dictionary wasn't installed; last notice: ${(await lem("state")).notice}`);
+    });
+    await lem("key", { combo: "Control+z" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+    await check(lem, "after downloading a dictionary");
+  },
+
+  async "renames and deletes the open file from the file menu"(lem, dir) {
+    fs.writeFileSync(path.join(dir, "notes.tex"), "Notes.\n");
+    await until(lem, "notes.tex in the tree", () => lem("exists", { selector: '.tree-scroll [data-path="notes.tex"]' }));
+    await lem("openFile", { path: "notes.tex" });
+    await lem("cursor", { at: "end" });
+    await lem("type", { text: "Not saved yet.\n" });
+    // Rename while the edit is unsaved: it must survive, saved under the new name.
+    await lem("contextmenu", { selector: '.tree-scroll [data-path="notes.tex"]' });
+    await lem("clickText", { text: "Rename", within: ".tree-menu" });
+    // The dialog opens once the references to the file are found.
+    await until(lem, "the rename dialog", () => lem("exists", { selector: "#fa-name" }));
+    await lem("fill", { selector: "#fa-name", value: "renamed.tex" });
+    await lem("clickText", { text: "Rename", within: "[role=dialog]" });
+    await until(lem, "the renamed tab", async () => (await lem("state")).tabs.includes("renamed.tex"));
+    await lem("idle", { timeout: 60_000 });
+    if (fs.existsSync(path.join(dir, "notes.tex"))) throw new Error("the old name is still on disk");
+    if (!fs.readFileSync(path.join(dir, "renamed.tex"), "utf8").includes("Not saved yet.")) throw new Error("the unsaved edit was lost in the rename");
+    await check(lem, "after renaming the open file");
+    await lem("contextmenu", { selector: '.tree-scroll [data-path="renamed.tex"]' });
+    await lem("clickText", { text: "Delete", within: ".tree-menu" });
+    // Deleting into the project's trash can be undone, so it doesn't ask; the system trash asks first.
+    const asked = () => lem("exists", { selector: "[role=dialog]" });
+    await until(lem, "the delete to happen or ask", async () => (await asked()) || !(await lem("state")).tabs.includes("renamed.tex"));
+    if (await asked()) await lem("clickText", { text: "Delete", within: "[role=dialog]" });
+    await until(lem, "the tab to close", async () => !(await lem("state")).tabs.includes("renamed.tex"));
+    if (fs.existsSync(path.join(dir, "renamed.tex"))) throw new Error("the deleted file is still there");
+    await check(lem, "after deleting the open file");
+    await lem("openFile", { path: "main.tex" });
+  },
+
+  async "stops a build and saves twice in a row"(lem, dir) {
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { at: "end" });
+    await lem("type", { text: "\n% stop and save" });
+    await lem("command", { id: "recompile" });
+    await until(lem, "the build to start", async () => (await lem("state")).building, 10_000).catch(() => {});
+    if ((await lem("state")).building) await lem("clickText", { text: "Stop" });
+    await lem("key", { combo: "Control+s" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+    if (!fs.readFileSync(path.join(dir, "main.tex"), "utf8").includes("% stop and save")) throw new Error("the edit wasn't saved");
+    await check(lem, "after stopping and saving twice");
+    await lem("key", { combo: "Control+z" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+  },
+
+  async "restores a snapshot without unsaved edits coming back"(lem, dir) {
+    const file = path.join(dir, "main.tex");
+    const original = fs.readFileSync(file, "utf8");
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { at: "start" });
+    await lem("type", { text: "% version one\n" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+    await lem("command", { id: "snapshot" });
+    await lem("fill", { selector: "#snapshot-label", value: "Version one" });
+    await lem("clickText", { text: "Save snapshot" });
+    await lem("cursor", { at: "start" });
+    await lem("type", { text: "% version two\n" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+    // Typed but not saved when the restore starts.
+    await lem("type", { text: "% not saved\n" });
+    await lem("command", { id: "history" });
+    await until(lem, "the snapshot", async () => (await lem("text", { selector: "aside.history" }).catch(() => "")).includes("Version one"));
+    await lem("clickText", { text: "Version one", within: "aside.history" });
+    await lem("clickText", { text: "Restore project", within: "aside.history" });
+    await lem("clickText", { text: "Restore", within: "aside.history .tools" });
+    await until(lem, "the restored text", async () => !(await lem("editorText")).includes("% version two"));
+    await sleep(lem, 1500); // past the autosave delay: nothing may write the old edits back
+    const disk = fs.readFileSync(file, "utf8");
+    if (!disk.includes("% version one") || disk.includes("% version two") || disk.includes("% not saved")) throw new Error(`the file isn't the snapshot's: ${disk.slice(0, 120)}`);
+    if ((await lem("editorText")) !== disk) throw new Error("the editor doesn't show the restored file");
+    await check(lem, "after restoring a snapshot");
+    await lem("click", { selector: 'aside.history [aria-label="Close history"]' });
+    fs.writeFileSync(file, original);
+    await until(lem, "the original text back", async () => (await lem("editorText")) === original);
+    await lem("idle", { timeout: 120_000 });
+  },
+
+  async "reviews the changes since a snapshot and undoes one"(lem, dir) {
+    const file = path.join(dir, "main.tex");
+    const original = fs.readFileSync(file, "utf8");
+    await lem("openFile", { path: "main.tex" });
+    await lem("command", { id: "snapshot" });
+    await lem("fill", { selector: "#snapshot-label", value: "Before review" });
+    await lem("clickText", { text: "Save snapshot" });
+    await lem("cursor", { at: "end" });
+    await lem("type", { text: "\n% a change to undo" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+    await lem("command", { id: "history" });
+    await until(lem, "the snapshot", async () => (await lem("text", { selector: "aside.history" }).catch(() => "")).includes("Before review"));
+    const option = (await lem("query", { selector: "aside.history .review option" })).find((o) => (o.text ?? "").startsWith("Before review"));
+    if (!option) throw new Error("the snapshot isn't offered for review");
+    await lem("fill", { selector: "aside.history .review select", value: option.value });
+    await lem("clickText", { text: "Review changes", within: "aside.history .review" });
+    await until(lem, "the change to review", async () => (await lem("exists", { selector: "aside.history .hunk" })));
+    await lem("clickText", { text: "Reject", within: "aside.history .hunk" });
+    await until(lem, "the change undone", async () => !fs.readFileSync(file, "utf8").includes("% a change to undo"));
+    if ((await lem("editorText")).includes("% a change to undo")) throw new Error("the editor still shows the rejected change");
+    await check(lem, "after rejecting a change");
+    await lem("click", { selector: 'aside.history [aria-label="Close history"]' });
+    if (fs.readFileSync(file, "utf8") !== original) {
+      fs.writeFileSync(file, original);
+      await until(lem, "the original text back", async () => (await lem("editorText")) === original);
+    }
+    await lem("idle", { timeout: 120_000 });
+  },
+
+  async "deletes a project from the start screen"(lem, dir) {
+    const copy = copyFixture(dir, "article");
+    await lem("openProject", { path: copy });
+    await lem("idle", { timeout: 120_000 });
+    await lem("command", { id: "close" });
+    await until(lem, "the library", () => lem("exists", { selector: ".library" }));
+    await lem("fill", { selector: "#library-search", value: path.basename(copy) });
+    await until(lem, "only that project listed", async () => (await lem("query", { selector: ".library .table .tr:not(.th), .library .grid .card" })).length === 1);
+    await lem("contextmenu", { selector: ".library .table .tr:not(.th), .library .grid .card" });
+    await lem("clickText", { text: "Delete project" });
+    await lem("clickText", { text: "Move to trash" });
+    await until(lem, "the project gone", async () => !fs.existsSync(copy), 15_000).catch(async () => {
+      throw new Error(`the project folder is still there; the dialog says: ${await lem("text", { selector: "[role=dialog]" }).catch(() => "(no dialog)")}`);
+    });
+    await until(lem, "the list without it", async () => (await lem("query", { selector: ".library .table .tr:not(.th), .library .grid .card" })).length === 0);
+    await lem("fill", { selector: "#library-search", value: "" });
+    await lem("openProject", { path: dir });
+    await lem("idle", { timeout: 120_000 });
+  },
+
+  async "leaves a presentation cleanly when Esc comes at once"(lem) {
+    await lem("openFile", { path: "main.tex" });
+    await lem("idle", { timeout: 120_000 });
+    await until(lem, "the PDF", async () => (await lem("state")).hasPdf, 30_000);
+    // The PDF's toolbar is hidden while the logs are shown.
+    if ((await lem("state")).logsOpen) await lem("click", { selector: ".bar .logs" });
+    // Esc before going full screen has finished must not leave the window full screen.
+    await lem("click", { selector: '[aria-label="Present full screen"]' });
+    await lem("key", { combo: "Escape" });
+    await sleep(lem, 1500);
+    if (await lem("exists", { selector: ".stage .count" })) throw new Error("the presentation is still showing");
+    if (await lem("fullscreen")) throw new Error("the window stayed full screen");
+    await check(lem, "after leaving a presentation");
+  },
+
+  async "shows What's new once after an update"(lem, dir) {
+    // During a reload the app can't answer, so wait here, not through the app.
+    const reload = async () => {
+      await lem("reload");
+      await new Promise((r) => setTimeout(r, 5000));
+    };
+    await lem("setting", { key: "lastSeenVersion", value: "1.4.0" });
+    await sleep(lem, 600); // settings are written after a short delay
+    await reload();
+    await until(lem, "the What's new window", async () => (await lem("text", { selector: "[role=dialog]" }).catch(() => "")).includes("What's new"));
+    await lem("clickText", { text: "Got it", within: "[role=dialog]" });
+    await until(lem, "the window closed", async () => !(await lem("exists", { selector: "[role=dialog]" })));
+    await sleep(lem, 600);
+    await reload();
+    if (await lem("exists", { selector: "[role=dialog]" })) throw new Error("What's new showed a second time");
+    await lem("openProject", { path: dir });
+    await lem("idle", { timeout: 120_000 });
+  },
+
+  async "creates a project from the template gallery and builds it"(lem, dir) {
+    const name = `${path.basename(dir)}-gallery`;
+    fs.rmSync(path.join(path.dirname(dir), name), { recursive: true, force: true });
+    await lem("command", { id: "close" });
+    await until(lem, "the library", () => lem("exists", { selector: ".library" }));
+    await lem("clickText", { text: "New project" });
+    await until(lem, "the gallery", () => lem("exists", { selector: '[aria-label="Search templates"]' }));
+    await lem("fill", { selector: '[aria-label="Search templates"]', value: "homework" });
+    await until(lem, "the search to narrow the list", async () => (await lem("query", { selector: ".templates [role=radio]" })).length === 1);
+    await lem("click", { selector: ".templates [role=radio]" });
+    await lem("fill", { selector: "#np-name", value: name });
+    await lem("fill", { selector: "#np-parent", value: path.dirname(dir) });
+    await lem("clickText", { text: "Create project" });
+    await until(lem, "the new project", async () => (await lem("state")).project?.endsWith(name), 30_000);
+    const project = path.join(path.dirname(dir), name);
+    await lem("idle", { timeout: 120_000 });
+    await until(lem, "the new project's PDF", async () => (await lem("state")).hasPdf, 30_000).catch(async () => {
+      // What the build left behind says more than the app's state.
+      const out = path.join(project, ".lemmata/build");
+      const log = fs.existsSync(path.join(out, "main.log")) ? fs.readFileSync(path.join(out, "main.log"), "utf8").slice(-1500) : "(no log)";
+      const files = fs.existsSync(out) ? fs.readdirSync(out).join(", ") : "(no build folder)";
+      throw new Error(`the new project did not build: ${await describe(lem)}\nbuild folder: ${files}\nlog tail: ${log}`);
+    });
+    if ((await lem("state")).status !== "success") throw new Error(`the new project's build failed: ${await describe(lem)}`);
+    await check(lem, "after creating from a template");
+    await lem("openProject", { path: dir });
+    await lem("idle", { timeout: 120_000 });
+  },
+
+  async "commits a saved edit from the Git panel"(lem, dir) {
+    const copy = copyFixture(dir, "article");
+    await lem("openProject", { path: copy });
+    await lem("idle", { timeout: 120_000 });
+    await lem("command", { id: "git" });
+    const panel = () => lem("text", { selector: "aside.git" });
+    await until(lem, "the Git panel", async () => (await lem("exists", { selector: "aside.git" })) && /git repository|Changes|No changes/.test(await panel()));
+    // Never commit into a repository the temp folder happens to sit in.
+    if (!(await panel()).includes("isn't in a git repository")) throw new Error(`the copy is already in a repository: ${await panel()}`);
+    await lem("clickText", { text: "Turn this project into a git repository", within: "aside.git" });
+    await until(lem, "the repository", async () => /now a git repository|doesn't know who you are/.test(await panel()));
+    if ((await panel()).includes("doesn't know who you are")) throw new Error("git has no user name and email here; set them (git config --global) to run this scenario");
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { at: "start" });
+    await lem("type", { text: "% committed from the panel\n" });
+    await lem("key", { combo: "Control+s" });
+    await until(lem, "the saved edit in the panel", async () => (await panel()).includes("main.tex"));
+    await lem("clickText", { text: "Stage all", within: "aside.git" });
+    await until(lem, "the staged file", async () => (await panel()).includes("Commit 1 file"));
+    await lem("fill", { selector: 'aside.git textarea[aria-label="Commit message"]', value: "Edit from the panel" });
+    await lem("click", { selector: "aside.git .commitbox button" });
+    await until(lem, "the commit", async () => {
+      const t = await panel();
+      return t.includes("Edit from the panel") && t.includes("No changes");
+    });
+    await check(lem, "after committing");
+    await lem("click", { selector: 'aside.git [aria-label="Close Git"]' });
+    await lem("openProject", { path: dir });
+    await lem("idle", { timeout: 120_000 });
   },
 };
 

@@ -7,11 +7,15 @@ mod bib;
 mod export;
 mod figures;
 mod files;
+mod git;
 mod grammar;
 mod history;
 mod lsp;
+mod online_templates;
+mod open_with;
 mod projects;
 mod spell;
+mod tectonic;
 mod terminal;
 mod tools;
 mod updates;
@@ -204,6 +208,22 @@ fn open_pdf_externally(app: tauri::AppHandle, state: State<AppState>) -> CmdResu
         .map_err(|e| format!("Could not open the PDF: {e}"))
 }
 
+/// Opens a file inside the project (e.g. the PDF of tracked changes) with the system's default program.
+#[tauri::command(async)]
+fn open_project_file(app: tauri::AppHandle, state: State<AppState>, path: String) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let root = project(&state)?.root;
+    let full = lemmata_project::canonical(Path::new(&path))
+        .map_err(|e| format!("Could not open {path}: {e}"))?;
+    // Only files of the open project, never an arbitrary path the page sends.
+    if !full.starts_with(&root) || !full.is_file() {
+        return Err(format!("{path} is not a file of this project."));
+    }
+    app.opener()
+        .open_path(full.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("Could not open {path}: {e}"))
+}
+
 /// False when the file watcher couldn't start (e.g. the system's watch limit is reached).
 #[tauri::command(async)]
 fn watching(state: State<AppState>) -> bool {
@@ -347,6 +367,20 @@ async fn build(
         Some(d) => d,
         None => first_or_fresh_detection(&state, false),
     };
+    // Tectonic when chosen, or as the fallback on a machine without TeX.
+    if project.config.engine == lemmata_project::Engine::Tectonic
+        || (detection.tool("latexmk").is_none() && detection.tectonic.is_some())
+    {
+        let exe = detection.tectonic.as_deref().ok_or(
+            "Tectonic is not installed. Install it from the start screen, or choose another compiler in the project settings.",
+        )?;
+        let _ = app.emit("build-started", ());
+        return lemmata_tex::tectonic::build(&project, exe, rx, force, &|n| {
+            let _ = app.emit("build-progress", tectonic::fetch_message(n));
+        })
+        .await
+        .map_err(err);
+    }
     let latexmk = detection
         .tool("latexmk")
         .ok_or("latexmk was not found. Install TeX Live first.")?;
@@ -392,42 +426,16 @@ fn read_pdf(state: State<AppState>) -> CmdResult<Response> {
     Ok(Response::new(bytes))
 }
 
-/// Whether the PDF was written at least a second after the last change to any
-/// source file (the build folder and hidden folders don't count).
-fn pdf_newer_than_sources(root: &Path, outdir: &str, pdf: &Path) -> bool {
-    fn newest(entries: &[Entry]) -> u64 {
-        entries
-            .iter()
-            .map(|e| {
-                if e.is_dir {
-                    newest(&e.children)
-                } else {
-                    e.modified
-                }
-            })
-            .max()
-            .unwrap_or(0)
-    }
-    let Some(pdf_secs) = std::fs::metadata(pdf)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-    else {
-        return false;
-    };
-    pdf_secs > newest(&lemmata_project::tree(root, outdir))
-}
-
 /// True when the open project's PDF is up to date, so opening it needn't build.
 #[tauri::command(async)]
 fn pdf_is_current(state: State<AppState>) -> CmdResult<bool> {
-    let (root, outdir, pdf) = {
-        let guard = state.project.lock_safe();
-        let p = guard.as_ref().ok_or("No project is open.")?;
-        (p.root.clone(), p.config.outdir.clone(), p.pdf_path())
-    };
-    Ok(pdf_newer_than_sources(&root, &outdir, &pdf))
+    // The build's own check: compared with when the last good build began, so an edit saved while it ran isn't taken as built.
+    let project = state
+        .project
+        .lock_safe()
+        .clone()
+        .ok_or("No project is open.")?;
+    Ok(lemmata_tex::up_to_date(&project))
 }
 
 fn synctex_and_pdf(state: &State<AppState>) -> CmdResult<(PathBuf, PathBuf, PathBuf)> {
@@ -496,12 +504,24 @@ fn user_templates_dir(app: &tauri::AppHandle) -> CmdResult<PathBuf> {
     Ok(app.path().app_data_dir().map_err(err)?.join("templates"))
 }
 
+/// The template collection's templates, kept so they work offline once seen.
+fn online_templates_dir(app: &tauri::AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().app_cache_dir().map_err(err)?.join("templates"))
+}
+
 #[tauri::command(async)]
 fn list_templates(app: tauri::AppHandle) -> CmdResult<Vec<projects::Template>> {
     Ok(projects::list_all(
         &templates_dir(&app)?,
+        &online_templates_dir(&app)?,
         &user_templates_dir(&app)?,
     ))
+}
+
+/// Brings the template collection's templates up to date; list_templates then includes them.
+#[tauri::command]
+async fn refresh_templates(app: tauri::AppHandle) -> CmdResult<usize> {
+    online_templates::refresh(&online_templates_dir(&app)?).await
 }
 
 /// Saves the open project as a template for new projects.
@@ -534,17 +554,28 @@ fn delete_template(app: tauri::AppHandle, id: String) -> CmdResult<()> {
 #[tauri::command(async)]
 fn create_project(
     app: tauri::AppHandle,
+    state: State<AppState>,
     template: String,
     parent: String,
     name: String,
 ) -> CmdResult<PathBuf> {
-    projects::create_from_template(
+    let dir = projects::create_from_template(
         &templates_dir(&app)?,
+        &online_templates_dir(&app)?,
         &user_templates_dir(&app)?,
         &template,
         Path::new(&parent),
         &name,
-    )
+    )?;
+    // Only Tectonic can build here, so the project should say so.
+    let detection = match state.detection.lock_safe().clone() {
+        Some(d) => d,
+        None => first_or_fresh_detection(&state, false),
+    };
+    if !detection.tex_ready && detection.tectonic.is_some() {
+        projects::use_tectonic(&dir)?;
+    }
+    Ok(dir)
 }
 
 /// Starts a folder that has no main document: writes a minimal main.tex, never over an existing one.
@@ -717,8 +748,18 @@ fn trash_project(app: tauri::AppHandle, state: State<AppState>, path: String) ->
         *state.watcher.lock_safe() = None;
         *state.project.lock_safe() = None;
     }
-    trash::delete(&dir)
-        .map_err(|e| format!("Could not move {} to the trash: {e}", dir.display()))?;
+    // Windows refuses while a process still has the folder open; the language server was only just told to quit.
+    let mut tries = 0;
+    while let Err(e) = trash::delete(&dir) {
+        tries += 1;
+        if tries == 5 {
+            return Err(format!(
+                "Could not move {} to the trash: {e}",
+                dir.display()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
     if let Ok(thumb) = thumbnail_path(&app, &path) {
         let _ = std::fs::remove_file(thumb);
     }
@@ -867,11 +908,9 @@ pub fn run() {
     // A second launch focuses the running app instead of fighting over its settings. Not in debug
     // builds, so a test build can run next to an installed Lemmata.
     #[cfg(not(debug_assertions))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.unminimize();
-            let _ = w.set_focus();
-        }
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        // A second launch with a file or folder opens it in the running app (and focuses it).
+        open_with::on_second_launch(app, &args, &cwd);
     }));
     builder
         .plugin(tauri_plugin_dialog::init())
@@ -879,11 +918,21 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_deep_link::init())
         .manage(AppState::default())
         .setup(|app| {
+            // lemmata:// links. macOS takes the scheme from the bundle; Linux (AppImage) and Windows
+            // need it registered at run time. Release builds only: a test build must not take them over.
+            #[cfg(all(not(debug_assertions), any(target_os = "linux", windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let _ = app.deep_link().register_all();
+            }
             #[cfg(debug_assertions)]
             automation::start(app.handle());
+            tectonic::init(app.handle());
             start_detection(app.handle());
+            open_with::init(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -895,6 +944,25 @@ pub fn run() {
             project_info_cmd,
             watching,
             open_pdf_externally,
+            open_with::take_open_request,
+            history::history_latexdiff,
+            open_project_file,
+            tectonic::tectonic_status,
+            tectonic::tectonic_install,
+            git::git_overview,
+            git::git_init,
+            git::git_stage,
+            git::git_unstage,
+            git::git_stage_all,
+            git::git_commit,
+            git::git_fetch,
+            git::git_pull,
+            git::git_push,
+            git::git_branches,
+            git::git_switch,
+            git::git_create_branch,
+            git::git_log,
+            git::git_clone,
             set_config,
             read_text,
             write_text,
@@ -916,6 +984,7 @@ pub fn run() {
             word_count,
             package_names,
             list_templates,
+            refresh_templates,
             save_as_template,
             delete_template,
             create_project,
@@ -943,6 +1012,8 @@ pub fn run() {
             spell::spell_check,
             spell::spell_suggest,
             spell::spell_add,
+            spell::spell_available,
+            spell::spell_download,
             updates::update_check,
             updates::update_install,
             bib::bib_entries,
@@ -985,6 +1056,11 @@ pub fn run() {
         .expect("error while building Lemmata")
         .run(|app, event| {
             // Quitting mid-build must not leave latexmk, pdflatex and biber running.
+            // macOS hands files over as an event, not as arguments.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                open_with::on_opened(app, urls);
+            }
             if let tauri::RunEvent::Exit = event {
                 cancel_running(&app.state::<AppState>());
                 std::thread::sleep(std::time::Duration::from_millis(400));
@@ -1000,35 +1076,5 @@ mod tests {
             super::percent_decode("%2Fhome%2Fa%2FMa%C3%AEtrise%20x"),
             "/home/a/Maîtrise x"
         );
-    }
-
-    #[test]
-    fn pdf_is_current_only_when_newer_than_every_source() {
-        use std::time::{Duration, SystemTime};
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let at = |p: &std::path::Path, secs_ago: u64| {
-            let f = std::fs::File::options().write(true).open(p).unwrap();
-            f.set_modified(SystemTime::now() - Duration::from_secs(secs_ago))
-                .unwrap();
-        };
-        std::fs::create_dir_all(root.join("sections")).unwrap();
-        std::fs::create_dir_all(root.join(".lemmata/build")).unwrap();
-        let (main, sec) = (root.join("main.tex"), root.join("sections/a.tex"));
-        let pdf = root.join(".lemmata/build/main.pdf");
-        for p in [&main, &sec, &pdf] {
-            std::fs::write(p, "x").unwrap();
-        }
-        let current = || super::pdf_newer_than_sources(root, ".lemmata/build", &pdf);
-        at(&main, 100);
-        at(&sec, 50);
-        at(&pdf, 10);
-        assert!(current());
-        at(&sec, 5); // edited after the PDF, in a subfolder
-        assert!(!current());
-        at(&sec, 10); // same second as the PDF: not provably current
-        assert!(!current());
-        std::fs::remove_file(&pdf).unwrap();
-        assert!(!current());
     }
 }

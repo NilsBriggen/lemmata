@@ -15,6 +15,10 @@ use tokio::sync::oneshot;
 pub enum Error {
     #[error("latexmk was not found. Install TeX Live, or choose its folder in settings.")]
     NoLatexmk,
+    #[error(
+        "Tectonic was not found. Use Tectonic from the start screen, or choose another compiler in the project settings."
+    )]
+    NoTectonic,
     #[error("could not start latexmk: {0}")]
     Spawn(std::io::Error),
     #[error("could not start {0}: {1}")]
@@ -90,6 +94,8 @@ pub fn latexmk_args(project: &Project, miktex: bool) -> Vec<OsString> {
             lemmata_project::Engine::Pdflatex => ("-pdflatex", "pdflatex"),
             lemmata_project::Engine::Xelatex => ("-xelatex", "xelatex"),
             lemmata_project::Engine::Lualatex => ("-lualatex", "lualatex"),
+            // Tectonic builds never come here (see tectonic::build).
+            lemmata_project::Engine::Tectonic => ("-xelatex", "xelatex"),
         };
         args.push(format!("{flag}={bin} --enable-installer %O %S").into());
     }
@@ -125,25 +131,8 @@ pub async fn build_with(
     }
     let started = Instant::now();
     // Nothing changed since the last good build: no TeX run at all, just its result again.
-    if !force && up_to_date(project) {
-        let outdir = project.config.outdir.trim_start_matches("./").to_string();
-        let mut diagnostics = read_log(project);
-        for d in &mut diagnostics {
-            if d.file
-                .as_deref()
-                .is_some_and(|f| f.trim_start_matches("./").starts_with(&outdir))
-            {
-                d.file = None;
-                d.line = None;
-            }
-        }
-        return Ok(Outcome {
-            status: Status::Success,
-            duration_ms: started.elapsed().as_millis() as u64,
-            pdf: None,
-            diagnostics,
-            latexmk_failed: false,
-        });
+    if !force && let Some(o) = cached_outcome(project, started) {
+        return Ok(o);
     }
     let started_at = SystemTime::now();
     prepare_outdir(project);
@@ -161,6 +150,12 @@ pub async fn build_with(
     let engine = tool(opts, project.config.engine.binary());
     let can_go_direct = engine.is_some();
     let warm = !skip_latexmk && can_go_direct && warm_ok(project);
+    // No stamp: the last build failed or was stopped midway, and a killed TeX run may have taken
+    // the log and synctex with it. latexmk's record still says the PDF matches, so it would do
+    // nothing once the text is back to what it last built (undoing a broken edit, say).
+    if !project.outdir_abs().join(OK_STAMP).is_file() {
+        let _ = std::fs::remove_file(out_file(project, "fdb_latexmk"));
+    }
     let _ = std::fs::remove_file(project.outdir_abs().join(OK_STAMP));
     // A warm rebuild can start from the precompiled preamble; an explicit Recompile never does.
     let fmt = match &engine {
@@ -261,26 +256,7 @@ pub async fn build_with(
     let pdf = project.pdf_path();
     let fresh = written_since(&pdf, started_at);
     let mut diagnostics = read_log(project);
-    // The bibliography tool's own log explains what the main log can't.
-    let blg_path = out_file(project, "blg");
-    let blg_fresh = written_since(&blg_path, started_at);
-    if blg_fresh && let Ok(bytes) = std::fs::read(&blg_path) {
-        for d in lemmata_log::parse_blg(&String::from_utf8_lossy(&bytes)) {
-            // A missing key is already reported from the main log.
-            if !diagnostics.iter().any(|x| x.kind == d.kind) {
-                diagnostics.push(d);
-            }
-        }
-    } else if diagnostics
-        .iter()
-        .any(|d| matches!(d.kind, lemmata_log::Kind::UndefinedCitation { .. }))
-    {
-        for d in &mut diagnostics {
-            if matches!(d.kind, lemmata_log::Kind::UndefinedCitation { .. }) {
-                d.hint = Some("The bibliography tool did not run, most often because a .bib file named in \\addbibresource{} or \\bibliography{} is missing from the project. Also check that biber (or bibtex) is installed.".into());
-            }
-        }
-    }
+    merge_blg(project, &mut diagnostics, started_at);
     // Files in the build folder (.bbl, .aux) aren't something the user can edit.
     let outdir = project.config.outdir.trim_start_matches("./");
     for d in &mut diagnostics {
@@ -349,9 +325,61 @@ pub async fn build_with(
     })
 }
 
+/// The result of the last good build again, when nothing changed since.
+pub(crate) fn cached_outcome(project: &Project, started: Instant) -> Option<Outcome> {
+    if !up_to_date(project) {
+        return None;
+    }
+    let outdir = project.config.outdir.trim_start_matches("./").to_string();
+    let mut diagnostics = read_log(project);
+    for d in &mut diagnostics {
+        if d.file
+            .as_deref()
+            .is_some_and(|f| f.trim_start_matches("./").starts_with(&outdir))
+        {
+            d.file = None;
+            d.line = None;
+        }
+    }
+    Some(Outcome {
+        status: Status::Success,
+        duration_ms: started.elapsed().as_millis() as u64,
+        pdf: None,
+        diagnostics,
+        latexmk_failed: false,
+    })
+}
+
+/// The bibliography tool's own log explains what the main log can't.
+pub(crate) fn merge_blg(
+    project: &Project,
+    diagnostics: &mut Vec<Diagnostic>,
+    started_at: SystemTime,
+) {
+    let blg_path = out_file(project, "blg");
+    let blg_fresh = written_since(&blg_path, started_at);
+    if blg_fresh && let Ok(bytes) = std::fs::read(&blg_path) {
+        for d in lemmata_log::parse_blg(&String::from_utf8_lossy(&bytes)) {
+            // A missing key is already reported from the main log.
+            if !diagnostics.iter().any(|x| x.kind == d.kind) {
+                diagnostics.push(d);
+            }
+        }
+    } else if diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, lemmata_log::Kind::UndefinedCitation { .. }))
+    {
+        for d in diagnostics.iter_mut() {
+            if matches!(d.kind, lemmata_log::Kind::UndefinedCitation { .. }) {
+                d.hint = Some("The bibliography tool did not run, most often because a .bib file named in \\addbibresource{} or \\bibliography{} is missing from the project. Also check that biber (or bibtex) is installed.".into());
+            }
+        }
+    }
+}
+
 /// Where TeX and its helpers write `ext` output for the main file. They put it
 /// flat in the build folder, so `src/main.tex` gives `main.ext`, not `src/main.ext`.
-fn out_file(project: &Project, ext: &str) -> PathBuf {
+pub(crate) fn out_file(project: &Project, ext: &str) -> PathBuf {
     let stem = project.main.file_stem().unwrap_or_default();
     let mut name = stem.to_os_string();
     name.push(".");
@@ -361,10 +389,13 @@ fn out_file(project: &Project, ext: &str) -> PathBuf {
 
 /// The diagnostics in the main log. A run from the precompiled preamble didn't read the preamble,
 /// so what it said then comes from the log of the run that made the format.
-fn read_log(project: &Project) -> Vec<Diagnostic> {
-    let log = std::fs::read(project.log_path())
+pub(crate) fn read_log(project: &Project) -> Vec<Diagnostic> {
+    let mut log = std::fs::read(project.log_path())
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default();
+    if project.config.engine == lemmata_project::Engine::Tectonic {
+        log = crate::tectonic::normalize_log(&log);
+    }
     let mut d = lemmata_log::parse(&log);
     if format::was_used(&log) {
         let mut pre = lemmata_log::parse(&format::preamble_log(project));
@@ -380,7 +411,7 @@ fn read_log(project: &Project) -> Vec<Diagnostic> {
 const MTIME_SLACK: Duration = Duration::from_secs(2);
 
 /// Whether `path` was written by a build that began at `started_at`.
-fn written_since(path: &Path, started_at: SystemTime) -> bool {
+pub(crate) fn written_since(path: &Path, started_at: SystemTime) -> bool {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .is_ok_and(|t| t + MTIME_SLACK >= started_at)
@@ -460,7 +491,7 @@ const MAX_PASSES: usize = 5;
 
 /// Written into the build folder after a successful build, holding the main
 /// file. Its presence means the folder is in a state the direct build can continue from.
-const OK_STAMP: &str = ".lemmata-ok";
+pub(crate) const OK_STAMP: &str = ".lemmata-ok";
 
 /// Whether the engine can be run directly instead of latexmk: the last build here
 /// succeeded, and nothing configures steps that only latexmk runs.
@@ -503,8 +534,8 @@ fn warm_ok(project: &Project) -> bool {
     !needs_tools
 }
 
-/// The last build succeeded, its PDF and log are there, and no project file changed since.
-fn up_to_date(project: &Project) -> bool {
+/// The last build succeeded, its PDF and log are there, and no project file changed since it began.
+pub fn up_to_date(project: &Project) -> bool {
     let stamp = project.outdir_abs().join(OK_STAMP);
     let main = project.main.to_string_lossy();
     std::fs::read_to_string(&stamp).is_ok_and(|s| s == main)
@@ -542,7 +573,7 @@ fn changed_since(project: &Project, stamp: &Path) -> bool {
 }
 
 /// Records a successful build, and what the bibliography tool read, so the next one can go direct without running it again.
-fn mark_ok(project: &Project, started_at: SystemTime) {
+pub(crate) fn mark_ok(project: &Project, started_at: SystemTime) {
     let biber = project.config.bib == lemmata_project::Bib::Biber;
     if let Some(fp) = bib_fingerprint(project, biber) {
         let _ = std::fs::write(out_file(project, "lemmata-bib"), fp);
@@ -609,6 +640,9 @@ async fn direct_build(
         .ok_or_else(|| Error::SpawnTool(engine.into(), std::io::Error::other("not found")))?;
     let mut bib_checked = false;
     let mut status = Status::Failed;
+    // This writes over latexmk's outputs without latexmk knowing: its record would later call a
+    // stale PDF up to date (e.g. after undoing a broken edit) and skip the build.
+    let _ = std::fs::remove_file(out_file(project, "fdb_latexmk"));
 
     for pass in 0..MAX_PASSES {
         let mut cmd = Command::new(&engine_path);
@@ -754,7 +788,7 @@ async fn run_bibliography(
 }
 
 /// The last `max` bytes of `text`, cut at a character boundary.
-fn tail_of(text: &str, max: usize) -> String {
+pub(crate) fn tail_of(text: &str, max: usize) -> String {
     let mut start = text.len().saturating_sub(max);
     while !text.is_char_boundary(start) {
         start += 1;
@@ -879,7 +913,7 @@ pub fn clean(project: &Project) -> std::io::Result<usize> {
 
 /// `\include{chapters/x}` writes `chapters/x.aux` inside the output folder,
 /// and TeX can't create folders, so mirror the project's folders there.
-fn prepare_outdir(project: &Project) {
+pub(crate) fn prepare_outdir(project: &Project) {
     fn mirror(entries: &[lemmata_project::Entry], outdir: &Path) {
         for e in entries.iter().filter(|e| e.is_dir) {
             let _ = std::fs::create_dir_all(outdir.join(&e.path));
@@ -1171,6 +1205,46 @@ mod tests {
                 assert!(p.outdir_abs().join(OK_STAMP).is_file());
             }
         }
+    }
+
+    /// A build stopped midway leaves no log, synctex or stamp, and latexmk's record of the last good
+    /// build. Back at that text (an undo), the next build must run, not call the old PDF up to date.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn after_a_stopped_build_undoing_back_still_builds() {
+        let (Ok(pdflatex), Ok(latexmk)) = (which::which("pdflatex"), which::which("latexmk"))
+        else {
+            return;
+        };
+        let d = tempfile::tempdir().unwrap();
+        let good = "\\documentclass{article}\n\\begin{document}\nHello.\n\\end{document}\n";
+        let main = d.path().join("main.tex");
+        std::fs::write(&main, good).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.config.fast_preamble = false;
+        let bin = pdflatex.parent().unwrap().to_path_buf();
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: Some(&bin),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let (_tx, rx) = oneshot::channel();
+        assert_eq!(build(&p, &opts, rx).await.unwrap().status, Status::Success);
+        // What a run killed while building a broken edit leaves behind.
+        let out = p.outdir_abs();
+        for f in ["main.log", "main.synctex.gz", OK_STAMP] {
+            let _ = std::fs::remove_file(out.join(f));
+        }
+        std::thread::sleep(Duration::from_millis(30));
+        std::fs::write(&main, good).unwrap();
+        let (_tx, rx) = oneshot::channel();
+        assert_eq!(build(&p, &opts, rx).await.unwrap().status, Status::Success);
+        assert!(
+            out.join("main.synctex.gz").is_file() && p.log_path().is_file(),
+            "latexmk didn't run"
+        );
     }
 
     #[test]

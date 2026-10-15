@@ -5,9 +5,12 @@ Usage: finalize-release.py <artifacts-dir> <out-dir> <version> <tag> <repo>
 
 <artifacts-dir> holds one folder per build job, named after the platform
 label (linux_x86_64, linux_aarch64, macos_universal, windows_x86_64), each
-containing that job's Tauri bundle folder. This script:
+containing that job's Tauri bundle folder, and one folder per command-line
+build, named cli_<label>, holding lemmata-cli_<version>_<label>.tar.gz (.zip on
+Windows) as scripts/package-cli.sh made it. This script:
 
   * copies every installer to Lemmata_<version>_<label><ext>
+  * copies the command-line archives as they are
   * writes latest.json for the Tauri updater when .sig files are present, but
     only for plain X.Y.Z versions: a release candidate (X.Y.Z-rc.N) must never
     reach users of the stable channel through the updater
@@ -60,6 +63,16 @@ def main() -> None:
 
     for job in sorted(p for p in artifacts.iterdir() if p.is_dir()):
         label = job.name
+        if label.startswith("cli_"):
+            platform = label[len("cli_"):]
+            archives = [f for f in job.rglob("*") if f.is_file()]
+            expected = {f"lemmata-cli_{version}_{platform}{ext}" for ext in (".tar.gz", ".zip")}
+            if len(archives) != 1 or archives[0].name not in expected:
+                sys.exit(f"{label} should hold one of {sorted(expected)}, not {[a.name for a in archives]}")
+            shutil.copy(archives[0], out / archives[0].name)
+            published.append(out / archives[0].name)
+            print(f"{archives[0].relative_to(artifacts)} -> {archives[0].name}")
+            continue
         for f in sorted(job.rglob("*")):
             if not f.is_file():
                 continue

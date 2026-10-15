@@ -1,6 +1,6 @@
 // Hover cards for \ref, \cite, \includegraphics and \input: what the label,
 // key or file points at, without leaving the line.
-import { hoverTooltip, EditorView, type Tooltip } from "@codemirror/view";
+import { hoverTooltip, hasHoverTooltips, closeHoverTooltips, keymap, EditorView, type Tooltip } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import type { Providers } from "./completions";
 import type { BibEntry, LabelInfo } from "../api";
@@ -247,6 +247,8 @@ async function fileCard(t: Target, p: HoverProviders): Promise<Card> {
 /** Hover cards for references, citations, images and input files. */
 export function referenceHovers(getProviders: () => HoverProviders | null): Extension {
   return [
+    // Escape closes an open hover tooltip; otherwise it does whatever it did before (Vim, panels).
+    keymap.of([{ key: "Escape", run: (v) => hasHoverTooltips(v.state) && (v.dispatch({ effects: closeHoverTooltips }), true) }]),
     hoverTooltip(
       async (view, pos): Promise<Tooltip | null> => {
         const line = view.state.doc.lineAt(pos);
@@ -286,6 +288,9 @@ export function referenceHovers(getProviders: () => HoverProviders | null): Exte
       ".cm-hover-math": { overflowX: "auto", fontSize: "1.1em" },
       ".cm-hover-math .katex-display": { margin: "0" },
       ".cm-hover-img": { display: "block", maxWidth: "240px", maxHeight: "240px", marginTop: "6px", borderRadius: "4px", border: "1px solid var(--border)", backgroundColor: "#fff" },
+      // Hover tooltips shown together share one box: where a card shows, texlab's note on the same command is a duplicate.
+      ".cm-tooltip-hover:has(.cm-hover-card) .cm-lsp-hover-tooltip": { display: "none" },
+      ".cm-tooltip-hover:has(.cm-hover-card) .cm-tooltip-section": { borderTop: "none" },
     }),
   ];
 }

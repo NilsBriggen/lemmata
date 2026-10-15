@@ -1,3 +1,5 @@
 name = "Article"
 description = "A paper with sections, maths, figures and a biblatex bibliography."
 order = 1
+category = "Papers"
+tags = ["paper", "article", "single column"]

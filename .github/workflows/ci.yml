@@ -59,11 +59,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14, windows-latest]
+        include:
+          - { os: ubuntu-22.04, cli: linux_x86_64, target: x86_64-unknown-linux-gnu }
+          - { os: macos-14, cli: macos_universal, target: universal }
+          - { os: windows-latest, cli: windows_x86_64, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # The command-line tool ships as one binary for both Mac architectures.
+          targets: ${{ matrix.target == 'universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Install Tauri system libraries
         if: runner.os == 'Linux'
@@ -78,10 +84,30 @@ jobs:
       # The desktop crate embeds the built frontend, so build it before cargo.
       - run: pnpm --filter lemmata-desktop build
       - run: cargo test --workspace
+      # The Tectonic download and a real build on every OS (the first build fetches its packages, so it is slow).
+      # One thread: the tests share Tectonic's package cache.
+      - name: Tectonic installs and builds
+        timeout-minutes: 20
+        run: cargo test -p lemmata-tex -- --ignored --test-threads=1 --nocapture installs_the_pinned_release builds_a_project_with_bibtex_and_reports_errors fixture_with_biber_reports_the_limitation
+      # The release's packaging, run here so it is tested on every push.
+      - name: Package the command-line tool
+        shell: bash
+        run: scripts/package-cli.sh ci ${{ matrix.cli }} ${{ matrix.target }}
       # Release profile on one OS is enough to catch a broken release build; the frontend is already built above.
       - name: Build the app without bundling
         if: runner.os == 'Linux'
         run: pnpm --filter lemmata-desktop tauri build --no-bundle --config '{"build":{"beforeBuildCommand":""}}'
+
+  # The macOS test job runs on Apple silicon; the Intel download needs an Intel runner.
+  tectonic-macos-intel:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tectonic installs and builds
+        timeout-minutes: 20
+        run: cargo test -p lemmata-tex -- --ignored --test-threads=1 --nocapture installs_the_pinned_release builds_a_project_with_bibtex_and_reports_errors fixture_with_biber_reports_the_limitation
 
   # One TeX Live install and one CLI build serve both the fixture and the template checks.
   tex-integration:
@@ -118,6 +144,10 @@ jobs:
             beamer
             beamertheme-metropolis
             collection-fontsrecommended
+            latexdiff
+            ulem
+            listings
+            graphics
       - name: Build the CLI
         run: cargo build -p lemmata-cli
       - name: lemmata doctor
@@ -126,6 +156,11 @@ jobs:
         run: scripts/check-fixtures.sh target/debug/lemmata
       - name: Build every template
         run: scripts/check-templates.sh target/debug/lemmata
+      # latexdiff's markup needs ulem, color and listings; the test fails instead of skipping when any is missing.
+      - name: PDF of the changes (latexdiff)
+        run: cargo test -p lemmata-history --test latexdiff
+        env:
+          LEMMATA_REQUIRE_TEX: "1"
 
   e2e:
     runs-on: ubuntu-22.04
@@ -145,8 +180,25 @@ jobs:
             synctex
             biber
             biblatex
+            lipsum
             amsmath
             amsfonts
+            amscls
+            tools
+            float
+            colortbl
+            booktabs
+            fancyhdr
+            geometry
+            enumitem
+            mdframed
+            zref
+            needspace
+            etoolbox
+            cleveref
+            koma-script
+            beamer
+            beamertheme-metropolis
             collection-fontsrecommended
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
@@ -160,5 +212,10 @@ jobs:
         run: pnpm --filter lemmata-desktop tauri build --debug --no-bundle
         env:
           VITE_LEMMATA_TEST: "1"
+      # The Git panel scenario commits; runners have no git identity.
+      - name: Set a git identity
+        run: |
+          git config --global user.name "Lemmata CI"
+          git config --global user.email "ci@lemmata.invalid"
       - name: Run end-to-end tests
         run: xvfb-run --auto-servernum pnpm --filter lemmata-desktop e2e

@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+pub mod export;
 pub mod extras;
 pub mod prose;
 pub mod symbols;
@@ -43,6 +44,8 @@ pub enum Engine {
     Pdflatex,
     Xelatex,
     Lualatex,
+    /// Tectonic: a self-contained XeTeX-based engine that fetches packages as needed.
+    Tectonic,
 }
 
 impl Engine {
@@ -52,6 +55,8 @@ impl Engine {
             Engine::Pdflatex => "-pdf",
             Engine::Xelatex => "-xelatex",
             Engine::Lualatex => "-lualatex",
+            // Never run through latexmk; XeTeX is what Tectonic is built on.
+            Engine::Tectonic => "-xelatex",
         }
     }
 
@@ -60,6 +65,7 @@ impl Engine {
             Engine::Pdflatex => "pdflatex",
             Engine::Xelatex => "xelatex",
             Engine::Lualatex => "lualatex",
+            Engine::Tectonic => "tectonic",
         }
     }
 }
@@ -416,6 +422,7 @@ fn engine_named(program: &str) -> Option<Engine> {
         "pdflatex" | "pdftex" | "latex" => Some(Engine::Pdflatex),
         "xelatex" | "xetex" => Some(Engine::Xelatex),
         "lualatex" | "luatex" | "lualatex-dev" => Some(Engine::Lualatex),
+        "tectonic" => Some(Engine::Tectonic),
         _ => None,
     }
 }

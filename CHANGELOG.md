@@ -1,6 +1,50 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 2.0.0-rc.1 (2026-10-15)
+
+### Added
+- Command-line tool: lint, wordcount, bib, outline and export --zip
+- Tectonic as an optional engine, downloaded on demand
+- Git panel with commit, pull, push, branches and clone
+- Review changes against a snapshot, and a compiled PDF diff
+- 14 more spell-check languages, downloaded on demand
+- Export for arXiv as one .tex file
+- Open .tex files and project folders from the system
+- A short What's new window after an update
+- Templates from a template collection, beyond the six built in
+- Offer a missing dictionary when a project or file asks for its language
+- Lemmata:// links to open, clone and start projects
+- Export --arxiv, sharing the app's code
+- The PDF of the changes is tested end to end, and its failures are explained
+- Tectonic tested on every OS, with progress, and the default where it's the only engine
+- Build with Tectonic like the app does
+- The command-line tool on every release, on its own
+- A simpler template picker, by kind of document
+- \begin opens the list of environments
+
+### Fixed
+- Opening a project trusts its PDF only if nothing changed after its build began
+- Images in the project open instead of loading forever
+- Ask for a name and email instead of guessing them
+- The What's new spell check entry says English, German and French stay
+- Ctrl+Alt+M adds a review comment, and Ctrl+/ only comments lines
+- Drop the update channel setting, which changed nothing
+- What's new decides 'fresh install' before anything opens a project
+- A missing biber on Windows is explained too
+- Offers to act stay on screen until answered; deleting the open project works on Windows
+- One cursor again after a snippet that typed in two places
+- A build after a stopped or failed one always runs
+- The jump between PDF and source explains a missing synctex file
+
+### Documentation
+- 1.5.2 changelog without the reverted 2.0 work
+- Tectonic's progress and default, and the What's new window
+- Release candidate checklist, with the macOS checks
+- Guide checked against the code for 2.0
+
+### wip
+- Guide for 2.0, one hover tooltip, Escape closes it
 ## 1.5.2 (2026-10-15)
 
 ### Fixed

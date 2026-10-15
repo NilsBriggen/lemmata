@@ -42,6 +42,9 @@ export interface Detection {
   distribution: Distribution;
   tools: Tool[];
   ready: boolean;
+  /** TeX itself is installed; `ready` is also true with only Tectonic. */
+  tex_ready: boolean;
+  tectonic: string | null;
   outdated: boolean;
 }
 
@@ -63,7 +66,7 @@ export interface TexStatus {
   instructions: Record<string, Instructions>;
 }
 
-export type Engine = "pdflatex" | "xelatex" | "lualatex";
+export type Engine = "pdflatex" | "xelatex" | "lualatex" | "tectonic";
 
 export interface Target { name: string; main: string; engine?: Engine | null }
 
@@ -109,6 +112,11 @@ export interface Snapshot {
   changes: { status: "added" | "modified" | "deleted"; path: string }[];
 }
 
+/** A project (and maybe a file in it) to open, from the OS or a second launch. */
+export type OpenTarget = { project_root: string; file: string | null };
+/** What the system asked for: a file or folder, or a lemmata:// link to clone a repository or start a project. */
+export type OpenRequest = ({ kind: "open" } & OpenTarget) | { kind: "clone"; url: string } | { kind: "new_project"; template: string };
+
 export interface LabelInfo {
   label: string;
   file: string;
@@ -137,7 +145,7 @@ export interface SearchOptions { query: string; regex: boolean; case_sensitive: 
 export interface FileMatches { path: string; matches: { line: number; text: string; ranges: [number, number][]; replaced?: string }[] }
 export interface ReplaceTarget { path: string; lines: number[] }
 
-export interface Template { id: string; name: string; description: string; /** Saved by the user, so it can be deleted. */ user?: boolean }
+export interface Template { id: string; name: string; description: string; /** Saved by the user, so it can be deleted. */ user?: boolean; /** Gallery section. */ category?: string; tags?: string[]; /** `data:image/png` URL of page 1. */ preview?: string | null }
 
 export interface PdfBox { page: number; x: number; y: number; h: number; v: number; width: number; height: number }
 export interface SourceHit { path: string; line: number; inside_project: boolean }
@@ -152,6 +160,10 @@ export const api = {
   pdfIsCurrent: () => invoke<boolean>("pdf_is_current"),
   /** Opens the project's PDF in the system's PDF viewer. */
   openPdfExternally: () => invoke<void>("open_pdf_externally"),
+  /** A file or folder the app was asked to open at launch (from the OS or the command line); asked once. */
+  takeOpenRequest: () => invoke<OpenRequest | null>("take_open_request"),
+  /** Opens a file inside the project with the system's default program. */
+  openProjectFile: (path: string) => invoke<void>("open_project_file", { path }),
   watching: () => invoke<boolean>("watching"),
   readText: (path: string) => invoke<string>("read_text", { path }),
   /** `expected`: hash (contentHash) of the text last read or written; the save is refused if the disk differs. */
@@ -181,6 +193,8 @@ export const api = {
   saveAsTemplate: (name: string, description: string) => invoke<string>("save_as_template", { name, description }),
   deleteTemplate: (id: string) => invoke<void>("delete_template", { id }),
   listTemplates: () => invoke<Template[]>("list_templates"),
+  /** Fetches the template collection's templates; listTemplates includes them afterwards. */
+  refreshTemplates: () => invoke<number>("refresh_templates"),
   createProject: (template: string, parent: string, name: string) =>
     invoke<string>("create_project", { template, parent, name }),
   importOverleafZip: (zip: string, parent: string, name: string) =>
@@ -196,8 +210,7 @@ export const api = {
   /** Moves a project folder to the system trash. */
   trashProject: (path: string) => invoke<void>("trash_project", { path }),
   loadThumbnail: async (root: string) => new Uint8Array(await invoke<ArrayBuffer>("load_thumbnail", { root })),
-  updateCheck: (channel: string) =>
-    invoke<{ version: string; current: string; notes: string | null } | null>("update_check", { channel }),
+  updateCheck: () => invoke<{ version: string; current: string; notes: string | null } | null>("update_check"),
   updateInstall: () => invoke<void>("update_install"),
   bibEntries: () => invoke<{ files: string[]; entries: BibEntry[] }>("bib_entries"),
   bibAddReference: (id: string, file: string) => invoke<{ key: string; file: string }>("bib_add_reference", { id, file }),
@@ -226,7 +239,7 @@ export const api = {
   renameSymbol: (kind: SymbolKind, old: string, newName: string) => invoke<string[]>("rename_symbol", { kind, old, new: newName }),
   exportPdf: (dest: string) => invoke<void>("export_pdf", { dest }),
   exportZip: (dest: string, withPdf: boolean) => invoke<number>("export_zip", { dest, withPdf }),
-  exportArxiv: (dest: string, strip: boolean) => invoke<number>("export_arxiv", { dest, strip }),
+  exportArxiv: (dest: string, strip: boolean, flatten = false) => invoke<number>("export_arxiv", { dest, strip, flatten }),
   zoteroStatus: () => invoke<"ready" | "starting" | "unavailable">("zotero_status"),
   zoteroPick: () => invoke<string[]>("zotero_pick"),
   zoteroSync: () => invoke<{ written: number; missing: string[]; linked: boolean }>("zotero_sync"),

@@ -34,8 +34,12 @@ pub struct Detection {
     pub bin_dir: Option<PathBuf>,
     pub distribution: Distribution,
     pub tools: Vec<Tool>,
-    /// True when every required tool was found.
+    /// True when the app can build: every required tool was found, or Tectonic is available.
     pub ready: bool,
+    /// True when every required TeX tool was found (`ready` also holds for Tectonic alone).
+    pub tex_ready: bool,
+    /// The Tectonic binary: the one Lemmata downloaded, else one on PATH.
+    pub tectonic: Option<PathBuf>,
     /// TeX Live older than this gets a warning.
     pub outdated: bool,
 }
@@ -113,10 +117,14 @@ pub fn detect(extra: &[PathBuf]) -> Detection {
         });
     }
 
+    let tectonic = crate::tectonic::find();
+    let tex_ready = found == REQUIRED.len();
     Detection {
         bin_dir,
         distribution,
-        ready: found == REQUIRED.len(),
+        ready: tex_ready || tectonic.is_some(),
+        tex_ready,
+        tectonic,
         tools,
         outdated,
     }

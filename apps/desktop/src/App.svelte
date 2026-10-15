@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
-  import { api, errorMessage, type Target, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
+  import { api, errorMessage, type Target, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus, type OpenTarget, type OpenRequest } from "./lib/api";
   import Library from "./lib/Library.svelte";
   import Editor from "./lib/Editor.svelte";
   import PdfPane from "./lib/PdfPane.svelte";
@@ -15,6 +15,7 @@
   import { COMMENTS_FILE, locate, newId, parse as parseComments, serialize as serializeComments, type Thread } from "./lib/comments/model";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { contentHash } from "./lib/contentHash";
+  import { Buffers } from "./lib/session.svelte";
   import { closePresenter } from "./lib/presenter/window";
   import X from "@lucide/svelte/icons/x";
   import CircleCheck from "@lucide/svelte/icons/circle-check";
@@ -42,6 +43,7 @@
   import { findEntry, isTextFile, isViewerFile } from "./lib/treeModel";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getVersion } from "@tauri-apps/api/app";
+  import { releasesSince, type Release } from "./lib/whatsNew";
   import { errorSummary, issueUrl, systemSummary } from "./lib/report";
   import { listen } from "@tauri-apps/api/event";
   import { relaunch } from "@tauri-apps/plugin-process";
@@ -50,7 +52,7 @@
   import { setMathMacros } from "./lib/writing/math";
   import { figureSnippet } from "./lib/writing/table";
   import { startLanguageServer, type LanguageServer } from "./lib/lsp";
-  import { detectLanguage, spell } from "./lib/spell/service";
+  import { detectLanguage, downloadNote, spell } from "./lib/spell/service";
   import { forgetProject, recentEntries, rememberProject, rememberProjects, type Recent } from "./lib/recent";
 
   const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -67,6 +69,8 @@
   let recent = $state<Recent[]>(recentEntries());
   /** First-run welcome: shown once, or when asked for from the library. */
   let welcome = $state(false);
+  /** After an update: the version now running and what it brought. */
+  let whatsNew = $state<{ version: string; releases: Release[] } | null>(null);
 
   let tabs = $state<string[]>([]);
   /** Pinned tabs (always first in `tabs`), recently closed files (newest first) and folds per file. */
@@ -75,11 +79,15 @@
   let folds: Record<string, number[]> = {};
   let foldsVersion = $state(0);
   let active = $state<string | null>(null);
-  let dirty = $state<Record<string, boolean>>({});
-  const contents = new Map<string, string>();
+  /** Open files' text, unsaved edits, autosave, conflicts and failed saves (lib/session.svelte.ts). */
+  const buffers = new Buffers({
+    write: (path, text, expected) => api.writeText(path, text, expected),
+    autosaveMs: () => settings.autosaveMs,
+    autosave: (path) => save(path, settings.autoCompile, true),
+  });
+  const contents = buffers.contents;
   /** What each file held when we last read or wrote it: disk content equal to this is not an outside change. */
-  const lastSaved = new Map<string, string>();
-  const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const lastSaved = buffers.lastSaved;
 
   /** Shown when several files could be the main file and none is chosen. */
   let choosingMain = $state(false);
@@ -108,15 +116,13 @@
   let snippetsOpen = $state(false);
   let bibManagerOpen = $state(false);
   let todosOpen = $state(false);
+  let gitOpen = $state(false);
+  let gitVersion = $state(0);
   /** Review comments of the open project, and the panel showing them. */
   let threads = $state<Thread[]>([]);
   let reviewOpen = $state(false);
   let activeComment = $state<string | null>(null);
   let commentDraft = $state<{ file: string; line: number; quote: string } | null>(null);
-  /** Files changed by another program while they had unsaved edits here: not saved until the user decides. */
-  let conflicts = $state<string[]>([]);
-  /** Files whose last save failed: the status bar says so in red. */
-  let failedSaves = $state<string[]>([]);
   /** The project's lemmata.toml turns on shell escape, and the user hasn't said yet whether to allow it. */
   let askShellEscape = $state(false);
   const shellEscapeAllowed = () => !!project?.config.shell_escape && settings.shellEscapeProjects.includes(project.root);
@@ -142,6 +148,8 @@
   let lastThumbnail = 0;
 
   let building = $state(false);
+  /** What the engine says it is doing while it builds (Tectonic fetching packages), if anything. */
+  let buildNote = $state<string | null>(null);
   let outcome = $state<Outcome | null>(null);
   let lastCompiled = $state(0);
   let diagnostics = $state<Diagnostic[]>([]);
@@ -213,9 +221,7 @@
     recent = rememberProject(project.root);
     welcome = false;
     tabs = [];
-    contents.clear();
-    dirty = {};
-    conflicts = [];
+    buffers.clear();
     threads = [];
     grammar.resetIgnored();
     commentDraft = null;
@@ -283,6 +289,50 @@
     historyOpen = false;
     // The panel sits where the PDF is.
     if (settings.layout === "editor") updateSettings({ layout: "split" });
+  }
+
+  function openGit() {
+    gitOpen = true;
+    reviewOpen = historyOpen = todosOpen = false;
+    if (settings.layout === "editor") updateSettings({ layout: "split" });
+  }
+
+  /** After a commit, pull or branch switch: files may differ on disk. */
+  async function afterGitChange() {
+    await refreshTree();
+    refreshGit();
+    for (const t of tabs) if (!buffers.dirty[t] && !isViewer(t)) await reloadFromDisk(t);
+    refreshOutline();
+    runBuild();
+  }
+
+  /** Writes text a review put back (a rejected change) through the save path, then shows it in the editor. */
+  async function applyText(path: string, text: string) {
+    const known = lastSaved.get(path);
+    await api.writeText(path, text, known === undefined ? undefined : contentHash(known));
+    await reloadFromDisk(path);
+    runBuild();
+  }
+
+  /** Opens a project, and a file in it, that the OS asked us to open. */
+  /** A link asking to clone or start a project: handled by the start screen's dialogs. */
+  let linkRequest = $state<Exclude<OpenRequest, { kind: "open" }> | null>(null);
+
+  /** A file, folder or lemmata:// link from the system. */
+  async function handleRequest(r: OpenRequest) {
+    if (r.kind === "open") return openTarget(r);
+    welcome = false;
+    // The dialogs live on the start screen; closing the project saves it first.
+    if (project) await closeProject();
+    if (!project) linkRequest = r;
+  }
+
+  async function openTarget(t: OpenTarget) {
+    const before = project;
+    welcome = false;
+    await openProject(t.project_root);
+    // Only when the project really opened (it stays as it was if saving the old one failed).
+    if (t.file && project && project !== before) await openFile(t.file);
   }
 
   /** Re-indents the open file with latexindent or tex-fmt, as one undoable edit. */
@@ -389,6 +439,29 @@
     const lang = fileLanguage ?? project.config.spellcheck ?? fallback;
     spell.setLanguage(lang, project.config.words ?? []);
     grammar.configure(settings.grammar, settings.grammarUrl, lang);
+    if (lang !== "off") offerDictionary(lang);
+  }
+
+  /** A language chosen in the project or a magic comment whose dictionary isn't here yet: offered once per session. */
+  const offeredDictionaries = new Set<string>();
+  async function offerDictionary(lang: string) {
+    if (offeredDictionaries.has(lang)) return;
+    offeredDictionaries.add(lang);
+    const d = (await spell.dictionaries()).find((x) => x.code === lang);
+    if (!d || d.installed) return;
+    showNotice(`Spell check in ${d.label} needs its dictionary${downloadNote(d)}.`, {
+      label: "Download",
+      run: async () => {
+        showNotice(`Downloading the ${d.label} dictionary…`, { tone: "info" });
+        try {
+          await spell.download(lang);
+          applySpellLanguage();
+          showNotice(`Spell check in ${d.label} is on.`, { tone: "ok" });
+        } catch (e) {
+          showNotice(errorMessage(e), { tone: "error" });
+        }
+      },
+    });
   }
 
   // Turning grammar checking on or off (or changing its server) in Preferences applies at once.
@@ -451,27 +524,23 @@
   }
 
   async function closeTab(path: string, saveFirst = true) {
-    if (saveFirst && dirty[path]) {
+    if (saveFirst && buffers.dirty[path]) {
       await save(path);
       // A failed save keeps the tab and its text, so nothing is lost.
-      if (dirty[path]) {
+      if (buffers.dirty[path]) {
         showNotice(
-          conflicts.includes(path)
+          buffers.conflicts.includes(path)
             ? `${path} changed on disk: choose which version to keep before closing it.`
             : `${path} could not be saved, so its tab stays open.${openError ? ` ${openError}` : ""}`,
         );
         return;
       }
     }
-    clearTimeout(saveTimers.get(path));
-    conflicts = conflicts.filter((c) => c !== path);
     if (tabs.includes(path)) closedTabs = [path, ...closedTabs.filter((c) => c !== path)].slice(0, 10);
     pinned = pinned.filter((p) => p !== path);
     delete folds[path];
     tabs = tabs.filter((t) => t !== path);
-    contents.delete(path);
-    lastSaved.delete(path);
-    dirty[path] = false;
+    buffers.forget(path);
     editor?.forget(path);
     if (active === path) {
       const next = tabs.at(-1);
@@ -505,12 +574,9 @@
   }
 
   function onChange(path: string, text: string) {
-    contents.set(path, text);
-    dirty[path] = true;
+    // Saved after the autosave delay (never while in conflict; a delay of 0 means only on Ctrl+S).
+    buffers.edit(path, text);
     if (path === active && project && magicLanguage(text) !== fileLanguage) applySpellLanguage();
-    clearTimeout(saveTimers.get(path));
-    // A delay of 0 means: only save on Ctrl+S. A file in conflict waits for the user.
-    if (settings.autosaveMs > 0 && !conflicts.includes(path)) saveTimers.set(path, setTimeout(() => save(path, settings.autoCompile, true), settings.autosaveMs));
   }
 
   /** Automatic builds wait this long after the last edit, so a build isn't started and cancelled again while typing. */
@@ -519,65 +585,47 @@
 
   /** `auto` marks a save made by the autosave timer: its build is debounced. An explicit save builds at once. */
   async function save(path: string, build = settings.autoCompile, auto = false) {
-    clearTimeout(saveTimers.get(path));
-    const text = contents.get(path);
-    if (text === undefined || !dirty[path] || conflicts.includes(path)) return;
-    const known = lastSaved.get(path);
-    try {
-      await api.writeText(path, text, known === undefined ? undefined : contentHash(known));
-      lastSaved.set(path, text);
-      failedSaves = failedSaves.filter((f) => f !== path);
-      // Keep comment anchors' lines current, so they're found again after big edits.
-      if (threads.some((t) => t.file === path)) {
-        let moved = false;
-        const next = threads.map((t) => {
-          const at = t.file === path ? locate(text, t) : null;
-          if (!at || at.line === t.line) return t;
-          moved = true;
-          return { ...t, line: at.line };
-        });
-        if (moved) saveComments(next);
-      }
-      refreshGit();
-      // Typing continued while the write was in flight: those edits aren't saved yet.
-      if (contents.get(path) === text) dirty[path] = false;
-      else if (settings.autosaveMs > 0) saveTimers.set(path, setTimeout(() => save(path, settings.autoCompile, true), settings.autosaveMs));
-      if (build) {
-        clearTimeout(buildTimer);
-        if (auto) buildTimer = setTimeout(runBuild, AUTO_COMPILE_DELAY_MS);
-        else runBuild();
-      }
-      if (path.endsWith(".tex")) refreshOutline();
-      if (path === project?.main) setMathMacros(text);
-      editedSinceSnapshot = true;
-      // The first save of a session takes a snapshot; later ones follow the timer.
-      if (lastSnapshot === 0) takeSnapshot("Automatic snapshot");
-    } catch (e) {
-      const message = errorMessage(e);
-      if (message.startsWith("conflict:")) addConflict(path);
-      else {
-        openError = message;
-        if (!failedSaves.includes(path)) failedSaves = [...failedSaves, path];
-        showNotice(`${path} was not saved: ${message}`, { tone: "error" });
-      }
+    const result = await buffers.write(path);
+    if (!result || "conflict" in result) return;
+    if ("error" in result) {
+      openError = result.error;
+      showNotice(`${path} was not saved: ${result.error}`, { tone: "error" });
+      return;
     }
-  }
-
-  function addConflict(path: string) {
-    clearTimeout(saveTimers.get(path));
-    if (!conflicts.includes(path)) conflicts = [...conflicts, path];
+    const text = result.saved;
+    // Keep comment anchors' lines current, so they're found again after big edits.
+    if (threads.some((t) => t.file === path)) {
+      let moved = false;
+      const next = threads.map((t) => {
+        const at = t.file === path ? locate(text, t) : null;
+        if (!at || at.line === t.line) return t;
+        moved = true;
+        return { ...t, line: at.line };
+      });
+      if (moved) saveComments(next);
+    }
+    refreshGit();
+    if (build) {
+      clearTimeout(buildTimer);
+      if (auto) buildTimer = setTimeout(runBuild, AUTO_COMPILE_DELAY_MS);
+      else runBuild();
+    }
+    if (path.endsWith(".tex")) refreshOutline();
+    if (path === project?.main) setMathMacros(text);
+    editedSinceSnapshot = true;
+    // The first save of a session takes a snapshot; later ones follow the timer.
+    if (lastSnapshot === 0) takeSnapshot("Automatic snapshot");
   }
 
   /** The user picked a side: their own edits overwrite the disk, or the disk's version replaces them. */
   async function resolveConflict(path: string, keep: "mine" | "disk") {
-    conflicts = conflicts.filter((c) => c !== path);
+    buffers.resolve(path, keep);
     if (keep === "disk") return reloadFromDisk(path);
-    lastSaved.delete(path); // no expectation: write over the other program's version
     await save(path, settings.autoCompile);
   }
 
   async function saveAll(build = settings.autoCompile) {
-    const paths = Object.keys(dirty).filter((p) => dirty[p]);
+    const paths = buffers.unsaved;
     await Promise.all(paths.map((p) => save(p, false)));
     // One build for all of them, not one per file.
     if (build && paths.length) runBuild();
@@ -585,7 +633,7 @@
 
   /** `force`: the user asked for it, so build even if nothing changed. */
   async function runBuild(force = false) {
-    clearTimeout(buildTimer);
+    clearTimeout(buildTimer); buildTimer = undefined;
     if (!tex?.detection.ready) {
       if (!toldNoTex) {
         toldNoTex = true;
@@ -595,6 +643,7 @@
     }
     const seq = ++buildSeq;
     building = true;
+    buildNote = null;
     try {
       const result = await api.build(shellEscapeAllowed(), force === true);
       if (seq !== buildSeq || result.status === "cancelled") return;
@@ -662,9 +711,12 @@
 
   /** `extra` is either an action button or just a tone. */
   function showNotice(text: string, extra?: { label: string; run: () => void } | { tone: "ok" | "info" | "error" }) {
-    clearTimeout(noticeTimer);
     notices = [{ text, time: Date.now() }, ...notices].slice(0, 30);
-    notice = extra && "label" in extra ? { text, action: extra } : { text, tone: extra?.tone };
+    const next = extra && "label" in extra ? { text, action: extra } : { text, tone: extra?.tone };
+    // A passing note doesn't push away an offer still waiting for a click; it stays in the list under the bell.
+    if (notice?.action && !next.action && next.tone !== "error") return;
+    clearTimeout(noticeTimer);
+    notice = next;
     // Errors and offers to act stay until dismissed; they're easy to miss in 8 seconds.
     if (!notice.action && notice.tone !== "error") noticeTimer = setTimeout(() => (notice = null), 8000);
   }
@@ -799,6 +851,7 @@
     clearTimeout(gitTimer);
     gitTimer = setTimeout(() => {
       if (project) api.gitStatus().then(setGitStatus).catch(() => setGitStatus([]));
+      if (gitOpen) gitVersion++;
     }, 600);
   }
 
@@ -858,9 +911,8 @@
     const reopen = [...tabs];
     const wasActive = active;
     for (const p of reopen) {
-      contents.delete(p);
+      buffers.reset(p);
       editor?.forget(p);
-      dirty[p] = false;
     }
     tabs = [];
     active = null;
@@ -901,9 +953,8 @@
   /** Before a restore: unsaved edits are saved (and so kept in the safety snapshot), and no autosave can overwrite the restored file. */
   async function beforeRestore() {
     await saveAll(false);
-    for (const t of saveTimers.values()) clearTimeout(t);
-    saveTimers.clear();
-    clearTimeout(buildTimer);
+    buffers.cancelAll();
+    clearTimeout(buildTimer); buildTimer = undefined;
     if (unsaved().length) throw new Error(`${unsaved().join(", ")} could not be saved, so nothing was restored.`);
   }
 
@@ -921,9 +972,8 @@
   }
 
   async function onRestored(path: string) {
-    contents.delete(path);
+    buffers.reset(path);
     editor?.forget(path);
-    dirty[path] = false;
     if (active === path || tabs.includes(path)) await openFile(path);
     historyVersion++;
     runBuild();
@@ -1089,9 +1139,10 @@
       { id: "shortcuts", label: "Keyboard shortcuts", detail: hint("shortcuts"), run: () => (dialog = "shortcuts") },
       { id: "snapshot", label: "Save a snapshot", detail: hint("snapshot"), run: () => (snapshotLabel = "") },
       { id: "history", label: "Show history", run: () => (historyOpen = true) },
-      { id: "comment", label: "Add a comment", detail: hint("comment"), run: addComment },
+      { id: "comment", label: "Add a comment", detail: hint("add-comment"), run: addComment },
       { id: "comments", label: "Show comments", run: openReview },
       { id: "bib-manager", label: "Bibliography manager…", run: () => (bibManagerOpen = true) },
+      { id: "git", label: "Git: commit, pull, push…", run: openGit },
       { id: "todos", label: "Show TODOs", run: () => ((todosOpen = true), (reviewOpen = false), (historyOpen = false)) },
       { id: "format", label: "Format document", run: formatDocument },
       { id: "sync", label: "Show this line in the PDF", detail: hint("sync"), run: () => active && syncForward(active, editor?.currentLine() ?? 1, 0) },
@@ -1110,6 +1161,7 @@
       { id: "save-template", label: "Save this project as a template…", run: () => (savingTemplate = true) },
       { id: "export-zip", label: "Export the whole project (.zip)…", run: exportZip },
       { id: "export-arxiv", label: "Export for arXiv (.zip)…", run: () => exportArxiv() },
+      { id: "export-arxiv-flat", label: "Export for arXiv as one .tex file (.zip)…", run: () => exportArxiv(false, true) },
       { id: "project-settings", label: "Project settings", run: () => (settingsOpen = true) },
       { id: "preferences", label: "Preferences", run: () => (prefsOpen = true) },
       { id: "guide", label: "Open the user guide", run: () => openGuide() },
@@ -1213,7 +1265,8 @@
     }
   }
 
-  async function exportArxiv(anyway = false) {
+  /** `flatten` inlines \input/\include files and the bibliography into the main file. */
+  async function exportArxiv(anyway = false, flatten = false) {
     if (!project) return;
     await saveAll(false);
     await runBuild();
@@ -1221,15 +1274,15 @@
     if (!anyway && outcome?.status !== "success") {
       showNotice("The document doesn't build without errors, so arXiv would likely reject it. Fix the errors in Logs first.", {
         label: "Export anyway",
-        run: () => exportArxiv(true),
+        run: () => exportArxiv(true, flatten),
       });
       return;
     }
     const dest = await saveDialog({ title: "Export for arXiv", defaultPath: `${project.name}-arxiv.zip`, filters: [{ name: "Zip", extensions: ["zip"] }] });
     if (!dest) return;
     try {
-      const n = await api.exportArxiv(dest, true);
-      showNotice(`Exported ${n} files with comments removed, including the compiled bibliography.`);
+      const n = await api.exportArxiv(dest, true, flatten);
+      showNotice(flatten ? `Exported ${n} files with the sources merged into one .tex file and comments removed.` : `Exported ${n} files with comments removed, including the compiled bibliography.`);
     } catch (e) {
       showNotice(errorMessage(e));
     }
@@ -1247,17 +1300,8 @@
         return null;
       });
       if (disk === null) continue;
-      // What we last read or wrote (our own autosave), or what's in the editor, isn't an outside change.
-      if (disk === lastSaved.get(path)) continue;
-      if (disk === contents.get(path)) {
-        lastSaved.set(path, disk);
-        continue;
-      }
-      if (dirty[path]) {
-        addConflict(path);
-      } else {
-        await reloadFromDisk(path);
-      }
+      // Our own writes and the editor's text aren't outside changes; unsaved edits make it a conflict.
+      if (buffers.outsideChange(path, disk) === "reload") await reloadFromDisk(path);
     }
     refreshOutline();
   }
@@ -1268,10 +1312,7 @@
     const closing = tabs.filter(gone);
     const cached = [...contents.keys()].filter(gone);
     for (const p of cached) {
-      clearTimeout(saveTimers.get(p));
-      contents.delete(p);
-      lastSaved.delete(p);
-      dirty[p] = false;
+      buffers.forget(p);
       editor?.forget(p);
     }
     const wasActive = active;
@@ -1298,10 +1339,8 @@
   }
 
   async function reloadFromDisk(path: string) {
-    contents.delete(path);
-    lastSaved.delete(path);
+    buffers.reset(path);
     editor?.forget(path);
-    dirty[path] = false;
     if (active === path) await openFile(path);
   }
 
@@ -1310,22 +1349,16 @@
   let moveTimer: ReturnType<typeof setTimeout> | undefined;
 
   function onRenamed(from: string, to: string) {
-    for (const p of [...contents.keys()]) {
-      if (p === from || p.startsWith(from + "/")) {
-        contents.delete(p);
-        editor?.forget(p);
-      }
-    }
-    for (const p of [...lastSaved.keys()]) if (p === from || p.startsWith(from + "/")) lastSaved.delete(p);
+    for (const p of contents.keys()) if (p === from || p.startsWith(from + "/")) editor?.forget(p);
+    // The text is read again under the new name; unsaved marks and conflicts follow.
+    buffers.rename(from, to);
     const moved = (p: string) => (p === from ? to : p.startsWith(from + "/") ? to + p.slice(from.length) : p);
     const movedKeys = <T,>(o: Record<string, T>) => Object.fromEntries(Object.entries(o).map(([k, v]) => [moved(k), v]));
     tabs = tabs.map(moved);
     // Pins, recently closed tabs, folds and unsaved marks follow the file to its new name.
     pinned = pinned.map(moved);
     closedTabs = closedTabs.map(moved);
-    conflicts = conflicts.map(moved);
     folds = movedKeys(folds);
-    dirty = movedKeys(dirty);
     // Several renames can arrive together (moving a selection): follow the active file through all of them.
     if (reopenAfterMove === undefined) reopenAfterMove = active;
     if (reopenAfterMove) reopenAfterMove = moved(reopenAfterMove);
@@ -1363,7 +1396,7 @@
     else if (active && hit("symbols")) dialog = "symbols";
     else if (hit("shortcuts")) dialog = "shortcuts";
     else if (hit("snapshot")) snapshotLabel = "";
-    else if (hit("comment")) addComment();
+    else if (hit("add-comment")) addComment();
     else if (hit("save")) saveAll();
     else if (hit("recompile")) saveAll(false).then(() => runBuild(true));
     else if (active && hit("close-tab")) closeTab(active);
@@ -1380,7 +1413,7 @@
   /** Returns a short message for the Preferences dialog. */
   async function checkForUpdates(): Promise<string> {
     try {
-      const found = await api.updateCheck(settings.updateChannel);
+      const found = await api.updateCheck();
       if (!found) return "Lemmata is up to date.";
       update = { version: found.version, progress: null, error: null };
       return `Lemmata ${found.version} is available.`;
@@ -1424,7 +1457,7 @@
     widthTimer = setTimeout(() => updateSettings({}), 400);
   });
 
-  const unsaved = () => Object.keys(dirty).filter((p) => dirty[p]);
+  const unsaved = () => buffers.unsaved;
 
   /** Closes the window for good: the presenter window goes with it. */
   async function quit() {
@@ -1464,8 +1497,9 @@
             main: project?.main ?? null,
             tabs: [...tabs],
             active,
-            dirty: Object.keys(dirty).filter((p) => dirty[p]),
+            dirty: buffers.unsaved,
             building,
+            buildQueued: buildTimer !== undefined,
             status: outcome?.status ?? null,
             diagnostics: diagnostics.map(({ severity, message, file, line }) => ({ severity, message, file, line })),
             layout: settings.layout,
@@ -1474,7 +1508,8 @@
             logsOpen,
             notice: notice?.text ?? null,
             openError,
-            conflicts: [...conflicts],
+            conflicts: [...buffers.conflicts],
+            notices: notices.slice(0, 5).map((n) => n.text),
             dialogs: Object.entries({ settingsOpen, prefsOpen, citeOpen, historyOpen, searchOpen, choosingMain, savingTemplate, palette, dialog, renaming, welcome, bibManagerOpen, todosOpen, reviewOpen, snippetsOpen })
               .filter(([, v]) => !!v)
               .map(([k, v]) => (typeof v === "string" ? `${k}:${v}` : k)),
@@ -1506,10 +1541,13 @@
     setInterval(() => {
       if (project && editedSinceSnapshot && Date.now() - lastSnapshot > AUTO_SNAPSHOT_MS) takeSnapshot("Automatic snapshot");
     }, 60_000);
+    listen<string>("build-progress", (e) => (buildNote = e.payload)).catch(() => {});
     listen<{ changed: string[]; removed: string[] }>("files-changed", (e) => onFilesChanged(e.payload)).catch((e) =>
       reportOnce("watch", `Lemmata can't watch for changes made by other programs: ${errorMessage(e)}`),
     );
     await loadSettings();
+    // Decided before anything can open a project (and add it to the recent list): a fresh install shows no What's new.
+    const usedBefore = settings.firstRunDone || recent.length > 0;
     appliedEditor = "";
     // Detection can take seconds (it runs pdflatex). With a remembered working result the app starts at
     // once and checks again in the background; without one it has to wait for the answer.
@@ -1524,14 +1562,37 @@
       checkForUpdates();
       setInterval(() => settings.checkForUpdates && !update && checkForUpdates(), UPDATE_INTERVAL_MS);
     }
+    showWhatsNew(usedBefore);
     // Existing users (with projects) never see the welcome.
-    if (!settings.firstRunDone && recent.length === 0) {
+    // A file or folder opened from the OS (double-click, "Open with", a second launch) wins over the last project.
+    listen<OpenRequest>("open-request", (e) => handleRequest(e.payload)).catch((e) =>
+      reportOnce("open", `Opening files from other programs won't work: ${errorMessage(e)}`),
+    );
+    const request = await api.takeOpenRequest().catch(() => null);
+    if (request) {
+      if (!settings.firstRunDone) updateSettings({ firstRunDone: true });
+      await handleRequest(request);
+    } else if (!settings.firstRunDone && recent.length === 0) {
       welcome = true;
     } else {
       if (!settings.firstRunDone) updateSettings({ firstRunDone: true });
       if (tex?.detection.ready && recent[0]) openProject(recent[0].path);
     }
   });
+
+  /** Once after an update, what the new version can do. A fresh install gets the welcome instead. */
+  async function showWhatsNew(usedBefore: boolean) {
+    const version = await getVersion().catch(() => null);
+    const last = settings.lastSeenVersion;
+    if (!version || version === last) return;
+    updateSettings({ lastSeenVersion: version });
+    // Before 2.0 the version wasn't remembered: someone who already used the app is updating to this one.
+    const updated = last !== "" || usedBefore;
+    const releases = updated ? releasesSince(last || "0.0.0", version) : [];
+    // Unknown previous version: only this release's news, not the whole history.
+    const shown = last ? releases : releases.slice(0, 1);
+    if (shown.length) whatsNew = { version, releases: shown };
+  }
 
   const menuItems = $derived<MenuAction[]>([
     { label: "All projects", run: closeProject },
@@ -1545,8 +1606,10 @@
     { label: "Export PDF…", run: exportPdf, separator: true },
     { label: "Export project (.zip)…", run: exportZip },
     { label: "Export for arXiv…", run: () => exportArxiv() },
+    { label: "Export for arXiv as one file…", run: () => exportArxiv(false, true) },
     { label: "Preferences", run: () => (prefsOpen = true), separator: true },
     { label: "Keyboard shortcuts", hint: hint("shortcuts"), run: () => (dialog = "shortcuts") },
+    { label: "Git…", run: openGit },
     { label: "User guide", run: () => openGuide() },
     { label: "Report a problem…", run: startReport },
   ]);
@@ -1606,6 +1669,8 @@
   {#await import("./lib/Onboarding.svelte") then { default: Onboarding }}<Onboarding status={tex} {checking} onRecheck={recheck} onSkip={() => (withoutTex = true)} />{/await}
 {:else if !project}
   <Library
+    {linkRequest}
+    onLinkHandled={() => (linkRequest = null)}
     {recent}
     error={openError}
     {noMainIn}
@@ -1708,7 +1773,7 @@
           <TabStrip
             {tabs}
             {active}
-            {dirty}
+            dirty={buffers.dirty}
             {pinned}
             closed={closedTabs}
             onPin={togglePin}
@@ -1772,14 +1837,14 @@
         <footer class="status">
           <span>Line {cursor.line}</span>
           {#if selectionWords}<span title="Words in the selection">{selectionWords} selected</span>{/if}
-          {#if active}<span class:save-failed={failedSaves.includes(active)}>{failedSaves.includes(active) ? "Not saved" : dirty[active] ? "Unsaved" : "Saved"}</span>{/if}
+          {#if active}<span class:save-failed={buffers.failedSaves.includes(active)}>{buffers.failedSaves.includes(active) ? "Not saved" : buffers.dirty[active] ? "Unsaved" : "Saved"}</span>{/if}
           <span class="grow"></span>
           {#if lspStarting}<span class="starting" title="The language server is starting"><span class="spin-dot"></span>Starting completion</span>{:else if !lspAvailable}<button class="status-link" title="Why is completion off?" onclick={() => showNotice("Completion, hover and go to definition come from texlab, which ships with Lemmata but didn't start. Reinstall Lemmata, or install texlab yourself (your package manager, or cargo install texlab), then reopen the project.")}>No completion</button>{/if}
           {#if tex.detection.outdated}<span class="warn" title="Some packages may lack newer features">Old TeX Live</span>{/if}
           {#if project.config.draft}<span class="warn" title="Figures are drawn as boxes. Switch to Normal in the Recompile menu for the final PDF.">Draft mode</span>{/if}
           {#if spellLang !== "off"}<span title="Spell-check language">{spellLang}</span>{/if}
           {#if totalWords}<span title="Words in the document body, without commands, maths or comments">{words.format(totalWords)} words</span>{/if}
-          <span>{project.config.engine === "pdflatex" ? "pdfLaTeX" : project.config.engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"}</span>
+          <span>{{ pdflatex: "pdfLaTeX", xelatex: "XeLaTeX", lualatex: "LuaLaTeX", tectonic: "Tectonic" }[project.config.engine]}</span>
           {#if outcome && !building}
             {#if outcome.status === "success"}
               <span class="ok" title={lastCompiled ? `Finished at ${new Date(lastCompiled).toLocaleTimeString()}` : undefined}>Compiled in {(outcome.duration_ms / 1000).toFixed(1)} s</span>
@@ -1810,11 +1875,12 @@
           />
         {/if}
         <div class="preview" style:width={showEditor ? `${settings.pdfWidth}px` : undefined} class:wide={!showEditor}>
-          <div class="fill" class:hidden={historyOpen || reviewOpen || todosOpen}>
+          <div class="fill" class:hidden={historyOpen || reviewOpen || todosOpen || gitOpen}>
             <PdfPane
               bind:this={pdf}
               {diagnostics}
               {building}
+              {buildNote}
               failed={!!outcome && outcome.status !== "success" && !outcome.pdf}
               status={outcome?.status ?? null}
               pageLayout={settings.pdfLayout}
@@ -1833,7 +1899,13 @@
               onExport={exportPdf}
             />
           </div>
-          {#if todosOpen}
+          {#if gitOpen}
+            <div class="fill">
+              {#await import("./lib/git/GitPanel.svelte") then { default: GitPanel }}
+                <GitPanel version={gitVersion} beforeGit={() => saveAll(false)} onChanged={afterGitChange} onClose={() => (gitOpen = false)} />
+              {/await}
+            </div>
+          {:else if todosOpen}
             <div class="fill">
               {#await import("./lib/Todos.svelte") then { default: Todos }}<Todos onOpen={gotoProblem} />{/await}
               <button class="btn ghost icon sm close-todos" aria-label="Close TODOs" onclick={() => (todosOpen = false)}><X size={15} /></button>
@@ -1860,7 +1932,7 @@
               />
             </div>
           {:else if historyOpen}
-            <div class="fill">{#await import("./lib/HistoryPanel.svelte") then { default: HistoryPanel }}<HistoryPanel version={historyVersion} {currentText} {beforeRestore} {onRestored} {onRestoredAll} onClose={() => (historyOpen = false)} />{/await}</div>
+            <div class="fill">{#await import("./lib/HistoryPanel.svelte") then { default: HistoryPanel }}<HistoryPanel version={historyVersion} {currentText} {beforeRestore} beforeChange={beforeRestore} {applyText} onOpenPdf={(p) => api.openProjectFile(p).catch((e) => showNotice(errorMessage(e), { tone: "error" }))} {onRestored} {onRestoredAll} onClose={() => (historyOpen = false)} />{/await}</div>
           {/if}
         </div>
       {/if}
@@ -1894,7 +1966,7 @@
       <div class="toast" class:error={notice.tone === "error"} role={notice.tone === "error" ? "alert" : "status"}>
         <span class="t-ico" class:ok={notice.tone === "ok"}>{#if notice.tone === "ok"}<CircleCheck size={16} />{:else}<Info size={16} />{/if}</span>
         <span class="t-text">{notice.text}</span>
-        {#if notice.action}<button class="btn sm" onclick={() => { notice?.action?.run(); notice = null; }}>{notice.action.label}</button>{/if}
+        {#if notice.action}<button class="btn sm" onclick={() => { const act = notice?.action; notice = null; act?.run(); }}>{notice.action.label}</button>{/if}
         <button class="btn ghost icon sm" aria-label="Dismiss" onclick={() => (notice = null)}><X size={14} /></button>
       </div>
     {/if}
@@ -1942,8 +2014,8 @@
   </Modal>
 {/if}
 
-{#if conflicts.length}
-  {@const path = conflicts[0]}
+{#if buffers.conflicts.length}
+  {@const path = buffers.conflicts[0]}
   <Modal title="{path} changed on disk" width={480} onClose={() => {}}>
     <p class="close-msg">Another program changed this file while it had unsaved edits in Lemmata. Nothing is saved until you choose which version to keep.</p>
     {#snippet footer()}
@@ -2046,13 +2118,17 @@
   {#await import("./lib/Shortcuts.svelte") then { default: Shortcuts }}<Shortcuts onClose={() => (dialog = null)} />{/await}
 {/if}
 
+{#if whatsNew && !welcome}
+  {#await import("./lib/WhatsNew.svelte") then { default: WhatsNew }}<WhatsNew {...whatsNew} onClose={() => (whatsNew = null)} />{/await}
+{/if}
+
 {#if citeOpen}
   {#await import("./lib/CitePicker.svelte") then { default: CitePicker }}<CitePicker
     onInsert={(keys) => {
       citeOpen = false;
       editor?.insertCitation(keys);
     }}
-    beforeBibChange={() => Promise.all(Object.keys(dirty).filter((p) => dirty[p] && p.endsWith(".bib")).map((p) => save(p, false))).then(() => {})}
+    beforeBibChange={() => Promise.all(buffers.unsaved.filter((p) => p.endsWith(".bib")).map((p) => save(p, false))).then(() => {})}
     onBibChanged={(file) => {
       contents.delete(file);
       editor?.forget(file);
