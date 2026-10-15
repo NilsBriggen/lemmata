@@ -1,5 +1,0 @@
-name = "Lab report"
-description = "Aim, method, results table, a fitted plot and an error discussion, with SI units."
-order = 30
-category = "Teaching"
-tags = ["physics", "chemistry", "experiment", "siunitx", "lab"]

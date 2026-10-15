@@ -11,6 +11,7 @@ mod git;
 mod grammar;
 mod history;
 mod lsp;
+mod online_templates;
 mod open_with;
 mod projects;
 mod spell;
@@ -501,12 +502,24 @@ fn user_templates_dir(app: &tauri::AppHandle) -> CmdResult<PathBuf> {
     Ok(app.path().app_data_dir().map_err(err)?.join("templates"))
 }
 
+/// The template collection's templates, kept so they work offline once seen.
+fn online_templates_dir(app: &tauri::AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().app_cache_dir().map_err(err)?.join("templates"))
+}
+
 #[tauri::command(async)]
 fn list_templates(app: tauri::AppHandle) -> CmdResult<Vec<projects::Template>> {
     Ok(projects::list_all(
         &templates_dir(&app)?,
+        &online_templates_dir(&app)?,
         &user_templates_dir(&app)?,
     ))
+}
+
+/// Brings the template collection's templates up to date; list_templates then includes them.
+#[tauri::command]
+async fn refresh_templates(app: tauri::AppHandle) -> CmdResult<usize> {
+    online_templates::refresh(&online_templates_dir(&app)?).await
 }
 
 /// Saves the open project as a template for new projects.
@@ -545,6 +558,7 @@ fn create_project(
 ) -> CmdResult<PathBuf> {
     projects::create_from_template(
         &templates_dir(&app)?,
+        &online_templates_dir(&app)?,
         &user_templates_dir(&app)?,
         &template,
         Path::new(&parent),
@@ -940,6 +954,7 @@ pub fn run() {
             word_count,
             package_names,
             list_templates,
+            refresh_templates,
             save_as_template,
             delete_template,
             create_project,

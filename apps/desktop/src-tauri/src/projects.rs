@@ -23,17 +23,27 @@ pub const USER_CATEGORY: &str = "My templates";
 
 /// Ids of user templates start with this, so they can't clash with bundled ones.
 pub const USER_PREFIX: &str = "user:";
+/// Ids of templates from the template collection (see online_templates.rs).
+pub const ONLINE_PREFIX: &str = "online:";
+
+/// Where a template comes from: shipped with the app, the template collection, or saved by the user.
+#[derive(Clone, Copy, PartialEq)]
+enum Source {
+    Bundled,
+    Online,
+    User,
+}
 
 #[derive(Deserialize, Serialize)]
-struct TemplateMeta {
-    name: String,
-    description: String,
+pub(crate) struct TemplateMeta {
+    pub name: String,
+    pub description: String,
     #[serde(default)]
-    order: u32,
+    pub order: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    category: Option<String>,
+    pub category: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    tags: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 /// Checks that `path` may be moved to the trash as a whole project: a folder
@@ -86,14 +96,16 @@ pub fn ensure_example(templates: &Path, dir: &Path) -> Result<PathBuf, String> {
     Ok(dir.to_path_buf())
 }
 
-/// Bundled templates in their own order, then the user's, by name.
-pub fn list_all(bundled: &Path, user: &Path) -> Vec<Template> {
-    let mut all = list_templates(bundled, false);
-    all.extend(list_templates(user, true));
+/// Bundled templates in their own order, then the collection's (kept in `online`), then the user's.
+pub fn list_all(bundled: &Path, online: &Path, user: &Path) -> Vec<Template> {
+    let mut all = list_templates(bundled, Source::Bundled);
+    all.extend(list_templates(online, Source::Online));
+    all.extend(list_templates(user, Source::User));
     all
 }
 
-fn list_templates(dir: &Path, user: bool) -> Vec<Template> {
+fn list_templates(dir: &Path, source: Source) -> Vec<Template> {
+    let user = source == Source::User;
     let mut found: Vec<(u32, Template)> = fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -104,17 +116,17 @@ fn list_templates(dir: &Path, user: bool) -> Vec<Template> {
             let text = fs::read_to_string(e.path().join(META)).ok()?;
             let meta: TemplateMeta = toml::from_str(&text).ok()?;
             let folder = e.file_name().to_string_lossy().into_owned();
-            let id = if user {
-                format!("{USER_PREFIX}{folder}")
-            } else {
-                folder
+            let id = match source {
+                Source::User => format!("{USER_PREFIX}{folder}"),
+                Source::Online => format!("{ONLINE_PREFIX}{folder}"),
+                Source::Bundled => folder,
             };
             let category = match (user, meta.category) {
                 (false, Some(c)) if !c.trim().is_empty() => c,
                 (false, _) => "Other".to_string(),
                 (true, _) => USER_CATEGORY.to_string(),
             };
-            // Only bundled templates ship a thumbnail: a user's own project may have a preview.png of its own.
+            // Only bundled and collection templates come with a thumbnail: a user's own project may have a preview.png of its own.
             let preview = (!user)
                 .then(|| fs::read(e.path().join(PREVIEW)).ok())
                 .flatten()
@@ -176,22 +188,26 @@ fn fresh_target(parent: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-/// The folder a template id names: bundled, or the user's (`user:` prefix).
-fn template_dir(bundled: &Path, user: &Path, id: &str) -> Result<PathBuf, String> {
-    Ok(match id.strip_prefix(USER_PREFIX) {
-        Some(folder) => user.join(check_name(folder)?),
-        None => bundled.join(check_name(id)?),
+/// The folder a template id names: the user's (`user:`), the collection's (`online:`) or bundled.
+fn template_dir(bundled: &Path, online: &Path, user: &Path, id: &str) -> Result<PathBuf, String> {
+    Ok(if let Some(folder) = id.strip_prefix(USER_PREFIX) {
+        user.join(check_name(folder)?)
+    } else if let Some(folder) = id.strip_prefix(ONLINE_PREFIX) {
+        online.join(check_name(folder)?)
+    } else {
+        bundled.join(check_name(id)?)
     })
 }
 
 pub fn create_from_template(
     bundled: &Path,
+    online: &Path,
     user: &Path,
     id: &str,
     parent: &Path,
     name: &str,
 ) -> Result<PathBuf, String> {
-    let source = template_dir(bundled, user, id)?;
+    let source = template_dir(bundled, online, user, id)?;
     if !source.join(META).is_file() {
         return Err(format!("There is no template called {id}."));
     }
@@ -564,6 +580,7 @@ mod tests {
     #[test]
     fn creates_from_template_without_metadata() {
         let d = tempfile::tempdir().unwrap();
+        let none = d.path().join("no-online-templates");
         let t = d.path().join("templates/article");
         fs::create_dir_all(&t).unwrap();
         fs::write(
@@ -574,7 +591,7 @@ mod tests {
         fs::write(t.join(PREVIEW), b"ab").unwrap();
         fs::write(t.join("main.tex"), "\\documentclass{article}").unwrap();
         let (bundled, user) = (d.path().join("templates"), d.path().join("user"));
-        let listed = &list_all(&bundled, &user)[0];
+        let listed = &list_all(&bundled, &none, &user)[0];
         assert_eq!(listed.name, "Article");
         assert_eq!((listed.category.as_str(), listed.tags.len()), ("Papers", 2));
         assert_eq!(
@@ -582,13 +599,19 @@ mod tests {
             Some("data:image/png;base64,YWI=")
         );
 
-        let p = create_from_template(&bundled, &user, "article", d.path(), "My Paper").unwrap();
+        let p =
+            create_from_template(&bundled, &none, &user, "article", d.path(), "My Paper").unwrap();
         assert!(p.join("main.tex").is_file());
         assert!(!p.join(META).exists());
         assert!(!p.join(PREVIEW).exists());
-        assert!(create_from_template(&bundled, &user, "article", d.path(), "My Paper").is_err());
-        assert!(create_from_template(&bundled, &user, "../x", d.path(), "q").is_err());
-        assert!(create_from_template(&bundled, &user, "user:../x", d.path(), "q").is_err());
+        assert!(
+            create_from_template(&bundled, &none, &user, "article", d.path(), "My Paper").is_err()
+        );
+        assert!(create_from_template(&bundled, &none, &user, "../x", d.path(), "q").is_err());
+        assert!(create_from_template(&bundled, &none, &user, "user:../x", d.path(), "q").is_err());
+        assert!(
+            create_from_template(&bundled, &none, &user, "online:../x", d.path(), "q").is_err()
+        );
     }
 
     #[test]
@@ -606,6 +629,7 @@ mod tests {
     #[test]
     fn saves_a_project_as_a_template_and_uses_it() {
         let d = tempfile::tempdir().unwrap();
+        let none = d.path().join("no-online-templates");
         let (bundled, user, proj) = (
             d.path().join("bundled"),
             d.path().join("user"),
@@ -626,17 +650,18 @@ mod tests {
         );
         assert!(save_as_template(&user, &proj, ".lemmata/build", "  ", "").is_err());
 
-        let listed = list_all(&bundled, &user);
+        let listed = list_all(&bundled, &none, &user);
         assert_eq!(listed.len(), 2);
         assert!(listed.iter().all(|t| t.user));
         assert!(listed.iter().any(|t| t.description == "Mine"));
 
-        let made = create_from_template(&bundled, &user, &id, d.path(), "New thesis").unwrap();
+        let made =
+            create_from_template(&bundled, &none, &user, &id, d.path(), "New thesis").unwrap();
         assert!(made.join("chapters/one.tex").is_file());
         assert!(!made.join(".lemmata").exists() && !made.join(META).exists());
 
         delete_user_template(&user, &id).unwrap();
-        assert_eq!(list_all(&bundled, &user).len(), 1);
+        assert_eq!(list_all(&bundled, &none, &user).len(), 1);
         assert!(delete_user_template(&user, "article").is_err());
         assert!(delete_user_template(&user, "user:../../x").is_err());
     }
@@ -714,5 +739,35 @@ mod tests {
             assert_eq!(project.main, PathBuf::from("main.tex"), "{}", p.display());
         }
         assert!(d.path().join("CA_Assignement_4/images").is_dir());
+    }
+
+    #[test]
+    fn templates_from_the_collection_are_listed_and_used_like_bundled_ones() {
+        let d = tempfile::tempdir().unwrap();
+        let online = d.path().join("online");
+        fs::create_dir_all(online.join("ieee")).unwrap();
+        fs::write(
+            online.join("ieee/template.toml"),
+            "name = \"IEEE\"\ndescription = \"d\"\ncategory = \"Papers\"\n",
+        )
+        .unwrap();
+        fs::write(online.join("ieee/main.tex"), "x").unwrap();
+        fs::write(online.join("ieee/preview.png"), "png").unwrap();
+        let none = d.path().join("none");
+        let listed = list_all(&none, &online, &none);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            (
+                listed[0].id.as_str(),
+                listed[0].category.as_str(),
+                listed[0].user
+            ),
+            ("online:ieee", "Papers", false)
+        );
+        assert!(listed[0].preview.is_some());
+        let made =
+            create_from_template(&none, &online, &none, "online:ieee", d.path(), "Paper").unwrap();
+        assert!(made.join("main.tex").is_file());
+        assert!(!made.join("template.toml").exists() && !made.join("preview.png").exists());
     }
 }

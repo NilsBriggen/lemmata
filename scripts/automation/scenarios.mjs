@@ -241,7 +241,7 @@ export const scenarios = {
     await until(lem, "the library", () => lem("exists", { selector: ".library" }));
     await lem("clickText", { text: "New project" });
     await until(lem, "the gallery", () => lem("exists", { selector: '[aria-label="Search templates"]' }));
-    await lem("fill", { selector: '[aria-label="Search templates"]', value: "blank" });
+    await lem("fill", { selector: '[aria-label="Search templates"]', value: "homework" });
     await until(lem, "the search to narrow the list", async () => (await lem("query", { selector: ".templates [role=radio]" })).length === 1);
     await lem("click", { selector: ".templates [role=radio]" });
     await lem("fill", { selector: "#np-name", value: name });

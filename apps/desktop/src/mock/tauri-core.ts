@@ -207,6 +207,7 @@ const handlers: Record<string, (a: Args) => unknown> = {
     { id: "homework", name: "Homework", description: "Exercise sheets: shaded problem boxes, solutions, and a header with your name and course.", category: "Teaching" },
   ],
   create_project: (a) => `${a.parent}/${a.name}`,
+  refresh_templates: () => 0,
   create_example: () => "/home/you/.local/share/dev.briggen.lemmata/example",
   inspect_zip: () => ({ bulk: true, projects: ["CA_Assignement_5", "INF_SEC_Assignement_3", "NET_assignment_4", "Homework", "CA_Assignement_4", "DB_Assignement_3"] }),
   import_overleaf_zip: (a) => ["CA_Assignement_5", "INF_SEC_Assignement_3", "NET_assignment_4", "Homework", "CA_Assignement_4", "DB_Assignement_3"].map((n) => `${a.parent}/${n}`),

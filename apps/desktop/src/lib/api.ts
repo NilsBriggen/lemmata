@@ -191,6 +191,8 @@ export const api = {
   saveAsTemplate: (name: string, description: string) => invoke<string>("save_as_template", { name, description }),
   deleteTemplate: (id: string) => invoke<void>("delete_template", { id }),
   listTemplates: () => invoke<Template[]>("list_templates"),
+  /** Fetches the template collection's templates; listTemplates includes them afterwards. */
+  refreshTemplates: () => invoke<number>("refresh_templates"),
   createProject: (template: string, parent: string, name: string) =>
     invoke<string>("create_project", { template, parent, name }),
   importOverleafZip: (zip: string, parent: string, name: string) =>

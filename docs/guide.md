@@ -16,14 +16,7 @@ Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't f
 
 **Project menu.** Right-click a project on the start screen, or use its ⋯ button, to open it, show it in your file manager, put it in a folder, remove it from the list (the files stay on disk), or *Delete project…*, which moves the whole project folder to your system's trash after asking. Lemmata only deletes folders that hold a `.tex` file or `lemmata.toml` directly, never your home folder or a folder above it.
 
-- **New project** shows a gallery of templates with a preview of each. Pick a category on the left or type in the search box (it also matches descriptions and tags such as `beamer` or `physics`). The templates are:
-  - *Papers*: Article, IEEE conference, ACM sigconf, Springer LNCS, Elsevier journal, APS / AIP physics (REVTeX) and Two-column article.
-  - *Theses & books*: Thesis, Thesis with front matter (title page, declaration, abstract, lists of figures and tables, appendix) and Book.
-  - *Presentations*: Slides (Beamer with the metropolis theme) and Slides (classic).
-  - *Posters*: Research poster (A0, tikzposter).
-  - *Letters & CV*: CV, Letter and Cover letter.
-  - *Teaching*: Homework (exercise sheets with problem boxes and a name-and-course header), Lab report and Exam.
-  - *Basics*: Blank and Example, a short tour of Lemmata.
+- **New project** shows a gallery of templates with a preview of each. Pick a category on the left or type in the search box (it also matches descriptions and tags such as `beamer` or `physics`). Six come with Lemmata: Article, Thesis, Slides (Beamer with the metropolis theme), CV, Letter and Homework (exercise sheets with a name-and-course header). The rest come from the Lemmata template collection, a small set of carefully made templates for journals and conferences (IEEE, ACM, Springer, Elsevier, physics), theses and books, posters, slides, exams, lab reports and cover letters. Opening the gallery fetches them; this needs an internet connection the first time, after which they also work offline. Every file is checked before it is used.
 - **Clone a repository…** copies a git repository from GitHub, GitLab, Overleaf or any other git URL to your computer and opens it. See [Git](#git).
 - **Open folder** works with any folder containing a `.tex` file with `\documentclass`. If there are several, Lemmata asks which one is the main document. If there are none, it offers **Create main.tex and open**.
 - **Import Overleaf .zip** takes the zip from Overleaf's *Menu → Download → Source*.

@@ -28,6 +28,8 @@
 
   let query = $state("");
   let category = $state("All");
+  /** The template collection: being fetched, or why it couldn't be. */
+  let online = $state<{ loading: boolean; error: string | null }>({ loading: true, error: null });
 
   const ORDER = ["Papers", "Theses & books", "Presentations", "Posters", "Letters & CV", "Teaching", "Basics", "My templates"];
   const catOf = (t: Template) => t.category || "Other";
@@ -48,6 +50,14 @@
     templates = await api.listTemplates().catch(() => []);
     chosen = templates[0]?.id ?? "article";
     parent = defaultParent || (await documentDir().catch(() => ""));
+    // The collection's templates arrive in the background; ones seen before are already listed.
+    try {
+      await api.refreshTemplates();
+      templates = await api.listTemplates();
+      online = { loading: false, error: null };
+    } catch (err) {
+      online = { loading: false, error: errorMessage(err) };
+    }
   });
 
   async function remove(t: Template) {
@@ -95,6 +105,11 @@
           <Search size={15} />
           <input class="input" type="search" bind:value={query} placeholder="Search templates, e.g. ieee, poster, thesis" aria-label="Search templates" />
         </label>
+        {#if online.loading}
+          <p class="online">Getting more templates…</p>
+        {:else if online.error}
+          <p class="online" title={online.error}>More templates are online, but they couldn't be loaded right now.</p>
+        {/if}
         <div class="templates" role="radiogroup" aria-label="Template">
           {#each shown as t (t.id)}
             <div class="tpl">
@@ -158,6 +173,7 @@
   .search .input { width: 100%; padding-left: 32px; }
   .templates { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; padding: 2px; }
   .none { grid-column: 1 / -1; color: var(--muted); margin: 8px 0; }
+  .online { margin: -4px 0 0; font-size: 12px; color: var(--muted); }
   .tpl { position: relative; display: flex; }
   .tpl > button:first-child { flex: 1; }
   .templates .del { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; padding: 0; align-items: center; justify-content: center; border-radius: var(--r-sm); border-color: transparent; background: var(--surface); color: var(--faint); }
