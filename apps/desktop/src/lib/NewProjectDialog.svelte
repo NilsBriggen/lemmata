@@ -211,7 +211,7 @@
   }
   .cat:hover { border-color: var(--accent); }
   .ico { display: inline-flex; color: var(--accent); margin-bottom: 4px; }
-  .folder { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; text-align: left; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); color: var(--ink); cursor: pointer; }
+  .folder { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; text-align: left; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); color: var(--ink); cursor: pointer; }
   .folder:hover { border-color: var(--border-strong); }
   .folder :global(svg) { color: var(--accent); flex: none; }
   .folder > span { display: flex; flex-direction: column; gap: 1px; }
