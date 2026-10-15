@@ -20,7 +20,7 @@
   import { renderTex } from "./writing/katexRender";
   import { folding, foldKeymap, foldRange } from "./editor/folding";
   import { snippetCompletions } from "./editor/snippets";
-  import { reindent, tabSizeOf, unitOf } from "./editor/indent";
+  import { indentLines, placeBlock, reindent, tabSizeOf, unitOf } from "./editor/indent";
   import { symbolAt } from "./writing/symbolAt";
   import { foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
   import { formattingKeymap, toggleWrap } from "./editor/shortcuts";
@@ -155,12 +155,12 @@
     if (!view) return;
     const pos = at ?? view.state.selection.main.head;
     const line = view.state.doc.lineAt(pos);
-    // Figures go on their own lines.
-    const prefix = line.text.slice(0, pos - line.from).trim() ? "\n" : "";
+    // Figures go on their own lines, every line indented like the cursor.
+    const { prefix, indent } = placeBlock(line.text, pos - line.from);
     // Blocks are written with two spaces per level; use the indentation the user chose.
     const unit = unitOf(settings.indent);
-    const text = reindent(snippet.text, unit);
-    const cursor = reindent(snippet.text.slice(0, snippet.cursor), unit).length;
+    const text = indentLines(reindent(snippet.text, unit), indent);
+    const cursor = indentLines(reindent(snippet.text.slice(0, snippet.cursor), unit), indent).length;
     const insert = prefix + text + "\n";
     view.dispatch({ changes: { from: pos, insert }, selection: { anchor: pos + prefix.length + cursor } });
     view.focus();
@@ -170,11 +170,7 @@
   /** Inserts a snippet template (`${}` tab stops) on its own lines, like a figure or table. */
   export function insertBlock(template: string, needs?: string) {
     if (!view) return;
-    const head = view.state.selection.main.head;
-    const line = view.state.doc.lineAt(head);
-    if (view.state.sliceDoc(line.from, head).trim()) {
-      view.dispatch({ changes: { from: head, insert: "\n" }, selection: { anchor: head + 1 } });
-    }
+    newLineAfterText();
     const at = view.state.selection.main.head;
     snippet(reindent(template, unitOf(settings.indent)) + "\n")(view, null, at, at);
     view.focus();
@@ -310,9 +306,20 @@
     ];
   }
 
+  /** After text on the cursor's line, a block starts on a new line indented like that line;
+   *  CodeMirror's snippets then indent the block's other lines to match. */
+  function newLineAfterText() {
+    if (!view) return;
+    const head = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(head);
+    const { prefix } = placeBlock(line.text, head - line.from);
+    if (prefix) view.dispatch({ changes: { from: head, insert: prefix }, selection: { anchor: head + prefix.length } });
+  }
+
   /** Inserts a CodeMirror snippet (`${}` marks tab stops) at the selection. */
   export function insertTemplate(template: string) {
     if (!view) return;
+    if (template.includes("\n") && view.state.selection.main.empty) newLineAfterText();
     const { from, to } = view.state.selection.main;
     snippet(reindent(template, unitOf(settings.indent)))(view, null, from, to);
     view.focus();
