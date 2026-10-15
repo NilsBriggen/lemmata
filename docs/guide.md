@@ -1,6 +1,6 @@
 # Lemmata user guide
 
-Lemmata is a LaTeX editor that builds your document as you write and shows the PDF next to the source. Projects are ordinary folders; nothing is uploaded anywhere.
+Lemmata is a LaTeX editor that builds your document as you write and shows the PDF next to the source. Projects are ordinary folders. Lemmata goes online only for references you look up or search for, grammar checking on a server you choose, and the update check.
 
 ## First launch
 
@@ -29,7 +29,7 @@ Per-project settings (main file, engine, bibliography tool, spell-check language
 
 ## Writing and building
 
-Lemmata saves shortly after you stop typing and builds after each save. In **Preferences** you can change the save delay or save only with Ctrl+S, and in the **Recompile** menu you can turn auto-compile off so the document only builds when you press Recompile. The build output goes to `.lemmata/build`, which is kept out of git. Under *Project settings → Build folder* you can choose another folder inside the project.
+Lemmata saves shortly after you stop typing and builds after each save. In **Preferences** you can change the save delay or save only with Ctrl+S, and in the **Recompile** menu you can turn auto-compile off so the document only builds when you press Recompile. The build output goes to `.lemmata/build`. History snapshots leave it out; to keep it out of your own git commits, list `.lemmata/` in your `.gitignore`. Under *Project settings → Build folder* you can choose another folder inside the project.
 
 The Recompile menu also has:
 
@@ -41,7 +41,9 @@ A build that runs longer than five minutes is stopped and explained. Change the 
 
 If a build fails but an older PDF is still there, the PDF pane keeps that PDF and shows a banner with **Show logs**. Clicking the red build result in the status bar also opens the logs. While a build runs, the Recompile button reads **Stop**.
 
-Errors and warnings appear in the **Problems** panel in plain language, with a few lines of source and a hint where one is known. Click one to jump to its line (**F8** and **Shift+F8** step through problems in the editor). Some come with a one-click fix: **Add `\usepackage{amssymb}`** when a command like `\mathbb` is undefined, or the exact install command when a package is missing from your TeX installation. Problems from the bibliography tool (a missing `.bib` file, a broken entry) are listed too.
+Errors and warnings appear in the **Problems** panel in plain language, with a few lines of source and a hint where one is known. Click one to jump to its line (**F8** and **Shift+F8** step through problems in the editor). Some come with a one-click fix: **Add `\usepackage{amssymb}`** when a command like `\mathbb` is undefined, or the exact install command when a package is missing from your TeX installation. Problems from the bibliography tool (a missing `.bib` file, a broken entry) are listed too. Many common TeX errors also come with a one-sentence explanation of what went wrong and, where there is one, a fix.
+
+**Show TODOs** in the command palette lists every `% TODO`, `% FIXME` and `% XXX` comment and every `\todo{…}` note in the project, grouped by file. Click one to go to its line.
 
 If a save fails, the tab stays open with your text, the status bar says **Not saved** in red, and the error stays on screen until you dismiss it. With autosave on, closing the window saves unsaved files first. If a file can't be saved, or autosave is off, Lemmata asks before it closes. Switching projects saves first too, and stays where it is if a save fails.
 
@@ -56,6 +58,9 @@ If a save fails, the tab stays open with your text, the status bar says **Not sa
 - **Formatting**: Ctrl+B and Ctrl+I toggle bold and italic, Ctrl+/ comments lines, Ctrl+] and Ctrl+[ change a heading's level, Ctrl+Shift+E wraps the selection in an environment. The toolbar above the editor has buttons for these, headings, links, figures, tables, lists and citations.
 - **Insert dialogs**: **Figure** (pick an image from the project or your computer, caption, label, width), **Table** (choose the size on a grid) and **Symbols** (about 300 maths symbols, Ctrl+Shift+M).
 - Everything above can be switched off in **Preferences → Editor**, together with the font, line height and line wrapping.
+- **Format document** in the command palette re-indents the open file with `tex-fmt` or `latexindent` (part of TeX Live), whichever is installed, using your indentation setting. The change is a single edit, so Ctrl+Z brings the old layout back.
+- **Hover cards.** Hover over `\ref`, `\eqref` or `\cref` to see what it points to: the rendered equation, the figure with its caption and image, the table caption or the section heading. Over `\cite`, you see the entry. Over `\includegraphics` or `\input`, you see the file.
+- **Review comments.** Select the text, then click **Comment** in the editor toolbar or press Ctrl+Alt+M (**Add a comment** in the palette). The text is highlighted and the Comments panel opens for you to write. The **Comments** button in the top toolbar opens the panel at any time; its badge shows how many comments are open. In the panel you can reply, **Resolve** a thread and **Reopen** it later, or **Delete** it (a second click confirms). **Show resolved** lists the resolved threads too. Comments follow the text as you edit it. They are saved in `.lemmata/comments.json` in the project. Lemmata doesn't change your `.gitignore`, so `.lemmata/` is ignored only if yours lists it. To share the comments through git, commit just that file with `git add -f .lemmata/comments.json`; the force flag adds it even when the folder is ignored.
 
 ## The PDF
 
@@ -64,6 +69,9 @@ If a save fails, the tab stays open with your text, the status bar says **Not sa
 - Text in the PDF can be **selected and copied**. **Ctrl+F** with the PDF focused searches it and highlights every match.
 - Links in the PDF work: `\ref`, the table of contents and URLs.
 - The **outline** button lists the PDF's bookmarks (load `hyperref` to get them).
+- The **page thumbnails** button shows a strip of every page beside the document; click one to go to it.
+- The zoom menu (the percentage button) has **Two pages**, which lays pages out side by side with page 1 on its own, like a book, and **Start with two pages**, which pairs pages 1 and 2, 3 and 4, and so on.
+- **Open in external viewer** (in the PDF toolbar) opens the PDF in your system's PDF viewer.
 - **Present full screen** shows one page at a time for Beamer slides: arrow keys, Space or a click move on, Esc leaves.
 - **Presenter view** (press **P** while presenting) opens a second window for you: the current slide, the next slide, your speaker notes, a timer (T pauses it, R resets it) and the clock, while the audience window shows only the slide. Either window can change slide and the other follows. With two screens it opens by itself: the slides go to the other screen and the presenter view stays on this one.
 - **Speaker notes** come from Beamer. Add `\setbeameroption{show notes on second screen=right}` to the preamble and `\note{…}` after a frame. The PDF then has the slide on the left half of each page and the notes on the right; the audience window shows only the slide and the presenter view shows the notes. Without that option the presenter view says how to add them.
@@ -86,6 +94,7 @@ Press **Ctrl+Shift+/** or **F1** for the full list inside Lemmata. It has a sear
 | Ctrl+/ | Comment or uncomment |
 | Ctrl+W, Ctrl+Tab | Close tab, next tab |
 | Ctrl+J | Show this line in the PDF |
+| Ctrl+Alt+M | Add a comment on the selection |
 | F8 / Shift+F8 | Next / previous problem |
 | F12 / Shift+F12 | Go to definition / find references (labels, citations, files) |
 | F2 | Rename a label everywhere |
@@ -97,7 +106,13 @@ On macOS, use Cmd instead of Ctrl.
 
 **Ctrl+Shift+C** searches your `.bib` files by author, title, year or key. Inside an open `\cite{` it adds the key; elsewhere it inserts a new `\cite{…}`.
 
-To add a reference, paste a DOI (`10.1038/nature14539`) or an arXiv ID (`arXiv:1707.06347`) into the picker. Lemmata looks it up on doi.org, gives it a readable key such as `schulman2017proximal` and appends it to the `.bib` file you choose. This lookup is the only time Lemmata goes online for references.
+To add a reference, paste a DOI (`10.1038/nature14539`) or an arXiv ID (`arXiv:1707.06347`) into the picker. Lemmata looks it up on doi.org, gives it a readable key such as `schulman2017proximal` and appends it to the `.bib` file you choose.
+
+Don't have the DOI? Type a title or author in the picker and click **Search online**. That sends your search to Crossref, and only when you click it; nothing is sent while you type. Pick a result to add it to your `.bib` file and cite it.
+
+Those two are the only times Lemmata goes online for references. Zotero, below, talks only to Zotero on your computer.
+
+**Bibliography manager…** in the command palette lists every entry in your `.bib` files, with the file each one is in. It marks **Duplicate key**, **Same DOI** and **Same title** entries and **Not cited** ones, and lists keys that are cited but in no `.bib` file at the top. The menu next to the search box shows only the duplicates or only the uncited entries. On each row, **Open** goes to the entry, **Fields** shows its fields, **Rename key…** changes its key and **Delete…** removes it after you confirm.
 
 ### Zotero
 
@@ -122,6 +137,8 @@ A file can choose its own language with a comment in its first lines, such as `%
 Misspelled words get a wavy underline. Commands, labels, citation keys, file names, maths and comments are skipped. Right-click a word for suggestions or **Add to dictionary**; added words are saved in `lemmata.toml`.
 
 Dictionaries: English (US and UK), German, Swiss German (with ss instead of ß) and French. Lemmata guesses the language from `babel` or `polyglossia`; you can set it in project settings.
+
+**Grammar checking** is off by default. Choose a mode under **Preferences → Grammar check**: **LanguageTool on this computer** (a server at `http://localhost:8081`), or **LanguageTool at an address…** for a server you run or trust. Lemmata sends the prose of the document to that server, a paragraph at a time, and nowhere else. Preferences shows where the text goes, and **Test the connection** checks that a server answers. Lemmata doesn't start one for you; to run one for a session, start it in Docker with `docker run -p 8081:8010 erikvl87/languagetool`, or with the standalone jar with `java -cp languagetool-server.jar org.languagetool.server.HTTPServer --port 8081`, and stop it with Ctrl+C when you're done. Findings get a dotted underline. Hover over one to see its suggestions as buttons, or **Ignore this rule**. Grammar checking covers English (US and UK), German (Germany and Switzerland) and French, following the spell-check language.
 
 The status bar shows the word count of the document body, and the number of words in your selection. **Word count** in the menu breaks it down by file and counts headings, maths, figures, tables and citations. The outline shows words per section and folds.
 
@@ -175,4 +192,4 @@ Run **Report a problem** from the command palette. It shows the details it will 
 
 ## Not in 1.x
 
-Lemmata is a local editor, so there is no real-time collaboration or track changes, no rich-text (visual) editor, and no grammar checker. Open an issue if one of them matters to you.
+Lemmata is a local editor, so there is no real-time collaboration or track changes (review comments are the closest), and no rich-text (visual) editor. Open an issue if one of the missing features matters to you.
