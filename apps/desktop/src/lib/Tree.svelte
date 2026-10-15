@@ -12,7 +12,7 @@
   import type { Entry } from "./api";
   import { dragState, parentOf, startDrag, wasDrag } from "./treeDrag.svelte";
   import { isSelected, targets, tree } from "./treeSelection.svelte";
-  import { countFiles, formatSize } from "./treeModel";
+  import { countFiles, formatSize, isTextFile, isViewerFile } from "./treeModel";
 
   interface Props {
     entries: Entry[];
@@ -29,9 +29,9 @@
   }
   let { entries, active, main, depth = 0, onOpen, onContext, onMove, onSelect }: Props = $props();
 
-  const editable = (name: string) => /\.(tex|bib|sty|cls|txt|md|toml|bst|tikz|bbx|cbx)$/i.test(name);
-  /** Images and PDFs open in a read-only viewer tab. */
-  const viewable = (name: string) => /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(name);
+  /** Text files open in the editor. Anything not listed here is binary and stays unopened. */
+  const editable = isTextFile;
+  const viewable = isViewerFile;
   const press = (ev: PointerEvent, e: Entry) => onMove && startDrag(ev, e, () => targets(e.path), onMove);
   const mods = (ev: MouseEvent) => ({ ctrl: ev.ctrlKey || ev.metaKey, shift: ev.shiftKey });
   /** Returns true when the click only changed the selection. */

@@ -7,9 +7,12 @@ use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Emitter, State};
 
-/// Files search and rename-reference updates look into.
+/// Files search and rename-reference updates look into: the text files the editor opens
+/// (`isTextFile` in src/lib/treeModel.ts; files known by name, like Makefile, aren't searched).
 const TEXT_EXTS: &[&str] = &[
-    "tex", "bib", "sty", "cls", "bst", "txt", "md", "toml", "tikz", "bbx", "cbx",
+    "tex", "bib", "sty", "cls", "bst", "txt", "md", "markdown", "toml", "tikz", "bbx", "cbx",
+    "csv", "tsv", "json", "yaml", "yml", "xml", "ini", "cfg", "conf", "py", "r", "m", "jl", "sh",
+    "lua",
 ];
 const MAX_MATCHES: usize = 2000;
 

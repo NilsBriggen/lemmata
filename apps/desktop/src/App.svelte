@@ -47,7 +47,7 @@
   import { loadTexCache, saveTexCache } from "./lib/texCache";
   import { clearSelection, prune, reveal, setGitStatus, tree as treeView } from "./lib/treeSelection.svelte";
   import { dragState } from "./lib/treeDrag.svelte";
-  import { findEntry } from "./lib/treeModel";
+  import { findEntry, isTextFile, isViewerFile } from "./lib/treeModel";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getVersion } from "@tauri-apps/api/app";
   import { errorSummary, issueUrl, systemSummary } from "./lib/report";
@@ -111,6 +111,18 @@
   let conflicts = $state<string[]>([]);
   /** Files whose last save failed: the status bar says so in red. */
   let failedSaves = $state<string[]>([]);
+  /** The project's lemmata.toml turns on shell escape, and the user hasn't said yet whether to allow it. */
+  let askShellEscape = $state(false);
+  const shellEscapeAllowed = () => !!project?.config.shell_escape && settings.shellEscapeProjects.includes(project.root);
+
+  async function allowShellEscape(allow: boolean) {
+    askShellEscape = false;
+    if (allow && project) {
+      await updateSettings({ shellEscapeProjects: [...settings.shellEscapeProjects, project.root] });
+      runBuild();
+    }
+  }
+
   /** History works for the open project: git is installed. Off means snapshots (and undoing replaces) aren't possible. */
   let historyOn = $state(false);
   /** Closing the window with edits that couldn't be saved (or autosave is off): ask first. */
@@ -217,6 +229,7 @@
     lastThumbnail = 0;
     lastSnapshot = 0; // the first save of a session takes a snapshot
     choosingMain = project.main_candidates.length > 1 && !project.config.main;
+    askShellEscape = project.config.shell_escape && !shellEscapeAllowed();
     // Show the existing PDF right away, then rebuild.
     api.readPdf().then((b) => pdf?.load(b)).catch(() => {});
     runBuild();
@@ -312,7 +325,7 @@
     return "\\begin{" + env + "}\n\t\\item ${}\n\\end{" + env + "}";
   };
 
-  const isViewer = (p: string) => /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(p);
+  const isViewer = isViewerFile;
   const viewerActive = $derived(!!active && isViewer(active));
 
   async function openFile(path: string) {
@@ -455,7 +468,10 @@
   }
 
   async function saveAll(build = settings.autoCompile) {
-    await Promise.all(Object.keys(dirty).filter((p) => dirty[p]).map((p) => save(p, build)));
+    const paths = Object.keys(dirty).filter((p) => dirty[p]);
+    await Promise.all(paths.map((p) => save(p, false)));
+    // One build for all of them, not one per file.
+    if (build && paths.length) runBuild();
   }
 
   async function runBuild() {
@@ -463,7 +479,7 @@
     const seq = ++buildSeq;
     building = true;
     try {
-      const result = await api.build();
+      const result = await api.build(shellEscapeAllowed());
       if (seq !== buildSeq || result.status === "cancelled") return;
       outcome = result;
       lastCompiled = Date.now();
@@ -805,6 +821,8 @@
 
   async function saveSettings(config: Config) {
     if (!project) return;
+    if (config.shell_escape && !settings.shellEscapeProjects.includes(project.root))
+      await updateSettings({ shellEscapeProjects: [...settings.shellEscapeProjects, project.root] });
     const mainChanged = config.main !== project.main;
     // The dialog stays open when saving fails, so the choices aren't lost.
     if (!(await configure(config)) || !project) return;
@@ -898,7 +916,7 @@
   const fileItems = $derived<PaletteItem[]>(
     project
       ? allFiles(project.tree)
-          .filter((p) => /\.(tex|bib|sty|cls|txt|md|toml|bst|tikz)$/i.test(p))
+          .filter(isTextFile)
           .map((p) => ({ id: p, label: p.split("/").pop()!, detail: p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "", run: () => openFile(p) }))
       : [],
   );
@@ -1554,6 +1572,7 @@
           onTable={() => (dialog = "table")}
           onCite={() => (citeOpen = true)}
           onList={(ordered) => editor?.insertTemplate(listTemplate(ordered))}
+          onSyncToPdf={() => active && syncForward(active, editor?.currentLine() ?? 1, 0)}
         />
         {#if openError}
           <div class="err-bar" role="alert">
@@ -1692,12 +1711,22 @@
   onNotice={(text, action) => showNotice(text, action)}
   onCreated={async (path, dir) => {
     await refreshTree();
-    if (!dir && /\.(tex|bib|sty|cls|txt|md|toml)$/i.test(path)) openFile(path);
+    if (!dir && isTextFile(path)) openFile(path);
   }}
   {onRenamed}
   {onTrashed}
   onUpload={uploadFiles}
 />
+
+{#if askShellEscape && project}
+  <Modal title="Allow this project to run programs?" width={500} onClose={() => allowShellEscape(false)}>
+    <p class="close-msg">This project's <code>lemmata.toml</code> turns on <b>shell escape</b>, which lets the document run programs on your computer while it builds (packages such as <code>minted</code> need it). Allow it only for projects you trust. Until then, the project builds without it.</p>
+    {#snippet footer()}
+      <button class="btn" onclick={() => allowShellEscape(false)}>Build without it</button>
+      <button class="btn primary" onclick={() => allowShellEscape(true)}>Allow for this project</button>
+    {/snippet}
+  </Modal>
+{/if}
 
 {#if conflicts.length}
   {@const path = conflicts[0]}

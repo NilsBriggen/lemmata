@@ -50,6 +50,13 @@ export function range(rows: Entry[], a: string, b: string): string[] {
   return rows.slice(Math.min(i, j), Math.max(i, j) + 1).map((r) => r.path);
 }
 
+const TEXT_EXT = /\.(tex|bib|sty|cls|bst|bbx|cbx|tikz|txt|md|markdown|toml|csv|tsv|json|ya?ml|xml|ini|cfg|conf|py|r|m|jl|sh|lua)$/i;
+const TEXT_NAME = /^(\.?latexmkrc|makefile|readme|license|changelog|\.gitignore|\.gitattributes|\.editorconfig)$/i;
+/** Files the editor opens as text. Everything that opens anywhere (tree, palette, keyboard) uses this. */
+export const isTextFile = (path: string) => TEXT_EXT.test(path) || TEXT_NAME.test(baseName(path));
+/** Images and PDFs open in a read-only viewer tab. */
+export const isViewerFile = (path: string) => /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(path);
+
 export const parentOf = (path: string) => path.split("/").slice(0, -1).join("/");
 export const baseName = (path: string) => path.split("/").pop() ?? path;
 export const joinPath = (folder: string, name: string) => (folder ? `${folder}/${name}` : name);

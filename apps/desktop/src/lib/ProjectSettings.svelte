@@ -18,10 +18,24 @@
   // A working copy; nothing changes until Save.
   let config = $state<Config>(untrack(() => ({ ...project.config, main: project.config.main ?? project.main })));
   const candidates = $derived(Array.from(new Set([project.main, ...project.main_candidates])));
+
+  // Mirrors valid_outdir in crates/lemmata-project: the build folder must stay inside the project.
+  const outdirError = $derived.by(() => {
+    const d = config.outdir ?? "";
+    const parts = d.split(/[\\/]/);
+    if (!d.trim()) return "Enter a folder name.";
+    if (/^([\\/]|[A-Za-z]:)/.test(d)) return "Use a folder inside the project, not a full path.";
+    if (parts.includes("..")) return "The folder must stay inside the project, so remove the \"..\".";
+    if (!parts.some((s) => s && s !== ".")) return "Name a folder, not \".\".";
+    return null;
+  });
+  const timeoutValid = $derived(Number.isInteger(config.timeout_secs) && config.timeout_secs! >= 10 && config.timeout_secs! <= 3600);
+  // An empty box gives null, which Number.isInteger rejects.
+  const invalid = $derived(!!outdirError || !timeoutValid);
 </script>
 
 <Modal title="Project settings" subtitle="Saved in lemmata.toml in the project folder, so they travel with it." width={540} {onClose}>
-  <form id="project-settings" onsubmit={(e) => (e.preventDefault(), onSave(config))}>
+  <form id="project-settings" onsubmit={(e) => (e.preventDefault(), !invalid && onSave(config))}>
     <div class="field">
       <label for="ps-main">Main document</label>
       <select id="ps-main" class="input mono" bind:value={config.main}>
@@ -47,6 +61,20 @@
       </div>
     </div>
     <p class="hint">pdfLaTeX is fastest. XeLaTeX and LuaLaTeX can use the fonts installed on your computer.</p>
+
+    <div class="grid">
+      <div class="field">
+        <label for="ps-timeout">Stop a build after N seconds</label>
+        <input id="ps-timeout" class="input" type="number" min="10" max="3600" step="1" aria-invalid={!timeoutValid} bind:value={config.timeout_secs} />
+        {#if !timeoutValid}<p class="err">Enter a whole number from 10 to 3600.</p>{/if}
+      </div>
+      <div class="field">
+        <label for="ps-outdir">Build folder</label>
+        <input id="ps-outdir" class="input mono" aria-invalid={!!outdirError} aria-describedby="ps-outdir-hint" bind:value={config.outdir} />
+        {#if outdirError}<p class="err">{outdirError}</p>{/if}
+        <p class="hint" id="ps-outdir-hint">Relative to the project, e.g. .lemmata/build. Must stay inside the project.</p>
+      </div>
+    </div>
 
     <div class="field">
       <label for="ps-spell">Spell check</label>
@@ -94,7 +122,7 @@
   </form>
   {#snippet footer()}
     <button class="btn" onclick={onClose}>Cancel</button>
-    <button class="btn primary" type="submit" form="project-settings">Save</button>
+    <button class="btn primary" type="submit" form="project-settings" disabled={invalid}>Save</button>
   {/snippet}
 </Modal>
 
@@ -105,6 +133,7 @@
   .add { align-self: flex-start; }
   .hint { margin: -6px 0 0; color: var(--muted); font-size: 12px; }
   .field .hint { margin: 2px 0 0; }
+  .err { margin: 2px 0 0; color: var(--error); font-size: 12px; }
   .warn { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--r); color: var(--warn); background: var(--warn-soft); }
   .warn p { margin: 0; color: var(--ink-2); }
 </style>

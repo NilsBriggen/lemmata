@@ -139,7 +139,8 @@ export const api = {
   readText: (path: string) => invoke<string>("read_text", { path }),
   /** `expected`: hash (contentHash) of the text last read or written; the save is refused if the disk differs. */
   writeText: (path: string, content: string, expected?: number) => invoke<void>("write_text", { path, content, expected: expected ?? null }),
-  build: () => invoke<Outcome>("build"),
+  /** `shellEscape`: the user allowed it for this project; lemmata.toml alone can't turn it on. */
+  build: (shellEscape: boolean) => invoke<Outcome>("build", { shellEscape }),
   readPdf: async () => new Uint8Array(await invoke<ArrayBuffer>("read_pdf")),
   synctexForward: (path: string, line: number, column: number) =>
     invoke<PdfBox[]>("synctex_forward", { path, line, column }),

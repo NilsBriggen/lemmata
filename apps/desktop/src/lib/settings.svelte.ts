@@ -45,6 +45,8 @@ export interface Settings {
   /** Text the editor offers after typing a short trigger. */
   snippets: Snippet[];
   firstRunDone: boolean;
+  /** Projects (by folder) whose lemmata.toml may turn on shell escape: the user allowed it. */
+  shellEscapeProjects: string[];
 }
 
 export const DEFAULTS: Settings = {
@@ -76,7 +78,20 @@ export const DEFAULTS: Settings = {
   trashMode: "project",
   snippets: [],
   firstRunDone: false,
+  shellEscapeProjects: [],
 };
+
+/** Saved values of the wrong type (a damaged or hand-edited file) fall back to the defaults. */
+export function validSettings(saved: Record<string, unknown>): Partial<Settings> {
+  return Object.fromEntries(
+    Object.entries(saved).filter(([k, v]) => {
+      if (!(k in DEFAULTS)) return false;
+      const d = DEFAULTS[k as keyof Settings];
+      if (d === null) return v === null || typeof v === "string";
+      return typeof v === typeof d && Array.isArray(v) === Array.isArray(d);
+    }),
+  ) as Partial<Settings>;
+}
 
 export const settings: Settings = $state({ ...DEFAULTS });
 let store: Store | null = null;
@@ -85,7 +100,7 @@ let store: Store | null = null;
 export async function loadSettings() {
   try {
     store = await load("settings.json", { autoSave: 300, defaults: {} });
-    const saved = (await store.get<Partial<Settings>>("settings")) ?? {};
+    const saved = validSettings((await store.get<Record<string, unknown>>("settings")) ?? {});
     // Before 1.0, "compile as I type" and "save as I type" were one switch.
     if (saved.autoCompile === undefined && saved.autosaveMs === 0) saved.autoCompile = false;
     Object.assign(settings, { ...DEFAULTS, ...saved, indent: validIndent(saved.indent ?? DEFAULTS.indent) });

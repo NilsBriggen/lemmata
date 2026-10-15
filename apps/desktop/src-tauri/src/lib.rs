@@ -51,6 +51,8 @@ pub(crate) struct AppState {
     pub(crate) project: Mutex<Option<Project>>,
     /// Sending on this cancels the build in progress.
     cancel_build: Mutex<Option<oneshot::Sender<()>>>,
+    /// Bumped by every build request and by Stop: a build still waiting for the lock gives up when it's no longer the latest.
+    build_generation: std::sync::atomic::AtomicU64,
     lsp: tokio::sync::Mutex<Option<lsp::Server>>,
     lsp_generation: std::sync::atomic::AtomicU64,
     pub(crate) speller: Mutex<Option<lemmata_spell::Speller>>,
@@ -227,25 +229,50 @@ fn write_text(
     Ok(())
 }
 
-fn cancel_running(state: &State<AppState>) {
+/// Cancels the running build and any waiting one; returns the new generation.
+fn cancel_running(state: &State<AppState>) -> u64 {
+    let generation = state
+        .build_generation
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
     if let Some(tx) = state.cancel_build.lock_safe().take() {
         let _ = tx.send(());
     }
+    generation
 }
 
 #[tauri::command]
-async fn build(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<Outcome> {
-    cancel_running(&state);
+async fn build(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    shell_escape: bool,
+) -> CmdResult<Outcome> {
+    let generation = cancel_running(&state);
     // Wait for the cancelled build to kill latexmk and its children before starting another in the same folder.
     let _running = state.build_lock.lock().await;
+    // A newer build or Stop came while this one waited: don't run it at all.
+    if state
+        .build_generation
+        .load(std::sync::atomic::Ordering::SeqCst)
+        != generation
+    {
+        return Ok(Outcome {
+            status: lemmata_tex::Status::Cancelled,
+            duration_ms: 0,
+            pdf: None,
+            diagnostics: Vec::new(),
+        });
+    }
     let (tx, rx) = oneshot::channel();
     *state.cancel_build.lock_safe() = Some(tx);
 
-    let project = state
+    let mut project = state
         .project
         .lock_safe()
         .clone()
         .ok_or("No project is open.")?;
+    // A downloaded project's lemmata.toml can't run programs on its own: the user must have allowed it.
+    project.config.shell_escape &= shell_escape;
     let detection = match state.detection.lock_safe().clone() {
         Some(d) => d,
         None => lemmata_tex::detect(&state.extra_tex_dirs.lock_safe()),

@@ -106,3 +106,12 @@ describe("UndoLog", () => {
     expect(await log.undo()).toBeNull();
   });
 });
+
+describe("isTextFile", () => {
+  it("opens text formats and known names, not binaries", async () => {
+    const { isTextFile, isViewerFile } = await import("./treeModel");
+    for (const p of ["main.tex", "data/results.csv", "notes.MD", "scripts/plot.py", "Makefile", "sub/.latexmkrc", "README"]) expect(isTextFile(p), p).toBe(true);
+    for (const p of ["paper.docx", "fig.png", "font.ttf", "archive.zip", "x.pdf"]) expect(isTextFile(p), p).toBe(false);
+    expect(isViewerFile("fig.png") && isViewerFile("x.pdf")).toBe(true);
+  });
+});
