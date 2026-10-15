@@ -108,6 +108,8 @@ pub async fn build(
     let started = Instant::now();
     let started_at = SystemTime::now();
     prepare_outdir(project);
+    // With the slack in written_since, last build's log would look fresh; no log is the signal that latexmk never ran TeX.
+    let _ = std::fs::remove_file(project.log_path());
 
     // latexmk's own output is the only explanation when it dies before TeX
     // writes a log (no Perl, a MiKTeX prompt), so keep it in a file.
@@ -137,10 +139,7 @@ pub async fn build(
     // latexmk can fail to start at all (Perl missing, or blocked by a Windows
     // application control policy) and then writes no log. Rather than give up,
     // run the engine ourselves: the same passes, without latexmk.
-    // Strictly newer than the start: a log left by the last build must not count, even a second old.
-    let log_fresh = std::fs::metadata(project.log_path())
-        .and_then(|m| m.modified())
-        .is_ok_and(|t| t >= started_at);
+    let log_fresh = written_since(&project.log_path(), started_at);
     let mut fell_back = false;
     if status == Status::Failed
         && !log_fresh
@@ -194,19 +193,13 @@ pub async fn build(
     }
 
     let pdf = project.pdf_path();
-    let fresh = std::fs::metadata(&pdf)
-        .and_then(|m| m.modified())
-        .is_ok_and(|t| t + Duration::from_secs(1) >= started_at);
+    let fresh = written_since(&pdf, started_at);
     let mut diagnostics = std::fs::read(project.log_path())
         .map(|b| lemmata_log::parse(&String::from_utf8_lossy(&b)))
         .unwrap_or_default();
     // The bibliography tool's own log explains what the main log can't.
-    let blg_path = project
-        .outdir_abs()
-        .join(project.main.with_extension("blg"));
-    let blg_fresh = std::fs::metadata(&blg_path)
-        .and_then(|m| m.modified())
-        .is_ok_and(|t| t + Duration::from_secs(1) >= started_at);
+    let blg_path = out_file(project, "blg");
+    let blg_fresh = written_since(&blg_path, started_at);
     if blg_fresh && let Ok(bytes) = std::fs::read(&blg_path) {
         for d in lemmata_log::parse_blg(&String::from_utf8_lossy(&bytes)) {
             // A missing key is already reported from the main log.
@@ -279,6 +272,24 @@ pub async fn build(
     })
 }
 
+/// Where TeX and its helpers write `ext` output for the main file. They put it
+/// flat in the build folder, so `src/main.tex` gives `main.ext`, not `src/main.ext`.
+fn out_file(project: &Project, ext: &str) -> PathBuf {
+    let stem = project.main.file_stem().unwrap_or_default();
+    let mut name = stem.to_os_string();
+    name.push(".");
+    name.push(ext);
+    project.outdir_abs().join(name)
+}
+
+/// Whether `path` was written by a build that began at `started_at`. Allows 2 s
+/// of slack because FAT/exFAT and network shares round modification times.
+fn written_since(path: &Path, started_at: SystemTime) -> bool {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t + Duration::from_secs(2) >= started_at)
+}
+
 /// Puts the TeX and Perl folders first on PATH.
 fn set_path(cmd: &mut Command, opts: &BuildOptions<'_>) {
     let mut path_dirs: Vec<&Path> = Vec::new();
@@ -305,20 +316,17 @@ async fn run_step(
         Ok(c) => c,
         Err(e) => return Err(Error::Spawn(e)),
     };
-    let pid = child.id();
     Ok(Some(tokio::select! {
         res = child.wait() => match res {
             Ok(s) if s.success() => Status::Success,
             _ => Status::Failed,
         },
         _ = tokio::time::sleep(limit) => {
-            kill_tree(pid);
-            let _ = child.wait().await;
+            stop(&mut child).await;
             Status::Timeout
         }
         _ = cancel => {
-            kill_tree(pid);
-            let _ = child.wait().await;
+            stop(&mut child).await;
             Status::Cancelled
         }
     }))
@@ -361,8 +369,6 @@ async fn direct_build(
     let engine = project.config.engine.binary();
     let engine_path = tool(opts, engine)
         .ok_or_else(|| Error::SpawnTool(engine.into(), std::io::Error::other("not found")))?;
-    let outdir = project.outdir_abs();
-    let mirror = |ext: &str| outdir.join(project.main.with_extension(ext));
     let main = project.main.to_string_lossy().replace('\\', "/");
     let mut bib_checked = false;
     let mut status = Status::Failed;
@@ -401,7 +407,7 @@ async fn direct_build(
             return Ok(status);
         }
 
-        let log = std::fs::read(mirror("log"))
+        let log = std::fs::read(out_file(project, "log"))
             .map(|b| String::from_utf8_lossy(&b).into_owned())
             .unwrap_or_default();
         let rerun = [
@@ -441,7 +447,7 @@ enum Bib {
 /// size and time of every .bib file.
 fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
     use std::hash::{Hash, Hasher};
-    let mirror = |ext: &str| project.outdir_abs().join(project.main.with_extension(ext));
+    let mirror = |ext: &str| out_file(project, ext);
     let mut h = std::collections::hash_map::DefaultHasher::new();
     if biber {
         std::fs::read(mirror("bcf")).ok()?.hash(&mut h);
@@ -482,7 +488,7 @@ async fn run_bibliography(
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Bib, Error> {
     let biber = project.config.bib == lemmata_project::Bib::Biber;
-    let mirror = |ext: &str| project.outdir_abs().join(project.main.with_extension(ext));
+    let mirror = |ext: &str| out_file(project, ext);
     let Some(fingerprint) = bib_fingerprint(project, biber) else {
         return Ok(Bib::Skipped);
     };
@@ -537,6 +543,10 @@ fn tail_of(text: &str, max: usize) -> String {
     }
     text[start..].to_string()
 }
+
+/// Written into the build folder when Lemmata prepares it. `clean` deletes
+/// only where it finds this, so a build folder pointed at someone's own folder is safe.
+const MARKER: &str = ".lemmata-build";
 
 /// File types TeX and its helpers write next to the PDF. "Clear cached
 /// files" removes only these, so a build folder that was ever pointed at a
@@ -638,6 +648,12 @@ pub fn clean(project: &Project) -> std::io::Result<usize> {
     if !outdir.is_dir() {
         return Ok(0);
     }
+    // Lemmata's own default folder is safe even when a build from before the marker existed made it.
+    if !outdir.join(MARKER).is_file() && project.config.outdir != lemmata_project::DEFAULT_OUTDIR {
+        return Err(std::io::Error::other(
+            "the build folder was not created by Lemmata, so it is left alone",
+        ));
+    }
     clean_dir(&outdir, &project.pdf_path())
 }
 
@@ -652,6 +668,7 @@ fn prepare_outdir(project: &Project) {
     }
     let outdir = project.outdir_abs();
     let _ = std::fs::create_dir_all(&outdir);
+    let _ = std::fs::write(outdir.join(MARKER), "");
     mirror(
         &lemmata_project::tree(&project.root, &project.config.outdir),
         &outdir,
@@ -666,20 +683,41 @@ fn prepend_paths(dirs: &[&Path]) -> OsString {
     std::env::join_paths(paths).unwrap_or_default()
 }
 
-/// latexmk spawns the engine and biber as children; kill them all.
-fn kill_tree(pid: Option<u32>) {
+/// How long a build gets to exit after the polite kill before it is forced.
+const KILL_GRACE: Duration = Duration::from_secs(2);
+
+/// Kills the child and everything it started, and waits for it, without ever
+/// hanging: TERM first, then force after a grace period.
+async fn stop(child: &mut tokio::process::Child) {
+    let pid = child.id();
+    kill_tree(pid, false);
+    if tokio::time::timeout(KILL_GRACE, child.wait())
+        .await
+        .is_err()
+    {
+        kill_tree(pid, true);
+        // If even this fails the child is dropped, and kill_on_drop has the last word.
+        let _ = tokio::time::timeout(KILL_GRACE, child.wait()).await;
+    }
+}
+
+/// latexmk spawns the engine and biber as children; signal them all.
+fn kill_tree(pid: Option<u32>, force: bool) {
     let Some(pid) = pid else { return };
     #[cfg(unix)]
     {
         // The child leads its own process group (process_group(0) above).
         let _ = std::process::Command::new("kill")
-            .args(["-TERM", &format!("-{pid}")])
+            .args([if force { "-KILL" } else { "-TERM" }, &format!("-{pid}")])
             .status();
     }
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        let _ = force; // taskkill /F is already as hard as Windows gets
         let _ = std::process::Command::new("taskkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .status();
     }
 }
@@ -1015,5 +1053,139 @@ mod tests {
         p.config.outdir = ".".into();
         assert!(clean(&p).is_err());
         assert!(d.path().join("main.tex").exists());
+    }
+
+    #[test]
+    fn clean_refuses_a_folder_lemmata_did_not_create() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        // A folder of the user's own; Lemmata's default .lemmata/build is always its own.
+        std::fs::write(d.path().join("lemmata.toml"), "outdir = \"out\"\n").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        // The folder exists and holds an artefact-looking file, but no build ever prepared it.
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        std::fs::write(p.outdir_abs().join("mine.log"), "keep me").unwrap();
+        assert!(clean(&p).is_err());
+        assert!(p.outdir_abs().join("mine.log").exists());
+        prepare_outdir(&p);
+        assert_eq!(clean(&p).unwrap(), 1);
+        assert!(
+            p.outdir_abs().join(MARKER).exists(),
+            "the marker survives a clean"
+        );
+    }
+
+    #[test]
+    fn outputs_are_flat_in_the_build_folder() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("src")).unwrap();
+        std::fs::write(d.path().join("src/main.tex"), "\\documentclass{article}").unwrap();
+        std::fs::write(d.path().join("lemmata.toml"), "main = \"src/main.tex\"\n").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        assert_eq!(p.main, Path::new("src/main.tex"));
+        for ext in ["blg", "bbl", "log", "pdf", "lemmata-bib"] {
+            assert_eq!(
+                out_file(&p, ext),
+                p.outdir_abs().join(format!("main.{ext}"))
+            );
+        }
+        assert_eq!(out_file(&p, "pdf"), p.pdf_path());
+        assert_eq!(out_file(&p, "log"), p.log_path());
+    }
+
+    /// latexmk writes the .blg flat even for src/main.tex; its errors must reach the user.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_blg_of_a_main_file_in_a_subfolder_is_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("src")).unwrap();
+        std::fs::write(d.path().join("src/main.tex"), "\\documentclass{article}").unwrap();
+        std::fs::write(d.path().join("lemmata.toml"), "main = \"src/main.tex\"\n").unwrap();
+        let fake = d.path().join("fake-latexmk");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nout=.lemmata/build\necho x > $out/main.log\necho pdf > $out/main.pdf\necho \"ERROR - BibTeX subsystem: Cannot find 'refs.bib'\" > $out/main.blg\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let p = Project::open(d.path()).unwrap();
+        assert_eq!(p.config.outdir, ".lemmata/build");
+        let (_tx, rx) = oneshot::channel();
+        let opts = BuildOptions {
+            latexmk: &fake,
+            bin_dir: None,
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let out = build(&p, &opts, rx).await.unwrap();
+        assert!(out.pdf.is_some());
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|x| x.message.contains("refs.bib")),
+            "{:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
+    fn freshness_allows_two_seconds_of_slack() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("x.log");
+        std::fs::write(&f, "").unwrap();
+        let started = SystemTime::now();
+        let set = |ago: u64| {
+            let t = started - Duration::from_secs(ago);
+            std::fs::File::options()
+                .write(true)
+                .open(&f)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        };
+        set(1);
+        assert!(written_since(&f, started));
+        set(5);
+        assert!(!written_since(&f, started));
+        assert!(!written_since(&d.path().join("missing"), started));
+    }
+
+    /// A build that ignores SIGTERM must still be stopped within a few seconds, by timeout and by cancel.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_build_that_ignores_sigterm_is_still_stopped() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let fake = d.path().join("fake-latexmk");
+        std::fs::write(&fake, "#!/bin/sh\ntrap '' TERM\nsleep 60\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.config.timeout_secs = 1;
+        let opts = BuildOptions {
+            latexmk: &fake,
+            bin_dir: None,
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let t = Instant::now();
+        let (_tx, rx) = oneshot::channel();
+        let out = build(&p, &opts, rx).await.unwrap();
+        assert_eq!(out.status, Status::Timeout);
+        assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
+
+        p.config.timeout_secs = 0;
+        let t = Instant::now();
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _ = tx.send(());
+        });
+        let out = build(&p, &opts, rx).await.unwrap();
+        assert_eq!(out.status, Status::Cancelled);
+        assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
     }
 }
