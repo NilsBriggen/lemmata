@@ -106,6 +106,8 @@
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let update = $state<{ version: string; progress: number | null; error: string | null } | null>(null);
   let historyOpen = $state(false);
+  /** History works for the open project: git is installed. Off means snapshots (and undoing replaces) aren't possible. */
+  let historyOn = $state(false);
   /** Closing the window with edits that couldn't be saved (or autosave is off): ask first. */
   let closing = $state<{ files: string[]; error: string | null } | null>(null);
   let historyVersion = $state(0);
@@ -198,6 +200,7 @@
     diagnostics = [];
     outcome = null;
     headings = [];
+    ensureHistory();
     // The file first: texlab can take a moment to start, and nothing here needs it.
     await openFile(project.main);
     await startLsp(project.root);
@@ -677,14 +680,38 @@
     runBuild();
   }
 
-  async function takeSnapshot(label: string) {
+  /** History is on by default: a project that has none gets Lemmata's own snapshot store. Off only without git. */
+  async function ensureHistory() {
+    try {
+      const status = await api.historyStatus();
+      if (status.state === "not-a-repo") await api.historyEnable();
+      historyOn = status.state !== "no-git";
+      historyVersion++;
+    } catch (e) {
+      historyOn = false;
+      reportOnce("history", `History is off for this project: ${errorMessage(e)}`);
+    }
+  }
+
+  /** Returns false when no snapshot could be taken (History is off). */
+  async function takeSnapshot(label: string): Promise<boolean> {
     lastSnapshot = Date.now();
     editedSinceSnapshot = false;
     try {
       if (await api.historySnapshot(label)) historyVersion++;
+      return true;
     } catch {
-      // History is off for this project (not a repo, or no git): nothing to do.
+      return false;
     }
+  }
+
+  /** Before a restore: unsaved edits are saved (and so kept in the safety snapshot), and no autosave can overwrite the restored file. */
+  async function beforeRestore() {
+    await saveAll(false);
+    for (const t of saveTimers.values()) clearTimeout(t);
+    saveTimers.clear();
+    clearTimeout(buildTimer);
+    if (unsaved().length) throw new Error(`${unsaved().join(", ")} could not be saved, so nothing was restored.`);
   }
 
   async function confirmSnapshot(e: SubmitEvent) {
@@ -1392,7 +1419,7 @@
                 onOpen={gotoProblem}
                 beforeReplace={async () => {
                   await saveAll();
-                  await takeSnapshot("Before replace");
+                  return takeSnapshot("Before replace");
                 }}
                 onReplaced={async (paths) => {
                   for (const p of paths) await reloadFromDisk(p);
@@ -1542,7 +1569,7 @@
             />
           </div>
           {#if historyOpen}
-            <div class="fill"><HistoryPanel version={historyVersion} {currentText} {onRestored} {onRestoredAll} onClose={() => (historyOpen = false)} /></div>
+            <div class="fill"><HistoryPanel version={historyVersion} {currentText} {beforeRestore} {onRestored} {onRestoredAll} onClose={() => (historyOpen = false)} /></div>
           {/if}
         </div>
       {/if}
@@ -1655,9 +1682,10 @@
   <RenameSymbol
     kind={renaming.kind}
     name={renaming.name}
+    {historyOn}
     beforeApply={async () => {
       await saveAll();
-      await takeSnapshot("Before rename");
+      return takeSnapshot("Before rename");
     }}
     onApplied={async (files, text) => {
       for (const f of files) await reloadFromDisk(f);

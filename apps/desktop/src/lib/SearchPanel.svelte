@@ -8,7 +8,8 @@
     onOpen: (path: string, line: number) => void;
     /** Saves open files before replacing and reloads them after. */
     onReplaced: (paths: string[]) => Promise<void>;
-    beforeReplace: () => Promise<void>;
+    /** Saves open files and takes a snapshot; false when History is off, so the replace can't be undone. */
+    beforeReplace: () => Promise<boolean>;
     onClose: () => void;
   }
   let { onOpen, onReplaced, beforeReplace, onClose }: Props = $props();
@@ -63,10 +64,10 @@
     for (const c of chosen) byFile.set(c.path, [...(byFile.get(c.path) ?? []), c.line]);
     const targets = [...byFile].map(([path, lines]) => ({ path, lines }));
     try {
-      await beforeReplace();
+      const saved = await beforeReplace();
       const n = await api.replaceInFiles(options(), replacement, targets);
       await onReplaced(targets.map((t) => t.path));
-      message = `Replaced ${n} occurrence${n === 1 ? "" : "s"} in ${targets.length} file${targets.length === 1 ? "" : "s"}. A snapshot was saved first, so History can bring the old text back.`;
+      message = `Replaced ${n} occurrence${n === 1 ? "" : "s"} in ${targets.length} file${targets.length === 1 ? "" : "s"}. ${saved ? "A snapshot was saved first, so History can bring the old text back." : "History is off (git isn't installed), so this can't be undone."}`;
       results = await api.searchProject(options(), replacement);
       excluded = {};
     } catch (e) {
@@ -113,7 +114,7 @@
     {#if showReplace}
       <div class="row">
         <input id="search-replace" bind:value={replacement} oninput={search} placeholder={regex ? "Replace ($1 for groups)" : "Replace with"} spellcheck="false" />
-        <button disabled={!chosenCount} onclick={replaceAll} title="Replace the checked lines. A snapshot is saved first.">Replace {chosenCount === total ? "all" : chosenCount}</button>
+        <button disabled={!chosenCount} onclick={replaceAll} title="Replace the checked lines. History keeps a snapshot of the text before.">Replace {chosenCount === total ? "all" : chosenCount}</button>
       </div>
     {/if}
   </div>

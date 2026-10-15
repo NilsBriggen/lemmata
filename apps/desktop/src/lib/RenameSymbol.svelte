@@ -8,11 +8,13 @@
     kind: SymbolKind;
     name: string;
     /** Saves open files and takes a snapshot, so History can undo the rename. */
-    beforeApply: () => Promise<void>;
+    beforeApply: () => Promise<boolean>;
+    /** History works for this project (git is installed), so a snapshot can be taken. */
+    historyOn: boolean;
     onApplied: (files: string[], text: string) => void;
     onClose: () => void;
   }
-  let { kind: startKind, name: startName, beforeApply, onApplied, onClose }: Props = $props();
+  let { kind: startKind, name: startName, beforeApply, historyOn, onApplied, onClose }: Props = $props();
 
   // The dialog is created fresh each time, so the starting values are only read once.
   // svelte-ignore state_referenced_locally
@@ -59,7 +61,7 @@
   }
 </script>
 
-<Modal title="Rename label or citation key" subtitle="Changes every use in the project. A snapshot is saved first." width={560} {onClose}>
+<Modal title="Rename label or citation key" subtitle={historyOn ? "Changes every use in the project. A snapshot is saved first." : "Changes every use in the project. History is off (git isn't installed), so this can't be undone."} width={560} {onClose}>
   <form id="rename-symbol" onsubmit={apply}>
     <div class="segmented" role="group" aria-label="What to rename">
       <button type="button" aria-pressed={kind === "label"} onclick={() => (kind = "label")}>Label</button>

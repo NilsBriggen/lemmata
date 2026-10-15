@@ -1,5 +1,7 @@
 //! Snapshots of a project, stored as commits on the private ref
-//! `refs/lemmata/snapshots` in the project's git repository.
+//! `refs/lemmata/snapshots`: in the project's own git repository when it is
+//! one, otherwise in a repository of Lemmata's own at `.lemmata/history`
+//! (the project folder stays a plain folder).
 //!
 //! Every git call uses a separate index file, so the user's HEAD, branches,
 //! staging area and stash are never touched. Snapshots respect .gitignore.
@@ -90,6 +92,16 @@ pub fn parse_status(z: &str, prefix: &str) -> Vec<FileStatus> {
     out
 }
 
+/// No console window flashes up on Windows.
+fn no_window(c: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let _ = c;
+}
+
 /// Which files of the project differ from the last commit. Empty when the
 /// folder isn't in a git repository (or git isn't installed). Never changes
 /// anything in the repository.
@@ -103,11 +115,7 @@ pub fn working_status(root: &Path) -> Vec<FileStatus> {
             .arg(root)
             .env("GIT_OPTIONAL_LOCKS", "0")
             .args(args);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            c.creation_flags(0x0800_0000);
-        }
+        no_window(&mut c);
         c.output().ok().filter(|o| o.status.success())
     };
     let Some(prefix) = run(&["rev-parse", "--show-prefix"]) else {
@@ -126,16 +134,33 @@ pub fn working_status(root: &Path) -> Vec<FileStatus> {
     parse_status(&String::from_utf8_lossy(&out.stdout), &prefix)
 }
 
+/// Lemmata's own snapshot store for projects that aren't git repositories.
+pub const STORE: &str = ".lemmata/history";
+
 pub struct History {
     git: PathBuf,
     root: PathBuf,
     git_dir: PathBuf,
+    /// The store is `STORE`, not the user's repository: git is told where both live.
+    separate: bool,
 }
 
 impl History {
-    /// Opens history for a project folder that is (inside) a git repository.
+    /// Opens history for a project folder: Lemmata's own store if it has one,
+    /// else the git repository the folder is (inside of).
     pub fn open(root: &Path) -> Result<History> {
         let git = which::which("git").map_err(|_| Error::NoGit)?;
+        let store = root.join(STORE);
+        if store.join("HEAD").is_file() {
+            let h = History {
+                git,
+                root: root.to_path_buf(),
+                git_dir: store,
+                separate: true,
+            };
+            h.exclude_build_folder()?;
+            return Ok(h);
+        }
         let out = Command::new(&git)
             .arg("-C")
             .arg(root)
@@ -149,25 +174,30 @@ impl History {
             git,
             root: root.to_path_buf(),
             git_dir,
+            separate: false,
         };
         h.exclude_build_folder()?;
         Ok(h)
     }
 
-    /// Makes `root` a git repository and opens its history.
+    /// Creates Lemmata's own snapshot store in `.lemmata/history` and opens
+    /// it. Nothing else in the project folder changes.
     pub fn init(root: &Path) -> Result<History> {
         let git = which::which("git").map_err(|_| Error::NoGit)?;
-        check(
-            Command::new(&git)
-                .arg("-C")
-                .arg(root)
-                .args(["init", "--quiet"])
-                .output()?,
-        )?;
-        let ignore = root.join(".gitignore");
-        if !ignore.exists() {
-            std::fs::write(&ignore, "# Lemmata's build output\n.lemmata/\n")?;
-        }
+        let store = root.join(STORE);
+        std::fs::create_dir_all(&store)?;
+        let mut init = Command::new(&git);
+        init.arg("--git-dir").arg(&store).args(["init", "--quiet"]);
+        no_window(&mut init);
+        check(init.output()?)?;
+        // The work tree is passed on every call, so a moved project keeps its history.
+        let mut unset = Command::new(&git);
+        unset
+            .arg("--git-dir")
+            .arg(&store)
+            .args(["config", "--unset", "core.worktree"]);
+        no_window(&mut unset);
+        let _ = unset.output();
         History::open(root)
     }
 
@@ -190,6 +220,10 @@ impl History {
 
     fn cmd(&self) -> Command {
         let mut c = Command::new(&self.git);
+        if self.separate {
+            c.env("GIT_DIR", &self.git_dir)
+                .env("GIT_WORK_TREE", &self.root);
+        }
         c.arg("-C")
             .arg(&self.root)
             // A private index: the user's staging area stays as it is.
@@ -198,11 +232,7 @@ impl History {
             .env("GIT_AUTHOR_EMAIL", "snapshots@lemmata.invalid")
             .env("GIT_COMMITTER_NAME", "Lemmata")
             .env("GIT_COMMITTER_EMAIL", "snapshots@lemmata.invalid");
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
+        no_window(&mut c);
         c
     }
 
@@ -520,7 +550,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
         fs::write(root.join("main.tex"), "one").unwrap();
-        let h = History::init(root).unwrap();
+        fs::write(root.join(".gitignore"), "*.aux\n").unwrap();
+        git(root, &["init", "-q"]);
+        let h = History::open(root).unwrap();
         // The user has a staged change of their own.
         fs::write(root.join("notes.txt"), "mine").unwrap();
         git(root, &["add", "notes.txt"]);
@@ -565,6 +597,39 @@ mod tests {
             Some("one")
         );
         assert_eq!(h.file_at(&first, "missing.tex").unwrap(), None);
+    }
+
+    #[test]
+    fn a_plain_folder_gets_a_store_of_its_own() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("thesis");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("main.tex"), "one").unwrap();
+        assert!(matches!(History::open(&root), Err(Error::NotARepo(_))));
+        let h = History::init(&root).unwrap();
+        let first = h.snapshot("First").unwrap().unwrap();
+        // The folder itself is still not a repository, and nothing was added to it.
+        assert_eq!(git(&root, &["rev-parse", "--is-inside-work-tree"]), "");
+        assert!(!root.join(".git").exists() && !root.join(".gitignore").exists());
+        assert!(working_status(&root).is_empty());
+        // The history moves with the folder.
+        let moved = d.path().join("moved");
+        fs::rename(&root, &moved).unwrap();
+        fs::write(moved.join("main.tex"), "two").unwrap();
+        let h = History::open(&moved).unwrap();
+        h.snapshot("Second").unwrap().unwrap();
+        let list = h.list(10).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[1].id, first);
+        assert_eq!(
+            h.file_at(&first, "main.tex").unwrap().as_deref(),
+            Some("one")
+        );
+        assert!(
+            list.iter()
+                .flat_map(|s| &s.changes)
+                .all(|c| !c.path.starts_with(".lemmata"))
+        );
     }
 
     #[test]

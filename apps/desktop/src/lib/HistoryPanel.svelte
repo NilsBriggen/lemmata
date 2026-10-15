@@ -16,12 +16,14 @@
     version: number;
     /** Current contents of a file, including unsaved edits. */
     currentText: (path: string) => Promise<string | null>;
+    /** Saves unsaved edits and stops pending autosaves, so a restore can't be overwritten by them. */
+    beforeRestore: () => Promise<void>;
     onRestored: (path: string) => void;
     /** The whole project was put back; reload everything from disk. */
     onRestoredAll: () => void;
     onClose: () => void;
   }
-  let { version, currentText, onRestored, onRestoredAll, onClose }: Props = $props();
+  let { version, currentText, beforeRestore, onRestored, onRestoredAll, onClose }: Props = $props();
 
   let status = $state<HistoryStatus | null>(null);
   let snapshots = $state<Snapshot[]>([]);
@@ -97,6 +99,7 @@
   async function restore() {
     if (!diffFor) return;
     try {
+      await beforeRestore();
       await api.historyRestore(diffFor.id, diffFor.path);
       onRestored(diffFor.path);
       confirmRestore = false;
@@ -122,6 +125,7 @@
 
   async function restoreAll(id: string) {
     try {
+      await beforeRestore();
       await api.historyRestoreAll(id);
       confirmAll = null;
       onRestoredAll();
@@ -148,7 +152,7 @@
   {#if status?.state === "not-a-repo"}
     <div class="intro">
       <p>History keeps snapshots of your project so you can see what changed and bring back earlier versions. Snapshots are taken every 10 minutes while you work, and whenever you press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>.</p>
-      <p>It uses git: turning it on creates a git repository in the project folder.</p>
+      <p>It uses git and keeps the snapshots in the project's <code>.lemmata</code> folder; the project folder itself doesn't change.</p>
       <button class="btn primary" onclick={enable}>Turn on history</button>
     </div>
   {:else if status?.state === "no-git"}

@@ -124,7 +124,7 @@ The status bar shows the word count of the document body, and the number of word
 
 **History** keeps snapshots of the project in git: one when you start working, then every 10 minutes while you edit, and named ones with **Ctrl+Shift+S**. Select a snapshot to see which files changed, and a file to compare it with the current version, or **compare it with another snapshot**. You can **rename** a snapshot, restore one file with **Restore this version**, or **Restore project** to put every file back. Restoring first snapshots the current state, so it can always be undone.
 
-History uses its own git ref. If the project already is a git repository, your branches, commits and staged changes are never touched.
+History is on for every project; it only needs git to be installed. A project that is a git repository keeps its snapshots on a private ref of its own, so your branches, commits and staged changes are never touched. Any other project gets a small snapshot store in its hidden `.lemmata` folder; the project folder doesn't become a git repository and nothing else in it changes. Without git, History is off, and replacing or renaming across the project says that it can't be undone.
 
 ## Files
 
