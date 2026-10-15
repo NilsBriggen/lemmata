@@ -70,7 +70,7 @@
 
 <header class="toolbar chrome">
   <div class="left">
-    <button class="btn icon" bind:this={menuBtn} aria-label="Menu" aria-expanded={open === "menu"} onclick={() => (open = open === "menu" ? null : "menu")}>
+    <button class="btn icon" bind:this={menuBtn} aria-label="Menu" aria-haspopup="menu" aria-expanded={open === "menu"} onclick={() => (open = open === "menu" ? null : "menu")}>
       <Menu size={18} />
     </button>
     <button class="brand" onclick={p.onLibrary} title="Back to all projects">Lemmata</button>
@@ -102,7 +102,7 @@
         <span class:spin={p.building}><RefreshCw size={15} /></span>
         {p.building ? "Compiling…" : "Recompile"}
       </button>
-      <button class="btn primary caret" bind:this={compileBtn} aria-label="Compile options" aria-expanded={open === "compile"} onclick={() => (open = open === "compile" ? null : "compile")}>
+      <button class="btn primary caret" bind:this={compileBtn} aria-label="Compile options" aria-haspopup="menu" aria-expanded={open === "compile"} onclick={() => (open = open === "compile" ? null : "compile")}>
         <ChevronDown size={15} />
       </button>
     </div>

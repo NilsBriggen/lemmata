@@ -14,8 +14,8 @@
   --border-strong: #c9cfd5;
   --ink: #18212b;
   --ink-2: #3a4652;
-  --muted: #66727e;
-  --faint: #8c96a0;
+  --muted: #5c6873; /* was #66727e: 4.1:1 on --app */
+  --faint: #616b76; /* was #8c96a0: 2.5 to 3.0:1 on the surfaces; now >= 4.5:1 */
 
   /* Dark chrome: toolbar and sidebar, in both themes, like Overleaf */
   --chrome: #1d2630;
@@ -28,8 +28,8 @@
   --chrome-active: rgba(111, 179, 227, 0.16);
 
   /* Accent: non-photo blue */
-  --accent: #2f7fb8;
-  --accent-hover: #2870a3;
+  --accent: #2a71a4; /* was #2f7fb8: white on it was 4.33:1 */
+  --accent-hover: #2d6b9b;
   --accent-ink: #ffffff;
   --accent-soft: #e4f0f8;
   --accent-on-dark: #7cbbe6;
@@ -78,12 +78,13 @@
     --ink: #e2e8ed;
     --ink-2: #c3ccd4;
     --muted: #93a0ac;
-    --faint: #6f7b87;
+    --faint: #86919b;
     --chrome: #12181e;
     --chrome-2: #161d24;
     --chrome-3: #1e262e;
     --chrome-border: #26303a;
     --accent: #4a97cf;
+    --accent-ink: #0b1620; /* white on this accent is only 3.2:1 */
     --accent-hover: #5aa5db;
     --accent-soft: #1b2e3e;
     --accent-on-dark: #7cbbe6;
@@ -112,12 +113,13 @@
   --ink: #e2e8ed;
   --ink-2: #c3ccd4;
   --muted: #93a0ac;
-  --faint: #6f7b87;
+  --faint: #86919b;
   --chrome: #12181e;
   --chrome-2: #161d24;
   --chrome-3: #1e262e;
   --chrome-border: #26303a;
   --accent: #4a97cf;
+  --accent-ink: #0b1620; /* white on this accent is only 3.2:1 */
   --accent-hover: #5aa5db;
   --accent-soft: #1b2e3e;
   --accent-on-dark: #7cbbe6;

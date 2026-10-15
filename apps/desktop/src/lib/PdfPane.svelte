@@ -144,7 +144,7 @@
       </div>
       <div class="group">
         <button class="btn ghost icon sm optional" aria-label="Zoom out" onclick={() => view?.zoomBy(1 / 1.15)}><ZoomOut size={16} /></button>
-        <button class="btn ghost sm zoom" bind:this={zoomBtn} aria-label="Zoom level" onclick={() => (zoomMenu = !zoomMenu)}>{percent}% <ChevronDown size={13} /></button>
+        <button class="btn ghost sm zoom" bind:this={zoomBtn} aria-label="Zoom level" aria-haspopup="menu" aria-expanded={zoomMenu} onclick={() => (zoomMenu = !zoomMenu)}>{percent}% <ChevronDown size={13} /></button>
         <button class="btn ghost icon sm optional" aria-label="Zoom in" onclick={() => view?.zoomBy(1.15)}><ZoomIn size={16} /></button>
       </div>
       <div class="group end">
@@ -194,11 +194,11 @@
 
 {#if zoomMenu && zoomBtn}
   <DropMenu anchor={zoomBtn} onClose={() => (zoomMenu = false)}>
-    <button onclick={() => fit("width")}>Fit width</button>
-    <button onclick={() => fit("page")}>Fit page</button>
+    <button role="menuitem" onclick={() => fit("width")}>Fit width</button>
+    <button role="menuitem" onclick={() => fit("page")}>Fit page</button>
     <hr />
     {#each [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as z (z)}
-      <button onclick={() => fit(z)}>{z * 100}%</button>
+      <button role="menuitem" onclick={() => fit(z)}>{z * 100}%</button>
     {/each}
   </DropMenu>
 {/if}

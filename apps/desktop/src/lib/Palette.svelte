@@ -41,18 +41,27 @@
     list?.querySelector(".on")?.scrollIntoView({ block: "nearest" });
   }
 
+  // Options are not tab stops (focus stays in the input, as a combobox does), so Tab must not leave the dialog.
   function onKey(e: KeyboardEvent) {
     if (e.key === "ArrowDown") (e.preventDefault(), move(1));
     else if (e.key === "ArrowUp") (e.preventDefault(), move(-1));
     else if (e.key === "Enter") (e.preventDefault(), run(results[selected]));
     else if (e.key === "Escape") onClose();
+    else if (e.key === "Tab") e.preventDefault();
   }
+
+  const optionId = (i: number) => `palette-option-${i}`;
 </script>
 
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onClose()}>
-  <div class="palette" role="dialog" aria-label={placeholder}>
+  <div class="palette" role="dialog" aria-modal="true" aria-label={placeholder}>
     <input
       id="palette-input"
+      role="combobox"
+      aria-expanded="true"
+      aria-controls="palette-list"
+      aria-autocomplete="list"
+      aria-activedescendant={results.length ? optionId(selected) : undefined}
       bind:this={input}
       bind:value={query}
       oninput={() => (selected = 0)}
@@ -61,16 +70,24 @@
       autocomplete="off"
       spellcheck="false"
     />
-    <ul bind:this={list} role="listbox">
+    <ul id="palette-list" bind:this={list} role="listbox">
       {#each results as item, i (item.id)}
-        <li role="option" aria-selected={i === selected}>
-          <button class:on={i === selected} onclick={() => run(item)} onmouseenter={() => (selected = i)}>
+        <li role="presentation">
+          <button
+            id={optionId(i)}
+            role="option"
+            tabindex="-1"
+            aria-selected={i === selected}
+            class:on={i === selected}
+            onclick={() => run(item)}
+            onmouseenter={() => (selected = i)}
+          >
             <span>{item.label}</span>
             {#if item.detail}<kbd>{item.detail}</kbd>{/if}
           </button>
         </li>
       {:else}
-        <li class="none">Nothing matches.</li>
+        <li class="none" role="presentation">Nothing matches.</li>
       {/each}
     </ul>
   </div>
