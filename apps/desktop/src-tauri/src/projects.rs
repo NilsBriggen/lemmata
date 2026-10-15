@@ -220,6 +220,13 @@ pub fn create_from_template(
     Ok(target)
 }
 
+/// Sets a new project's engine to Tectonic, keeping the rest of its lemmata.toml.
+pub fn use_tectonic(project: &Path) -> Result<(), String> {
+    let mut p = lemmata_project::Project::open(project).map_err(|e| e.to_string())?;
+    p.config.engine = lemmata_project::Engine::Tectonic;
+    p.save_config().map_err(|e| e.to_string())
+}
+
 /// A folder name for a template called `name`: letters, digits and dashes.
 fn slug(name: &str) -> String {
     let s: String = name
@@ -612,6 +619,34 @@ mod tests {
         assert!(
             create_from_template(&bundled, &none, &user, "online:../x", d.path(), "q").is_err()
         );
+    }
+
+    #[test]
+    fn tectonic_replaces_only_the_engine() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        use_tectonic(d.path()).unwrap();
+        let text = fs::read_to_string(d.path().join("lemmata.toml")).unwrap();
+        assert!(text.contains("engine = \"tectonic\""), "{text}");
+
+        // A template's own settings and comments stay.
+        fs::write(
+            d.path().join("lemmata.toml"),
+            "# my notes\nmain = \"main.tex\"\nengine = \"xelatex\" # for the font\nstop_on_error = true\n",
+        )
+        .unwrap();
+        use_tectonic(d.path()).unwrap();
+        let text = fs::read_to_string(d.path().join("lemmata.toml")).unwrap();
+        assert!(
+            text.starts_with("# my notes\nmain = \"main.tex\"\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("engine = \"tectonic\" # for the font"),
+            "{text}"
+        );
+        assert!(text.contains("stop_on_error = true"), "{text}");
+        assert!(!text.contains("xelatex"), "{text}");
     }
 
     #[test]

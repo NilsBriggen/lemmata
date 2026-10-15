@@ -61,3 +61,20 @@ pub(crate) fn tectonic_install(app: tauri::AppHandle) -> Result<TectonicStatus, 
     crate::run_detection(&state);
     Ok(status())
 }
+
+/// What the build status says while Tectonic downloads the packages a document needs.
+pub(crate) fn fetch_message(files: usize) -> String {
+    format!(
+        "Tectonic is fetching the packages this document needs (first build only): {files} file{} so far",
+        if files == 1 { "" } else { "s" }
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fetch_message_counts_files() {
+        assert!(super::fetch_message(1).ends_with("1 file so far"));
+        assert!(super::fetch_message(37).ends_with("37 files so far"));
+    }
+}

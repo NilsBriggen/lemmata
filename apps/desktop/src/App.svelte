@@ -147,6 +147,8 @@
   let lastThumbnail = 0;
 
   let building = $state(false);
+  /** What the engine says it is doing while it builds (Tectonic fetching packages), if anything. */
+  let buildNote = $state<string | null>(null);
   let outcome = $state<Outcome | null>(null);
   let lastCompiled = $state(0);
   let diagnostics = $state<Diagnostic[]>([]);
@@ -667,6 +669,7 @@
     }
     const seq = ++buildSeq;
     building = true;
+    buildNote = null;
     try {
       const result = await api.build(shellEscapeAllowed(), force === true);
       if (seq !== buildSeq || result.status === "cancelled") return;
@@ -1582,6 +1585,7 @@
     setInterval(() => {
       if (project && editedSinceSnapshot && Date.now() - lastSnapshot > AUTO_SNAPSHOT_MS) takeSnapshot("Automatic snapshot");
     }, 60_000);
+    listen<string>("build-progress", (e) => (buildNote = e.payload)).catch(() => {});
     listen<{ changed: string[]; removed: string[] }>("files-changed", (e) => onFilesChanged(e.payload)).catch((e) =>
       reportOnce("watch", `Lemmata can't watch for changes made by other programs: ${errorMessage(e)}`),
     );
@@ -1882,7 +1886,7 @@
           {#if project.config.draft}<span class="warn" title="Figures are drawn as boxes. Switch to Normal in the Recompile menu for the final PDF.">Draft mode</span>{/if}
           {#if spellLang !== "off"}<span title="Spell-check language">{spellLang}</span>{/if}
           {#if totalWords}<span title="Words in the document body, without commands, maths or comments">{words.format(totalWords)} words</span>{/if}
-          <span>{project.config.engine === "pdflatex" ? "pdfLaTeX" : project.config.engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"}</span>
+          <span>{{ pdflatex: "pdfLaTeX", xelatex: "XeLaTeX", lualatex: "LuaLaTeX", tectonic: "Tectonic" }[project.config.engine]}</span>
           {#if outcome && !building}
             {#if outcome.status === "success"}
               <span class="ok" title={lastCompiled ? `Finished at ${new Date(lastCompiled).toLocaleTimeString()}` : undefined}>Compiled in {(outcome.duration_ms / 1000).toFixed(1)} s</span>
@@ -1918,6 +1922,7 @@
               bind:this={pdf}
               {diagnostics}
               {building}
+              {buildNote}
               failed={!!outcome && outcome.status !== "success" && !outcome.pdf}
               status={outcome?.status ?? null}
               pageLayout={settings.pdfLayout}

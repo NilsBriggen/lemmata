@@ -375,9 +375,11 @@ async fn build(
             "Tectonic is not installed. Install it from the start screen, or choose another compiler in the project settings.",
         )?;
         let _ = app.emit("build-started", ());
-        return lemmata_tex::tectonic::build(&project, exe, rx, force)
-            .await
-            .map_err(err);
+        return lemmata_tex::tectonic::build(&project, exe, rx, force, &|n| {
+            let _ = app.emit("build-progress", tectonic::fetch_message(n));
+        })
+        .await
+        .map_err(err);
     }
     let latexmk = detection
         .tool("latexmk")
@@ -552,18 +554,28 @@ fn delete_template(app: tauri::AppHandle, id: String) -> CmdResult<()> {
 #[tauri::command(async)]
 fn create_project(
     app: tauri::AppHandle,
+    state: State<AppState>,
     template: String,
     parent: String,
     name: String,
 ) -> CmdResult<PathBuf> {
-    projects::create_from_template(
+    let dir = projects::create_from_template(
         &templates_dir(&app)?,
         &online_templates_dir(&app)?,
         &user_templates_dir(&app)?,
         &template,
         Path::new(&parent),
         &name,
-    )
+    )?;
+    // Only Tectonic can build here, so the project should say so.
+    let detection = match state.detection.lock_safe().clone() {
+        Some(d) => d,
+        None => first_or_fresh_detection(&state, false),
+    };
+    if !detection.tex_ready && detection.tectonic.is_some() {
+        projects::use_tectonic(&dir)?;
+    }
+    Ok(dir)
 }
 
 /// Starts a folder that has no main document: writes a minimal main.tex, never over an existing one.

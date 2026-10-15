@@ -30,6 +30,8 @@
   interface Props {
     diagnostics: Diagnostic[];
     building: boolean;
+    /** A plain-language note on what a long build is doing, shown while building. */
+    buildNote?: string | null;
     /** The last build ended without writing a PDF. */
     failed?: boolean;
     /** Outcome of the last build, or null before the first one. */
@@ -208,6 +210,9 @@
         {/if}
       </aside>
     {/if}
+    {#if p.building && p.buildNote}
+      <div class="note" role="status">{p.buildNote}</div>
+    {/if}
     {#if p.failed && pageCount > 0 && !p.logsOpen && !p.building}
       <div class="stale" role="status">
         <span>The latest build failed{errors ? ` with ${errors} error${errors === 1 ? "" : "s"}` : ""}. This is the last PDF that built.</span>
@@ -281,5 +286,6 @@
   .search input:focus { outline: none; border-color: var(--accent); }
   .search .count { font-size: 12px; min-width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
   .pdf.hidden { visibility: hidden; }
+  .note { padding: 6px 10px; background: var(--accent-soft); color: var(--ink); border-bottom: 1px solid var(--border); font-size: 12.5px; }
   .stale { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; background: var(--error-soft); color: var(--ink); border-bottom: 1px solid var(--border); font-size: 12.5px; }
 </style>

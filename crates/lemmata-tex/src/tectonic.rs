@@ -175,13 +175,23 @@ fn cache_dir() -> Option<PathBuf> {
     }
 }
 
+/// How many files Tectonic has fetched so far, from its output ("note: downloading cmr10.tfm").
+fn files_fetched(output: &str) -> usize {
+    output
+        .lines()
+        .filter(|l| l.starts_with("note: downloading "))
+        .count()
+}
+
 /// Builds the project with Tectonic at `exe`. Sending on `cancel` stops it.
+/// `on_fetch` is told how many files Tectonic has downloaded so far while it works.
 pub async fn build(
     project: &Project,
     exe: &Path,
     cancel: oneshot::Receiver<()>,
     // Build even when no project file changed (an explicit Recompile).
     force: bool,
+    on_fetch: &(dyn Fn(usize) + Sync),
 ) -> Result<Outcome, Error> {
     if !exe.exists() {
         return Err(Error::NoTectonic);
@@ -218,9 +228,24 @@ pub async fn build(
         .stdout(stdout)
         .stderr(stderr);
     let mut cancel = cancel;
-    let mut status = crate::build::run_step(cmd, limit, &mut cancel)
-        .await?
-        .unwrap_or(Status::Failed);
+    // Tectonic writes its notes straight into the output file, so reading it shows how far it is.
+    let watch = async {
+        let mut shown = 0;
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let text = std::fs::read(&output_path).unwrap_or_default();
+            let n = files_fetched(&String::from_utf8_lossy(&text));
+            if n != shown {
+                shown = n;
+                on_fetch(n);
+            }
+        }
+    };
+    let mut status = tokio::select! {
+        r = crate::build::run_step(cmd, limit, &mut cancel) => r?,
+        () = watch => unreachable!(),
+    }
+    .unwrap_or(Status::Failed);
 
     let duration_ms = started.elapsed().as_millis() as u64;
     let outcome = |status, pdf, diagnostics| Outcome {
@@ -319,7 +344,7 @@ pub(crate) fn normalize_log(log: &str) -> String {
     out
 }
 
-const BIBER_HINT: &str = "Tectonic runs BibTeX itself but needs a separate biber program for biblatex, and its biblatex (TeX Live 2022) only works with biber 2.17. Choose BibTeX under Bibliography in the project settings (natbib, or biblatex with backend=bibtex), or build with TeX Live.";
+const BIBER_HINT: &str = "Tectonic can run BibTeX by itself, but biblatex with biber needs the separate biber program, and Tectonic's old biblatex only works with biber 2.17. Easiest fix: choose BibTeX under Bibliography in the project settings (natbib, or biblatex with backend=bibtex). Or install TeX Live and build with that.";
 
 /// Problems Tectonic reported on stderr that the TeX log does not show: a missing
 /// or incompatible biber, no network, a crash. With `tex_errors` the TeX errors
@@ -366,7 +391,7 @@ pub(crate) fn diagnostics_from_stderr(text: &str, tex_errors: bool) -> Vec<Diagn
                     .unwrap_or("it reported errors");
                 format!("biber failed: {}", detail.trim())
             } else {
-                "Tectonic could not run biber, which was not found.".to_string()
+                "This document needs biber, and biber is not installed.".to_string()
             };
             out.push(err(message, Some(BIBER_HINT)));
             return out;
@@ -685,8 +710,8 @@ mod tests {
         let text = include_str!("../tests/tectonic/biber-missing.stderr");
         let d = diagnostics_from_stderr(text, false);
         assert_eq!(d.len(), 1);
-        assert!(d[0].message.contains("biber"));
-        assert!(d[0].hint.is_some());
+        assert!(d[0].message.contains("biber is not installed"));
+        assert!(d[0].hint.as_deref().unwrap().contains("BibTeX"));
     }
 
     #[test]
@@ -695,6 +720,13 @@ mod tests {
         let d = diagnostics_from_stderr(text, false);
         assert_eq!(d.len(), 1);
         assert!(d[0].message.contains("download"));
+    }
+
+    #[test]
+    fn fetched_files_are_counted() {
+        let text = "note: Running TeX ...\nnote: generating format \"latex\"\nnote: downloading latex.ltx\nnote: downloading cmr10.tfm\nwarning: downloading is slow\n";
+        assert_eq!(files_fetched(text), 2);
+        assert_eq!(files_fetched(""), 0);
     }
 
     #[test]
@@ -745,33 +777,63 @@ mod tests {
     fn installs_the_pinned_release() {
         let d = tempfile::tempdir().unwrap();
         let exe = install(d.path()).unwrap();
+        eprintln!("installed {}", exe.display());
         assert_eq!(version(&exe).as_deref(), Some(VERSION));
         // No leftovers besides the binary.
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
     }
 
-    /// Network on first run: a real build with the Tectonic found on PATH.
+    /// The release downloaded into a temp folder, once per test run (never the one on PATH, so CI
+    /// tests what users get). Run these tests with --test-threads=1: they share Tectonic's package cache.
+    fn downloaded() -> &'static Path {
+        static EXE: OnceLock<PathBuf> = OnceLock::new();
+        EXE.get_or_init(|| {
+            let d = tempfile::tempdir().unwrap();
+            let exe = install(d.path()).unwrap();
+            std::mem::forget(d);
+            eprintln!("tectonic: {} ({:?})", exe.display(), version(&exe));
+            exe
+        })
+    }
+
+    /// What Tectonic printed, for failure messages: a CI log is all there is to diagnose from.
+    fn output_of(project: &Project) -> String {
+        std::fs::read_to_string(project.outdir_abs().join("tectonic-output.txt"))
+            .unwrap_or_else(|e| format!("(no output: {e})"))
+    }
+
+    /// Network on first run: a real build with the downloaded Tectonic.
     #[tokio::test]
     #[ignore]
     async fn builds_a_project_with_bibtex_and_reports_errors() {
-        let exe = find().expect("tectonic on PATH");
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let exe = downloaded();
         let d = tempfile::tempdir().unwrap();
         let refs = "@article{k, author={A, B}, title={T}, journal={J}, year={2020}}\n";
         std::fs::write(d.path().join("refs.bib"), refs).unwrap();
         let main = "\\documentclass{article}\n\\begin{document}\nSee \\cite{k}.\n\\bibliographystyle{plain}\n\\bibliography{refs}\n\\end{document}\n";
         std::fs::write(d.path().join("main.tex"), main).unwrap();
         let project = Project::open(d.path()).unwrap();
+        let fetched = AtomicUsize::new(0);
         let (_tx, rx) = oneshot::channel();
-        let o = build(&project, &exe, rx, true).await.unwrap();
-        assert_eq!(o.status, Status::Success, "{:?}", o.diagnostics);
+        let o = build(&project, exe, rx, true, &|n| {
+            fetched.store(n, Ordering::Relaxed)
+        })
+        .await
+        .unwrap();
+        let output = output_of(&project);
+        eprintln!("{output}\ncache: {:?}", cache_dir());
+        assert_eq!(o.status, Status::Success, "{:?}\n{output}", o.diagnostics);
         assert!(project.pdf_path().is_file());
         assert!(project.pdf_path().with_extension("synctex.gz").is_file());
+        // The package cache was empty, so the first build fetched files and said so.
+        assert!(fetched.load(Ordering::Relaxed) > 0, "{output}");
 
         // An error still gives a PDF (continue-on-errors) but the build is Failed and located.
         std::fs::write(d.path().join("main.tex"), main.replace("See", "\\oops See")).unwrap();
         let (_tx, rx) = oneshot::channel();
-        let o = build(&project, &exe, rx, true).await.unwrap();
-        assert_eq!(o.status, Status::Failed);
+        let o = build(&project, exe, rx, true, &|_| {}).await.unwrap();
+        assert_eq!(o.status, Status::Failed, "{}", output_of(&project));
         let e = o
             .diagnostics
             .iter()
@@ -784,7 +846,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn fixture_with_biber_reports_the_limitation() {
-        let exe = find().expect("tectonic on PATH");
+        let exe = downloaded();
         let d = tempfile::tempdir().unwrap();
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/article");
         for f in ["main.tex", "refs.bib", "chapters/method.tex"] {
@@ -794,13 +856,14 @@ mod tests {
         }
         let project = Project::open(d.path()).unwrap();
         let (_tx, rx) = oneshot::channel();
-        let o = build(&project, &exe, rx, true).await.unwrap();
-        assert_eq!(o.status, Status::Failed);
+        let o = build(&project, exe, rx, true, &|_| {}).await.unwrap();
+        let output = output_of(&project);
+        assert_eq!(o.status, Status::Failed, "{output}");
         let b = o
             .diagnostics
             .iter()
             .find(|d| d.message.contains("biber"))
-            .unwrap();
+            .unwrap_or_else(|| panic!("{:?}\n{output}", o.diagnostics));
         assert!(b.hint.as_deref().unwrap().contains("BibTeX"));
     }
 
