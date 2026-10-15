@@ -21,7 +21,7 @@ export const RELEASES: Release[] = [
       { title: "Review every change", text: "Compare your project with an earlier snapshot and keep or undo each change, or get a PDF with the changes marked." },
       { title: "Compile without installing TeX", text: "No TeX on this computer? Lemmata can download a small engine and compile right away." },
       { title: "A template for every occasion", text: "Journal and conference papers, a full thesis, a book, a poster, slides, an exam, a cover letter and more." },
-      { title: "Spell check in 14 more languages", text: "Spanish, Italian, Portuguese, Dutch, Polish, Swedish, Danish, Norwegian, Czech, Russian, Ukrainian, Turkish and Greek." },
+      { title: "Spell check in many more languages", text: "Besides English, German and French, you can now check Spanish, Italian, Portuguese, Dutch, Polish, Swedish, Danish, Norwegian, Czech, Russian, Ukrainian, Turkish and Greek. Pick one in Preferences and it downloads once." },
     ],
   },
   {
