@@ -138,7 +138,14 @@ pub fn replace_on_lines(
             Some(b) => (b, &raw[b.len()..]),
             None => (body, &raw[body.len()..]),
         };
-        count += re.find_iter(body).filter(|m| !m.is_empty()).count();
+        // The file may have changed since the search: a line with no match
+        // any more is left alone (an empty match must not rewrite it).
+        let n = re.find_iter(body).filter(|m| !m.is_empty()).count();
+        if n == 0 {
+            out.push_str(raw);
+            continue;
+        }
+        count += n;
         out.push_str(&replace_line(body, re, replacement, regex_mode));
         out.push_str(eol);
     }
@@ -198,18 +205,63 @@ pub fn replace_in_files(
 ) -> CmdResult<usize> {
     let p = project(&state)?;
     let re = build_regex(&options)?;
-    let mut count = 0;
+    replace_across(&p.root, &re, &replacement, options.regex, targets)
+}
+
+/// Computes every new text before writing any, so an unreadable file stops
+/// the whole replace instead of leaving it half done.
+fn replace_across(
+    root: &Path,
+    re: &Regex,
+    replacement: &str,
+    regex_mode: bool,
+    targets: Vec<ReplaceTarget>,
+) -> CmdResult<usize> {
+    // One entry per file, in case the same path is listed twice.
+    let mut by_file: std::collections::BTreeMap<String, std::collections::HashSet<u32>> =
+        Default::default();
     for t in targets {
-        let path = p.root.join(safe_rel(&t.path)?);
-        let text = std::fs::read_to_string(&path).map_err(err)?;
-        let lines = t.lines.into_iter().collect();
-        let (new, n) = replace_on_lines(&text, &re, &replacement, options.regex, &lines);
-        if n > 0 {
-            std::fs::write(&path, new).map_err(err)?;
-        }
-        count += n;
+        by_file.entry(t.path).or_default().extend(t.lines);
     }
+    let mut count = 0;
+    let mut writes = Vec::new();
+    for (rel, lines) in by_file {
+        let path = root.join(safe_rel(&rel)?);
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("Could not read {rel}: {e}"))?;
+        let (new, n) = replace_on_lines(&text, re, replacement, regex_mode, &lines);
+        if n > 0 {
+            writes.push((path, new));
+            count += n;
+        }
+    }
+    write_all_atomic(&writes)?;
     Ok(count)
+}
+
+/// Writes every file to a hidden sibling first and only then renames them
+/// into place, so a failure (a full disk, say) almost always happens before
+/// the first real file is touched. The watcher ignores hidden files.
+fn write_all_atomic(writes: &[(PathBuf, String)]) -> CmdResult<()> {
+    let tmp_of = |path: &Path| {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+        path.with_file_name(format!(".{}.lemmata-tmp", name.unwrap_or_default()))
+    };
+    for (i, (path, text)) in writes.iter().enumerate() {
+        if let Err(e) = std::fs::write(tmp_of(path), text) {
+            for (path, _) in &writes[..=i] {
+                let _ = std::fs::remove_file(tmp_of(path));
+            }
+            return Err(format!("Could not save {}: {e}", path.display()));
+        }
+    }
+    for (path, _) in writes {
+        std::fs::rename(tmp_of(path), path).map_err(|e| {
+            let _ = std::fs::remove_file(tmp_of(path));
+            format!("Could not save {}: {e}", path.display())
+        })?;
+    }
+    Ok(())
 }
 
 /// Where labels and citation keys are defined, for "Go to label or citation".
@@ -267,16 +319,20 @@ pub fn rename_symbol(
         .collect();
     files.sort();
     files.dedup();
+    // Read and compute everything first; write only if all of it worked.
     let mut changed = Vec::new();
+    let mut writes = Vec::new();
     for f in files {
         let path = p.root.join(safe_rel(&f)?);
-        let text = std::fs::read_to_string(&path).map_err(err)?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("Could not read {f}: {e}"))?;
         let (out, n) = rename_in_text(&f, &text, f.ends_with(".bib"), kind, &old, &new);
         if n > 0 {
-            std::fs::write(&path, out).map_err(err)?;
+            writes.push((path, out));
             changed.push(f);
         }
     }
+    write_all_atomic(&writes)?;
     Ok(changed)
 }
 
@@ -454,13 +510,17 @@ fn rename_one(
 ) -> CmdResult<usize> {
     let src = p.root.join(safe_rel(from)?);
     let dst = p.root.join(safe_rel(to)?);
-    if dst.exists() {
-        return Err(format!("{to} already exists."));
+    rename_on_disk(&src, &dst, to)?;
+    // Keep lemmata.toml's main file and targets pointing at the right place,
+    // before anything below can fail.
+    {
+        let mut guard = state.project.lock_safe();
+        if let Some(proj) = guard.as_mut()
+            && repoint_config(proj, from, to)
+        {
+            proj.save_config().map_err(err)?;
+        }
     }
-    if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent).map_err(err)?;
-    }
-    std::fs::rename(&src, &dst).map_err(err)?;
     let mut updated = 0;
     if update_references {
         for rel in text_files(p) {
@@ -475,16 +535,81 @@ fn rename_one(
             }
         }
     }
-    // Keep lemmata.toml's main file pointing at the right place.
-    let mut guard = state.project.lock_safe();
-    if let Some(proj) = guard.as_mut()
-        && proj.main == Path::new(from)
-    {
-        proj.main = PathBuf::from(to);
-        proj.config.main = Some(to.to_string());
-        proj.save_config().map_err(err)?;
-    }
     Ok(updated)
+}
+
+/// `path` after `from` was renamed to `to`, if it was `from` or inside it.
+fn path_after_rename(path: &str, from: &str, to: &str) -> Option<String> {
+    let path = path.replace('\\', "/");
+    let path = path.trim_start_matches("./");
+    if path == from {
+        Some(to.to_string())
+    } else {
+        let rest = path.strip_prefix(from)?.strip_prefix('/')?;
+        Some(format!("{to}/{rest}"))
+    }
+}
+
+/// Rewrites the main file and every target's main file that sat at or inside
+/// `from`. True when something changed and the config needs saving.
+fn repoint_config(proj: &mut lemmata_project::Project, from: &str, to: &str) -> bool {
+    let mut changed = false;
+    if let Some(new) = path_after_rename(&proj.main.to_string_lossy(), from, to) {
+        proj.main = PathBuf::from(&new);
+        proj.config.main = Some(new);
+        changed = true;
+    }
+    for t in &mut proj.config.targets {
+        if let Some(new) = path_after_rename(&t.main, from, to) {
+            t.main = new;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Moves `src` to `dst`, refusing to overwrite. A rename that only changes
+/// the case (Intro.tex -> intro.tex) hits the same file on Windows and macOS,
+/// where the destination "exists", so it goes through a temporary name.
+fn rename_on_disk(src: &Path, dst: &Path, to: &str) -> CmdResult<()> {
+    if dst.exists() {
+        if !is_same_file(src, dst) {
+            return Err(format!("{to} already exists."));
+        }
+        let name = dst.file_name().map(|n| n.to_string_lossy().into_owned());
+        let tmp = dst.with_file_name(format!(".{}.lemmata-rename", name.unwrap_or_default()));
+        std::fs::rename(src, &tmp).map_err(err)?;
+        return std::fs::rename(&tmp, dst).map_err(|e| {
+            let _ = std::fs::rename(&tmp, src);
+            err(e)
+        });
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(err)?;
+    }
+    std::fs::rename(src, dst).map_err(err)
+}
+
+/// Do both paths name one file? Only names that differ by case can, so a
+/// case-sensitive file system (Linux) still sees two files there.
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    if !a
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&b.to_string_lossy())
+    {
+        return false;
+    }
+    if matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(x), Ok(y)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            return x.dev() == y.dev() && x.ino() == y.ino();
+        }
+    }
+    false
 }
 
 /// Renames a file or folder; with `update_references`, also rewrites
@@ -600,21 +725,55 @@ pub fn trash_into(root: &Path, paths: &[String]) -> CmdResult<TrashBatch> {
             return Err(format!("{rel} no longer exists."));
         }
     }
-    for rel in &paths {
-        let dest = batch.join(rel);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(err)?;
-        }
-        std::fs::rename(root.join(rel), &dest)
-            .map_err(|e| format!("Could not move {rel} to the trash: {e}"))?;
-    }
+    let pairs: Vec<(PathBuf, PathBuf)> = paths
+        .iter()
+        .map(|rel| (root.join(rel), batch.join(rel)))
+        .collect();
+    move_all(&pairs).inspect_err(|_| prune_empty(&batch))?;
     let result = TrashBatch { id, paths };
-    std::fs::write(
-        batch.join(MANIFEST),
-        serde_json::to_vec(&result).map_err(err)?,
-    )
-    .map_err(err)?;
+    let manifest = serde_json::to_vec(&result)
+        .map_err(err)
+        .and_then(|bytes| std::fs::write(batch.join(MANIFEST), bytes).map_err(err));
+    if let Err(e) = manifest {
+        // Without a manifest the batch can't be restored, so put it back.
+        undo_moves(&pairs);
+        prune_empty(&batch);
+        return Err(e);
+    }
     Ok(result)
+}
+
+/// Renames each `(from, to)` in turn. If one fails, the ones already done are
+/// moved back, so the caller sees all or nothing.
+fn move_all(pairs: &[(PathBuf, PathBuf)]) -> CmdResult<()> {
+    for (i, (from, to)) in pairs.iter().enumerate() {
+        let moved = to
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::rename(from, to));
+        if let Err(e) = moved {
+            undo_moves(&pairs[..i]);
+            let name = from.file_name().unwrap_or_default().to_string_lossy();
+            return Err(format!("Could not move {name} to the trash: {e}"));
+        }
+    }
+    Ok(())
+}
+
+/// Removes `dir` and the folders in it that are empty, never a file.
+fn prune_empty(dir: &Path) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if e.path().is_dir() {
+            prune_empty(&e.path());
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
+}
+
+fn undo_moves(done: &[(PathBuf, PathBuf)]) {
+    for (from, to) in done.iter().rev() {
+        let _ = std::fs::rename(to, from);
+    }
 }
 
 /// Puts a trashed batch back where it came from. Nothing is restored if any
@@ -779,9 +938,9 @@ pub struct Changes {
     pub removed: Vec<String>,
 }
 
-/// Sorts raw event paths into `changed` and `removed`: hidden files and the
-/// build folder are ignored, and so are files whose content is exactly what
-/// the app last wrote.
+/// Sorts raw event paths into `changed` and `removed`: hidden files and
+/// folders (`.git`), `node_modules` and the build folder are ignored, and so
+/// are files whose content is exactly what the app last wrote.
 pub fn classify(root: &Path, outdir: &str, written: &Written, paths: &[PathBuf]) -> Changes {
     let outdir = outdir.trim_start_matches("./").trim_end_matches('/');
     let mut out = Changes::default();
@@ -791,7 +950,8 @@ pub fn classify(root: &Path, outdir: &str, written: &Written, paths: &[PathBuf])
         };
         let p = rel.to_string_lossy().replace('\\', "/");
         if p.is_empty()
-            || p.split('/').any(|seg| seg.starts_with('.'))
+            || p.split('/')
+                .any(|seg| seg.starts_with('.') || seg == "node_modules")
             || (!outdir.is_empty() && (p == outdir || p.starts_with(&format!("{outdir}/"))))
         {
             continue;
@@ -1145,5 +1305,157 @@ mod tests {
             classify(&root, "", &written(), &all[3..]).changed,
             ["build2/x.tex"]
         );
+    }
+
+    #[test]
+    fn ignores_git_node_modules_and_the_build_folder_without_touching_disk() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        // None of these exist: a deleted file would otherwise count as removed.
+        let all: Vec<PathBuf> = [
+            ".git/index.lock",
+            "node_modules/pkg/index.js",
+            "web/node_modules/x.js",
+            "out/main.pdf",
+            "src/main.tex",
+        ]
+        .iter()
+        .map(|r| root.join(r))
+        .collect();
+        let c = classify(&root, "./out/", &written(), &all);
+        assert!(c.changed.is_empty());
+        assert_eq!(c.removed, ["src/main.tex"]);
+    }
+
+    fn mk_project(root: &Path) -> lemmata_project::Project {
+        touch(root, "ch/main.tex", "\\documentclass{article}");
+        touch(root, "ch/other.tex", "\\documentclass{article}");
+        let mut p = lemmata_project::Project::open(root).unwrap();
+        p.main = PathBuf::from("ch/main.tex");
+        p.config.main = Some("ch/main.tex".into());
+        p.config.targets = vec![
+            lemmata_project::Target {
+                name: "slides".into(),
+                main: "ch/other.tex".into(),
+                engine: None,
+            },
+            lemmata_project::Target {
+                name: "paper".into(),
+                main: "chapters/x.tex".into(),
+                engine: None,
+            },
+        ];
+        p
+    }
+
+    #[test]
+    fn renaming_a_folder_repoints_main_and_targets() {
+        let d = tempfile::tempdir().unwrap();
+        let mut p = mk_project(d.path());
+        assert!(repoint_config(&mut p, "ch", "text"));
+        assert_eq!(p.main, Path::new("text/main.tex"));
+        assert_eq!(p.config.main.as_deref(), Some("text/main.tex"));
+        assert_eq!(p.config.targets[0].main, "text/other.tex");
+        // "chapters" merely starts with "ch": not inside it.
+        assert_eq!(p.config.targets[1].main, "chapters/x.tex");
+        assert!(!repoint_config(&mut p, "figs", "pics"));
+        // Renaming the main file itself works too.
+        assert!(repoint_config(&mut p, "text/main.tex", "text/paper.tex"));
+        assert_eq!(p.config.main.as_deref(), Some("text/paper.tex"));
+    }
+
+    #[test]
+    fn case_only_rename_works_and_other_clashes_are_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        touch(r, "Intro.tex", "intro");
+        rename_on_disk(&r.join("Intro.tex"), &r.join("intro.tex"), "intro.tex").unwrap();
+        let names: Vec<_> = std::fs::read_dir(r)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["intro.tex"]);
+        assert_eq!(
+            std::fs::read_to_string(r.join("intro.tex")).unwrap(),
+            "intro"
+        );
+
+        // A different file that exists is never overwritten.
+        touch(r, "a.tex", "a");
+        touch(r, "b.tex", "b");
+        let e = rename_on_disk(&r.join("a.tex"), &r.join("b.tex"), "b.tex").unwrap_err();
+        assert_eq!(e, "b.tex already exists.");
+        // On a case-sensitive file system these are two files, so also a clash.
+        touch(r, "X.tex", "1");
+        if r.join("x.tex").exists() {
+            // Case-insensitive: that is the same file, so no clash.
+            assert!(rename_on_disk(&r.join("X.tex"), &r.join("x.tex"), "x.tex").is_ok());
+        } else {
+            touch(r, "x.tex", "2");
+            assert!(rename_on_disk(&r.join("X.tex"), &r.join("x.tex"), "x.tex").is_err());
+        }
+    }
+
+    fn opts(q: &str) -> Regex {
+        build_regex(&SearchOptions {
+            query: q.into(),
+            regex: false,
+            case_sensitive: true,
+            whole_word: false,
+        })
+        .unwrap()
+    }
+
+    fn target(path: &str, lines: &[u32]) -> ReplaceTarget {
+        ReplaceTarget {
+            path: path.into(),
+            lines: lines.to_vec(),
+        }
+    }
+
+    #[test]
+    fn replace_writes_nothing_when_one_target_cannot_be_read() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "a.tex", "cat\n");
+        let targets = vec![target("a.tex", &[1]), target("missing.tex", &[1])];
+        assert!(replace_across(d.path(), &opts("cat"), "dog", false, targets).is_err());
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("a.tex")).unwrap(),
+            "cat\n"
+        );
+    }
+
+    #[test]
+    fn replace_skips_lines_that_no_longer_match() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "a.tex", "cat\nbird\ncat\n");
+        // Line 2 changed since the search, and line 9 is gone.
+        let targets = vec![target("a.tex", &[1, 2, 9])];
+        let n = replace_across(d.path(), &opts("cat"), "dog", false, targets).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("a.tex")).unwrap(),
+            "dog\nbird\ncat\n"
+        );
+        // No hidden temp file is left behind.
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_failed_trash_move_puts_the_earlier_ones_back() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        touch(r, "a.tex", "a");
+        touch(r, "c.tex", "c");
+        let t = r.join("trash");
+        let pairs = [
+            (r.join("a.tex"), t.join("a.tex")),
+            (r.join("gone.tex"), t.join("gone.tex")),
+            (r.join("c.tex"), t.join("c.tex")),
+        ];
+        assert!(move_all(&pairs).is_err());
+        assert_eq!(std::fs::read_to_string(r.join("a.tex")).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(r.join("c.tex")).unwrap(), "c");
+        assert!(!t.join("a.tex").exists());
     }
 }
