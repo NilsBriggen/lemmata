@@ -14,39 +14,127 @@ pub fn export_pdf(state: State<AppState>, dest: String) -> CmdResult<()> {
     Ok(())
 }
 
+/// Drops the `\\?\` prefix Windows puts on verbatim paths, so they compare
+/// equal to the plain `C:\...` form latexmk writes in the `.fls` file.
+fn plain(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(&s))
+}
+
 /// Project files the last build read, from latexmk's `.fls` recorder file.
 pub fn used_files(fls: &str, root: &Path, outdir: &str) -> BTreeSet<PathBuf> {
+    let root = plain(root);
     let pwd = fls
         .lines()
         .find_map(|l| l.strip_prefix("PWD "))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.to_path_buf());
+        .map(|p| plain(Path::new(p)))
+        .unwrap_or_else(|| root.clone());
     fls.lines()
         .filter_map(|l| l.strip_prefix("INPUT "))
         .filter_map(|p| {
-            let abs = if Path::new(p).is_absolute() {
-                PathBuf::from(p)
-            } else {
-                pwd.join(p)
-            };
-            let rel = abs.strip_prefix(root).ok()?;
+            let p = plain(Path::new(p));
+            let abs = if p.is_absolute() { p } else { pwd.join(p) };
+            let rel = abs.strip_prefix(&root).ok()?;
             // Normalise "./chapters/a.tex" and skip build output.
             let rel: PathBuf = rel
                 .components()
                 .filter(|c| !matches!(c, std::path::Component::CurDir))
                 .collect();
-            let s = rel.to_string_lossy();
-            (!s.starts_with(outdir) && !s.starts_with('.') && !s.is_empty()).then_some(rel)
+            // Whole path components: "build" must not match "buildings.tex".
+            let in_outdir = !outdir.is_empty() && rel.starts_with(outdir);
+            (!in_outdir && !rel.to_string_lossy().starts_with('.') && rel.as_os_str() != "")
+                .then_some(rel)
         })
         .collect()
 }
 
+/// Environments whose body is printed as written, so `%` is not a comment.
+const VERBATIM_ENVS: [&str; 5] = ["verbatim", "Verbatim", "lstlisting", "minted", "alltt"];
+
+/// Length of the braced argument at the start of `r` (after its `{`),
+/// including the closing `}`; the whole string if it never closes.
+fn braced_len(r: &str) -> usize {
+    let mut depth = 1;
+    for (n, c) in r.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return n + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    r.len()
+}
+
+/// Finds where a real comment starts on `line`, skipping `\verb`, `\url`,
+/// `\href` and inline verbatim environments. Also returns the name of a
+/// verbatim environment that is still open at the end of the line.
+fn scan_line(line: &str) -> (Option<usize>, Option<String>) {
+    let mut i = 0;
+    while let Some(c) = line[i..].chars().next() {
+        if c == '%' {
+            return (Some(i), None);
+        }
+        if c != '\\' {
+            i += c.len_utf8();
+            continue;
+        }
+        let after = &line[i + 1..];
+        let rest_start = |rest: &str| line.len() - rest.len();
+        if let Some(r) = after.strip_prefix("verb")
+            && !r.starts_with(|c: char| c.is_ascii_alphabetic())
+        {
+            // \verb|..| or \verb*|..|: any delimiter, closed on the same line.
+            let r = r.strip_prefix('*').unwrap_or(r);
+            if let Some(d) = r.chars().next() {
+                let body = &r[d.len_utf8()..];
+                let end = body.find(d).map_or(body.len(), |k| k + d.len_utf8());
+                i = rest_start(body) + end;
+                continue;
+            }
+        }
+        if let Some(r) = ["url{", "href{"].iter().find_map(|c| after.strip_prefix(c)) {
+            i = rest_start(r) + braced_len(r);
+            continue;
+        }
+        if let Some(r) = after.strip_prefix("begin{")
+            && let Some(n) = r.find('}')
+            && VERBATIM_ENVS.contains(&r[..n].trim_end_matches('*'))
+        {
+            let end = format!("\\end{{{}}}", &r[..n]);
+            let body = &r[n + 1..];
+            match body.find(&end) {
+                Some(k) => i = rest_start(body) + k + end.len(),
+                None => return (None, Some(r[..n].to_string())),
+            }
+            continue;
+        }
+        // Any other escape (`\%`, `\\`): the next character is not special.
+        i += 1 + after.chars().next().map_or(0, char::len_utf8);
+    }
+    (None, None)
+}
+
 /// Removes `%` comments (keeping `\%`), dropping lines that were only a comment.
+/// Verbatim code, `\verb`, `\url` and `\href` are left alone.
 pub fn strip_comments(tex: &str) -> String {
     let mut out = String::with_capacity(tex.len());
+    let mut open: Option<String> = None;
     for line in tex.lines() {
-        let b = line.as_bytes();
-        let cut = (0..b.len()).find(|&i| b[i] == b'%' && (i == 0 || b[i - 1] != b'\\'));
+        if let Some(env) = &open {
+            if line.contains(&format!("\\end{{{env}}}")) {
+                open = None;
+            }
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let (cut, opened) = scan_line(line);
+        open = opened;
         match cut {
             Some(0) => continue,
             // Keep the % so TeX still joins the lines as the author intended.
@@ -203,5 +291,77 @@ mod tests {
     fn strips_comments_but_not_escaped_percent() {
         let tex = "% header\nText 50\\% done % note\n  % indented\nkeep\n";
         assert_eq!(strip_comments(tex), "Text 50\\% done %\nkeep\n");
+    }
+
+    #[test]
+    fn keeps_percent_in_verbatim_environments() {
+        for env in ["verbatim", "Verbatim", "verbatim*", "lstlisting", "minted"] {
+            let tex =
+                format!("a % x\n\\begin{{{env}}}\n% kept\nx = 5 % kept\n\\end{{{env}}}\nb % y\n");
+            assert_eq!(
+                strip_comments(&tex),
+                format!("a %\n\\begin{{{env}}}\n% kept\nx = 5 % kept\n\\end{{{env}}}\nb %\n")
+            );
+        }
+        // Arguments on the \begin line belong to the environment too.
+        assert_eq!(
+            strip_comments("\\begin{minted}[linenos]{c} % kept\n% kept\n\\end{minted}\n"),
+            "\\begin{minted}[linenos]{c} % kept\n% kept\n\\end{minted}\n"
+        );
+    }
+
+    #[test]
+    fn keeps_percent_in_verb_with_any_delimiter() {
+        assert_eq!(strip_comments("\\verb|50%| ok % c\n"), "\\verb|50%| ok %\n");
+        assert_eq!(strip_comments("\\verb+a%b+ x % c\n"), "\\verb+a%b+ x %\n");
+        assert_eq!(strip_comments("\\verb*!a%b! x % c\n"), "\\verb*!a%b! x %\n");
+        assert_eq!(strip_comments("\\verb|a%\n"), "\\verb|a%\n");
+    }
+
+    #[test]
+    fn keeps_percent_in_url_and_href() {
+        assert_eq!(
+            strip_comments("\\url{http://a.b/c%20d} text % c\n"),
+            "\\url{http://a.b/c%20d} text %\n"
+        );
+        assert_eq!(
+            strip_comments("\\href{http://a.b/c%20d}{link} % c\n"),
+            "\\href{http://a.b/c%20d}{link} %\n"
+        );
+    }
+
+    #[test]
+    fn comment_after_escaped_backslash_is_stripped() {
+        assert_eq!(
+            strip_comments("a \\\\ % c\nb\\\\% c\n"),
+            "a \\\\ %\nb\\\\%\n"
+        );
+    }
+
+    #[test]
+    fn outdir_match_is_by_path_component() {
+        let fls = "PWD /p\nINPUT main.tex\nINPUT buildings.tex\nINPUT build-notes/a.tex\nINPUT build/main.aux\nINPUT build/sub/x.tex\n";
+        let got: Vec<_> = used_files(fls, Path::new("/p"), "build")
+            .into_iter()
+            .collect();
+        assert_eq!(
+            got,
+            [
+                PathBuf::from("build-notes/a.tex"),
+                PathBuf::from("buildings.tex"),
+                PathBuf::from("main.tex")
+            ]
+        );
+    }
+
+    #[test]
+    fn verbatim_windows_prefix_is_ignored() {
+        assert_eq!(plain(Path::new(r"\\?\C:\proj")), PathBuf::from(r"C:\proj"));
+        // A verbatim root still matches the plain paths in the .fls.
+        let fls = "PWD /p\nINPUT main.tex\nINPUT /p/a.tex\n";
+        let got: Vec<_> = used_files(fls, Path::new(r"\\?\/p"), "build")
+            .into_iter()
+            .collect();
+        assert_eq!(got, [PathBuf::from("a.tex"), PathBuf::from("main.tex")]);
     }
 }
