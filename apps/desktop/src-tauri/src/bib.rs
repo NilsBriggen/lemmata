@@ -49,6 +49,81 @@ pub async fn bib_add_reference(
     Ok(Added { key, file })
 }
 
+/// Searches Crossref by title, author or keywords. The query leaves the
+/// computer only here, when the user clicks "Search online".
+#[tauri::command]
+pub async fn bib_search_online(query: String) -> CmdResult<Vec<lemmata_bib::search::Hit>> {
+    lemmata_bib::search::search_online(&query)
+        .await
+        .map_err(crate::err)
+}
+
+/// Every entry with its place in the file, duplicates, and which keys are
+/// cited or missing, for the bibliography manager.
+#[tauri::command(async)]
+pub fn bib_library(state: State<AppState>) -> CmdResult<lemmata_bib::manage::Library> {
+    let p = project(&state)?;
+    let files = lemmata_bib::bib_files(&p);
+    Ok(lemmata_bib::manage::library(
+        &p.root,
+        &files,
+        &lemmata_bib::cited_keys(&p),
+    ))
+}
+
+/// Reads `file` (a .bib file in the project), applies `edit` and writes it
+/// back atomically. Returns the changed paths for the app to reload.
+fn edit_bib(
+    state: &State<AppState>,
+    file: &str,
+    edit: impl FnOnce(&str) -> Result<String, lemmata_bib::Error>,
+) -> CmdResult<Vec<String>> {
+    let p = project(state)?;
+    if !file.ends_with(".bib") || file.contains("..") || std::path::Path::new(file).is_absolute() {
+        return Err("Choose a .bib file inside the project.".into());
+    }
+    let path = p.root.join(file);
+    let text = edit(&std::fs::read_to_string(&path).map_err(crate::err)?).map_err(crate::err)?;
+    lemmata_bib::manage::write_atomic(&path, &text).map_err(crate::err)?;
+    Ok(vec![file.to_string()])
+}
+
+/// Deletes the entry `key` that starts on `line` of `file`; the rest of the
+/// file stays as it was.
+#[tauri::command(async)]
+pub fn bib_remove_entry(
+    state: State<AppState>,
+    file: String,
+    key: String,
+    line: usize,
+) -> CmdResult<Vec<String>> {
+    edit_bib(&state, &file, |src| {
+        lemmata_bib::manage::remove_entry(src, &key, line)
+    })
+}
+
+/// Gives the entry `key` at `line` of `file` a new key. Citations in the
+/// .tex files are not touched: this is for fixing a key that two entries share.
+#[tauri::command(async)]
+pub fn bib_rename_key(
+    state: State<AppState>,
+    file: String,
+    key: String,
+    line: usize,
+    new_key: String,
+) -> CmdResult<Vec<String>> {
+    let p = project(&state)?;
+    let taken = lemmata_bib::entries(&p.root, &lemmata_bib::bib_files(&p))
+        .into_iter()
+        .any(|e| e.key.eq_ignore_ascii_case(&new_key));
+    if taken {
+        return Err("Another entry already uses that key.".into());
+    }
+    edit_bib(&state, &file, |src| {
+        lemmata_bib::manage::rename_entry(src, &key, line, &new_key)
+    })
+}
+
 #[tauri::command]
 pub async fn zotero_status() -> lemmata_bib::zotero::Status {
     lemmata_bib::zotero::status().await

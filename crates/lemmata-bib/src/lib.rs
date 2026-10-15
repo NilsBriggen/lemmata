@@ -1,6 +1,8 @@
 //! The project's bibliography: which .bib files it uses, their entries for
 //! the citation picker, and adding a reference by DOI or arXiv ID.
 
+pub mod manage;
+pub mod search;
 pub mod zotero;
 
 use biblatex::{Bibliography, ChunksExt};
@@ -114,32 +116,34 @@ pub fn entries(root: &Path, files: &[String]) -> Vec<Entry> {
         let Ok(bib) = Bibliography::parse(&src) else {
             continue;
         };
-        for e in bib.iter() {
-            let field = |k: &str| e.get(k).map(|c| c.format_verbatim()).unwrap_or_default();
-            let year = {
-                let y = field("year");
-                if y.is_empty() {
-                    field("date").chars().take(4).collect()
-                } else {
-                    y
-                }
-            };
-            let names = if e.get("author").is_some() {
-                field("author")
-            } else {
-                field("editor")
-            };
-            out.push(Entry {
-                key: e.key.clone(),
-                kind: e.entry_type.to_string(),
-                title: clean(&field("title")),
-                authors: short_authors(&names),
-                year,
-                file: file.clone(),
-            });
-        }
+        out.extend(bib.iter().map(|e| make_entry(e, file)));
     }
     out
+}
+
+fn make_entry(e: &biblatex::Entry, file: &str) -> Entry {
+    let field = |k: &str| e.get(k).map(|c| c.format_verbatim()).unwrap_or_default();
+    let year = {
+        let y = field("year");
+        if y.is_empty() {
+            field("date").chars().take(4).collect()
+        } else {
+            y
+        }
+    };
+    let names = if e.get("author").is_some() {
+        field("author")
+    } else {
+        field("editor")
+    };
+    Entry {
+        key: e.key.clone(),
+        kind: e.entry_type.to_string(),
+        title: clean(&field("title")),
+        authors: short_authors(&names),
+        year,
+        file: file.to_string(),
+    }
 }
 
 fn clean(s: &str) -> String {

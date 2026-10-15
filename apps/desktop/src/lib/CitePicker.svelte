@@ -3,6 +3,7 @@
   // reference by DOI or arXiv ID.
   import { onMount, tick } from "svelte";
   import { api, errorMessage, type BibEntry } from "./api";
+  import { bibApi, type OnlineHit } from "./bib/api";
   import Modal from "./ui/Modal.svelte";
   import BookOpen from "@lucide/svelte/icons/book-open";
 
@@ -27,6 +28,10 @@
   let addFile = $state("refs.bib");
   let adding = $state(false);
   let addMessage = $state<{ ok: boolean; text: string } | null>(null);
+  let online = $state<OnlineHit[] | null>(null);
+  let searching = $state(false);
+  let onlineError = $state("");
+  let addingDoi = $state("");
   let searchEl = $state<HTMLInputElement>();
   let listEl = $state<HTMLUListElement>();
 
@@ -87,6 +92,35 @@
     picked = picked.includes(key) ? picked.filter((k) => k !== key) : [...picked, key];
   }
 
+  // Goes online only on this click, never while typing.
+  async function searchOnline() {
+    searching = true;
+    onlineError = "";
+    online = null;
+    try {
+      online = await bibApi.searchOnline(query);
+    } catch (err) {
+      onlineError = errorMessage(err);
+    } finally {
+      searching = false;
+    }
+  }
+
+  async function addHit(h: OnlineHit) {
+    addingDoi = h.doi;
+    onlineError = "";
+    try {
+      await beforeBibChange();
+      const added = await api.bibAddReference(h.doi, addFile);
+      onBibChanged(added.file);
+      onInsert([added.key]);
+    } catch (err) {
+      onlineError = errorMessage(err);
+    } finally {
+      addingDoi = "";
+    }
+  }
+
   async function addReference(e: SubmitEvent) {
     e.preventDefault();
     adding = true;
@@ -121,12 +155,12 @@
       id="cite-search"
       bind:this={searchEl}
       bind:value={query}
-      oninput={() => (selected = 0)}
+      oninput={() => { selected = 0; online = null; onlineError = ""; }}
       onkeydown={onKey}
       placeholder="Search by author, title, year or key"
       autocomplete="off"
     />
-    <ul bind:this={listEl}>
+    <ul class="local" bind:this={listEl}>
       {#if loading}
         <li class="muted">Reading the bibliography…</li>
       {:else if entries.length === 0}
@@ -147,6 +181,33 @@
         </li>
       {/each}
     </ul>
+    {#if query.trim() && !loading}
+      <div class="online">
+        <div class="row">
+          <button class="btn sm" class:primary={results.length < 3} onclick={searchOnline} disabled={searching}>{searching ? "Searching…" : "Search online"}</button>
+          <span class="muted small">{results.length < 3 ? "Few matches here. " : ""}Sends “{query.trim()}” to Crossref, only when you click.</span>
+        </div>
+        {#if onlineError}<p class="msg error">{onlineError}</p>{/if}
+        {#if online}
+          {#if online.length === 0}
+            <p class="muted">Crossref found nothing for “{query.trim()}”.</p>
+          {:else}
+            <ul class="hits">
+              {#each online as h (h.doi)}
+                <li>
+                  <div class="hit">
+                    <span class="top"><b>{h.authors || "Unknown author"}</b>{#if h.year}<span class="year">{h.year}</span>{/if}<code>{h.doi}</code></span>
+                    <span class="title wrap">{h.title || "(no title)"}{h.venue ? ` · ${h.venue}` : ""}</span>
+                  </div>
+                  <button class="btn sm" onclick={() => addHit(h)} disabled={!!addingDoi} title="Adds it to {addFile} and inserts the citation">{addingDoi === h.doi ? "Adding…" : "Add"}</button>
+                </li>
+              {/each}
+            </ul>
+            <p class="muted small">Add puts the reference in {addFile} (change the file below) and inserts the citation.</p>
+          {/if}
+        {/if}
+      </div>
+    {/if}
     <p class="hint">
       <kbd>Enter</kbd> inserts · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> or the checkbox selects several
       {#if picked.length}· <button class="link" onclick={() => onInsert([...picked])}>Insert {picked.length} selected</button>{/if}
@@ -178,12 +239,18 @@
   #cite-search { font-size: 14px; }
   ul { list-style: none; margin: 0; padding: 0; overflow: auto; min-height: 80px; max-height: 42vh; border: 1px solid var(--border); border-radius: var(--r-lg); }
   li.muted { padding: 10px 12px; }
-  li button { width: 100%; text-align: left; border: none; border-radius: 0; border-bottom: 1px solid var(--border); background: none; padding: 7px 12px; display: flex; flex-direction: column; gap: 2px; font-weight: 400; }
-  li button.on { background: var(--accent-soft); }
+  .local li button { width: 100%; text-align: left; border: none; border-radius: 0; border-bottom: 1px solid var(--border); background: none; padding: 7px 12px; display: flex; flex-direction: column; gap: 2px; font-weight: 400; }
+  .local li button.on { background: var(--accent-soft); }
   .top { display: flex; gap: 8px; align-items: center; }
   .year { color: var(--muted); }
   code { margin-left: auto; font-size: 11px; color: var(--muted); }
   .title { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .online { display: flex; flex-direction: column; gap: 6px; }
+  .online .row { align-items: center; }
+  .hits { max-height: 28vh; }
+  .hits li { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+  .hit { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .wrap { white-space: normal; }
   .hint { margin: 0; color: var(--muted); font-size: 12px; }
   kbd { font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
   .link { border: none; background: none; color: var(--accent); padding: 0; text-decoration: underline; font-weight: 400; }
