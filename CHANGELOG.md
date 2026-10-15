@@ -1,6 +1,24 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.5.2 (2026-10-15)
+
+### Added
+- Lint, wordcount, bib, outline and export --zip
+- Tectonic as an optional engine, downloaded on demand
+- Git panel with commit, pull, push, branches and clone
+- Review changes against a snapshot, and a compiled PDF diff
+- Template gallery with 14 more templates
+- 14 more spell-check languages, downloaded on demand
+- Export for arXiv as one .tex file
+- Open .tex files and project folders from the system
+- Wire the 2.0 features into the app
+
+### Fixed
+- An edit saved during a build was left out of the next one
+
+### revert
+- Move the 2.0 work to the 2.0 branch
 ## 1.5.1 (2026-10-15)
 
 ### Fixed
