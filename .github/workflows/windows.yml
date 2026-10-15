@@ -51,7 +51,9 @@ jobs:
         run: pwsh scripts/windows-smoke.ps1 target/release/lemmata.exe
 
   e2e:
-    runs-on: windows-latest
+    # windows-latest (Server 2025) breaks msedgedriver with WebView2 apps ("DevToolsActivePort file
+    # doesn't exist"); 2022 works. https://github.com/actions/runner-images/issues/14738
+    runs-on: windows-2022
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
