@@ -30,6 +30,8 @@ Per-project settings (main file, engine, bibliography tool, spell-check language
 
 **Opening files from your system.** Lemmata is registered for `.tex` files, so you can double-click one or choose **Open with Lemmata**. You can also pass a file or a folder on the command line, as in `lemmata-app notes.tex` or `lemmata-app ~/thesis`. A folder opens as a project. For a file, Lemmata uses the nearest folder above it with a `lemmata.toml` as the project; if there is none, the folder of the main file named by a `% !TeX root = ../main.tex` comment in the file's first lines; and otherwise the file's own folder. The file opens in that project. If Lemmata is already running, the project opens in the running window. `.bib`, `.sty` and `.cls` files work the same way.
 
+**Links that open Lemmata.** Web pages and other programs can open Lemmata with a `lemmata://` link: `lemmata://new?template=ieee` opens the New project gallery with that template chosen, `lemmata://clone?url=https://github.com/you/paper.git` opens Clone a repository with the address filled in, and `lemmata://open?path=/home/you/thesis` opens a project. Nothing is created or cloned until you confirm in the dialog.
+
 **Git marks.** If the project folder is in a git repository, changed files in the file tree get a letter (M modified, A added, D deleted, ? not tracked) and folders with changes get a dot. The marks only read the repository's status. To commit, pull and push, use the Git panel (see [Git](#git)). History snapshots live on a private reference of their own and don't touch your branches.
 
 ## Writing and building

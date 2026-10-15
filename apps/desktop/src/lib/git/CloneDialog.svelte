@@ -11,13 +11,16 @@
 
   interface Props {
     defaultParent?: string;
+    /** Filled in from a lemmata://clone link; the user still decides. */
+    initialUrl?: string;
     /** The folder the repository was cloned into. */
     onCloned: (path: string) => void;
     onClose: () => void;
   }
-  let { defaultParent = "", onCloned, onClose }: Props = $props();
+  let { defaultParent = "", initialUrl = "", onCloned, onClose }: Props = $props();
 
-  let url = $state("");
+  // svelte-ignore state_referenced_locally
+  let url = $state(initialUrl);
   /** Typed by the user; while empty, the name follows the URL. */
   let typedName = $state("");
   let parent = $state("");

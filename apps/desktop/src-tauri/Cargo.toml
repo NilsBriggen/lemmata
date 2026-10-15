@@ -34,6 +34,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-deep-link = "2"
 which.workspace = true
 toml.workspace = true
 regex.workspace = true
@@ -49,3 +50,8 @@ ring = "0.17"
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt"] }
+
+# shortcut: tauri-plugin-deep-link 2.6.2 doesn't compile with rust-ini 0.21.3 (new ParseOption fields);
+# drop this pin once a newer deep-link plugin builds without it.
+[target.'cfg(target_os = "linux")'.dependencies]
+rust-ini = "=0.21.1"

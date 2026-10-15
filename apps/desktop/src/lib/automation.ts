@@ -157,6 +157,7 @@ export function install(host: Host) {
         class: el.className && typeof el.className === "string" ? el.className : undefined,
         label: el.getAttribute("aria-label") ?? el.getAttribute("title") ?? undefined,
         text: el.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) || undefined,
+        value: el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement ? el.value : undefined,
         display: getComputedStyle(el).display,
         rect: (({ x, y, width, height }) => [x, y, width, height].map(Math.round))(el.getBoundingClientRect()),
       })),

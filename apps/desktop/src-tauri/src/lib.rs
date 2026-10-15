@@ -896,8 +896,16 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_deep_link::init())
         .manage(AppState::default())
         .setup(|app| {
+            // lemmata:// links. macOS takes the scheme from the bundle; Linux (AppImage) and Windows
+            // need it registered at run time. Release builds only: a test build must not take them over.
+            #[cfg(all(not(debug_assertions), any(target_os = "linux", windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let _ = app.deep_link().register_all();
+            }
             #[cfg(debug_assertions)]
             automation::start(app.handle());
             tectonic::init(app.handle());

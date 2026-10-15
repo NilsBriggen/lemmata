@@ -1,7 +1,8 @@
 //! Opening a project or file handed to us by the OS: file association, "Open
 //! with", a command-line argument, a second launch while running, or (macOS)
-//! an Apple Event. All of them end up as an [`OpenTarget`] that the frontend
-//! picks up with `take_open_request` (first load) or the `open-request` event.
+//! an Apple Event; and `lemmata://` links from a web page or another program.
+//! All of them end up as a [`Request`] that the frontend picks up with
+//! `take_open_request` (first load) or the `open-request` event.
 
 use serde::Serialize;
 use std::path::{Component, Path, PathBuf};
@@ -18,6 +19,62 @@ pub(crate) struct OpenTarget {
     pub project_root: PathBuf,
     /// Path of the file to open, relative to `project_root` with `/` separators.
     pub file: Option<String>,
+}
+
+/// What the app is asked to do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum Request {
+    Open(OpenTarget),
+    /// `lemmata://clone?url=…`: the Clone dialog, filled in. Nothing is cloned until the user says so.
+    Clone {
+        url: String,
+    },
+    /// `lemmata://new?template=…`: the New project gallery with that template chosen.
+    NewProject {
+        template: String,
+    },
+}
+
+const SCHEME: &str = "lemmata";
+
+/// A `lemmata://open|clone|new?…` link. Links come from web pages, so every value is checked.
+fn from_link(link: &str) -> Option<Request> {
+    let url = tauri::Url::parse(link).ok()?;
+    if url.scheme() != SCHEME {
+        return None;
+    }
+    let param = |key: &str| {
+        url.query_pairs()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.into_owned())
+    };
+    match url.host_str()? {
+        "open" => {
+            let path = PathBuf::from(param("path")?);
+            if !path.is_absolute() {
+                return None;
+            }
+            target_from_path(&normalize(&path)).map(Request::Open)
+        }
+        "clone" => {
+            let repo = param("url")?;
+            let ok = repo.len() <= 500
+                && tauri::Url::parse(&repo)
+                    .is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some());
+            ok.then_some(Request::Clone { url: repo })
+        }
+        "new" => {
+            let template = param("template")?;
+            let ok = !template.is_empty()
+                && template.len() <= 64
+                && template
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            ok.then_some(Request::NewProject { template })
+        }
+        _ => None,
+    }
 }
 
 /// Lexically resolves `.` and `..` (no symlink or existence handling, so no
@@ -100,19 +157,25 @@ fn target_from_path(path: &Path) -> Option<OpenTarget> {
     })
 }
 
-/// The first of `args` that names a project folder or a .tex/.bib/.sty/.cls
-/// file. `args` excludes the program name; relative paths are taken from `cwd`.
-/// Flags (`--`, `-psn_0_123`, ...) and anything that isn't there are skipped.
-pub(crate) fn target_from_args(args: &[String], cwd: &Path) -> Option<OpenTarget> {
+/// The first of `args` that is a `lemmata://` link or names a project folder or a
+/// .tex/.bib/.sty/.cls file. `args` excludes the program name; relative paths are
+/// taken from `cwd`. Flags (`--`, `-psn_0_123`, ...) and anything that isn't there are skipped.
+pub(crate) fn request_from_args(args: &[String], cwd: &Path) -> Option<Request> {
     args.iter()
         .filter(|a| !a.starts_with('-') && !a.is_empty())
-        .find_map(|a| target_from_path(&normalize(&cwd.join(a))))
+        .find_map(|a| {
+            if a.starts_with(&format!("{SCHEME}:")) {
+                from_link(a)
+            } else {
+                target_from_path(&normalize(&cwd.join(a))).map(Request::Open)
+            }
+        })
 }
 
 /// What the frontend has not picked up yet.
 #[derive(Default)]
 pub(crate) struct OpenRequest {
-    pending: Mutex<Option<OpenTarget>>,
+    pending: Mutex<Option<Request>>,
     /// Set by the first `take_open_request`: from then on the page listens, so requests are emitted.
     page_ready: Mutex<bool>,
 }
@@ -122,7 +185,7 @@ pub(crate) fn init(app: &tauri::AppHandle) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cwd = std::env::current_dir().unwrap_or_default();
     app.manage(OpenRequest {
-        pending: Mutex::new(target_from_args(&args, &cwd)),
+        pending: Mutex::new(request_from_args(&args, &cwd)),
         ..Default::default()
     });
 }
@@ -130,7 +193,7 @@ pub(crate) fn init(app: &tauri::AppHandle) {
 /// Hands a target to the running app: emitted when the page listens, stored otherwise; the window is focused.
 // Used by second launches (release builds) and macOS file events.
 #[cfg(any(not(debug_assertions), target_os = "macos"))]
-fn deliver(app: &tauri::AppHandle, target: OpenTarget) {
+fn deliver(app: &tauri::AppHandle, target: Request) {
     let Some(state) = app.try_state::<OpenRequest>() else {
         return;
     };
@@ -149,7 +212,7 @@ fn deliver(app: &tauri::AppHandle, target: OpenTarget) {
 /// Call from the single-instance callback (`args` still has the program name first). Release builds only.
 #[cfg(not(debug_assertions))]
 pub(crate) fn on_second_launch(app: &tauri::AppHandle, args: &[String], cwd: &str) {
-    if let Some(t) = target_from_args(args.get(1..).unwrap_or_default(), Path::new(cwd)) {
+    if let Some(t) = request_from_args(args.get(1..).unwrap_or_default(), Path::new(cwd)) {
         deliver(app, t);
     }
 }
@@ -157,19 +220,22 @@ pub(crate) fn on_second_launch(app: &tauri::AppHandle, args: &[String], cwd: &st
 /// Call from `RunEvent::Opened` (macOS Apple Events).
 #[cfg(target_os = "macos")]
 pub(crate) fn on_opened(app: &tauri::AppHandle, urls: &[tauri::Url]) {
+    // file:// URLs for opened files, lemmata:// for links.
     let args: Vec<String> = urls
         .iter()
-        .filter_map(|u| u.to_file_path().ok())
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|u| match u.to_file_path() {
+            Ok(p) if u.scheme() == "file" => p.to_string_lossy().into_owned(),
+            _ => u.to_string(),
+        })
         .collect();
-    if let Some(t) = target_from_args(&args, Path::new("/")) {
+    if let Some(t) = request_from_args(&args, Path::new("/")) {
         deliver(app, t);
     }
 }
 
 /// The page calls this once, after registering its `open-request` listener.
 #[tauri::command]
-pub(crate) fn take_open_request(state: tauri::State<OpenRequest>) -> Option<OpenTarget> {
+pub(crate) fn take_open_request(state: tauri::State<OpenRequest>) -> Option<Request> {
     *state.page_ready.lock().unwrap_or_else(|e| e.into_inner()) = true;
     state
         .pending
@@ -187,11 +253,11 @@ mod tests {
         a.iter().map(|s| s.to_string()).collect()
     }
 
-    fn at(root: &Path, file: Option<&str>) -> Option<OpenTarget> {
-        Some(OpenTarget {
+    fn at(root: &Path, file: Option<&str>) -> Option<Request> {
+        Some(Request::Open(OpenTarget {
             project_root: root.to_path_buf(),
             file: file.map(String::from),
-        })
+        }))
     }
 
     #[test]
@@ -199,16 +265,16 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path();
         assert_eq!(
-            target_from_args(&args(&["--", "-psn_0_42", "proj"]), p),
+            request_from_args(&args(&["--", "-psn_0_42", "proj"]), p),
             None
         );
         fs::create_dir(p.join("proj")).unwrap();
         assert_eq!(
-            target_from_args(&args(&["--", "-psn_0_42", "proj"]), p),
+            request_from_args(&args(&["--", "-psn_0_42", "proj"]), p),
             at(&p.join("proj"), None)
         );
         assert_eq!(
-            target_from_args(&args(&["./proj/../proj/."]), p),
+            request_from_args(&args(&["./proj/../proj/."]), p),
             at(&p.join("proj"), None)
         );
     }
@@ -221,13 +287,13 @@ mod tests {
         fs::write(p.join("a/main.TEX"), "\\documentclass{article}").unwrap();
         fs::write(p.join("a/notes.txt"), "x").unwrap();
         assert_eq!(
-            target_from_args(&args(&["a/main.TEX"]), p),
+            request_from_args(&args(&["a/main.TEX"]), p),
             at(&p.join("a"), Some("main.TEX"))
         );
-        assert_eq!(target_from_args(&args(&["a/notes.txt"]), p), None);
+        assert_eq!(request_from_args(&args(&["a/notes.txt"]), p), None);
         // The first usable argument wins.
         assert_eq!(
-            target_from_args(&args(&["a/notes.txt", "a/main.TEX"]), p),
+            request_from_args(&args(&["a/notes.txt", "a/main.TEX"]), p),
             at(&p.join("a"), Some("main.TEX"))
         );
     }
@@ -244,7 +310,7 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         assert_eq!(
-            target_from_args(&[f], Path::new("/nonexistent")),
+            request_from_args(&[f], Path::new("/nonexistent")),
             at(&p.join("thesis"), Some("chapters/one.tex"))
         );
     }
@@ -261,17 +327,54 @@ mod tests {
         fs::write(p.join("book/ch/c.tex"), "%!TeX root=../../other/x.tex\n").unwrap();
         fs::write(p.join("other/x.tex"), "").unwrap();
         assert_eq!(
-            target_from_args(&args(&["book/ch/a.tex"]), p),
+            request_from_args(&args(&["book/ch/a.tex"]), p),
             at(&p.join("book"), Some("ch/a.tex"))
         );
         // Missing main, or one that is not in a parent folder: the file's own folder.
         assert_eq!(
-            target_from_args(&args(&["book/ch/b.tex"]), p),
+            request_from_args(&args(&["book/ch/b.tex"]), p),
             at(&p.join("book/ch"), Some("b.tex"))
         );
         assert_eq!(
-            target_from_args(&args(&["book/ch/c.tex"]), p),
+            request_from_args(&args(&["book/ch/c.tex"]), p),
             at(&p.join("book/ch"), Some("c.tex"))
         );
+    }
+
+    #[test]
+    fn links_open_clone_and_start_projects_and_refuse_anything_else() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path();
+        fs::create_dir(p.join("proj")).unwrap();
+        let open = format!("lemmata://open?path={}", p.join("proj").display());
+        assert_eq!(
+            request_from_args(&args(&[&open]), p),
+            at(&p.join("proj"), None)
+        );
+        assert_eq!(
+            request_from_args(
+                &args(&["lemmata://clone?url=https%3A%2F%2Fgithub.com%2Fa%2Fb.git"]),
+                p
+            ),
+            Some(Request::Clone {
+                url: "https://github.com/a/b.git".into()
+            })
+        );
+        assert_eq!(
+            request_from_args(&args(&["lemmata://new?template=ieee"]), p),
+            Some(Request::NewProject {
+                template: "ieee".into()
+            })
+        );
+        for bad in [
+            "lemmata://open?path=proj",
+            "lemmata://clone?url=file:///etc",
+            "lemmata://clone?url=ext::sh%20-c%20x",
+            "lemmata://new?template=../x",
+            "lemmata://run?cmd=x",
+            "other://new?template=ieee",
+        ] {
+            assert_eq!(request_from_args(&args(&[bad]), p), None, "{bad}");
+        }
     }
 }

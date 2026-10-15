@@ -14,10 +14,14 @@
   interface Props {
     /** A sensible default location, e.g. next to the last project. */
     defaultParent?: string;
+    /** From a lemmata://new link: the template to choose, bundled or from the collection. */
+    initialTemplate?: string;
     onCreated: (path: string) => void;
     onClose: () => void;
   }
-  let { defaultParent = "", onCreated, onClose }: Props = $props();
+  let { defaultParent = "", initialTemplate = "", onCreated, onClose }: Props = $props();
+  /** The id of `initialTemplate` in the list, once it's there (the collection's arrive later). */
+  const linked = (list: Template[]) => list.find((t) => t.id === initialTemplate || t.id === `online:${initialTemplate}`)?.id;
 
   let templates = $state<Template[]>([]);
   let chosen = $state("article");
@@ -48,12 +52,13 @@
 
   onMount(async () => {
     templates = await api.listTemplates().catch(() => []);
-    chosen = templates[0]?.id ?? "article";
+    chosen = linked(templates) ?? templates[0]?.id ?? "article";
     parent = defaultParent || (await documentDir().catch(() => ""));
     // The collection's templates arrive in the background; ones seen before are already listed.
     try {
       await api.refreshTemplates();
       templates = await api.listTemplates();
+      chosen = (initialTemplate && linked(templates)) || chosen;
       online = { loading: false, error: null };
     } catch (err) {
       online = { loading: false, error: errorMessage(err) };

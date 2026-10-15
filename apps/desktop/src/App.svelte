@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
-  import { api, errorMessage, type Target, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus, type OpenTarget } from "./lib/api";
+  import { api, errorMessage, type Target, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus, type OpenTarget, type OpenRequest } from "./lib/api";
   import Library from "./lib/Library.svelte";
   import Editor from "./lib/Editor.svelte";
   import PdfPane from "./lib/PdfPane.svelte";
@@ -314,6 +314,18 @@
   }
 
   /** Opens a project, and a file in it, that the OS asked us to open. */
+  /** A link asking to clone or start a project: handled by the start screen's dialogs. */
+  let linkRequest = $state<Exclude<OpenRequest, { kind: "open" }> | null>(null);
+
+  /** A file, folder or lemmata:// link from the system. */
+  async function handleRequest(r: OpenRequest) {
+    if (r.kind === "open") return openTarget(r);
+    welcome = false;
+    // The dialogs live on the start screen; closing the project saves it first.
+    if (project) await closeProject();
+    if (!project) linkRequest = r;
+  }
+
   async function openTarget(t: OpenTarget) {
     const before = project;
     welcome = false;
@@ -1591,13 +1603,13 @@
     showWhatsNew();
     // Existing users (with projects) never see the welcome.
     // A file or folder opened from the OS (double-click, "Open with", a second launch) wins over the last project.
-    listen<OpenTarget>("open-request", (e) => openTarget(e.payload)).catch((e) =>
+    listen<OpenRequest>("open-request", (e) => handleRequest(e.payload)).catch((e) =>
       reportOnce("open", `Opening files from other programs won't work: ${errorMessage(e)}`),
     );
     const request = await api.takeOpenRequest().catch(() => null);
     if (request) {
       if (!settings.firstRunDone) updateSettings({ firstRunDone: true });
-      await openTarget(request);
+      await handleRequest(request);
     } else if (!settings.firstRunDone && recent.length === 0) {
       welcome = true;
     } else {
@@ -1695,6 +1707,8 @@
   {#await import("./lib/Onboarding.svelte") then { default: Onboarding }}<Onboarding status={tex} {checking} onRecheck={recheck} onSkip={() => (withoutTex = true)} />{/await}
 {:else if !project}
   <Library
+    {linkRequest}
+    onLinkHandled={() => (linkRequest = null)}
     {recent}
     error={openError}
     {noMainIn}

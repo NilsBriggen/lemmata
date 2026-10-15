@@ -114,6 +114,8 @@ export interface Snapshot {
 
 /** A project (and maybe a file in it) to open, from the OS or a second launch. */
 export type OpenTarget = { project_root: string; file: string | null };
+/** What the system asked for: a file or folder, or a lemmata:// link to clone a repository or start a project. */
+export type OpenRequest = ({ kind: "open" } & OpenTarget) | { kind: "clone"; url: string } | { kind: "new_project"; template: string };
 
 export interface LabelInfo {
   label: string;
@@ -159,7 +161,7 @@ export const api = {
   /** Opens the project's PDF in the system's PDF viewer. */
   openPdfExternally: () => invoke<void>("open_pdf_externally"),
   /** A file or folder the app was asked to open at launch (from the OS or the command line); asked once. */
-  takeOpenRequest: () => invoke<OpenTarget | null>("take_open_request"),
+  takeOpenRequest: () => invoke<OpenRequest | null>("take_open_request"),
   /** Opens a file inside the project with the system's default program. */
   openProjectFile: (path: string) => invoke<void>("open_project_file", { path }),
   watching: () => invoke<boolean>("watching"),

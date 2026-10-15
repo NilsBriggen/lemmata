@@ -1,7 +1,7 @@
 <script lang="ts">
   // The start screen, after Overleaf's project dashboard: actions on the
   // left, the projects as a list (or grid with thumbnails) on the right.
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import Plus from "@lucide/svelte/icons/plus";
@@ -45,12 +45,24 @@
     onExample: () => void;
     onWelcome: () => void;
     onPreferences: () => void;
+    /** A lemmata:// link asked to clone a repository or start from a template. */
+    linkRequest?: { kind: "clone"; url: string } | { kind: "new_project"; template: string } | null;
+    onLinkHandled?: () => void;
   }
   let p: Props = $props();
 
   let query = $state("");
   let thumbs = $state<Record<string, string>>({});
   let dialog = $state<null | "new" | "clone" | { zip: string }>(null);
+  let linkedUrl = $state("");
+  let linkedTemplate = $state("");
+  $effect(() => {
+    const r = p.linkRequest;
+    if (!r) return;
+    if (r.kind === "clone") (linkedUrl = r.url), (dialog = "clone");
+    else (linkedTemplate = r.template), (dialog = "new");
+    untrack(() => p.onLinkHandled?.());
+  });
 
   // Folders: named groups of projects. They only organise this list.
   let groups = $state<Groups>(readGroups());
@@ -442,9 +454,9 @@
 {/if}
 
 {#if dialog === "new"}
-  <NewProjectDialog {defaultParent} onCreated={(path) => ((dialog = null), filed([path]), p.onOpen(path))} onClose={() => (dialog = null)} />
+  <NewProjectDialog {defaultParent} initialTemplate={linkedTemplate} onCreated={(path) => ((dialog = null), filed([path]), p.onOpen(path))} onClose={() => ((dialog = null), (linkedTemplate = ""))} />
 {:else if dialog === "clone"}
-  <CloneDialog {defaultParent} onCloned={(path) => ((dialog = null), filed([path]), p.onOpen(path))} onClose={() => (dialog = null)} />
+  <CloneDialog {defaultParent} initialUrl={linkedUrl} onCloned={(path) => ((dialog = null), filed([path]), p.onOpen(path))} onClose={() => ((dialog = null), (linkedUrl = ""))} />
 {:else if dialog}
   <ImportDialog zip={dialog.zip} {defaultParent} onImported={(paths) => ((dialog = null), filed(paths), p.onImported(paths))} onClose={() => (dialog = null)} />
 {/if}
