@@ -4,10 +4,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { documentDir } from "@tauri-apps/api/path";
   import FileText from "@lucide/svelte/icons/file-text";
-  import GraduationCap from "@lucide/svelte/icons/graduation-cap";
-  import Presentation from "@lucide/svelte/icons/presentation";
-  import IdCard from "@lucide/svelte/icons/id-card";
-  import Mail from "@lucide/svelte/icons/mail";
+  import Search from "@lucide/svelte/icons/search";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import Trash2 from "@lucide/svelte/icons/trash";
   import Star from "@lucide/svelte/icons/star";
@@ -29,7 +26,23 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
 
-  const icons: Record<string, typeof FileText> = { homework: GraduationCap, article: FileText, thesis: GraduationCap, slides: Presentation, cv: IdCard, letter: Mail };
+  let query = $state("");
+  let category = $state("All");
+
+  const ORDER = ["Papers", "Theses & books", "Presentations", "Posters", "Letters & CV", "Teaching", "Basics", "My templates"];
+  const catOf = (t: Template) => t.category || "Other";
+  const categories = $derived(
+    [...new Set(templates.map(catOf))].sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99)),
+  );
+  // Every word of the query must appear in the name, description, tags or category.
+  const shown = $derived.by(() => {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    return templates.filter((t) => {
+      if (category !== "All" && catOf(t) !== category) return false;
+      const hay = [t.name, t.description, catOf(t), ...(t.tags ?? [])].join(" ").toLowerCase();
+      return words.every((w) => hay.includes(w));
+    });
+  });
 
   onMount(async () => {
     templates = await api.listTemplates().catch(() => []);
@@ -41,6 +54,7 @@
     try {
       await api.deleteTemplate(t.id);
       templates = templates.filter((x) => x.id !== t.id);
+      if (category !== "All" && !templates.some((x) => catOf(x) === category)) category = "All";
       if (chosen === t.id) chosen = templates[0]?.id ?? "article";
     } catch (err) {
       error = errorMessage(err);
@@ -66,22 +80,44 @@
   }
 </script>
 
-<Modal title="New project" subtitle="Start from a template. It's a normal folder you can open in any editor." width={640} {onClose}>
+<Modal title="New project" subtitle="Start from a template. It's a normal folder you can open in any editor." width={900} {onClose}>
   <form id="new-project" onsubmit={create}>
-    <div class="templates" role="radiogroup" aria-label="Template">
-      {#each templates as t (t.id)}
-        {@const Icon = t.user ? Star : (icons[t.id] ?? FileText)}
-        <div class="tpl">
-          <button type="button" role="radio" aria-checked={chosen === t.id} class:on={chosen === t.id} onclick={() => (chosen = t.id)}>
-            <span class="ico"><Icon size={20} /></span>
-            <b>{t.name}</b>
-            <span class="desc">{t.description || (t.user ? "Your template" : "")}</span>
+    <div class="gallery">
+      <nav class="cats" aria-label="Categories">
+        {#each ["All", ...categories] as c (c)}
+          <button type="button" class:on={category === c} aria-pressed={category === c} onclick={() => (category = c)}>
+            {c}<span class="n">{c === "All" ? templates.length : templates.filter((t) => catOf(t) === c).length}</span>
           </button>
-          {#if t.user}
-            <button type="button" class="del" aria-label="Delete template {t.name}" title="Delete this template" onclick={() => remove(t)}><Trash2 size={14} /></button>
-          {/if}
+        {/each}
+      </nav>
+      <div class="main">
+        <label class="search">
+          <Search size={15} />
+          <input class="input" type="search" bind:value={query} placeholder="Search templates, e.g. ieee, poster, thesis" aria-label="Search templates" />
+        </label>
+        <div class="templates" role="radiogroup" aria-label="Template">
+          {#each shown as t (t.id)}
+            <div class="tpl">
+              <button type="button" role="radio" aria-checked={chosen === t.id} class:on={chosen === t.id} onclick={() => (chosen = t.id)}>
+                <span class="thumb">
+                  {#if t.preview}
+                    <img src={t.preview} alt="" loading="lazy" />
+                  {:else}
+                    {#if t.user}<Star size={28} />{:else}<FileText size={28} />{/if}
+                  {/if}
+                </span>
+                <b>{t.name}</b>
+                <span class="desc">{t.description || (t.user ? "Your template" : "")}</span>
+              </button>
+              {#if t.user}
+                <button type="button" class="del" aria-label="Delete template {t.name}" title="Delete this template" onclick={() => remove(t)}><Trash2 size={14} /></button>
+              {/if}
+            </div>
+          {:else}
+            <p class="none">No template matches "{query}".</p>
+          {/each}
         </div>
-      {/each}
+      </div>
     </div>
     <div class="row">
       <div class="field grow">
@@ -107,20 +143,39 @@
 
 <style>
   form { display: flex; flex-direction: column; gap: 16px; }
-  .templates { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 8px; }
+  .gallery { display: flex; gap: 16px; height: min(420px, 52vh); }
+  .cats { display: flex; flex-direction: column; gap: 2px; width: 150px; flex: none; overflow-y: auto; }
+  .cats button {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 10px; text-align: left;
+    background: transparent; border: 0; border-radius: var(--r-sm); color: var(--muted); cursor: pointer;
+  }
+  .cats button:hover { background: var(--surface-2); color: var(--ink); }
+  .cats button.on { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--ink); font-weight: 600; }
+  .n { font-size: 11px; color: var(--faint); font-weight: 400; }
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+  .search { position: relative; display: block; }
+  .search :global(svg) { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+  .search .input { width: 100%; padding-left: 32px; }
+  .templates { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; padding: 2px; }
+  .none { grid-column: 1 / -1; color: var(--muted); margin: 8px 0; }
   .tpl { position: relative; display: flex; }
   .tpl > button:first-child { flex: 1; }
-  .templates .del { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; padding: 0; align-items: center; justify-content: center; border-radius: var(--r-sm); border-color: transparent; background: transparent; color: var(--faint); }
+  .templates .del { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; padding: 0; align-items: center; justify-content: center; border-radius: var(--r-sm); border-color: transparent; background: var(--surface); color: var(--faint); }
   .templates .del:hover { color: var(--error); background: var(--surface-2); }
   .templates button {
-    display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; text-align: left;
+    display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px; text-align: left;
     background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); color: var(--ink);
     transition: border-color 0.12s, box-shadow 0.12s;
   }
   .templates button:hover { border-color: var(--border-strong); }
   .templates button.on { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
-  .ico { display: inline-flex; color: var(--accent); margin-bottom: 4px; }
-  .desc { color: var(--muted); font-size: 12px; line-height: 1.4; }
+  .thumb {
+    display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 3 / 4; margin-bottom: 4px;
+    background: var(--surface-2); border-radius: var(--r-sm); color: var(--faint); overflow: hidden;
+  }
+  /* Pages are white whatever the theme; the border keeps them from melting into dark cards. */
+  .thumb img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
+  .desc { color: var(--muted); font-size: 12px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .row { display: flex; gap: 8px; }
   .grow { flex: 1; }
   .row .input { flex: 1; min-width: 0; }

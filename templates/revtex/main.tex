@@ -1,0 +1,73 @@
+% Journal options: aps + prl/pra/prb/prc/prd/pre/prx for the Physical Review family,
+% or aip + jcp/apl/jap/... for AIP Publishing. "reprint" gives the published two-column
+% look, "preprint" a one-column manuscript.
+\documentclass[aps,pra,reprint,amsmath,amssymb,superscriptaddress]{revtex4-2}
+\usepackage{graphicx}
+\usepackage{bm}
+\usepackage[colorlinks=true,allcolors=blue]{hyperref}
+
+\begin{document}
+
+\title{Title of the Letter or Article}
+
+\author{First Author}
+\email[Correspondence: ]{first.author@example.edu}
+\affiliation{Department of Physics, Example University, City, Country}
+
+\author{Second Author}
+\affiliation{Example Institute, City, Country}
+
+\date{\today}
+
+\begin{abstract}
+A single paragraph that states the problem, the method and the main quantitative
+result, understandable without the rest of the paper. No citations.
+\end{abstract}
+
+\maketitle
+
+\section{Introduction}
+Introduce the physical question and cite earlier work~\cite{einstein35}.
+Equations use the usual environments and are numbered automatically:
+\begin{equation}
+  i\hbar \frac{\partial}{\partial t}\Psi(\mathbf{r},t) = \hat{H}\,\Psi(\mathbf{r},t).
+  \label{eq:schroedinger}
+\end{equation}
+Refer to them as Eq.~(\ref{eq:schroedinger}).
+
+\section{Model}
+Define the system and the approximations. Wide equations can be broken up with
+\texttt{align}, or set across both columns with the \texttt{widetext} environment.
+
+\section{Results}
+% Uncomment and add the file: Fig.~\ref{fig:setup} then works.
+% \begin{figure}
+%   \includegraphics[width=\columnwidth]{setup.pdf}
+%   \caption{Caption below the figure.}
+%   \label{fig:setup}
+% \end{figure}
+Describe your results here, with tables in the \texttt{table} environment
+(\texttt{ruledtabular} gives the journal rules).
+
+\begin{table}
+\caption{A small example table.}
+\begin{ruledtabular}
+\begin{tabular}{lcc}
+ Quantity & Theory & Experiment \\
+ \hline
+ $\omega_0/2\pi$ (MHz) & 5.02 & 4.98(3) \\
+ $Q$ & $1.2\times10^{4}$ & $1.1(1)\times10^{4}$ \\
+\end{tabular}
+\end{ruledtabular}
+\end{table}
+
+\section{Conclusion}
+Summarise what was shown and what follows.
+
+\begin{acknowledgments}
+We thank colleagues and funding agencies here.
+\end{acknowledgments}
+
+\bibliography{refs}
+
+\end{document}

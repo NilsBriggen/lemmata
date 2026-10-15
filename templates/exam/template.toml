@@ -1,0 +1,5 @@
+name = "Exam"
+description = "A printable exam with points, a grading table and optional solutions (the exam class)."
+order = 31
+category = "Teaching"
+tags = ["test", "quiz", "problem sheet", "solutions"]

@@ -1,3 +1,5 @@
 name = "Slides"
 description = "A Beamer presentation with the clean metropolis theme."
 order = 3
+category = "Presentations"
+tags = ["beamer", "talk", "slides"]

@@ -1,0 +1,69 @@
+\documentclass[runningheads]{llncs}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+
+\begin{document}
+
+\title{Title of Your Contribution\thanks{Supported by the example project.}}
+\titlerunning{Short Title}   % shown in the page header when it is too long
+
+\author{First Author\inst{1} \and
+Second Author\inst{2}}
+\authorrunning{F. Author and S. Author}
+
+\institute{Example University, City, Country\\
+\email{first.author@example.edu} \and
+Example Lab, City, Country\\
+\email{second.author@example.com}}
+
+\maketitle
+
+\begin{abstract}
+Summarise the paper in 150 to 250 words: problem, method, result. Do not cite.
+\keywords{First keyword \and Second keyword \and Third keyword.}
+\end{abstract}
+
+\section{Introduction}
+Introduce the problem and state the contribution. Springer asks for numbered
+references in order of appearance~\cite{knuth84}. Keep to the page limit of your
+conference; references usually count unless the call for papers says otherwise.
+
+\section{Preliminaries}
+Definitions, theorems and proofs have their own environments in this class:
+
+\begin{definition}
+A \emph{widget} is a thing that is defined here once.
+\end{definition}
+
+\begin{theorem}\label{thm:main}
+Every widget is a gadget.
+\end{theorem}
+\begin{proof}
+Immediate from the definition.
+\end{proof}
+
+\section{Results}
+Table~\ref{tab:res} shows the compact table style LNCS expects (captions above).
+
+\begin{table}
+  \caption{Example results.}\label{tab:res}
+  \centering
+  \begin{tabular}{lrr}
+    \toprule
+    Instance & Baseline & Ours \\
+    \midrule
+    small & 12 & 9 \\
+    large & 340 & 210 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Conclusion}
+What you showed, and what is left.
+
+\bibliographystyle{splncs04}
+\bibliography{refs}
+
+\end{document}

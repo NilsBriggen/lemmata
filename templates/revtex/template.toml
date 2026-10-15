@@ -1,0 +1,5 @@
+name = "APS / AIP physics"
+description = "Physics paper with REVTeX 4.2 for Physical Review, AIP and similar journals."
+order = 24
+category = "Papers"
+tags = ["revtex", "aps", "aip", "physics", "physical review"]

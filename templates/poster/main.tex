@@ -1,0 +1,83 @@
+% A0 portrait poster. Change a0paper to a1paper/a2paper, or landscape for a wide one.
+\documentclass[30pt,a0paper,portrait]{tikzposter}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+
+\usetheme{Default}
+\usecolorstyle[colorOne=white,colorTwo=blue!10,colorThree=blue!30]{Default}
+\usebackgroundstyle{Default}
+\colorlet{blocktitlefgcolor}{black}
+\useblockstyle{Default}
+
+\title{Poster Title: One Clear Message in Two Lines}
+\author{First Author$^1$, Second Author$^2$}
+\institute{$^1$Example University \quad $^2$Example Institute\\
+  \texttt{first.author@example.edu}}
+
+\begin{document}
+\maketitle
+
+\begin{columns}
+  \column{0.5}
+  \block{Motivation}{
+    Say why anyone should stop at your poster, in two or three short lines:
+    \begin{itemize}
+      \item The problem in one sentence.
+      \item Why existing approaches fall short.
+      \item What you did instead.
+    \end{itemize}
+  }
+
+  \block{Method}{
+    Use a diagram rather than a paragraph. A formula should be big enough to read
+    from two metres away:
+    \[ \hat{y} = \operatorname*{arg\,max}_{c}\; p(c \mid x) \]
+  }
+
+  \block{Data}{
+    Describe the data or the experiment in two or three lines, and give the one number
+    that matters: how many samples, which instruments, which period.
+  }
+
+  \column{0.5}
+  \block{Results}{
+    \centering
+    \begin{tabular}{lcc}
+      \toprule
+      Method & Accuracy & Speed-up \\
+      \midrule
+      Baseline & 81\% & 1$\times$ \\
+      Ours & \textbf{87\%} & \textbf{3.2$\times$} \\
+      \bottomrule
+    \end{tabular}
+    \\[1cm]
+    \tikzset{every picture/.style={}}
+    % \includegraphics[width=0.9\linewidth]{figure.pdf}
+    Add a figure here: a large plot with a one-line caption beats a table.
+  }
+
+  \block{Conclusions}{
+    \begin{itemize}
+      \item The main finding, as a full sentence.
+      \item The second finding.
+      \item What comes next.
+    \end{itemize}
+  }
+  \block{Next steps}{
+    \begin{itemize}
+      \item What you would do with more time or data.
+      \item Where to find the code, the data and the full paper: put a QR code or URL here.
+    \end{itemize}
+  }
+\end{columns}
+
+\block[titlewidthscale=0.5]{References}{
+  \small
+  [1] L. Lamport, \emph{\LaTeX: A Document Preparation System}, Addison-Wesley, 1994.\\[0.3em]
+  [2] D. E. Knuth, ``Literate programming'', \emph{The Computer Journal} 27(2), 1984.
+}
+
+\end{document}

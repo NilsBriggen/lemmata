@@ -110,6 +110,23 @@ jobs:
             beamer
             beamertheme-metropolis
             collection-fontsrecommended
+            IEEEtran
+            cite
+            acmart
+            libertine
+            newtx
+            inconsolata
+            llncs
+            elsarticle
+            natbib
+            revtex
+            exam
+            tikzposter
+            pgf
+            pgfplots
+            siunitx
+            microtype
+            parskip
       - name: Build the CLI
         run: cargo build -p lemmata-cli
       - name: lemmata doctor

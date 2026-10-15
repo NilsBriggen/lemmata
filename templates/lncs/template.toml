@@ -1,0 +1,5 @@
+name = "Springer LNCS"
+description = "Springer Lecture Notes in Computer Science, with the llncs class and splncs04 bibliography."
+order = 22
+category = "Papers"
+tags = ["springer", "llncs", "lncs", "computer science", "conference"]
