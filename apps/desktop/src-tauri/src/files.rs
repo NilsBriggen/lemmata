@@ -982,6 +982,32 @@ pub fn classify(root: &Path, outdir: &str, written: &Written, paths: &[PathBuf])
     out
 }
 
+/// Drops paths whose content is what this watcher saw last time: on Linux
+/// every open is an event, so reading a file or listing a folder (the app
+/// does both when handling a change) would otherwise report itself forever.
+fn drop_unchanged(
+    root: &Path,
+    seen: &mut std::collections::HashMap<PathBuf, Option<u64>>,
+    changes: &mut Changes,
+) {
+    for p in &changes.removed {
+        let abs = root.join(p);
+        seen.retain(|k, _| !k.starts_with(&abs));
+    }
+    changes.changed.retain(|p| {
+        let abs = root.join(p);
+        let now = if abs.is_dir() {
+            None
+        } else {
+            match std::fs::read(&abs) {
+                Ok(b) => Some(hash_bytes(&b)),
+                Err(_) => return true,
+            }
+        };
+        seen.insert(abs, now) != Some(now)
+    });
+}
+
 /// Watches the project folder and emits `files-changed` with the changes
 /// (build output and hidden folders ignored).
 pub fn watch(
@@ -992,12 +1018,14 @@ pub fn watch(
 ) -> CmdResult<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>> {
     use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
     let watch_root = root.clone();
+    let mut seen = std::collections::HashMap::new();
     let mut debouncer = new_debouncer(
         std::time::Duration::from_millis(400),
         move |res: DebounceEventResult| {
             let Ok(events) = res else { return };
             let paths: Vec<PathBuf> = events.into_iter().map(|e| e.path).collect();
-            let changes = classify(&root, &outdir, &written, &paths);
+            let mut changes = classify(&root, &outdir, &written, &paths);
+            drop_unchanged(&root, &mut seen, &mut changes);
             if !changes.changed.is_empty() || !changes.removed.is_empty() {
                 let _ = app.emit("files-changed", changes);
             }
@@ -1265,6 +1293,31 @@ mod tests {
         let c = classify(&root, ".lemmata/build", &w, &[f]);
         assert_eq!(c.changed, ["main.tex"]);
         assert!(c.removed.is_empty());
+    }
+
+    #[test]
+    fn reading_a_file_or_folder_is_not_a_change() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("ch")).unwrap();
+        std::fs::write(root.join("main.tex"), "a").unwrap();
+        let mut seen = std::collections::HashMap::new();
+        let mut run = |changed: &[&str], removed: &[&str]| {
+            let mut c = Changes {
+                changed: changed.iter().map(|s| s.to_string()).collect(),
+                removed: removed.iter().map(|s| s.to_string()).collect(),
+            };
+            drop_unchanged(&root, &mut seen, &mut c);
+            c.changed
+        };
+        // The first sight of each is reported, opening them again is not.
+        assert_eq!(run(&["ch", "main.tex"], &[]), ["ch", "main.tex"]);
+        assert!(run(&["ch", "main.tex"], &[]).is_empty());
+        std::fs::write(root.join("main.tex"), "b").unwrap();
+        assert_eq!(run(&["ch", "main.tex"], &[]), ["main.tex"]);
+        // A folder deleted and made again counts as new.
+        assert!(run(&[], &["ch"]).is_empty());
+        assert_eq!(run(&["ch"], &[]), ["ch"]);
     }
 
     #[test]
