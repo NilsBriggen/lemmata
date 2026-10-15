@@ -41,7 +41,6 @@
   import { clearSelection, prune, reveal, setGitStatus, tree as treeView } from "./lib/treeSelection.svelte";
   import { dragState } from "./lib/treeDrag.svelte";
   import { findEntry, isTextFile, isViewerFile } from "./lib/treeModel";
-  import { openUrl } from "@tauri-apps/plugin-opener";
   import { getVersion } from "@tauri-apps/api/app";
   import { releasesSince, type Release } from "./lib/whatsNew";
   import { errorSummary, issueUrl, systemSummary } from "./lib/report";
@@ -1292,7 +1291,7 @@
 
   const GUIDE_URL = "https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md";
   function openGuide() {
-    openUrl(GUIDE_URL).catch((e) => showNotice(`Could not open the guide (${errorMessage(e)}). It's at ${GUIDE_URL}`, { tone: "error" }));
+    api.openUrl(GUIDE_URL).catch((e) => showNotice(`Could not open the guide (${errorMessage(e)}). It's at ${GUIDE_URL}`, { tone: "error" }));
   }
 
   function openSearch() {
@@ -2110,7 +2109,7 @@
       <button
         class="btn primary"
         onclick={() => {
-          openUrl(issueUrl(report!.system, report!.log)).catch((e) => showNotice(errorMessage(e)));
+          api.openUrl(issueUrl(report!.system, report!.log)).catch((e) => showNotice(errorMessage(e)));
           report = null;
         }}>Open GitHub</button
       >

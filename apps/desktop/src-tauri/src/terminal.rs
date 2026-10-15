@@ -40,7 +40,7 @@ pub fn open_with_command(command: &str) -> Result<(), String> {
             let Ok(path) = which::which(&term) else {
                 continue;
             };
-            let spawned = Command::new(path)
+            let spawned = lemmata_env::host(&mut Command::new(path))
                 .args(flags)
                 .args(["bash", "-c", CONFIRM_SCRIPT, "lemmata", command])
                 .spawn();

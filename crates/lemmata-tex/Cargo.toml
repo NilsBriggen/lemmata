@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+lemmata-env.workspace = true
 lemmata-log.workspace = true
 lemmata-project.workspace = true
 lemmata-pkgmap.workspace = true

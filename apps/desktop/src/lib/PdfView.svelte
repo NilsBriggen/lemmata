@@ -31,8 +31,7 @@
   // by page in place, so the reader keeps their position across rebuilds.
   import { onDestroy, onMount, untrack } from "svelte";
   import type { PDFPageProxy, RenderTask, TextLayer } from "pdfjs-dist";
-  import { openUrl } from "@tauri-apps/plugin-opener";
-  import type { PdfBox } from "./api";
+  import { api, type PdfBox } from "./api";
   import { loadPdfjs, openPdf } from "./presenter/render";
   import { settings } from "./settings.svelte";
 
@@ -368,7 +367,7 @@
         e.preventDefault();
         e.stopPropagation();
         if (a.dest) goTo(a.dest);
-        else if (url && /^https?:\/\//i.test(url)) openUrl(url).catch(() => {});
+        else if (url && /^https?:\/\//i.test(url)) api.openUrl(url).catch(() => {});
       };
       links.append(el);
     }

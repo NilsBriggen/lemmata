@@ -162,6 +162,8 @@ export const api = {
   pdfIsCurrent: () => invoke<boolean>("pdf_is_current"),
   /** Opens the project's PDF in the system's PDF viewer. */
   openPdfExternally: () => invoke<void>("open_pdf_externally"),
+  /** A web page in the browser; through the backend so an AppImage's libraries stay out of it. */
+  openUrl: (url: string) => invoke<void>("open_url", { url }),
   /** A file or folder the app was asked to open at launch (from the OS or the command line); asked once. */
   takeOpenRequest: () => invoke<OpenRequest | null>("take_open_request"),
   /** Opens a file inside the project with the system's default program. */

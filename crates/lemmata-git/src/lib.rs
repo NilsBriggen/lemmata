@@ -163,8 +163,10 @@ fn find_git() -> Option<PathBuf> {
     Some(git)
 }
 
-/// No console window flashes up on Windows.
+/// No console window flashes up on Windows, and git runs with the user's
+/// environment, not an AppImage's (see lemmata-env).
 fn no_window(c: &mut Command) {
+    lemmata_env::host(c);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -197,7 +199,7 @@ fn exec(git: &Path, dir: Option<&Path>, args: &[&str], timeout: Duration) -> Res
     // ssh would ask for a passphrase on the terminal; fail instead, unless the user chose their own command.
     let network = matches!(args.first(), Some(&("clone" | "fetch" | "pull" | "push")));
     if network && std::env::var_os("GIT_SSH_COMMAND").is_none() {
-        let own = Command::new(git)
+        let own = lemmata_env::host(&mut Command::new(git))
             .args(["config", "core.sshCommand"])
             .output();
         if own.is_ok_and(|o| o.stdout.is_empty()) {

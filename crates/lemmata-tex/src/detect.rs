@@ -283,7 +283,7 @@ fn identify(pdflatex: &Path) -> Distribution {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut cmd = Command::new(exe);
-        cmd.arg("--version");
+        lemmata_env::host(&mut cmd).arg("--version");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

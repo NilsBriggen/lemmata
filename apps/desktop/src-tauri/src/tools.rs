@@ -152,7 +152,8 @@ fn find_tool(name: &str, bin_dir: Option<&Path>) -> Option<PathBuf> {
 
 /// Runs `cmd` with `input` on stdin and returns stdout, or stderr as the error.
 fn run(mut cmd: Command, input: &str, timeout: Duration) -> Result<String, String> {
-    cmd.stdin(Stdio::piped())
+    lemmata_env::host(&mut cmd)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]

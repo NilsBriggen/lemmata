@@ -82,7 +82,7 @@ fn run(mut cmd: Command, out: &Path, err: &Path, timeout: Duration) -> Result<bo
         }
         if started.elapsed() > timeout {
             #[cfg(unix)]
-            let _ = Command::new("kill")
+            let _ = lemmata_env::host(&mut Command::new("kill"))
                 .args(["-KILL", "--", &format!("-{}", child.id())])
                 .status();
             let _ = child.kill();

@@ -136,7 +136,7 @@ fn load(pdf: &Path) -> Option<Arc<Index>> {
 
 fn run(synctex: &Path, args: &[&str]) -> Result<String> {
     let mut cmd = Command::new(synctex);
-    cmd.args(args);
+    lemmata_env::host(&mut cmd).args(args);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

@@ -439,6 +439,8 @@ pub(crate) async fn run_step(
     limit: Duration,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Option<Status>, Error> {
+    // Every TeX tool starts here: with the user's environment, not an AppImage's.
+    lemmata_env::host(cmd.as_std_mut());
     cmd.kill_on_drop(true);
     #[cfg(unix)]
     cmd.process_group(0);

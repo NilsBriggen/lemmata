@@ -110,8 +110,10 @@ fn find_git() -> Option<PathBuf> {
     Some(git)
 }
 
-/// No console window flashes up on Windows.
+/// No console window flashes up on Windows, and git runs with the user's
+/// environment, not an AppImage's (see lemmata-env).
 fn no_window(c: &mut Command) {
+    lemmata_env::host(c);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -190,7 +192,7 @@ impl History {
             h.exclude_build_folder()?;
             return Ok(h);
         }
-        let out = Command::new(&git)
+        let out = lemmata_env::host(&mut Command::new(&git))
             .arg("-C")
             .arg(root)
             .args(["rev-parse", "--absolute-git-dir"])

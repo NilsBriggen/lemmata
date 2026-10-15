@@ -491,6 +491,7 @@ fn system_tool(name: &str) -> PathBuf {
 }
 
 fn no_window_std(cmd: &mut std::process::Command) {
+    lemmata_env::host(cmd);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

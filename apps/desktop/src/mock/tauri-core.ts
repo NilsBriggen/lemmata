@@ -243,6 +243,7 @@ const handlers: Record<string, (a: Args) => unknown> = {
   grammar_check: () => [],
   grammar_status: () => undefined,
   open_pdf_externally: () => undefined,
+  open_url: () => undefined,
   take_open_request: () => null,
   history_latexdiff: () => "/tmp/diff.pdf",
   open_project_file: () => undefined,

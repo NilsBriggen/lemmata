@@ -1,0 +1,9 @@
+[package]
+name = "lemmata-env"
+description = "Starts programs with the user's environment, not the AppImage's"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

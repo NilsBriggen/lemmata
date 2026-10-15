@@ -2281,6 +2281,7 @@ name = "lemmata-desktop"
 version = "2.0.0"
 dependencies = [
  "lemmata-bib",
+ "lemmata-env",
  "lemmata-git",
  "lemmata-grammar",
  "lemmata-history",
@@ -2317,9 +2318,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lemmata-env"
+version = "2.0.0"
+
+[[package]]
 name = "lemmata-git"
 version = "2.0.0"
 dependencies = [
+ "lemmata-env",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
@@ -2341,6 +2347,7 @@ dependencies = [
 name = "lemmata-history"
 version = "2.0.0"
 dependencies = [
+ "lemmata-env",
  "lemmata-log",
  "lemmata-pkgmap",
  "serde",
@@ -2400,6 +2407,7 @@ name = "lemmata-synctex"
 version = "2.0.0"
 dependencies = [
  "flate2",
+ "lemmata-env",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
@@ -2409,6 +2417,7 @@ dependencies = [
 name = "lemmata-tex"
 version = "2.0.0"
 dependencies = [
+ "lemmata-env",
  "lemmata-log",
  "lemmata-pkgmap",
  "lemmata-project",

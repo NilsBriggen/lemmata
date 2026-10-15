@@ -43,6 +43,7 @@ pub async fn start(
 ) -> Result<Server, String> {
     let texlab = find_texlab().ok_or("texlab was not found, so completion and hover are off.")?;
     let mut cmd = Command::new(texlab);
+    lemmata_env::host(cmd.as_std_mut());
     cmd.current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

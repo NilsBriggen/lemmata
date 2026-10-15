@@ -195,23 +195,52 @@ fn open_project(
     Ok(info)
 }
 
+/// Opens a file or a web address with the system's program for it. From an AppImage it goes
+/// through xdg-open with the user's environment: the opener plugin would hand the AppImage's
+/// libraries on to the PDF viewer or browser, which can then crash.
+fn open_external(app: &tauri::AppHandle, target: &str, url: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("APPDIR").is_some() {
+        let mut child = lemmata_env::host(&mut std::process::Command::new("xdg-open"))
+            .arg(target)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        std::thread::spawn(move || child.wait());
+        return Ok(());
+    }
+    use tauri_plugin_opener::OpenerExt;
+    let opener = app.opener();
+    if url {
+        opener.open_url(target, None::<&str>)
+    } else {
+        opener.open_path(target, None::<&str>)
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// Opens a web page (the guide, a link in the PDF, a bug report) in the browser.
+#[tauri::command(async)]
+fn open_url(app: tauri::AppHandle, url: String) -> CmdResult<()> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("Only web addresses can be opened.".into());
+    }
+    open_external(&app, &url, true).map_err(|e| format!("Could not open {url}: {e}"))
+}
+
 /// Opens the project's PDF with the system's default viewer. The path comes from the project, never the page.
 #[tauri::command(async)]
 fn open_pdf_externally(app: tauri::AppHandle, state: State<AppState>) -> CmdResult<()> {
-    use tauri_plugin_opener::OpenerExt;
     let pdf = project(&state)?.pdf_path();
     if !pdf.is_file() {
         return Err("There is no PDF yet. Compile the document first.".into());
     }
-    app.opener()
-        .open_path(pdf.to_string_lossy(), None::<&str>)
+    open_external(&app, &pdf.to_string_lossy(), false)
         .map_err(|e| format!("Could not open the PDF: {e}"))
 }
 
 /// Opens a file inside the project (e.g. the PDF of tracked changes) with the system's default program.
 #[tauri::command(async)]
 fn open_project_file(app: tauri::AppHandle, state: State<AppState>, path: String) -> CmdResult<()> {
-    use tauri_plugin_opener::OpenerExt;
     let root = project(&state)?.root;
     let full = lemmata_project::canonical(Path::new(&path))
         .map_err(|e| format!("Could not open {path}: {e}"))?;
@@ -219,8 +248,7 @@ fn open_project_file(app: tauri::AppHandle, state: State<AppState>, path: String
     if !full.starts_with(&root) || !full.is_file() {
         return Err(format!("{path} is not a file of this project."));
     }
-    app.opener()
-        .open_path(full.to_string_lossy(), None::<&str>)
+    open_external(&app, &full.to_string_lossy(), false)
         .map_err(|e| format!("Could not open {path}: {e}"))
 }
 
@@ -940,6 +968,7 @@ pub fn run() {
             project_info_cmd,
             watching,
             open_pdf_externally,
+            open_url,
             open_with::take_open_request,
             history::history_latexdiff,
             open_project_file,
