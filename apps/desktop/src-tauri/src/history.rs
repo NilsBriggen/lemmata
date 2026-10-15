@@ -120,3 +120,59 @@ pub fn history_relabel(state: State<AppState>, id: String, label: String) -> Cmd
     let id = snapshot_id(&id)?;
     with(&state, |h| h.relabel(id, &label))
 }
+
+/// A PDF of the changes since snapshot `id`, made with latexdiff: the old main
+/// file and everything it includes are compared with the current files.
+/// Returns the PDF's path.
+#[tauri::command(async)]
+pub fn history_latexdiff(state: State<AppState>, id: String) -> CmdResult<PathBuf> {
+    let id = snapshot_id(&id)?.to_string();
+    let project = state
+        .project
+        .lock_safe()
+        .clone()
+        .ok_or("No project is open.")?;
+    let known = state.detection.lock_safe().clone();
+    let detection = match known {
+        Some(d) => d,
+        None => crate::first_or_fresh_detection(&state, false),
+    };
+    let latexdiff = lemmata_history::find_latexdiff(detection.bin_dir.as_deref())
+        .ok_or(lemmata_history::MISSING_LATEXDIFF)?;
+    let latexmk = detection
+        .tool("latexmk")
+        .ok_or("latexmk was not found. Install TeX Live first.")?;
+
+    let old = project
+        .root
+        .join(lemmata_history::LATEXDIFF_DIR)
+        .join("old");
+    with(&state, |h| h.extract_tree(&id, &old))?;
+
+    let miktex = matches!(
+        detection.distribution,
+        lemmata_tex::Distribution::Miktex { .. }
+    );
+    let engine = project.config.engine;
+    let tools = lemmata_history::Tools {
+        latexdiff: &latexdiff,
+        latexmk,
+        engine_flag: engine.latexmk_flag(),
+        extra_args: if miktex {
+            vec![format!("-{0}={0} --enable-installer %O %S", engine.binary()).into()]
+        } else {
+            Vec::new()
+        },
+        path_dirs: [
+            detection.bin_dir.clone(),
+            detection
+                .tool("perl")
+                .and_then(|p| p.parent().map(PathBuf::from)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        timeout: std::time::Duration::from_secs(120),
+    };
+    lemmata_history::latexdiff_pdf(&project.root, &project.main, &tools).map_err(err)
+}

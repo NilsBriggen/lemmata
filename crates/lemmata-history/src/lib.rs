@@ -6,6 +6,9 @@
 //! Every git call uses a separate index file, so the user's HEAD, branches,
 //! staging area and stash are never touched. Snapshots respect .gitignore.
 
+mod latexdiff;
+pub use latexdiff::{LATEXDIFF_DIR, MISSING_LATEXDIFF, Tools, find_latexdiff, latexdiff_pdf};
+
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -26,6 +29,9 @@ pub enum Error {
     Git(String),
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    /// A TeX tool (latexdiff, latexmk) failed or couldn't run.
+    #[error("{0}")]
+    Tool(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
