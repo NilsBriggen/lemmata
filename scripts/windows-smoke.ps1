@@ -38,9 +38,11 @@ function Build([string]$dir, [string]$scenario, [string]$step, [bool]$expectFall
     $script:results += [pscustomobject]@{ Scenario = $scenario; Step = $step; Seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1); Pdf = $pdf; Direct = $fellBack }
 }
 
-function Rebuild([string]$dir, [string]$scenario, [bool]$expectFallback) {
+# After a good build, a rebuild following an edit calls pdflatex directly on purpose (no latexmk, no
+# "could not run" note), whichever way the first build went.
+function Rebuild([string]$dir, [string]$scenario) {
     Add-Content (Join-Path $dir "main.tex") "`n% edit"
-    Build $dir $scenario "after an edit" $expectFallback
+    Build $dir $scenario "after an edit" $false
 }
 
 # TeX detection is what the start screen waits for.
@@ -58,7 +60,7 @@ $original = $env:PATH
 # 1. latexmk with Perl on the PATH, as on a machine that works.
 $dir = Fresh "with-perl"
 Build $dir "latexmk with Perl" "first build" $false
-Rebuild $dir "latexmk with Perl" $false
+Rebuild $dir "latexmk with Perl"
 
 # 2. No Perl anywhere. Lemmata also looks in Strawberry's and Git's default folders, so hide those too.
 $hidden = @()
@@ -69,7 +71,7 @@ try {
     $env:PATH = (($original -split ";") | Where-Object { $_ -notmatch "Strawberry|perl|\\Git\\usr|msys" }) -join ";"
     $dir = Fresh "no-perl"
     Build $dir "Perl missing" "first build" $true
-    Rebuild $dir "Perl missing" $true
+    Rebuild $dir "Perl missing"
 } finally {
     foreach ($p in $hidden) { Rename-Item ($p + ".off") (Split-Path $p -Leaf) -ErrorAction Continue }
     $env:PATH = $original
@@ -83,7 +85,7 @@ Set-Content (Join-Path $fake "perl.rs") 'fn main() { eprintln!("fake perl: block
 $env:PATH = "$fake;$env:PATH"
 $dir = Fresh "failing-perl"
 Build $dir "Perl fails to start" "first build" $true
-Rebuild $dir "Perl fails to start" $true
+Rebuild $dir "Perl fails to start"
 $env:PATH = $original
 
 $table = $results | Format-Table -AutoSize | Out-String
