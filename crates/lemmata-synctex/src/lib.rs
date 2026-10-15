@@ -23,6 +23,11 @@ pub enum Error {
     Spawn(#[from] std::io::Error),
     #[error("synctex failed: {0}")]
     Failed(String),
+    /// pdfLaTeX writes the position data at the end of a build, so it is missing while one runs.
+    #[error(
+        "The PDF has no position data yet. It is written at the end of a build: wait for the build to finish, or compile again."
+    )]
+    NoData,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -59,6 +64,9 @@ pub fn forward(
     if let Some(idx) = load(pdf) {
         return Ok(idx.forward(tex_file, line));
     }
+    if !has_data(pdf) {
+        return Err(Error::NoData);
+    }
     let input = format!("{line}:{column}:{}", tex_file.display());
     let out = run(
         synctex,
@@ -78,9 +86,18 @@ pub fn backward(
     if let Some(idx) = load(pdf) {
         return Ok(idx.backward(page, x, y));
     }
+    // Without the file the synctex tool can't help either; it would only print its usage.
+    if !has_data(pdf) {
+        return Err(Error::NoData);
+    }
     let output = format!("{page}:{x:.2}:{y:.2}:{}", pdf.display());
     let out = run(synctex, &["edit", "-o", &output])?;
     Ok(parse_edit(&out))
+}
+
+/// Whether the synctex file next to `pdf` exists (compressed or not).
+fn has_data(pdf: &Path) -> bool {
+    pdf.with_extension("synctex.gz").is_file() || pdf.with_extension("synctex").is_file()
 }
 
 type Cache = Option<(PathBuf, SystemTime, Arc<Index>)>;
@@ -205,6 +222,16 @@ fn normalize(p: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pdf_without_position_data_says_so() {
+        let d = tempfile::tempdir().unwrap();
+        let pdf = d.path().join("main.pdf");
+        std::fs::write(&pdf, "%PDF").unwrap();
+        let e = backward(Path::new("synctex"), &pdf, 1, 10.0, 10.0).unwrap_err();
+        assert!(matches!(e, Error::NoData), "{e}");
+        assert!(forward(Path::new("synctex"), &pdf, Path::new("main.tex"), 1, 0).is_err());
+    }
+
     use super::*;
     use std::time::{Duration, Instant};
 

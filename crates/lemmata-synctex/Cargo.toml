@@ -10,3 +10,6 @@ repository.workspace = true
 flate2 = "1"
 serde.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
