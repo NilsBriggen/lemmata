@@ -42,6 +42,9 @@ export interface Detection {
   distribution: Distribution;
   tools: Tool[];
   ready: boolean;
+  /** TeX itself is installed; `ready` is also true with only Tectonic. */
+  tex_ready: boolean;
+  tectonic: string | null;
   outdated: boolean;
 }
 
@@ -63,7 +66,7 @@ export interface TexStatus {
   instructions: Record<string, Instructions>;
 }
 
-export type Engine = "pdflatex" | "xelatex" | "lualatex";
+export type Engine = "pdflatex" | "xelatex" | "lualatex" | "tectonic";
 
 export interface Target { name: string; main: string; engine?: Engine | null }
 
@@ -109,6 +112,9 @@ export interface Snapshot {
   changes: { status: "added" | "modified" | "deleted"; path: string }[];
 }
 
+/** A project (and maybe a file in it) to open, from the OS or a second launch. */
+export type OpenTarget = { project_root: string; file: string | null };
+
 export interface LabelInfo {
   label: string;
   file: string;
@@ -137,7 +143,7 @@ export interface SearchOptions { query: string; regex: boolean; case_sensitive: 
 export interface FileMatches { path: string; matches: { line: number; text: string; ranges: [number, number][]; replaced?: string }[] }
 export interface ReplaceTarget { path: string; lines: number[] }
 
-export interface Template { id: string; name: string; description: string; /** Saved by the user, so it can be deleted. */ user?: boolean }
+export interface Template { id: string; name: string; description: string; /** Saved by the user, so it can be deleted. */ user?: boolean; /** Gallery section. */ category?: string; tags?: string[]; /** `data:image/png` URL of page 1. */ preview?: string | null }
 
 export interface PdfBox { page: number; x: number; y: number; h: number; v: number; width: number; height: number }
 export interface SourceHit { path: string; line: number; inside_project: boolean }
@@ -152,6 +158,10 @@ export const api = {
   pdfIsCurrent: () => invoke<boolean>("pdf_is_current"),
   /** Opens the project's PDF in the system's PDF viewer. */
   openPdfExternally: () => invoke<void>("open_pdf_externally"),
+  /** A file or folder the app was asked to open at launch (from the OS or the command line); asked once. */
+  takeOpenRequest: () => invoke<OpenTarget | null>("take_open_request"),
+  /** Opens a file inside the project with the system's default program. */
+  openProjectFile: (path: string) => invoke<void>("open_project_file", { path }),
   watching: () => invoke<boolean>("watching"),
   readText: (path: string) => invoke<string>("read_text", { path }),
   /** `expected`: hash (contentHash) of the text last read or written; the save is refused if the disk differs. */
@@ -226,7 +236,7 @@ export const api = {
   renameSymbol: (kind: SymbolKind, old: string, newName: string) => invoke<string[]>("rename_symbol", { kind, old, new: newName }),
   exportPdf: (dest: string) => invoke<void>("export_pdf", { dest }),
   exportZip: (dest: string, withPdf: boolean) => invoke<number>("export_zip", { dest, withPdf }),
-  exportArxiv: (dest: string, strip: boolean) => invoke<number>("export_arxiv", { dest, strip }),
+  exportArxiv: (dest: string, strip: boolean, flatten = false) => invoke<number>("export_arxiv", { dest, strip, flatten }),
   zoteroStatus: () => invoke<"ready" | "starting" | "unavailable">("zotero_status"),
   zoteroPick: () => invoke<string[]>("zotero_pick"),
   zoteroSync: () => invoke<{ written: number; missing: string[]; linked: boolean }>("zotero_sync"),
