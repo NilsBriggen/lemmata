@@ -140,6 +140,10 @@ export const scenarios = {
       await lem("hoverText", { text: "schulman2017ppo" });
       return (await lem("text", { selector: ".cm-hover-card" }).catch(() => "")).includes("Proximal Policy");
     });
+    // texlab answers the same hover; its note must not show next to the card.
+    await sleep(lem, 800);
+    const lsp = await lem("query", { selector: ".cm-lsp-hover-tooltip" });
+    if (lsp.some((t) => t.rect[2] > 0)) throw new Error(`texlab's tooltip shows next to the card: ${JSON.stringify(lsp)}`);
     await lem("key", { combo: "Escape" });
     // The first "eq:objective" is the \\label itself; hover the \\ref.
     await until(lem, "the rendered equation", async () => {

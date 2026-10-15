@@ -6,6 +6,8 @@ Lemmata is a LaTeX editor that builds your document as you write and shows the P
 
 Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't find one, it shows the install command for your system. **Open terminal** shows that command in a terminal and waits for you to press Enter; Lemmata never installs anything by itself. Afterwards click **Check again**. If TeX is installed somewhere unusual, choose its `bin` folder. **Continue without compiling** opens Lemmata without TeX: nothing compiles until TeX is found, and Lemmata checks again when you come back to its window. A notice offers **Set up TeX** to return to these steps.
 
+**No TeX and no wish to install it?** On the same screen, **Use Tectonic (no install)** downloads Tectonic, a small LaTeX engine (the button shows the size: about 10 MB on Linux, 21 MB on macOS and Windows). You can also pick **Tectonic** as the *Compiler* in project settings, or put `% !TeX program = tectonic` in the first lines of the main file. The first build downloads the packages your document needs, so it needs an internet connection and can take a minute or two; later builds are fast. Tectonic runs BibTeX itself. biblatex with biber often fails because Tectonic bundles an older biblatex, so use BibTeX. Fast (draft) mode has no effect with Tectonic.
+
 **Windows with MiKTeX:** MiKTeX does not include Perl, and `latexmk` is a Perl script. Also run `winget install StrawberryPerl.StrawberryPerl` and restart Lemmata. The first build downloads the packages your document needs, which can take a minute. If MiKTeX refuses to run because it hasn't checked for updates (in any language, "major issue"), open MiKTeX Console, choose Updates and check for updates, or run `miktex packages update-package-database`; Lemmata shows this command when it happens. If Windows blocks Perl itself (an application control policy such as Smart App Control, error 4551), latexmk can't start; Lemmata then runs `pdflatex` and `biber` directly, with the same extra passes, and says so in the Problems panel. If a build fails before TeX starts, the Problems panel shows what `latexmk` printed.
 
 ## Projects
@@ -14,7 +16,15 @@ Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't f
 
 **Project menu.** Right-click a project on the start screen, or use its ⋯ button, to open it, show it in your file manager, put it in a folder, remove it from the list (the files stay on disk), or *Delete project…*, which moves the whole project folder to your system's trash after asking. Lemmata only deletes folders that hold a `.tex` file or `lemmata.toml` directly, never your home folder or a folder above it.
 
-- **New project** starts from a template: article, thesis, slides, CV, letter or homework (exercise sheets with problem boxes and a name-and-course header).
+- **New project** shows a gallery of templates with a preview of each. Pick a category on the left or type in the search box (it also matches descriptions and tags such as `beamer` or `physics`). The templates are:
+  - *Papers*: Article, IEEE conference, ACM sigconf, Springer LNCS, Elsevier journal, APS / AIP physics (REVTeX) and Two-column article.
+  - *Theses & books*: Thesis, Thesis with front matter (title page, declaration, abstract, lists of figures and tables, appendix) and Book.
+  - *Presentations*: Slides (Beamer with the metropolis theme) and Slides (classic).
+  - *Posters*: Research poster (A0, tikzposter).
+  - *Letters & CV*: CV, Letter and Cover letter.
+  - *Teaching*: Homework (exercise sheets with problem boxes and a name-and-course header), Lab report and Exam.
+  - *Basics*: Blank and Example, a short tour of Lemmata.
+- **Clone a repository…** copies a git repository from GitHub, GitLab, Overleaf or any other git URL to your computer and opens it. See [Git](#git).
 - **Open folder** works with any folder containing a `.tex` file with `\documentclass`. If there are several, Lemmata asks which one is the main document. If there are none, it offers **Create main.tex and open**.
 - **Import Overleaf .zip** takes the zip from Overleaf's *Menu → Download → Source*.
 - **Sort** the list by name or by last opened, with the sort menu next to the search box.
@@ -25,7 +35,9 @@ Per-project settings (main file, engine, bibliography tool, spell-check language
 
 **Your own templates.** *Save this project as a template…* in the command palette copies the project (without hidden files or build output) so that *New project* offers it next to the built-in ones. Delete your own templates from the same dialog.
 
-**Git.** If the project folder is in a git repository, changed files in the file tree get a letter (M modified, A added, D deleted, ? not tracked) and folders with changes get a dot. Lemmata only reads the repository's status to draw these marks; it never commits or stages anything in your repository. (History snapshots live on a private reference of their own and don't touch your branches either.)
+**Opening files from your system.** Lemmata is registered for `.tex` files, so you can double-click one or choose **Open with Lemmata**. You can also pass a file or a folder on the command line, as in `lemmata-app notes.tex` or `lemmata-app ~/thesis`. A folder opens as a project. For a file, Lemmata uses the nearest folder above it with a `lemmata.toml` as the project; if there is none, the folder of the main file named by a `% !TeX root = ../main.tex` comment in the file's first lines; and otherwise the file's own folder. The file opens in that project. If Lemmata is already running, the project opens in the running window. `.bib`, `.sty` and `.cls` files work the same way.
+
+**Git marks.** If the project folder is in a git repository, changed files in the file tree get a letter (M modified, A added, D deleted, ? not tracked) and folders with changes get a dot. The marks only read the repository's status. To commit, pull and push, use the Git panel (see [Git](#git)). History snapshots live on a private reference of their own and don't touch your branches.
 
 ## Writing and building
 
@@ -138,7 +150,9 @@ A file can choose its own language with a comment in its first lines, such as `%
 
 Misspelled words get a wavy underline. Commands, labels, citation keys, file names, maths and comments are skipped. Right-click a word for suggestions or **Add to dictionary**; added words are saved in `lemmata.toml`.
 
-Dictionaries: English (US and UK), German, Swiss German (with ss instead of ß) and French. Lemmata guesses the language from `babel` or `polyglossia`; you can set it in project settings.
+Dictionaries: English (US and UK), German, Swiss German (with ss instead of ß) and French come with Lemmata. Lemmata guesses the language from `babel` or `polyglossia`; you can set it in project settings.
+
+**More languages.** Spanish, Italian, Portuguese (Portugal and Brazil), Dutch, Polish, Swedish, Danish, Norwegian Bokmål, Czech, Russian, Ukrainian, Turkish and Greek are downloaded when you need them. In **Preferences → Spell check**, the languages that still have to be fetched show their download size, for example *(downloads 5 MB)*. Choose one and Lemmata downloads it once; after that it works offline. The language codes for `% !TeX spellcheck` are `es`, `it`, `pt-PT`, `pt-BR`, `nl`, `pl`, `sv`, `da`, `nb`, `cs`, `ru`, `uk`, `tr` and `el`. Download a language in Preferences first: project settings and the magic comment use a language only once it is installed.
 
 **Grammar checking** is off by default. Choose a mode under **Preferences → Grammar check**: **LanguageTool on this computer** (a server at `http://localhost:8081`), or **LanguageTool at an address…** for a server you run or trust. Lemmata sends the prose of the document to that server, a paragraph at a time, and nowhere else. Preferences shows where the text goes, and **Test the connection** checks that a server answers. Lemmata doesn't start one for you; to run one for a session, start it in Docker with `docker run -p 8081:8010 erikvl87/languagetool`, or with the standalone jar with `java -cp languagetool-server.jar org.languagetool.server.HTTPServer --port 8081`, and stop it with Ctrl+C when you're done. Findings get a dotted underline. Hover over one to see its suggestions as buttons, or **Ignore this rule**. Grammar checking covers English (US and UK), German (Germany and Switzerland) and French, following the spell-check language.
 
@@ -148,7 +162,35 @@ The status bar shows the word count of the document body, and the number of word
 
 **History** keeps snapshots of the project in git: one when you start working, then every 10 minutes while you edit, and named ones with **Ctrl+Shift+S**. Select a snapshot to see which files changed, and a file to compare it with the current version, or **compare it with another snapshot**. You can **rename** a snapshot, restore one file with **Restore this version**, or **Restore project** to put every file back. Restoring first snapshots the current state, so it can always be undone.
 
+**Review changes.** The bar at the top of History turns it into a way to review edits, for example after a co-author changed your text. Choose a starting point in *Review changes since* (by default your last review) and click **Review changes**. Every changed text file is listed as separate changes with the old lines in red and the new lines in green. **Accept** keeps the current text for that change; **Reject** puts the old text back for that change only, and Ctrl+Z in the file undoes it. Each file and the whole list also have **Accept all** and **Reject all**. Accepted changes are hidden. **Mark as reviewed** takes a snapshot called *Reviewed* where your next review starts.
+
+**PDF of the changes.** **PDF of the changes** compiles the old and the current version with `latexdiff` into one PDF with insertions and deletions marked, then offers **Open PDF of the changes**. It needs `latexdiff` (part of TeX Live; with MiKTeX it also needs Perl) and the LaTeX package `ulem`. If either is missing, Lemmata says how to install it.
+
 History is on for every project; it only needs git to be installed. A project that is a git repository keeps its snapshots on a private ref of its own, so your branches, commits and staged changes are never touched. Any other project gets a small snapshot store in its hidden `.lemmata` folder; the project folder doesn't become a git repository and nothing else in it changes. Without git, History is off, and replacing or renaming across the project says that it can't be undone.
+
+## Git
+
+Lemmata works with the git on your computer; install git first if you don't have it. Open the panel with **Git: commit, pull, push…** in the command palette or **Git…** in the app menu.
+
+- **Turn this project into a git repository** appears when the project isn't in one. It runs `git init`, adds a `.gitignore` containing `.lemmata/` if there is none, and makes a first commit of everything.
+- **Changes** are listed as *Staged*, *Changes* and *Untracked*. Tick a file to stage it and untick it to unstage it. **Stage all** stages every change in one go. Files with merge conflicts are listed under *Conflicts*; resolve them in a terminal.
+- **Commit** needs a message and at least one staged file. **Ctrl+Enter** in the message box commits too. Lemmata saves your open files first.
+- **Fetch**, **Pull** and **Push** talk to the remote. The numbers next to Pull and Push are the commits you are behind and ahead. Pull only fast-forwards: if both sides changed, Lemmata tells you to merge or rebase in a terminal. The first push of a branch sets up its link to the remote.
+- **Branch** menu at the top switches branches; the **+** button next to it creates a branch from where you are. Commit your changes before switching.
+- **History** at the bottom lists the last 50 commits.
+
+Lemmata uses your normal git settings, SSH keys and credential helper. If a push or pull asks for a password it can't give, run `git push` or `git pull` once in a terminal in the project folder to sign in.
+
+If git doesn't know your name and email yet, the panel shows the two commands to run once in a terminal:
+
+```
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+```
+
+**Clone a repository.** **Clone a repository…** on the start screen asks for the repository URL (https or ssh, from GitHub, GitLab, Overleaf or your own server), where to put it and the folder name, which follows the URL until you type one. Lemmata then opens the new folder. For Overleaf, create a token under *Account settings → Git integration* and use `https://git:TOKEN@git.overleaf.com/ID` as the URL, or sign in once with `git clone` in a terminal. A token in the URL stays in the project's git settings.
+
+History snapshots and the Git panel don't interfere: snapshots live on a private reference and never touch your branches, commits or staged files.
 
 ## Files
 
@@ -173,6 +215,7 @@ Files changed by other programs (another editor, `git pull`) reload automaticall
 - **Export PDF** saves a copy of the PDF.
 - **Export the whole project (.zip)** packs every file of the project (not hidden files or the build folder) plus the latest PDF, for a backup or to send to someone.
 - **Export for arXiv** builds the project, then zips exactly the files the build used plus the compiled bibliography (`.bbl`), with comments removed (but not a `%` inside verbatim environments, `\verb` or URLs). If the document doesn't build without errors, Lemmata warns first and offers **Export anyway**. That's ready to upload to arXiv.
+- **Export for arXiv as one .tex file** (in the command palette and the app menu) does the same, but puts the whole document into the main file: `\input`, `\include`, `\subfile` and `\import` are replaced by the text of the file they load, and with BibTeX the `.bbl` text replaces `\bibliography`. The files that were merged are left out of the zip. With biblatex, `\printbibliography` stays and the `.bbl` is in the zip. An input that can't be found, or that lies outside the project, is left as it is.
 
 ## Shell escape
 
@@ -190,8 +233,18 @@ Run **Report a problem** from the command palette. It shows the details it will 
 
 ## The command line
 
-`lemmata build [dir]` compiles a project once and prints its problems, `lemmata watch [dir]` rebuilds whenever a file changes, and `lemmata doctor` checks your TeX installation.
+`lemmata build [dir]` compiles a project once and prints its problems, `lemmata watch [dir]` rebuilds whenever a file changes, and `lemmata doctor` checks your TeX installation. The other commands check and export a project without the editor, for scripts and CI:
 
-## Not in 1.x
+| Command | What it does |
+|---|---|
+| `lemmata lint [dir]` | Compiles, then reports errors, citations missing from every `.bib` file and undefined labels. Exits 1 on errors; `--strict` makes warnings fail too. |
+| `lemmata wordcount [dir]` | Counts words in the document body, in total and per file. |
+| `lemmata bib [dir]` | Lists the bibliography entries. `--unused` lists entries no `.tex` file cites. `--missing` lists keys that are cited but in no `.bib` file, and exits 1 if there are any. |
+| `lemmata outline [dir]` | Shows the section tree with line numbers and word counts. |
+| `lemmata export --zip out.zip [dir]` | Zips the project's source files, without hidden files or build output. |
 
-Lemmata is a local editor, so there is no real-time collaboration or track changes (review comments are the closest), and no rich-text (visual) editor. Open an issue if one of the missing features matters to you.
+`dir` is the project folder and defaults to the current folder. `build`, `watch`, `lint`, `wordcount`, `bib` and `outline` take `--json` for machine-readable output; `export` has no JSON output. The exit status is 0 on success, 1 when a check finds problems or a build fails, and 2 for a usage error such as an unknown option. For example, `lemmata lint --strict && lemmata bib --missing` fails a CI job on any warning or missing citation.
+
+## Not in Lemmata
+
+Lemmata is a local editor, so there is no real-time collaboration and no rich-text (visual) editor. To work with others, use review comments, Git and the History review. Open an issue if one of the missing features matters to you.
