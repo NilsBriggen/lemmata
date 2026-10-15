@@ -9,7 +9,7 @@ use std::time::Duration;
 const BASE: &str = "http://127.0.0.1:23119/better-bibtex";
 
 fn client(timeout: Duration) -> Result<reqwest::Client, Error> {
-    reqwest::Client::builder()
+    crate::client_builder()
         .timeout(timeout)
         .no_proxy()
         .build()

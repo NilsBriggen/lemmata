@@ -196,9 +196,20 @@ impl std::fmt::Display for Error {
     }
 }
 
+/// A client builder with ring installed as rustls' crypto provider (reqwest
+/// is built without its own, so only one TLS crypto stack is compiled in).
+pub(crate) fn client_builder() -> reqwest::ClientBuilder {
+    static PROVIDER: std::sync::Once = std::sync::Once::new();
+    PROVIDER.call_once(|| {
+        // Err means another provider is already installed, which is fine.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+    reqwest::Client::builder()
+}
+
 /// Fetches BibTeX for a DOI from doi.org (content negotiation).
 pub async fn fetch_bibtex(doi: &str) -> Result<String, Error> {
-    let client = reqwest::Client::builder()
+    let client = client_builder()
         .timeout(Duration::from_secs(15))
         .user_agent(concat!(
             "Lemmata/",
