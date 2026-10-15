@@ -1,5 +1,6 @@
 //! Runs latexmk for a project and parses the resulting log.
 
+use crate::format;
 use lemmata_log::Diagnostic;
 use lemmata_project::Project;
 use serde::Serialize;
@@ -126,9 +127,7 @@ pub async fn build_with(
     // Nothing changed since the last good build: no TeX run at all, just its result again.
     if !force && up_to_date(project) {
         let outdir = project.config.outdir.trim_start_matches("./").to_string();
-        let mut diagnostics = std::fs::read(project.log_path())
-            .map(|b| lemmata_log::parse(&String::from_utf8_lossy(&b)))
-            .unwrap_or_default();
+        let mut diagnostics = read_log(project);
         for d in &mut diagnostics {
             if d.file
                 .as_deref()
@@ -159,13 +158,26 @@ pub async fn build_with(
         n => Duration::from_secs(n),
     };
     let mut cancel = cancel;
-    let can_go_direct = tool(opts, project.config.engine.binary()).is_some();
+    let engine = tool(opts, project.config.engine.binary());
+    let can_go_direct = engine.is_some();
     let warm = !skip_latexmk && can_go_direct && warm_ok(project);
     let _ = std::fs::remove_file(project.outdir_abs().join(OK_STAMP));
+    // A warm rebuild can start from the precompiled preamble; an explicit Recompile never does.
+    let fmt = match &engine {
+        Some(e) if warm && !force && format::eligible(project, opts.miktex) => {
+            format::usable(project, e)
+        }
+        _ => None,
+    };
     // On skipping, the earlier failure's output file stays to explain the note below.
     let mut status = Status::Failed;
-    if warm && let Ok(s) = direct_build(project, opts, limit, &mut cancel).await {
+    if warm && let Ok(s) = direct_build(project, opts, limit, &mut cancel, fmt.as_deref()).await {
         status = s;
+    }
+    let fmt_failed = fmt.is_some() && status == Status::Failed;
+    if fmt_failed {
+        // Its errors could be the format's own: only a build without it gets to report them.
+        let _ = std::fs::remove_file(project.log_path());
     }
     // A failed direct build is run again by latexmk, which keeps going past errors the way the user chose.
     let settled = warm && status != Status::Failed;
@@ -199,7 +211,7 @@ pub async fn build_with(
     let log_fresh = written_since(&project.log_path(), started_at);
     let mut fell_back = false;
     if status == Status::Failed && !log_fresh && can_go_direct {
-        match direct_build(project, opts, limit, &mut cancel).await {
+        match direct_build(project, opts, limit, &mut cancel, None).await {
             Ok(s) => {
                 status = s;
                 fell_back = true;
@@ -219,9 +231,7 @@ pub async fn build_with(
         });
     }
     if status == Status::Timeout {
-        let mut d = std::fs::read(project.log_path())
-            .map(|b| lemmata_log::parse(&String::from_utf8_lossy(&b)))
-            .unwrap_or_default();
+        let mut d = read_log(project);
         d.insert(
             0,
             Diagnostic {
@@ -250,9 +260,7 @@ pub async fn build_with(
 
     let pdf = project.pdf_path();
     let fresh = written_since(&pdf, started_at);
-    let mut diagnostics = std::fs::read(project.log_path())
-        .map(|b| lemmata_log::parse(&String::from_utf8_lossy(&b)))
-        .unwrap_or_default();
+    let mut diagnostics = read_log(project);
     // The bibliography tool's own log explains what the main log can't.
     let blg_path = out_file(project, "blg");
     let blg_fresh = written_since(&blg_path, started_at);
@@ -322,6 +330,14 @@ pub async fn build_with(
 
     if status == Status::Success && fresh {
         mark_ok(project);
+        if fmt_failed {
+            format::reject(project);
+        }
+        if let Some(e) = engine
+            && format::eligible(project, opts.miktex)
+        {
+            format::spawn(project.clone(), e, path_env(opts), limit);
+        }
     }
 
     Ok(Outcome {
@@ -343,6 +359,22 @@ fn out_file(project: &Project, ext: &str) -> PathBuf {
     project.outdir_abs().join(name)
 }
 
+/// The diagnostics in the main log. A run from the precompiled preamble didn't read the preamble,
+/// so what it said then comes from the log of the run that made the format.
+fn read_log(project: &Project) -> Vec<Diagnostic> {
+    let log = std::fs::read(project.log_path())
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    let mut d = lemmata_log::parse(&log);
+    if format::was_used(&log) {
+        let mut pre = lemmata_log::parse(&format::preamble_log(project));
+        pre.retain(|x| !d.contains(x));
+        pre.append(&mut d);
+        d = pre;
+    }
+    d
+}
+
 /// Whether `path` was written by a build that began at `started_at`. Allows 2 s
 /// of slack because FAT/exFAT and network shares round modification times.
 fn written_since(path: &Path, started_at: SystemTime) -> bool {
@@ -353,17 +385,22 @@ fn written_since(path: &Path, started_at: SystemTime) -> bool {
 
 /// Puts the TeX and Perl folders first on PATH.
 fn set_path(cmd: &mut Command, opts: &BuildOptions<'_>) {
+    if let Some(p) = path_env(opts) {
+        cmd.env("PATH", p);
+    }
+}
+
+/// PATH with the TeX and Perl folders first, if either is known.
+fn path_env(opts: &BuildOptions<'_>) -> Option<OsString> {
     let mut path_dirs: Vec<&Path> = Vec::new();
     path_dirs.extend(opts.bin_dir);
     path_dirs.extend(opts.perl_dir);
-    if !path_dirs.is_empty() {
-        cmd.env("PATH", prepend_paths(&path_dirs));
-    }
+    (!path_dirs.is_empty()).then(|| prepend_paths(&path_dirs))
 }
 
 /// Runs one command to the end, killing it and its children on timeout or
 /// cancel. `None` means it could not be started.
-async fn run_step(
+pub(crate) async fn run_step(
     mut cmd: Command,
     limit: Duration,
     cancel: &mut oneshot::Receiver<()>,
@@ -512,6 +549,44 @@ fn mark_ok(project: &Project) {
     );
 }
 
+/// The engine's arguments for one pass writing to `outdir`, from the format `fmt` if given.
+pub(crate) fn pass_args(
+    project: &Project,
+    outdir: &str,
+    fmt: Option<&str>,
+    miktex: bool,
+) -> Vec<String> {
+    let c = &project.config;
+    let mut args: Vec<String> = fmt.map(|f| format!("-fmt={f}")).into_iter().collect();
+    args.extend(
+        [
+            "-interaction=nonstopmode",
+            "-file-line-error",
+            "-synctex=1",
+            if c.shell_escape {
+                "-shell-escape"
+            } else {
+                "-no-shell-escape"
+            },
+        ]
+        .map(String::from),
+    );
+    if c.stop_on_error {
+        args.push("-halt-on-error".into());
+    }
+    if miktex {
+        args.push("--enable-installer".into());
+    }
+    args.push(format!("-output-directory={outdir}"));
+    let main = project.main.to_string_lossy().replace('\\', "/");
+    args.push(if c.draft {
+        format!("\\PassOptionsToPackage{{draft}}{{graphicx}}\\input{{{main}}}")
+    } else {
+        main
+    });
+    args
+}
+
 /// The part of latexmk that matters, without latexmk: run the engine, run
 /// biber or bibtex once when citations need it, and run the engine again
 /// while the log asks for another pass. Returns the status of the last run.
@@ -520,36 +595,17 @@ async fn direct_build(
     opts: &BuildOptions<'_>,
     limit: Duration,
     cancel: &mut oneshot::Receiver<()>,
+    fmt: Option<&str>,
 ) -> Result<Status, Error> {
     let engine = project.config.engine.binary();
     let engine_path = tool(opts, engine)
         .ok_or_else(|| Error::SpawnTool(engine.into(), std::io::Error::other("not found")))?;
-    let main = project.main.to_string_lossy().replace('\\', "/");
     let mut bib_checked = false;
     let mut status = Status::Failed;
 
     for pass in 0..MAX_PASSES {
         let mut cmd = Command::new(&engine_path);
-        cmd.args(["-interaction=nonstopmode", "-file-line-error", "-synctex=1"]);
-        cmd.arg(if project.config.shell_escape {
-            "-shell-escape"
-        } else {
-            "-no-shell-escape"
-        });
-        if project.config.stop_on_error {
-            cmd.arg("-halt-on-error");
-        }
-        if opts.miktex {
-            cmd.arg("--enable-installer");
-        }
-        cmd.arg(format!("-output-directory={}", project.config.outdir));
-        if project.config.draft {
-            cmd.arg(format!(
-                "\\PassOptionsToPackage{{draft}}{{graphicx}}\\input{{{main}}}"
-            ));
-        } else {
-            cmd.arg(&main);
-        }
+        cmd.args(pass_args(project, &project.config.outdir, fmt, opts.miktex));
         cmd.current_dir(&project.root)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -810,6 +866,7 @@ pub fn clean(project: &Project) -> std::io::Result<usize> {
         ));
     }
     let _ = std::fs::remove_file(outdir.join(OK_STAMP));
+    let _ = std::fs::remove_dir_all(outdir.join(format::DIR));
     clean_dir(&outdir, &project.pdf_path())
 }
 
@@ -1304,7 +1361,9 @@ mod tests {
         let latexmk = d.path().join("latexmk-fake");
         std::fs::write(&latexmk, "#!/bin/sh\nexit 1\n").unwrap();
         std::fs::set_permissions(&latexmk, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let p = Project::open(d.path()).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        // A precompiled preamble is made with pdflatex in the background, which would count too.
+        p.config.fast_preamble = false;
         let count = |name: &str| {
             std::fs::read_to_string(&calls)
                 .unwrap_or_default()
@@ -1559,5 +1618,256 @@ mod tests {
         let out = build(&p, &opts, rx).await.unwrap();
         assert_eq!(out.status, Status::Cancelled);
         assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
+    }
+
+    /// A project built with this machine's TeX, for the precompiled preamble. None without
+    /// pdflatex, latexmk or mylatexformat (the CI job with TeX runs these).
+    #[cfg(unix)]
+    struct Real {
+        dir: tempfile::TempDir,
+        latexmk: PathBuf,
+        bin: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl Real {
+        fn new(main: &str, toml: &str) -> Option<Self> {
+            let (Ok(pdflatex), Ok(latexmk)) = (which::which("pdflatex"), which::which("latexmk"))
+            else {
+                return None;
+            };
+            let has_mylatexformat = std::process::Command::new("kpsewhich")
+                .arg("mylatexformat.ltx")
+                .output()
+                .is_ok_and(|o| !o.stdout.is_empty());
+            if !has_mylatexformat {
+                return None;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("main.tex"), main).unwrap();
+            std::fs::write(dir.path().join("lemmata.toml"), toml).unwrap();
+            let bin = pdflatex.parent().unwrap().to_path_buf();
+            Some(Real { dir, latexmk, bin })
+        }
+        fn project(&self) -> Project {
+            Project::open(self.dir.path()).unwrap()
+        }
+        fn edit(&self, from: &str, to: &str) {
+            // File times are only a few milliseconds fine; an edit right after a build could look older.
+            std::thread::sleep(Duration::from_millis(30));
+            let main = self.dir.path().join("main.tex");
+            let text = std::fs::read_to_string(&main).unwrap();
+            assert!(text.contains(from), "{from}");
+            std::fs::write(&main, text.replacen(from, to, 1)).unwrap();
+        }
+        /// Builds after an edit to the body, as a rebuild in the app.
+        async fn build(&self) -> Outcome {
+            self.edit("\\end{document}", "\\end{document}\n% edit");
+            let opts = BuildOptions {
+                latexmk: &self.latexmk,
+                bin_dir: Some(&self.bin),
+                installer: None,
+                miktex: false,
+                perl_dir: None,
+            };
+            let (_tx, rx) = oneshot::channel();
+            build(&self.project(), &opts, rx).await.unwrap()
+        }
+        fn used_format(&self) -> bool {
+            format::was_used(
+                &std::fs::read_to_string(self.project().log_path()).unwrap_or_default(),
+            )
+        }
+        /// Waits for the background work to settle on the current preamble: usable or not.
+        async fn verdict(&self) -> bool {
+            for _ in 0..600 {
+                if let Some(ok) = format::recorded(&self.project(), &self.bin.join("pdflatex")) {
+                    return ok;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("no verdict on the precompiled preamble within a minute");
+        }
+        fn errors(out: &Outcome) -> Vec<&str> {
+            out.diagnostics
+                .iter()
+                .filter(|d| d.severity == lemmata_log::Severity::Error)
+                .map(|d| d.message.as_str())
+                .collect()
+        }
+    }
+
+    /// The case that once moved the title up by 12.7pt: \vspace* at the top of the first page.
+    #[cfg(unix)]
+    const TITLEPAGE: &str = "\\documentclass{article}\n\\PackageWarningNoLine{demo}{said in the preamble}\n\\begin{document}\n\\begin{titlepage}\\vspace*{3cm}{\\Huge Title\\par}\\end{titlepage}\nText.\n\\end{document}\n";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_warm_rebuild_starts_from_the_checked_preamble() {
+        let Some(r) = Real::new(TITLEPAGE, "") else {
+            return;
+        };
+        let first = r.build().await;
+        assert_eq!(first.status, Status::Success);
+        assert!(!r.used_format(), "the first build has no format yet");
+        assert!(r.verdict().await, "the title page comes out the same");
+        let fmt = r.project().outdir_abs().join("fmt/main.fmt");
+        assert!(fmt.is_file());
+        let second = r.build().await;
+        assert_eq!(second.status, Status::Success);
+        assert!(second.pdf.is_some());
+        assert!(r.used_format());
+        // What the preamble said is still reported, though this run never read the preamble.
+        assert!(
+            second
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("said in the preamble")),
+            "{:?}",
+            second.diagnostics
+        );
+        assert_eq!(first.diagnostics.len(), second.diagnostics.len());
+        // A deliberate Recompile builds without it.
+        let opts = BuildOptions {
+            latexmk: &r.latexmk,
+            bin_dir: Some(&r.bin),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        r.edit("Text.", "More text.");
+        let (_tx, rx) = oneshot::channel();
+        let forced = build_with(&r.project(), &opts, rx, false, true)
+            .await
+            .unwrap();
+        assert_eq!(forced.status, Status::Success);
+        assert!(!r.used_format());
+        // Clearing the cache removes it.
+        clean(&r.project()).unwrap();
+        assert!(!fmt.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn changing_the_preamble_or_a_file_it_reads_drops_the_format() {
+        let Some(r) = Real::new(
+            "\\documentclass{article}\n\\input{macros}\n\\begin{document}\n\\x\n\\end{document}\n",
+            "",
+        ) else {
+            return;
+        };
+        std::fs::write(r.dir.path().join("macros.tex"), "\\newcommand\\x{one}\n").unwrap();
+        assert_eq!(r.build().await.status, Status::Success);
+        assert!(r.verdict().await);
+        r.build().await;
+        assert!(r.used_format());
+
+        r.edit(
+            "\\begin{document}",
+            "\\usepackage{amsmath}\n\\begin{document}",
+        );
+        let out = r.build().await;
+        assert_eq!(out.status, Status::Success);
+        assert!(!r.used_format(), "the old format holds the old preamble");
+        assert!(r.verdict().await, "a new one is made");
+        r.build().await;
+        assert!(r.used_format());
+
+        std::thread::sleep(Duration::from_millis(30));
+        std::fs::write(r.dir.path().join("macros.tex"), "\\newcommand\\x{two}\n").unwrap();
+        let out = r.build().await;
+        assert_eq!(out.status, Status::Success);
+        assert!(!r.used_format(), "macros.tex changed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_preamble_a_format_cannot_hold_is_never_used() {
+        // Map lines are not kept in a format; an object written at once goes missing from the PDF.
+        for preamble in [
+            "\\pdfmapline{=cmr10 CMR10 <cmr10.pfb}",
+            "\\immediate\\pdfobj{<< /Lemmata 1 >>}",
+        ] {
+            let Some(r) = Real::new(
+                &format!(
+                    "\\documentclass{{article}}\n{preamble}\n\\begin{{document}}\nA\n\\end{{document}}\n"
+                ),
+                "",
+            ) else {
+                return;
+            };
+            assert_eq!(r.build().await.status, Status::Success);
+            assert!(!r.verdict().await, "{preamble}");
+            let out = r.build().await;
+            assert_eq!(out.status, Status::Success);
+            assert!(!r.used_format(), "{preamble}");
+            assert!(!r.project().outdir_abs().join("fmt/main.fmt").exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn draft_and_xelatex_builds_never_use_a_format() {
+        let doc = "\\documentclass{article}\n\\begin{document}\nA\n\\end{document}\n";
+        let Some(r) = Real::new(doc, "") else {
+            return;
+        };
+        r.build().await;
+        assert!(r.verdict().await);
+        std::fs::write(r.dir.path().join("lemmata.toml"), "draft = true\n").unwrap();
+        let out = r.build().await;
+        assert_eq!(out.status, Status::Success);
+        assert!(!r.used_format(), "draft");
+
+        if which::which("xelatex").is_err() {
+            return;
+        }
+        let Some(r) = Real::new(doc, "engine = \"xelatex\"\n") else {
+            return;
+        };
+        r.build().await;
+        let out = r.build().await;
+        assert_eq!(out.status, Status::Success);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!r.used_format());
+        assert!(!r.project().outdir_abs().join("fmt").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_broken_format_or_preamble_falls_back_cleanly() {
+        let Some(r) = Real::new(TITLEPAGE, "") else {
+            return;
+        };
+        r.build().await;
+        assert!(r.verdict().await);
+        // A format that dies: the build is redone without it, shows no error of its own, and drops it.
+        let fmt = r.project().outdir_abs().join("fmt/main.fmt");
+        std::fs::write(&fmt, "not a format").unwrap();
+        let out = r.build().await;
+        assert_eq!(out.status, Status::Success, "{:?}", Real::errors(&out));
+        assert!(Real::errors(&out).is_empty(), "{:?}", Real::errors(&out));
+        assert!(!r.used_format());
+        assert_eq!(
+            format::recorded(&r.project(), &r.bin.join("pdflatex")),
+            Some(false)
+        );
+
+        // A preamble error is reported as without a format.
+        r.edit(
+            "\\begin{document}",
+            "\\usepackage{lemmata-no-such-package}\n\\begin{document}",
+        );
+        let out = r.build().await;
+        assert_eq!(out.status, Status::Failed);
+        assert!(!r.used_format());
+        assert!(
+            out.diagnostics.iter().any(|d| matches!(
+                &d.kind,
+                lemmata_log::Kind::MissingFile { name } if name.contains("lemmata-no-such-package")
+            )),
+            "{:?}",
+            out.diagnostics
+        );
     }
 }

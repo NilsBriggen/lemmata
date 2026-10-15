@@ -37,6 +37,8 @@ The Recompile menu also has:
 - **Stop at the first error**: instead of pushing on to a complete PDF.
 - **Clear cached files**: deletes auxiliary files, for the odd case where a stale `.aux` confuses LaTeX. It only empties Lemmata's own build folder; a build folder that Lemmata didn't create is left alone.
 
+With pdflatex, Lemmata precompiles the preamble (everything before `\begin{document}`) in the background, so rebuilds after an edit start faster. A precompiled preamble is used only after one build with it gave exactly the same PDF as one without it, and it is made again whenever the preamble or a file it reads changes. Recompile always builds without it. To turn it off, set `fast_preamble = false` in `lemmata.toml`.
+
 A build that runs longer than five minutes is stopped and explained. Change the limit under *Project settings → Stop a build after N seconds* (10 to 3600), or set `timeout_secs` in `lemmata.toml`; 0 means no limit.
 
 If a build fails but an older PDF is still there, the PDF pane keeps that PDF and shows a banner with **Show logs**. Clicking the red build result in the status bar also opens the logs. While a build runs, the Recompile button reads **Stop**.

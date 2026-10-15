@@ -115,6 +115,10 @@ pub struct Config {
     /// Named build presets; empty for a project with one main file.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<Target>,
+    /// Precompile the preamble (pdflatex only) so rebuilds after an edit start faster.
+    /// Each precompiled preamble is checked once against a normal build before it is used.
+    #[serde(skip_serializing_if = "is_true")]
+    pub fast_preamble: bool,
 }
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -141,6 +145,10 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
 fn is_default_timeout(t: &u64) -> bool {
     *t == DEFAULT_TIMEOUT_SECS
 }
@@ -160,6 +168,7 @@ impl Default for Config {
             stop_on_error: false,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
             targets: Vec::new(),
+            fast_preamble: true,
         }
     }
 }
@@ -293,6 +302,7 @@ const CONFIG_KEYS: &[&str] = &[
     "stop_on_error",
     "timeout_secs",
     "targets",
+    "fast_preamble",
 ];
 
 /// A crash mid-write must not leave a half-written file, so write beside it
@@ -1018,6 +1028,23 @@ mod tests {
                 .unwrap()
                 .contains("engine")
         );
+    }
+
+    #[test]
+    fn fast_preamble_is_on_unless_turned_off() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "main.tex", "\\documentclass{article}");
+        let mut p = Project::open(d.path()).unwrap();
+        assert!(p.config.fast_preamble);
+        p.config.fast_preamble = false;
+        p.save_config().unwrap();
+        let text = fs::read_to_string(d.path().join(CONFIG_FILE)).unwrap();
+        assert!(text.contains("fast_preamble = false"), "{text}");
+        assert!(!Project::open(d.path()).unwrap().config.fast_preamble);
+        p.config.fast_preamble = true;
+        p.save_config().unwrap();
+        let text = fs::read_to_string(d.path().join(CONFIG_FILE)).unwrap();
+        assert!(!text.contains("fast_preamble"), "{text}");
     }
 
     #[test]

@@ -3,6 +3,7 @@
 
 pub mod build;
 pub mod detect;
+mod format;
 pub mod os;
 
 pub use build::{BuildOptions, Outcome, Status, build, build_with, clean};
