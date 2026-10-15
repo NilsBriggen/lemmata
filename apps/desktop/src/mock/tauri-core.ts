@@ -210,6 +210,27 @@ const handlers: Record<string, (a: Args) => unknown> = {
   import_overleaf_zip: (a) => ["CA_Assignement_5", "INF_SEC_Assignement_3", "NET_assignment_4", "Homework", "CA_Assignement_4", "DB_Assignement_3"].map((n) => `${a.parent}/${n}`),
   trash_project: () => undefined,
   watching: () => true,
+  bib_search_online: () => [
+    { title: "Attention Is All You Need", authors: "Vaswani et al.", year: "2017", venue: "NeurIPS", doi: "10.48550/arxiv.1706.03762" },
+    { title: "Proximal Policy Optimization Algorithms", authors: "Schulman et al.", year: "2017", venue: "arXiv", doi: "10.48550/arxiv.1707.06347" },
+  ],
+  bib_library: () => ({
+    files: ["refs.bib"],
+    entries: [
+      { key: "schulman2017ppo", kind: "article", title: "Proximal Policy Optimization Algorithms", authors: "Schulman et al.", year: "2017", file: "refs.bib", line: 1, doi: "10.48550/arxiv.1707.06347", fields: { title: "Proximal Policy Optimization Algorithms", year: "2017" }, cited: true },
+      { key: "sutton2018reinforcement", kind: "book", title: "Reinforcement Learning: An Introduction", authors: "Sutton and Barto", year: "2018", file: "refs.bib", line: 17, doi: "", fields: {}, cited: false },
+      { key: "sutton2018reinforcement", kind: "book", title: "Reinforcement Learning: An Introduction", authors: "Sutton and Barto", year: "2018", file: "refs.bib", line: 25, doi: "", fields: {}, cited: false },
+    ],
+    duplicates: [{ kind: "key", value: "sutton2018reinforcement", entries: [1, 2] }],
+    missing: ["nobody2020"],
+  }),
+  bib_remove_entry: (a) => [a.file],
+  bib_rename_key: (a) => [a.file],
+  todos: () => [{ file: "main.tex", line: 12, kind: "TODO", text: "Tighten the abstract" }],
+  format_tex: ({ text }) => text,
+  grammar_check: () => [],
+  grammar_status: () => undefined,
+  open_pdf_externally: () => undefined,
   pdf_is_current: () => false,
   create_main: () => undefined,
   load_thumbnail: async () => {

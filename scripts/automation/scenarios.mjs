@@ -98,6 +98,40 @@ export const scenarios = {
     });
   },
 
+  async "adds, shows and resolves a review comment"(lem, dir) {
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { line: 12 });
+    await lem("command", { id: "comment" });
+    await until(lem, "the comment form", () => lem("exists", { selector: ".review .draft textarea" }));
+    await lem("fill", { selector: ".review .draft textarea", value: "Is this the right citation?" });
+    await lem("click", { selector: '.review .draft button[type="submit"]' });
+    await until(lem, "the highlight", () => lem("exists", { selector: ".cm-comment" }));
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, ".lemmata/comments.json"), "utf8"));
+    if (saved.threads?.[0]?.body !== "Is this the right citation?") throw new Error(`comment not saved: ${JSON.stringify(saved)}`);
+    await lem("clickText", { text: "Resolve", within: ".review" });
+    await until(lem, "the highlight to go", async () => !(await lem("exists", { selector: ".cm-comment" })));
+    await lem("click", { selector: '[aria-label="Close comments"]' });
+    await check(lem, "after resolving");
+  },
+
+  async "lists TODOs and opens the bibliography manager"(lem) {
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { line: 12 });
+    await lem("type", { text: "% TODO tighten this paragraph\n" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+    await lem("command", { id: "todos" });
+    await until(lem, "the TODO", async () => (await lem("text", { selector: ".todos" }).catch(() => "")).includes("tighten this paragraph"));
+    await lem("click", { selector: '[aria-label="Close TODOs"]' });
+    await lem("key", { combo: "Control+z" });
+    await lem("key", { combo: "Control+s" });
+    await lem("command", { id: "bib-manager" });
+    await until(lem, "the bibliography manager", async () => (await lem("text", { selector: "[role=dialog]" }).catch(() => "")).includes("schulman2017ppo"));
+    await lem("key", { combo: "Escape" });
+    await lem("idle", { timeout: 120_000 });
+    await check(lem, "after TODOs and the manager");
+  },
+
   async "keeps the PDF after switching to editor only and back"(lem) {
     await lem("click", { selector: '[title="Editor only"]' });
     await lem("click", { selector: '[title="Editor and PDF"]' });

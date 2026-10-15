@@ -109,7 +109,18 @@ export interface Snapshot {
   changes: { status: "added" | "modified" | "deleted"; path: string }[];
 }
 
-export interface LabelInfo { label: string; file: string; line: number; context: string }
+export interface LabelInfo {
+  label: string;
+  file: string;
+  line: number;
+  context: string;
+  /** The environment the label is in (equation, figure, table, section, …). */
+  env?: string;
+  /** Equation body, caption or heading, for hover cards. */
+  snippet?: string;
+  /** First \includegraphics path in a figure. */
+  graphic?: string;
+}
 export interface WordCounts {
   total_words: number;
   files: { file: string; words: number }[];
@@ -139,6 +150,8 @@ export const api = {
   createMain: (dir: string) => invoke<void>("create_main", { dir }),
   /** The project's PDF is newer than every source file: opening it needs no build. */
   pdfIsCurrent: () => invoke<boolean>("pdf_is_current"),
+  /** Opens the project's PDF in the system's PDF viewer. */
+  openPdfExternally: () => invoke<void>("open_pdf_externally"),
   watching: () => invoke<boolean>("watching"),
   readText: (path: string) => invoke<string>("read_text", { path }),
   /** `expected`: hash (contentHash) of the text last read or written; the save is refused if the disk differs. */

@@ -7,11 +7,13 @@ mod bib;
 mod export;
 mod figures;
 mod files;
+mod grammar;
 mod history;
 mod lsp;
 mod projects;
 mod spell;
 mod terminal;
+mod tools;
 mod updates;
 
 use lemmata_project::{Config, Entry, Project};
@@ -189,6 +191,19 @@ fn open_project(
     Ok(info)
 }
 
+/// Opens the project's PDF with the system's default viewer. The path comes from the project, never the page.
+#[tauri::command(async)]
+fn open_pdf_externally(app: tauri::AppHandle, state: State<AppState>) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let pdf = project(&state)?.pdf_path();
+    if !pdf.is_file() {
+        return Err("There is no PDF yet. Compile the document first.".into());
+    }
+    app.opener()
+        .open_path(pdf.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("Could not open the PDF: {e}"))
+}
+
 /// False when the file watcher couldn't start (e.g. the system's watch limit is reached).
 #[tauri::command(async)]
 fn watching(state: State<AppState>) -> bool {
@@ -264,6 +279,10 @@ fn write_text(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let tmp = abs.with_file_name(format!(".{name}.lemmata-tmp"));
+    // A file in a folder that doesn't exist yet (e.g. .lemmata/comments.json before the first build).
+    if let Some(dir) = abs.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     std::fs::write(&tmp, &content).map_err(|e| format!("Could not save {path}: {e}"))?;
     std::fs::rename(&tmp, &abs).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -874,6 +893,7 @@ pub fn run() {
             open_project,
             project_info_cmd,
             watching,
+            open_pdf_externally,
             set_config,
             read_text,
             write_text,
@@ -925,6 +945,14 @@ pub fn run() {
             updates::update_check,
             updates::update_install,
             bib::bib_entries,
+            bib::bib_search_online,
+            bib::bib_library,
+            bib::bib_remove_entry,
+            bib::bib_rename_key,
+            tools::todos,
+            tools::format_tex,
+            grammar::grammar_check,
+            grammar::grammar_status,
             bib::bib_add_reference,
             bib::zotero_status,
             bib::zotero_pick,

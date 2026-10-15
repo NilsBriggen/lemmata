@@ -8,6 +8,11 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import Splitter from "./lib/ui/Splitter.svelte";
   import Modal from "./lib/ui/Modal.svelte";
+  import ReviewPanel from "./lib/comments/ReviewPanel.svelte";
+  import { grammar } from "./lib/grammar/service";
+  import type { HoverProviders } from "./lib/editor/hover";
+  import { todoApi } from "./lib/todos";
+  import { COMMENTS_FILE, locate, newId, parse as parseComments, serialize as serializeComments, type Thread } from "./lib/comments/model";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { contentHash } from "./lib/contentHash";
   import { closePresenter } from "./lib/presenter/window";
@@ -101,6 +106,13 @@
   let update = $state<{ version: string; progress: number | null; error: string | null } | null>(null);
   let historyOpen = $state(false);
   let snippetsOpen = $state(false);
+  let bibManagerOpen = $state(false);
+  let todosOpen = $state(false);
+  /** Review comments of the open project, and the panel showing them. */
+  let threads = $state<Thread[]>([]);
+  let reviewOpen = $state(false);
+  let activeComment = $state<string | null>(null);
+  let commentDraft = $state<{ file: string; line: number; quote: string } | null>(null);
   /** Files changed by another program while they had unsaved edits here: not saved until the user decides. */
   let conflicts = $state<string[]>([]);
   /** Files whose last save failed: the status bar says so in red. */
@@ -204,6 +216,11 @@
     contents.clear();
     dirty = {};
     conflicts = [];
+    threads = [];
+    grammar.resetIgnored();
+    commentDraft = null;
+    activeComment = null;
+    api.readText(COMMENTS_FILE).then((t) => (threads = parseComments(t)), () => {});
     clearSelection();
     pinned = [];
     closedTabs = [];
@@ -241,6 +258,62 @@
 
   // Completion data for \ref, \cite, file names and packages. Labels and
   // citation keys change as the user types, so they're cached only briefly.
+  async function saveComments(next: Thread[]) {
+    threads = next;
+    try {
+      await api.writeText(COMMENTS_FILE, serializeComments(next));
+    } catch (e) {
+      showNotice(`Comments could not be saved: ${errorMessage(e)}`, { tone: "error" });
+    }
+  }
+
+  /** Starts a comment on the selection (or the cursor's line). */
+  function addComment() {
+    const target = active && !isViewer(active) ? editor?.commentTarget() : null;
+    if (!active || !target) {
+      showNotice("Select the text you want to comment on, then choose Add comment.");
+      return;
+    }
+    commentDraft = { file: active, ...target };
+    openReview();
+  }
+
+  function openReview() {
+    reviewOpen = true;
+    historyOpen = false;
+    // The panel sits where the PDF is.
+    if (settings.layout === "editor") updateSettings({ layout: "split" });
+  }
+
+  /** Re-indents the open file with latexindent or tex-fmt, as one undoable edit. */
+  async function formatDocument() {
+    if (!active || isViewer(active)) return;
+    const view = editor?.getView();
+    if (!view) return;
+    const unit = settings.indent === "tab" ? "\t" : " ".repeat(Number(settings.indent));
+    try {
+      const formatted = await todoApi.formatTex(view.state.doc.toString(), unit);
+      if (formatted !== view.state.doc.toString()) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: formatted }, userEvent: "input.format" });
+      showNotice("Formatted the document. Undo brings the old layout back.", { tone: "ok" });
+    } catch (e) {
+      showNotice(errorMessage(e), { tone: "error" });
+    }
+  }
+
+  async function showThread(t: Thread) {
+    activeComment = t.id;
+    await openFile(t.file);
+    const at = locate(contents.get(t.file) ?? "", t);
+    if (at) editor?.gotoLine(at.line);
+  }
+
+  // The open file's comments are highlighted; resolved ones aren't.
+  $effect(() => {
+    const file = active;
+    const mine = threads.filter((t) => t.file === file && !t.resolved);
+    editor?.showComments(mine, activeComment);
+  });
+
   /** Stale-while-revalidate: once loaded, answers at once with the last list and refreshes it in the background when older than `ttl`. */
   function cached<T>(load: () => Promise<T>, ttl: number): () => Promise<T> {
     let at = 0;
@@ -270,10 +343,12 @@
       return last !== undefined ? Promise.resolve(last) : pending!;
     };
   }
-  const providers: Providers = {
+  const providers: HoverProviders = {
     labels: cached(() => api.labels(), 1500),
     cites: cached(async () => (await api.bibEntries()).entries, 3000),
     files: () => (project ? allFiles(project.tree) : []),
+    readBinary: (p) => api.readBinary(p),
+    readText: (p) => api.readText(p),
     packages: cached(() => api.packageNames(), 3_600_000),
     needsPackage: (pkg) => void needsPackage(pkg),
   };
@@ -313,6 +388,7 @@
     fileLanguage = active && /\.(tex|sty|cls)$/i.test(active) ? magicLanguage(contents.get(active) ?? "") : null;
     const lang = fileLanguage ?? project.config.spellcheck ?? fallback;
     spell.setLanguage(lang, project.config.words ?? []);
+    grammar.configure(settings.grammar, settings.grammarUrl, lang);
   }
 
   async function addWord(word: string) {
@@ -445,6 +521,17 @@
       await api.writeText(path, text, known === undefined ? undefined : contentHash(known));
       lastSaved.set(path, text);
       failedSaves = failedSaves.filter((f) => f !== path);
+      // Keep comment anchors' lines current, so they're found again after big edits.
+      if (threads.some((t) => t.file === path)) {
+        let moved = false;
+        const next = threads.map((t) => {
+          const at = t.file === path ? locate(text, t) : null;
+          if (!at || at.line === t.line) return t;
+          moved = true;
+          return { ...t, line: at.line };
+        });
+        if (moved) saveComments(next);
+      }
       refreshGit();
       // Typing continued while the write was in flight: those edits aren't saved yet.
       if (contents.get(path) === text) dirty[path] = false;
@@ -996,6 +1083,11 @@
       { id: "shortcuts", label: "Keyboard shortcuts", detail: hint("shortcuts"), run: () => (dialog = "shortcuts") },
       { id: "snapshot", label: "Save a snapshot", detail: hint("snapshot"), run: () => (snapshotLabel = "") },
       { id: "history", label: "Show history", run: () => (historyOpen = true) },
+      { id: "comment", label: "Add a comment", detail: hint("comment"), run: addComment },
+      { id: "comments", label: "Show comments", run: openReview },
+      { id: "bib-manager", label: "Bibliography manager…", run: () => (bibManagerOpen = true) },
+      { id: "todos", label: "Show TODOs", run: () => ((todosOpen = true), (reviewOpen = false), (historyOpen = false)) },
+      { id: "format", label: "Format document", run: formatDocument },
       { id: "sync", label: "Show this line in the PDF", detail: hint("sync"), run: () => active && syncForward(active, editor?.currentLine() ?? 1, 0) },
       { id: "focus", label: focusMode ? "Leave focus mode" : "Focus mode", detail: hint("focus"), run: () => (focusMode = !focusMode) },
       { id: "new-file", label: "New file…", run: () => fileActions?.openMenu(null, 240, 120) },
@@ -1265,6 +1357,7 @@
     else if (active && hit("symbols")) dialog = "symbols";
     else if (hit("shortcuts")) dialog = "shortcuts";
     else if (hit("snapshot")) snapshotLabel = "";
+    else if (hit("comment")) addComment();
     else if (hit("save")) saveAll();
     else if (hit("recompile")) saveAll(false).then(() => runBuild(true));
     else if (active && hit("close-tab")) closeTab(active);
@@ -1530,6 +1623,9 @@
       layout={settings.layout}
       sidebarOpen={settings.sidebarOpen}
       {historyOpen}
+      {reviewOpen}
+      openComments={threads.filter((t) => !t.resolved).length}
+      onReview={() => (reviewOpen ? (reviewOpen = false) : openReview())}
       autoCompile={settings.autoCompile}
       engine={project.config.engine}
       menu={menuItems}
@@ -1538,7 +1634,7 @@
         updateSettings({ layout: l });
       }}
       onToggleSidebar={() => updateSettings({ sidebarOpen: !settings.sidebarOpen })}
-      onHistory={() => (historyOpen = !historyOpen)}
+      onHistory={() => ((historyOpen = !historyOpen), (reviewOpen = false))}
       onProjectSettings={() => (settingsOpen = true)}
       onRecompile={() => saveAll(false).then(() => runBuild(true))}
       onStop={stopBuild}
@@ -1629,6 +1725,7 @@
           onCite={() => (citeOpen = true)}
           onList={(ordered) => editor?.insertTemplate(listTemplate(ordered))}
           onSyncToPdf={() => active && syncForward(active, editor?.currentLine() ?? 1, 0)}
+          onComment={addComment}
         />
         {#if openError}
           <div class="err-bar" role="alert">
@@ -1662,6 +1759,7 @@
               else selectionTimer = setTimeout(() => (selectionWords = countWords(t)), 120);
             }}
             onFoldsChange={() => foldsVersion++}
+            onCommentClick={(id) => ((activeComment = id), openReview())}
             onPastedTable={(undo) => showNotice("Pasted as a table.", { label: "Paste as text instead", run: undo })}
           />
         </div>
@@ -1706,13 +1804,16 @@
           />
         {/if}
         <div class="preview" style:width={showEditor ? `${settings.pdfWidth}px` : undefined} class:wide={!showEditor}>
-          <div class="fill" class:hidden={historyOpen}>
+          <div class="fill" class:hidden={historyOpen || reviewOpen || todosOpen}>
             <PdfPane
               bind:this={pdf}
               {diagnostics}
               {building}
               failed={!!outcome && outcome.status !== "success" && !outcome.pdf}
               status={outcome?.status ?? null}
+              pageLayout={settings.pdfLayout}
+              onPageLayout={(l) => updateSettings({ pdfLayout: l })}
+              onOpenExternally={() => api.openPdfExternally().catch((e) => showNotice(errorMessage(e), { tone: "error" }))}
               buildId={buildSeq}
               {logsOpen}
               onLogs={(o) => {
@@ -1726,7 +1827,33 @@
               onExport={exportPdf}
             />
           </div>
-          {#if historyOpen}
+          {#if todosOpen}
+            <div class="fill">
+              {#await import("./lib/Todos.svelte") then { default: Todos }}<Todos onOpen={gotoProblem} />{/await}
+              <button class="btn ghost icon sm close-todos" aria-label="Close TODOs" onclick={() => (todosOpen = false)}><X size={15} /></button>
+            </div>
+          {:else if reviewOpen}
+            <div class="fill">
+              <ReviewPanel
+                {threads}
+                active={activeComment}
+                draft={commentDraft}
+                onAdd={(body) => {
+                  if (!commentDraft) return;
+                  const t: Thread = { id: newId(), ...commentDraft, body, created: Date.now(), resolved: false, replies: [] };
+                  commentDraft = null;
+                  activeComment = t.id;
+                  saveComments([...threads, t]);
+                }}
+                onCancelDraft={() => (commentDraft = null)}
+                onSelect={showThread}
+                onReply={(id, body) => saveComments(threads.map((t) => (t.id === id ? { ...t, replies: [...t.replies, { body, created: Date.now() }] } : t)))}
+                onResolve={(id, resolved) => saveComments(threads.map((t) => (t.id === id ? { ...t, resolved } : t)))}
+                onDelete={(id) => saveComments(threads.filter((t) => t.id !== id))}
+                onClose={() => ((reviewOpen = false), (commentDraft = null))}
+              />
+            </div>
+          {:else if historyOpen}
             <div class="fill">{#await import("./lib/HistoryPanel.svelte") then { default: HistoryPanel }}<HistoryPanel version={historyVersion} {currentText} {beforeRestore} {onRestored} {onRestoredAll} onClose={() => (historyOpen = false)} />{/await}</div>
           {/if}
         </div>
@@ -1785,6 +1912,17 @@
   {onTrashed}
   onUpload={uploadFiles}
 />
+
+{#if bibManagerOpen}
+  {#await import("./lib/BibManager.svelte") then { default: BibManager }}
+    <BibManager
+      onClose={() => (bibManagerOpen = false)}
+      onOpen={(file, line) => ((bibManagerOpen = false), gotoProblem(file, line))}
+      beforeChange={() => saveAll(false)}
+      onChanged={(paths) => paths.forEach((p) => reloadFromDisk(p))}
+    />
+  {/await}
+{/if}
 
 {#if snippetsOpen}{#await import("./lib/SnippetsDialog.svelte") then { default: SnippetsDialog }}<SnippetsDialog onClose={() => (snippetsOpen = false)} />{/await}{/if}
 
@@ -2008,6 +2146,7 @@
   .close-files { margin: 0; padding-left: 18px; font: 12.5px var(--f-mono); }
   .danger-btn { background: var(--error) !important; border-color: var(--error) !important; color: #fff !important; }
   .status-link { border: none; background: none; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  .close-todos { position: absolute; top: 6px; right: 8px; }
   .save-failed { color: var(--error); font-weight: 600; }
   .toast.error { border-color: var(--error); }
   .toast.error .t-ico { color: var(--error); }

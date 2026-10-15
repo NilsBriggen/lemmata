@@ -47,6 +47,11 @@ export interface Settings {
   firstRunDone: boolean;
   /** Projects (by folder) whose lemmata.toml may turn on shell escape: the user allowed it. */
   shellEscapeProjects: string[];
+  /** Grammar checking with LanguageTool: off, a server on this computer, or an address the user gives. */
+  grammar: "off" | "local" | "custom";
+  grammarUrl: string;
+  /** PDF pages one by one, or side by side like a book. */
+  pdfLayout: "single" | "spread" | "spread-first";
 }
 
 export const DEFAULTS: Settings = {
@@ -79,6 +84,9 @@ export const DEFAULTS: Settings = {
   snippets: [],
   firstRunDone: false,
   shellEscapeProjects: [],
+  grammar: "off",
+  grammarUrl: "http://localhost:8081",
+  pdfLayout: "single",
 };
 
 /** Saved values of the wrong type (a damaged or hand-edited file) fall back to the defaults. */
