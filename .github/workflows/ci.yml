@@ -175,5 +175,10 @@ jobs:
         run: pnpm --filter lemmata-desktop tauri build --debug --no-bundle
         env:
           VITE_LEMMATA_TEST: "1"
+      # The Git panel scenario commits; runners have no git identity.
+      - name: Set a git identity
+        run: |
+          git config --global user.name "Lemmata CI"
+          git config --global user.email "ci@lemmata.invalid"
       - name: Run end-to-end tests
         run: xvfb-run --auto-servernum pnpm --filter lemmata-desktop e2e
