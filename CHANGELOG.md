@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.5.1 (2026-10-15)
+
+### Fixed
+- Editor styles were blocked; PDFs failed on older WebView2
+- Reading a file no longer counts as a change
+- Jump from the PDF to a file in a subfolder
 ## 1.5.0 (2026-10-15)
 
 ### Added
