@@ -1,6 +1,27 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.5.0 (2026-10-15)
+
+### Added
+- Search for references online and manage the bibliography
+- Grammar checking with LanguageTool (opt-in)
+- Hover cards for references, citations and figures
+- TODO list and Format document
+- Page thumbnails, two-page view and open in another PDF viewer
+- Review comments anchored in the text
+- Wire up the 1.5 writing features
+- Plain-language explanations for 31 more TeX errors
+- % !TeX root and % !TeX program magic comments
+
+### Fixed
+- Grammar settings apply at once; scenarios for hover cards and grammar
+
+### Faster
+- Precompile the preamble for warm rebuilds (40–60% faster)
+
+### Documentation
+- Guide for 1.5
 ## 1.4.0 (2026-10-15)
 
 ### Faster
