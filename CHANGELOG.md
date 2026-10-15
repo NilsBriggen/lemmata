@@ -1,71 +1,36 @@
 # Changelog
 
 All notable changes to Lemmata.
-## 2.0.0-rc.3 (2026-10-15)
+## 2.0.0 (2026-10-15)
 
 ### Added
-- \be offers \begin on its own, then the environment list
-- Recently deleted restores deleted files, also after a restart; Project settings lists dictionary words and ignored grammar rules so they can be removed; hover cards for an unknown citation or label offer a search
-- Git and Cite buttons, a grouped main menu, side panels that always show, a ⋯ menu in a narrow PDF toolbar, dark PDF pages in Preferences, and clickable word count, compiler and language in the status bar
-
-### Fixed
-- The template bars are as rounded as the category cards
-- Inserted figures, tables and lists keep the cursor's indentation
-- Switching layouts while the PDF resizes no longer throws an error
-## 2.0.0-rc.2 (2026-10-15)
-
-### Added
-- New project starts with six kinds of document, then their templates
-- Save as template from a project's menu, and optionally trash the project
-
-### Fixed
-- A very large image after another one is no longer blank in the PDF
-## 2.0.0-rc.1 (2026-10-15)
-
-### Added
-- Lint, wordcount, bib, outline and export --zip
-- Tectonic as an optional engine, downloaded on demand
-- Git panel with commit, pull, push, branches and clone
-- Review changes against a snapshot, and a compiled PDF diff
-- Template gallery with 14 more templates
-- 14 more spell-check languages, downloaded on demand
+- Git, built in: commit, pull, push and switch branches from the Git panel, and clone a project from GitHub, GitLab or Overleaf
+- Review changes against a snapshot and keep or undo each one, or get a PDF with the changes marked (latexdiff)
+- Tectonic as an optional engine, downloaded on demand: compile without installing TeX, on Linux, macOS and Windows
+- 30 templates from the Lemmata template collection (papers, theses, posters, slides, exams, letters, and journal and conference classes), with the six basic ones built in; New project starts with six kinds of document
+- Save any project as a template from its menu, and optionally move the project to the trash
+- 14 more spell-check languages, downloaded on demand, and an offer to download one when a file asks for it
+- Open .tex files and project folders from the system, and lemmata:// links that open, clone or start a project
 - Export for arXiv as one .tex file
-- Open .tex files and project folders from the system
-- Wire the 2.0 features into the app
+- The command-line tool on every release on its own, with lint, wordcount, bib, outline and export (--zip, --arxiv)
 - A short What's new window after an update
-- Templates from a template collection, beyond the six built in
-- Offer a missing dictionary when a project or file asks for its language
-- Lemmata:// links to open, clone and start projects
-- Export --arxiv, sharing the app's code
-- The PDF of the changes is tested end to end, and its failures are explained
-- Tectonic tested on every OS, with progress, and the default where it's the only engine
-- Build with Tectonic like the app does
-- The command-line tool on every release, on its own
-- A simpler template picker, by kind of document
-- \begin opens the list of environments
+- \be offers \begin on its own, then the list of environments
+- Git and Cite buttons, a grouped main menu, side panels that always show, a ⋯ menu in a narrow PDF toolbar, and a clickable word count, compiler and language in the status bar
+- Recently deleted restores deleted files, also after a restart; Project settings lists the dictionary's words and ignored grammar rules so they can be removed
+- Hover cards for an unknown citation or label offer a search
 
 ### Fixed
+- Only one cursor after a snippet that typed in two places, such as \begin{…}…\end{…}
+- A build after a stopped or failed one always runs, so the PDF and the jump to the source stay current
 - Opening a project trusts its PDF only if nothing changed after its build began
+- A very large image after another one is no longer blank in the PDF
 - Images in the project open instead of loading forever
-- Ask for a name and email instead of guessing them
-- The What's new spell check entry says English, German and French stay
+- Inserted figures, tables and lists keep the cursor's indentation
+- Git asks for a name and email instead of guessing them
 - Ctrl+Alt+M adds a review comment, and Ctrl+/ only comments lines
-- Drop the update channel setting, which changed nothing
-- What's new decides 'fresh install' before anything opens a project
-- A missing biber on Windows is explained too
+- A missing biber is explained on Windows too, and the jump between PDF and source explains a missing synctex file
 - Offers to act stay on screen until answered; deleting the open project works on Windows
-- One cursor again after a snippet that typed in two places
-- A build after a stopped or failed one always runs
-- The jump between PDF and source explains a missing synctex file
 
-### Documentation
-- 1.5.2 changelog without the reverted 2.0 work
-- Tectonic's progress and default, and the What's new window
-- Release candidate checklist, with the macOS checks
-- Guide checked against the code for 2.0
-
-### wip
-- Guide for 2.0, one hover tooltip, Escape closes it
 ## 1.5.2 (2026-10-15)
 
 ### Fixed
@@ -198,35 +163,6 @@ All notable changes to Lemmata.
 - Explain builds that stop before TeX starts, and MiKTeX without Perl
 ## 1.0.0 (2026-10-13)
 
-### Fixed
-- Autosave no longer looks like an outside change; deleted folders close quietly
-## 1.0.0-rc.1 (2026-10-13)
-
-### Added
-- Environment pairing, project-aware completion, folding, shortcuts
-- Formatting toolbar, insert figure/table/symbol dialogs, word count, shortcut sheet
-- Lazy rendering, text selection, search, links, outline, presentation mode
-- Draft mode, stop on first error, timeout, clear cache; package fixes and .blg diagnostics
-- File tree drag-to-move, viewer tabs, tab strip, whole-project restore, snapshot compare
-- Notification history, completion status, lemmata watch
-- Draft-mode indicator, focusable PDF pane; handoff update
-- Homework template; fix the PDF-click e2e point
-
-### Fixed
-- Wait for the completion list; click the PDF by event
-- Say so when a PDF click can't be resolved to source; e2e reports why
-
-### Documentation
-- 1.0 guide and readme; new fixtures and e2e cases
-## 0.1.0-beta.2 (2026-10-13)
-
-### Added
-- Overleaf-style redesign and first-run welcome
-
-### Fixed
-- Import Overleaf bulk downloads
-## 0.1.0-beta.1 (2026-10-13)
-
 ### Added
 - Editor, live PDF preview, SyncTeX and TeX setup (M0)
 - Install commands for missing packages
@@ -239,12 +175,26 @@ All notable changes to Lemmata.
 - Project tools and comfort features
 - Zotero citations through Better BibTeX
 - Report a problem, user guide and end-to-end tests
+- Overleaf-style redesign and first-run welcome
+- Environment pairing, project-aware completion, folding, shortcuts
+- Formatting toolbar, insert figure/table/symbol dialogs, word count, shortcut sheet
+- Lazy rendering, text selection, search, links, outline, presentation mode
+- Draft mode, stop on first error, timeout, clear cache; package fixes and .blg diagnostics
+- File tree drag-to-move, viewer tabs, tab strip, whole-project restore, snapshot compare
+- Notification history, completion status, lemmata watch
+- Draft-mode indicator, focusable PDF pane; handoff update
+- Homework template; fix the PDF-click e2e point
 
 ### Fixed
 - Builds with \include'd chapters in subfolders
 - Fetch-texlab.sh works with macOS's bash 3.2
 - Provide per-architecture texlab for universal macOS builds
 - Sign macOS builds ad hoc until a Developer ID exists
+- Import Overleaf bulk downloads
+- Wait for the completion list; click the PDF by event
+- Say so when a PDF click can't be resolved to source; e2e reports why
+- Autosave no longer looks like an outside change; deleted folders close quietly
 
 ### Documentation
 - Plan, website handoff and pitch
+- 1.0 guide and readme; new fixtures and e2e cases
