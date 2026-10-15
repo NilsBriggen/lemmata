@@ -198,8 +198,25 @@ impl Project {
                 }
                 m
             }
-            None => pick_main(&main_candidates).ok_or_else(|| Error::NoMainFile(root.clone()))?,
+            None => {
+                let picked =
+                    pick_main(&main_candidates).ok_or_else(|| Error::NoMainFile(root.clone()))?;
+                // "% !TeX root = ../thesis.tex" in the picked file names the real main file.
+                magic(&root.join(&picked), "root")
+                    .map(|r| {
+                        let dir = picked.parent().unwrap_or(Path::new(""));
+                        normalize(&dir.join(r))
+                    })
+                    .filter(|r| main_inside(&root, r))
+                    .unwrap_or(picked)
+            }
         };
+        // "% !TeX program = xelatex" sets the engine when lemmata.toml doesn't.
+        if !sets_key(&root, "engine")
+            && let Some(engine) = magic(&root.join(&main), "program").and_then(|p| engine_named(&p))
+        {
+            config.engine = engine;
+        }
         Ok(Project {
             root,
             config,
@@ -362,6 +379,62 @@ fn has_documentclass(text: &str) -> bool {
 }
 
 /// Prefers `main.tex`, then the shallowest candidate.
+/// A `% !TeX <key> = value` comment (also `TS-program`) near the top of a file, as TeXShop, TeXstudio and VS Code read them.
+fn magic(file: &Path, key: &str) -> Option<String> {
+    let text = fs::read_to_string(file).ok()?;
+    text.lines().take(40).find_map(|line| {
+        let rest = line
+            .trim_start()
+            .strip_prefix('%')?
+            .trim_start()
+            .strip_prefix('!')?
+            .trim_start();
+        let rest = rest
+            .get(..3)
+            .filter(|t| t.eq_ignore_ascii_case("tex"))
+            .map(|_| &rest[3..])?;
+        let (name, value) = rest.trim_start().split_once('=')?;
+        let name = name.trim().to_ascii_lowercase();
+        (name == key || name == format!("ts-{key}"))
+            .then(|| value.trim().to_string())
+            .filter(|v| !v.is_empty())
+    })
+}
+
+fn engine_named(program: &str) -> Option<Engine> {
+    match program.to_ascii_lowercase().as_str() {
+        "pdflatex" | "pdftex" | "latex" => Some(Engine::Pdflatex),
+        "xelatex" | "xetex" => Some(Engine::Xelatex),
+        "lualatex" | "luatex" | "lualatex-dev" => Some(Engine::Lualatex),
+        _ => None,
+    }
+}
+
+/// Whether lemmata.toml sets `key` itself (rather than leaving the default).
+fn sets_key(root: &Path, key: &str) -> bool {
+    fs::read_to_string(root.join(CONFIG_FILE))
+        .ok()
+        .and_then(|t| t.parse::<toml::Table>().ok())
+        .is_some_and(|t| t.contains_key(key))
+}
+
+/// `chapters/../main.tex` → `main.tex`, without touching the disk. A path that climbs above the root keeps its `..`, so main_inside rejects it.
+fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn pick_main(candidates: &[PathBuf]) -> Option<PathBuf> {
     candidates
         .iter()
@@ -642,6 +715,49 @@ fn clean_title(t: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn magic_comments_pick_the_root_and_the_engine() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("chapters")).unwrap();
+        std::fs::write(
+            d.path().join("thesis.tex"),
+            "% !TEX TS-program = xelatex\n\\documentclass{book}\n",
+        )
+        .unwrap();
+        // The only file with \documentclass that would be picked first points elsewhere.
+        std::fs::write(
+            d.path().join("main.tex"),
+            "%!TeX root = thesis.tex\n\\documentclass{article}\n",
+        )
+        .unwrap();
+        let p = Project::open(d.path()).unwrap();
+        assert_eq!(p.main, PathBuf::from("thesis.tex"));
+        assert_eq!(p.config.engine, Engine::Xelatex);
+        // An engine set in lemmata.toml wins over the comment.
+        std::fs::write(d.path().join(CONFIG_FILE), "engine = \"pdflatex\"\n").unwrap();
+        assert_eq!(
+            Project::open(d.path()).unwrap().config.engine,
+            Engine::Pdflatex
+        );
+        // A root outside the project is ignored.
+        std::fs::remove_file(d.path().join(CONFIG_FILE)).unwrap();
+        std::fs::write(
+            d.path().join("main.tex"),
+            "% !TeX root = ../elsewhere.tex\n\\documentclass{article}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Project::open(d.path()).unwrap().main,
+            PathBuf::from("main.tex")
+        );
+        assert_eq!(
+            magic(&d.path().join("thesis.tex"), "program").as_deref(),
+            Some("xelatex")
+        );
+        assert_eq!(engine_named("LuaLaTeX"), Some(Engine::Lualatex));
+        assert_eq!(engine_named("context"), None);
+    }
+
     use super::*;
 
     #[test]
