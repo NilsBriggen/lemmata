@@ -24,7 +24,7 @@
   import Check from "@lucide/svelte/icons/check";
   import DropMenu from "./ui/DropMenu.svelte";
   import Modal from "./ui/Modal.svelte";
-  import { countIn, createGroup, deleteGroup, forgetPath, inView, moveProject, nameProblem, readGroups, renameGroup, writeGroups, type Groups, type View } from "./groups";
+  import { countIn, createGroup, deleteGroup, forgetPath, inView, moveProject, nameProblem, readGroups, renameGroup, restoreGroup, writeGroups, type Groups, type View } from "./groups";
   import NewProjectDialog from "./NewProjectDialog.svelte";
   import ImportDialog from "./ImportDialog.svelte";
   import { api, errorMessage } from "./api";
@@ -55,17 +55,28 @@
   /** The menu of one project: open, show, folder, remove, delete. */
   let projectMenu = $state<{ path: string; anchor: HTMLElement } | null>(null);
   let deleting = $state<{ path: string; busy: boolean; error: string | null } | null>(null);
+  /** The folder just deleted, and the folders as they were before, so Undo can put it back. */
+  let undoable = $state.raw<{ id: string; name: string; before: Groups } | null>(null);
   const activeGroup = $derived(groups.groups.find((g) => g.id === view));
   const unfiled = $derived(p.recent.filter((r) => !(r.path in groups.members)).length);
 
+  // Any other change to the folders ends the Undo notice.
   function commit(next: Groups) {
     groups = next;
+    undoable = null;
     writeGroups(next);
   }
 
   function startEdit(id: string | null) {
+    undoable = null;
     editing = { id, name: id ? (groups.groups.find((g) => g.id === id)?.name ?? "") : "", error: null };
   }
+
+  $effect(() => {
+    if (!undoable) return;
+    const timer = setTimeout(() => (undoable = null), 8000);
+    return () => clearTimeout(timer);
+  });
 
   function finishEdit(e?: SubmitEvent) {
     e?.preventDefault();
@@ -85,8 +96,15 @@
   }
 
   function removeGroup(id: string) {
+    const before = groups;
+    const name = before.groups.find((g) => g.id === id)?.name ?? "";
     commit(deleteGroup(groups, id));
     if (view === id) view = "all";
+    undoable = { id, name, before };
+  }
+
+  function undoRemove() {
+    if (undoable) commit(restoreGroup(groups, undoable.before, undoable.id));
   }
 
   /** New and imported projects land in the folder being looked at. */
@@ -104,9 +122,34 @@
   const home = (path: string) => path.replace(/^\/home\/[^/]+|^\/Users\/[^/]+|^[A-Z]:\\Users\\[^\\]+/, "~");
   const defaultParent = $derived(p.recent[0] ? folderOf(p.recent[0].path) : "");
 
-  const shown = $derived(
-    p.recent.filter((r) => inView(groups, r.path, view) && (!query.trim() || r.path.toLowerCase().includes(query.trim().toLowerCase()))),
-  );
+  // The sort choice is kept in localStorage, like the recent list.
+  const SORT_KEY = "lemmata.librarySort";
+  function readSort(): "opened" | "name" {
+    try {
+      return localStorage.getItem(SORT_KEY) === "name" ? "name" : "opened";
+    } catch {
+      return "opened";
+    }
+  }
+  let sort = $state<"opened" | "name">(readSort());
+  function setSort(next: "opened" | "name") {
+    sort = next;
+    try {
+      localStorage.setItem(SORT_KEY, next);
+    } catch {
+      // Storage unavailable: the choice just isn't remembered.
+    }
+  }
+
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  const shown = $derived.by(() => {
+    const term = query.trim().toLowerCase();
+    const list = p.recent.filter((r) => inView(groups, r.path, view) && (!term || r.path.toLowerCase().includes(term)));
+    if (sort === "name") list.sort((a, b) => collator.compare(nameOf(a.path), nameOf(b.path)));
+    // Name matches come before matches that are only in the folder path. The sort is stable, so each part keeps its order.
+    if (term) list.sort((a, b) => Number(!nameOf(a.path).toLowerCase().includes(term)) - Number(!nameOf(b.path).toLowerCase().includes(term)));
+    return list;
+  });
 
   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
   function ago(t: number) {
@@ -200,6 +243,9 @@
       {/if}
       {#if editing && editing.id === null}{@render editor()}{/if}
     </div>
+    {#if undoable}
+      <p class="undo" role="status">Folder “{undoable.name}” deleted · <button onclick={undoRemove}>Undo</button></p>
+    {/if}
     <div class="foot">
       <button class="nav" onclick={p.onPreferences}><Settings size={16} /> Preferences</button>
       <button class="nav subtle" onclick={p.onWelcome}>Show welcome screen</button>
@@ -218,6 +264,10 @@
           <button aria-pressed={settings.libraryView === "list"} aria-label="List" onclick={() => updateSettings({ libraryView: "list" })}><List size={15} /></button>
           <button aria-pressed={settings.libraryView === "grid"} aria-label="Grid" onclick={() => updateSettings({ libraryView: "grid" })}><LayoutGrid size={15} /></button>
         </div>
+        <select class="input sort" aria-label="Sort projects" value={sort} onchange={(e) => setSort(e.currentTarget.value as "opened" | "name")}>
+          <option value="opened">Last opened</option>
+          <option value="name">Name</option>
+        </select>
       </div>
     </header>
 
@@ -384,8 +434,8 @@
   .blank i:first-child { width: 55%; height: 6px; margin: 0 auto 6px; background: #a6aeb6; }
   .info { padding: 10px 12px; display: flex; flex-direction: column; gap: 1px; }
   .info span { color: var(--muted); font-size: 12px; }
-  .card .more { position: absolute; top: 8px; right: 8px; opacity: 0; }
-  .card:hover .more, .card .more:focus-visible { opacity: 1; }
+  .card .more { position: absolute; top: 8px; right: 8px; opacity: 0.45; }
+  .card:hover .more, .card:focus-within .more { opacity: 1; }
 
   .empty { max-width: 460px; margin: 10vh auto 0; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--faint); }
   .empty h2 { font: 400 22px var(--f-display); color: var(--ink); margin: 6px 0 0; }
@@ -397,12 +447,16 @@
   .fhead .btn { color: var(--chrome-muted); }
   .nav i { margin-left: auto; font-style: normal; font-size: 11.5px; color: var(--chrome-muted); }
   .nav.on, .frow.on > .nav { background: var(--chrome-active); }
-  .frow { display: flex; align-items: center; position: relative; }
+  .frow { display: flex; align-items: center; }
+  .frow.on { background: var(--chrome-active); border-radius: var(--r); }
   .frow > .nav { flex: 1; min-width: 0; }
   .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .facts { position: absolute; right: 4px; display: none; gap: 0; background: var(--chrome-hover); border-radius: var(--r-sm); }
-  .frow:hover .facts, .frow:focus-within .facts { display: flex; }
-  .frow:hover > .nav i, .frow:focus-within > .nav i { visibility: hidden; }
+  /* Visible but faint, so they can be found; full strength on hover or keyboard focus. */
+  .facts { display: flex; flex: none; opacity: 0.45; }
+  .frow:hover .facts, .frow:focus-within .facts { opacity: 1; }
+  .undo { margin: 8px 6px 0; font-size: 12.5px; color: var(--chrome-muted); overflow-wrap: anywhere; }
+  .undo button { border: none; background: none; padding: 0; font: inherit; color: var(--chrome-ink); text-decoration: underline; cursor: pointer; }
+  .tools select.sort { width: auto; }
   .fedit { display: flex; flex-direction: column; gap: 3px; padding: 2px 4px; }
   .fedit .input { height: 30px; }
   .ferr { color: var(--error); font-size: 11.5px; padding-left: 4px; }

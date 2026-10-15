@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countIn, createGroup, deleteGroup, emptyGroups, forgetPath, inView, moveProject, nameProblem, readGroups, renameGroup, writeGroups } from "./groups";
+import { countIn, createGroup, deleteGroup, emptyGroups, forgetPath, inView, moveProject, nameProblem, readGroups, renameGroup, restoreGroup, writeGroups } from "./groups";
 
 const memory = () => {
   const data = new Map<string, string>();
@@ -38,6 +38,19 @@ describe("project folders", () => {
     s = moveProject(s, "/p/one", "b");
     expect(forgetPath(s, "/p/one").members).toEqual({});
     expect(forgetPath(s, "/nope")).toBe(s);
+  });
+
+  it("restores a deleted folder in its place with its projects", () => {
+    let s = createGroup(createGroup(emptyGroups(), "A", "a")!.state, "B", "b")!.state;
+    s = moveProject(moveProject(s, "/p/one", "a"), "/p/two", "b");
+    const gone = deleteGroup(s, "a");
+    expect(restoreGroup(gone, s, "a")).toEqual(s);
+    // A folder already back, or one that never existed, changes nothing.
+    expect(restoreGroup(s, s, "a")).toBe(s);
+    expect(restoreGroup(gone, s, "zzz")).toBe(gone);
+    // Changes made since the delete win over the old membership.
+    const later = moveProject(gone, "/p/one", "b");
+    expect(restoreGroup(later, s, "a").members).toEqual({ "/p/one": "b", "/p/two": "b" });
   });
 
   it("filters by view", () => {

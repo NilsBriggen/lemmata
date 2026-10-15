@@ -68,6 +68,16 @@ export function deleteGroup(state: Groups, id: string): Groups {
   return { groups: state.groups.filter((g) => g.id !== id), members };
 }
 
+/** Puts back a folder that deleteGroup removed, with its projects. `before` is the state from before the delete. */
+export function restoreGroup(state: Groups, before: Groups, id: string): Groups {
+  const group = before.groups.find((g) => g.id === id);
+  if (!group || state.groups.some((g) => g.id === id)) return state;
+  const groups = [...state.groups];
+  groups.splice(before.groups.indexOf(group), 0, group);
+  const members = { ...Object.fromEntries(Object.entries(before.members).filter(([, g]) => g === id)), ...state.members };
+  return { groups, members };
+}
+
 /** Puts a project in a folder, or in none with `null`. */
 export function moveProject(state: Groups, path: string, id: string | null): Groups {
   const members = { ...state.members };
