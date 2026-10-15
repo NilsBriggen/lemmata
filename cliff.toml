@@ -14,6 +14,17 @@ trim = true
 conventional_commits = true
 filter_unconventional = true
 commit_parsers = [
+  # The 2.0 work landed on main and was reverted the same day (07fbf81); it continues on the 2.0 branch.
+  { sha = "2e850e7bf754506c7b341427ba232568a2fd4ce9", skip = true },
+  { sha = "4d8be20223bfd71c7a7a9dced501c620c0f361fe", skip = true },
+  { sha = "73f349ae03f9765f838e0bf482172ac07ef3399e", skip = true },
+  { sha = "099f216d50ae048811e7c85dca326f6ff036edde", skip = true },
+  { sha = "6bbdb804f814c3e49ea412088baa7d3add5025bc", skip = true },
+  { sha = "c2184073812b04803033dc426aae0d51b0076529", skip = true },
+  { sha = "be2185e20936e30b1f2e944cb10f99f216712b94", skip = true },
+  { sha = "58bb74624b45bac377676456398dc7c61326aefa", skip = true },
+  { sha = "e45d10c38519f3ece042e8256af77fca17e1ffb6", skip = true },
+  { message = "^revert", skip = true },
   { message = "^feat", group = "<!-- 0 -->Added" },
   { message = "^fix", group = "<!-- 1 -->Fixed" },
   { message = "^perf", group = "<!-- 2 -->Faster" },
