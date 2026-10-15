@@ -116,7 +116,7 @@ jobs:
             beamer
             beamertheme-metropolis
             collection-fontsrecommended
-            IEEEtran
+            ieeetran
             cite
             acmart
             libertine
@@ -133,6 +133,27 @@ jobs:
             siunitx
             microtype
             parskip
+            # What the publisher templates load beyond the classes (found by building each with an empty cache).
+            a0poster
+            aliascnt
+            caption
+            comment
+            environ
+            everyshi
+            extsizes
+            fontaxes
+            hyperxmp
+            ifmtarg
+            kastrup
+            mweights
+            ncctools
+            oberdiek
+            preprint
+            textcase
+            totpages
+            trimspaces
+            xkeyval
+            xstring
       - name: Build the CLI
         run: cargo build -p lemmata-cli
       - name: lemmata doctor
