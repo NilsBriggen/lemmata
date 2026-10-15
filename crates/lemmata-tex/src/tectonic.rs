@@ -375,9 +375,11 @@ pub(crate) fn diagnostics_from_stderr(text: &str, tex_errors: bool) -> Vec<Diagn
         return out;
     }
     if all.contains("Running external tool biber") {
-        // Not found: "error: No such file or directory"; failed: biber's own output follows.
+        // Not found: "error: No such file or directory" (Linux, macOS) or "error: program not found"
+        // (Windows); failed: biber's own output follows.
         let failed = lines.iter().any(|l| {
             l.starts_with("error: No such file or directory")
+                || l.starts_with("error: program not found")
                 || l.starts_with("error: the external tool exited")
         });
         if failed {
@@ -703,6 +705,15 @@ mod tests {
         assert_eq!(d.len(), 1);
         assert!(d[0].message.contains("does not match"));
         assert!(d[0].hint.as_deref().unwrap().contains("BibTeX"));
+    }
+
+    #[test]
+    fn missing_biber_on_windows_is_explained() {
+        // What Tectonic 0.17 prints on Windows (from a CI run).
+        let text = "note: Running TeX ...\nnote: Running external tool biber ...\nerror: program not found\n";
+        let d = diagnostics_from_stderr(text, false);
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert!(d[0].message.contains("biber is not installed"), "{d:?}");
     }
 
     #[test]
