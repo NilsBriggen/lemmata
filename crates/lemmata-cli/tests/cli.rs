@@ -301,3 +301,129 @@ fn lint_passes_once_the_references_resolve() {
         "{v}"
     );
 }
+
+/// A file of the zip through `unzip`; None when it isn't installed.
+fn unzipped(zip: &Path, name: &str) -> Option<String> {
+    if !tool_runs("unzip") {
+        eprintln!("unzip not installed: zip content check skipped");
+        return None;
+    }
+    let o = Command::new("unzip")
+        .arg("-p")
+        .arg(zip)
+        .arg(name)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{name} is not in the zip");
+    Some(String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+#[test]
+fn export_arxiv_builds_and_zips_what_the_build_used() {
+    if !can_build() {
+        return;
+    }
+    let d = article_copy();
+    let main = d.path().join("main.tex");
+    let src = fs::read_to_string(&main).unwrap();
+    fs::write(&main, format!("% private note\n{src}")).unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let zip = out.path().join("arxiv.zip");
+
+    let o = lemmata(&["export", arg(d.path()), "--arxiv", zip.to_str().unwrap()]);
+    assert_eq!(
+        code(&o),
+        0,
+        "{}{}",
+        stdout(&o),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let bytes = fs::read(&zip).unwrap();
+    for name in ["main.tex", "chapters/method.tex", "main.bbl"] {
+        assert!(contains(&bytes, name.as_bytes()), "{name} is missing");
+    }
+    assert!(!contains(&bytes, b"refs.bib"), "the .bib is not needed");
+    assert!(!contains(&bytes, b".lemmata"));
+    if let Some(m) = unzipped(&zip, "main.tex") {
+        assert!(!m.contains("private note"), "comments were kept");
+    }
+
+    // --keep-comments leaves them in.
+    let kept = out.path().join("kept.zip");
+    let o = lemmata(&[
+        "export",
+        arg(d.path()),
+        "--arxiv",
+        kept.to_str().unwrap(),
+        "--keep-comments",
+    ]);
+    assert_eq!(code(&o), 0);
+    if let Some(m) = unzipped(&kept, "main.tex") {
+        assert!(m.contains("private note"), "comments were removed");
+    }
+}
+
+#[test]
+fn export_arxiv_flatten_merges_the_inputs() {
+    if !can_build() {
+        return;
+    }
+    let d = article_copy();
+    let out = tempfile::tempdir().unwrap();
+    let zip = out.path().join("flat.zip");
+
+    let o = lemmata(&[
+        "export",
+        arg(d.path()),
+        "--arxiv",
+        zip.to_str().unwrap(),
+        "--flatten",
+        "--json",
+    ]);
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    assert_eq!(json(&o)["files"], 2, "main.tex and main.bbl");
+    let bytes = fs::read(&zip).unwrap();
+    assert!(!contains(&bytes, b"chapters/method.tex"));
+    if let Some(m) = unzipped(&zip, "main.tex") {
+        assert!(m.contains("The objective maximises"), "{m}");
+        assert!(!m.contains("\\input{chapters/method}"), "{m}");
+    }
+}
+
+#[test]
+fn export_arxiv_flags_need_arxiv() {
+    let dir = fixture();
+    let o = lemmata(&["export", arg(&dir), "--flatten"]);
+    assert_eq!(code(&o), 2);
+    let o = lemmata(&["export", arg(&dir)]);
+    assert_eq!(code(&o), 2);
+    let o = lemmata(&["export", arg(&dir), "--zip", "a.zip", "--arxiv", "b.zip"]);
+    assert_eq!(code(&o), 2);
+}
+
+#[test]
+fn export_arxiv_refuses_a_document_that_does_not_build() {
+    if !can_build() {
+        return;
+    }
+    let d = article_copy();
+    let method = d.path().join("chapters/method.tex");
+    fs::write(&method, "\\undefinedcommand\n").unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let zip = out.path().join("bad.zip");
+
+    let o = lemmata(&["export", arg(d.path()), "--arxiv", zip.to_str().unwrap()]);
+    assert_eq!(code(&o), 1);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--anyway"));
+    assert!(!zip.exists());
+
+    let o = lemmata(&[
+        "export",
+        arg(d.path()),
+        "--arxiv",
+        zip.to_str().unwrap(),
+        "--anyway",
+    ]);
+    assert_eq!(code(&o), 0);
+    assert!(zip.exists());
+}

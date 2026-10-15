@@ -83,14 +83,31 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Zip the project's source files (no build output) to a file.
+    /// Zip the project's source files (no build output), or with --arxiv the
+    /// files an upload to arXiv needs.
     Export {
         /// Project folder.
         #[arg(default_value = ".")]
         dir: PathBuf,
-        /// The zip file to write.
-        #[arg(long, value_name = "OUT.ZIP")]
-        zip: PathBuf,
+        /// Write all source files to this zip.
+        #[arg(long, value_name = "OUT.ZIP", conflicts_with = "arxiv")]
+        zip: Option<PathBuf>,
+        /// Build, then write the files the build used, plus the compiled
+        /// bibliography, to this zip, with comments removed.
+        #[arg(long, value_name = "OUT.ZIP", required_unless_present = "zip")]
+        arxiv: Option<PathBuf>,
+        /// With --arxiv: merge \input and \include files into the main file.
+        #[arg(long, requires = "arxiv")]
+        flatten: bool,
+        /// With --arxiv: keep the % comments in the .tex files.
+        #[arg(long, requires = "arxiv")]
+        keep_comments: bool,
+        /// With --arxiv: export even if the build has errors.
+        #[arg(long, requires = "arxiv")]
+        anyway: bool,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Show the section tree with line numbers and word counts.
     Outline {
@@ -119,7 +136,26 @@ async fn main() -> anyhow::Result<()> {
             missing,
             json,
         } => bib::run(&dir, bib::Filter::from_flags(unused, missing), json)?,
-        Cmd::Export { dir, zip } => return export::run(&dir, &zip),
+        Cmd::Export {
+            dir,
+            zip,
+            arxiv,
+            flatten,
+            keep_comments,
+            anyway,
+            json,
+        } => match (zip, arxiv) {
+            (Some(zip), _) => export::run(&dir, &zip, None, json).await?,
+            (None, Some(out)) => {
+                let a = export::Arxiv {
+                    strip: !keep_comments,
+                    flatten,
+                    anyway,
+                };
+                export::run(&dir, &out, Some(a), json).await?
+            }
+            (None, None) => unreachable!("clap requires --zip or --arxiv"),
+        },
         Cmd::Outline { dir, json } => return outline(&dir, json),
     };
     if !ok {

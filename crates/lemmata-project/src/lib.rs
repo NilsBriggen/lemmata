@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+pub mod export;
 pub mod extras;
 pub mod prose;
 pub mod symbols;

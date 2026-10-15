@@ -237,8 +237,9 @@ Run **Report a problem** from the command palette. It shows the details it will 
 | `lemmata bib [dir]` | Lists the bibliography entries. `--unused` lists entries no `.tex` file cites. `--missing` lists keys that are cited but in no `.bib` file, and exits 1 if there are any. |
 | `lemmata outline [dir]` | Shows the section tree with line numbers and word counts. |
 | `lemmata export --zip out.zip [dir]` | Zips the project's source files, without hidden files or build output. |
+| `lemmata export --arxiv out.zip [dir]` | Builds, then zips the files the build used plus the compiled bibliography, with comments removed, like Export for arXiv in the app. `--flatten` merges `\input` and `\include` files into the main file, `--keep-comments` keeps the comments, `--anyway` exports even if the build has errors. |
 
-`dir` is the project folder and defaults to the current folder. `build`, `watch`, `lint`, `wordcount`, `bib` and `outline` take `--json` for machine-readable output; `export` has no JSON output. The exit status is 0 on success, 1 when a check finds problems or a build fails, and 2 for a usage error such as an unknown option. For example, `lemmata lint --strict && lemmata bib --missing` fails a CI job on any warning or missing citation.
+`dir` is the project folder and defaults to the current folder. `build`, `watch`, `lint`, `wordcount`, `bib`, `outline` and `export` take `--json` for machine-readable output. The exit status is 0 on success, 1 when a check finds problems or a build fails, and 2 for a usage error such as an unknown option. For example, `lemmata lint --strict && lemmata bib --missing` fails a CI job on any warning or missing citation.
 
 ## Not in Lemmata
 

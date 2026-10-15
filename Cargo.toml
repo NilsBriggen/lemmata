@@ -29,6 +29,7 @@ regex = "1"
 which = "8"
 walkdir = "2"
 tempfile = "3"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [profile.release]
 strip = true
