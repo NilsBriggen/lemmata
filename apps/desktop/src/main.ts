@@ -17,4 +17,7 @@ import PresenterView from "./lib/PresenterView.svelte";
 
 // The presenter window is the same app, opened with ?presenter=1.
 const presenter = new URLSearchParams(location.search).has("presenter");
-mount(presenter ? PresenterView : App, { target: document.getElementById("app")! });
+const target = document.getElementById("app")!;
+// index.html shows a static splash until the app takes over; mount appends, so clear it first.
+target.textContent = "";
+mount(presenter ? PresenterView : App, { target });

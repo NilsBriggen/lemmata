@@ -218,22 +218,33 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn probe(source: &Source) -> Vec<Tool> {
-    let find = |name: &str| -> Option<PathBuf> {
-        match source {
-            Source::Path => which::which(name).ok(),
-            Source::Dir(dir) => {
-                let exe = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-                exe.is_file().then_some(exe)
-            }
-        }
-    };
+    probe_with(|name| match source {
+        Source::Path => which::which(name).ok(),
+        Source::Dir(dir) => in_dir(dir, name),
+    })
+}
+
+fn in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
+    Some(dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))).filter(|p| p.is_file())
+}
+
+/// `find` locates one tool by name (a PATH search can take long on Windows).
+/// Once pdflatex is found, the other tools are looked for in its folder first,
+/// where they almost always are, and `find` only runs for the ones missing there.
+fn probe_with(find: impl Fn(&str) -> Option<PathBuf>) -> Vec<Tool> {
+    let pdflatex = find("pdflatex");
+    let sibling_dir = pdflatex.as_deref().and_then(Path::parent);
     REQUIRED
         .iter()
         .map(|n| (n, true))
         .chain(RECOMMENDED.iter().map(|n| (n, false)))
         .map(|(n, required)| Tool {
             name: n.to_string(),
-            path: find(n),
+            path: if *n == "pdflatex" {
+                pdflatex.clone()
+            } else {
+                sibling_dir.and_then(|d| in_dir(d, n)).or_else(|| find(n))
+            },
             required,
         })
         .collect()
@@ -364,5 +375,31 @@ mod tests {
         let det = detect(&[d.path().to_path_buf()]);
         assert!(det.ready);
         assert_eq!(det.bin_dir.as_deref(), Some(d.path()));
+    }
+
+    #[test]
+    fn sibling_tools_are_found_without_a_path_search() {
+        let d = tempfile::tempdir().unwrap();
+        let exe = |n: &str| {
+            d.path()
+                .join(format!("{n}{}", std::env::consts::EXE_SUFFIX))
+        };
+        for n in ["pdflatex", "latexmk", "synctex", "xelatex"] {
+            std::fs::write(exe(n), "").unwrap();
+        }
+        let searched = std::cell::RefCell::new(Vec::new());
+        let tools = probe_with(|n| {
+            searched.borrow_mut().push(n.to_string());
+            (n == "pdflatex").then(|| exe("pdflatex"))
+        });
+        let path = |n: &str| tools.iter().find(|t| t.name == n).unwrap().path.clone();
+        assert_eq!(path("latexmk"), Some(exe("latexmk")));
+        assert_eq!(path("xelatex"), Some(exe("xelatex")));
+        assert_eq!(path("biber"), None);
+        // Only pdflatex, then the tools missing from its folder, were searched for.
+        assert_eq!(
+            *searched.borrow(),
+            ["pdflatex", "biber", "bibtex", "lualatex"]
+        );
     }
 }

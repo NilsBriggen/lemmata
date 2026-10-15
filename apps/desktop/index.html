@@ -4,9 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Lemmata</title>
+    <style>
+      /* Shown until the app mounts; the colours are app.css's (light, and dark by system setting). */
+      .boot { height: 100%; display: grid; place-items: center; background: #e8ebee; color: #18212b; }
+      .boot span { font: 400 40px "Young Serif", Georgia, serif; color: #2a71a4; }
+      @media (prefers-color-scheme: dark) {
+        .boot { background: #0f1418; color: #e2e8ed; }
+        .boot span { color: #4a97cf; }
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app"><div class="boot"><span>Lemmata</span></div></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -38,6 +38,10 @@ pub struct Outcome {
     /// often still produces a usable PDF.
     pub pdf: Option<PathBuf>,
     pub diagnostics: Vec<Diagnostic>,
+    /// latexmk could not run and the engine was run directly. Callers can pass
+    /// `skip_latexmk` to `build_with` next time to avoid the failed start.
+    #[serde(skip)]
+    pub latexmk_failed: bool,
 }
 
 pub struct BuildOptions<'a> {
@@ -102,10 +106,46 @@ pub async fn build(
     opts: &BuildOptions<'_>,
     cancel: oneshot::Receiver<()>,
 ) -> Result<Outcome, Error> {
+    build_with(project, opts, cancel, false, false).await
+}
+
+/// Like `build`. With `skip_latexmk` (set after an earlier build reported
+/// `latexmk_failed`) the engine is run directly at once, when it can be.
+pub async fn build_with(
+    project: &Project,
+    opts: &BuildOptions<'_>,
+    cancel: oneshot::Receiver<()>,
+    skip_latexmk: bool,
+    // Build even when no project file changed (an explicit Recompile).
+    force: bool,
+) -> Result<Outcome, Error> {
     if !opts.latexmk.exists() {
         return Err(Error::NoLatexmk);
     }
     let started = Instant::now();
+    // Nothing changed since the last good build: no TeX run at all, just its result again.
+    if !force && up_to_date(project) {
+        let outdir = project.config.outdir.trim_start_matches("./").to_string();
+        let mut diagnostics = std::fs::read(project.log_path())
+            .map(|b| lemmata_log::parse(&String::from_utf8_lossy(&b)))
+            .unwrap_or_default();
+        for d in &mut diagnostics {
+            if d.file
+                .as_deref()
+                .is_some_and(|f| f.trim_start_matches("./").starts_with(&outdir))
+            {
+                d.file = None;
+                d.line = None;
+            }
+        }
+        return Ok(Outcome {
+            status: Status::Success,
+            duration_ms: started.elapsed().as_millis() as u64,
+            pdf: None,
+            diagnostics,
+            latexmk_failed: false,
+        });
+    }
     let started_at = SystemTime::now();
     prepare_outdir(project);
     // With the slack in written_since, last build's log would look fresh; no log is the signal that latexmk never ran TeX.
@@ -114,37 +154,51 @@ pub async fn build(
     // latexmk's own output is the only explanation when it dies before TeX
     // writes a log (no Perl, a MiKTeX prompt), so keep it in a file.
     let output_path = project.outdir_abs().join("latexmk-output.txt");
-    let (out, err) =
-        match std::fs::File::create(&output_path).and_then(|f| f.try_clone().map(|g| (f, g))) {
-            Ok((f, g)) => (Stdio::from(f), Stdio::from(g)),
-            Err(_) => (Stdio::null(), Stdio::null()),
-        };
-    let mut cmd = Command::new(opts.latexmk);
-    cmd.args(latexmk_args(project, opts.miktex))
-        .current_dir(&project.root)
-        .stdin(Stdio::null())
-        .stdout(out)
-        .stderr(err);
-    set_path(&mut cmd, opts);
-
     let limit = match project.config.timeout_secs {
         0 => Duration::from_secs(60 * 60 * 24),
         n => Duration::from_secs(n),
     };
     let mut cancel = cancel;
-    let mut status = run_step(cmd, limit, &mut cancel)
-        .await?
-        .ok_or(Error::Spawn(std::io::Error::other("could not start")))?;
+    let can_go_direct = tool(opts, project.config.engine.binary()).is_some();
+    let warm = !skip_latexmk && can_go_direct && warm_ok(project);
+    let _ = std::fs::remove_file(project.outdir_abs().join(OK_STAMP));
+    // On skipping, the earlier failure's output file stays to explain the note below.
+    let mut status = Status::Failed;
+    if warm && let Ok(s) = direct_build(project, opts, limit, &mut cancel).await {
+        status = s;
+    }
+    // A failed direct build is run again by latexmk, which keeps going past errors the way the user chose.
+    let settled = warm && status != Status::Failed;
+    if !settled && !(skip_latexmk && can_go_direct) {
+        let (out, err) =
+            match std::fs::File::create(&output_path).and_then(|f| f.try_clone().map(|g| (f, g))) {
+                Ok((f, g)) => (Stdio::from(f), Stdio::from(g)),
+                Err(_) => (Stdio::null(), Stdio::null()),
+            };
+        let mut cmd = Command::new(opts.latexmk);
+        cmd.args(latexmk_args(project, opts.miktex))
+            .current_dir(&project.root)
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err);
+        set_path(&mut cmd, opts);
+        status = match run_step(cmd, limit, &mut cancel).await {
+            Ok(s) => s.ok_or(Error::Spawn(std::io::Error::other("could not start")))?,
+            // Blocked from starting (a Windows policy): the direct build below can still work.
+            Err(Error::Spawn(e)) if can_go_direct => {
+                let _ = std::fs::write(&output_path, e.to_string());
+                Status::Failed
+            }
+            Err(e) => return Err(e),
+        };
+    }
 
     // latexmk can fail to start at all (Perl missing, or blocked by a Windows
     // application control policy) and then writes no log. Rather than give up,
     // run the engine ourselves: the same passes, without latexmk.
     let log_fresh = written_since(&project.log_path(), started_at);
     let mut fell_back = false;
-    if status == Status::Failed
-        && !log_fresh
-        && tool(opts, project.config.engine.binary()).is_some()
-    {
+    if status == Status::Failed && !log_fresh && can_go_direct {
         match direct_build(project, opts, limit, &mut cancel).await {
             Ok(s) => {
                 status = s;
@@ -161,6 +215,7 @@ pub async fn build(
             duration_ms,
             pdf: None,
             diagnostics: Vec::new(),
+            latexmk_failed: false,
         });
     }
     if status == Status::Timeout {
@@ -189,6 +244,7 @@ pub async fn build(
             duration_ms,
             pdf: None,
             diagnostics: d,
+            latexmk_failed: false,
         });
     }
 
@@ -264,11 +320,16 @@ pub async fn build(
         diagnostics.insert(0, lemmata_log::launcher::launcher_failure(&tail));
     }
 
+    if status == Status::Success && fresh {
+        mark_ok(project);
+    }
+
     Ok(Outcome {
         status,
         duration_ms,
         pdf: fresh.then_some(pdf),
         diagnostics,
+        latexmk_failed: fell_back,
     })
 }
 
@@ -356,6 +417,100 @@ fn helper(opts: &BuildOptions<'_>, name: &str) -> Option<PathBuf> {
 }
 
 const MAX_PASSES: usize = 5;
+
+/// Written into the build folder after a successful build, holding the main
+/// file. Its presence means the folder is in a state the direct build can continue from.
+const OK_STAMP: &str = ".lemmata-ok";
+
+/// Whether the engine can be run directly instead of latexmk: the last build here
+/// succeeded, and nothing configures steps that only latexmk runs.
+fn warm_ok(project: &Project) -> bool {
+    let outdir = project.outdir_abs();
+    let main = project.main.to_string_lossy();
+    if !std::fs::read_to_string(outdir.join(OK_STAMP)).is_ok_and(|s| s == main) {
+        return false;
+    }
+    // Nothing changed since the last good build: latexmk sees that at once (faster than an engine run).
+    if !changed_since(project, &outdir.join(OK_STAMP)) {
+        return false;
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    let rcs = [
+        project.root.join("latexmkrc"),
+        project.root.join(".latexmkrc"),
+    ]
+    .into_iter()
+    .chain(home.into_iter().flat_map(|h| {
+        [
+            h.join(".latexmkrc"),
+            h.join(".config").join("latexmk").join("latexmkrc"),
+        ]
+    }));
+    if rcs.into_iter().any(|p| p.exists()) {
+        return false;
+    }
+    // Index and glossary files need makeindex or makeglossaries, which only latexmk runs.
+    let needs_tools = std::fs::read_dir(&outdir).is_ok_and(|d| {
+        d.flatten().any(|e| {
+            e.path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| ["idx", "glo", "nlo", "acn", "ist", "xdy"].contains(&x))
+        })
+    });
+    !needs_tools
+}
+
+/// The last build succeeded, its PDF and log are there, and no project file changed since.
+fn up_to_date(project: &Project) -> bool {
+    let stamp = project.outdir_abs().join(OK_STAMP);
+    let main = project.main.to_string_lossy();
+    std::fs::read_to_string(&stamp).is_ok_and(|s| s == main)
+        && project.pdf_path().is_file()
+        && project.log_path().is_file()
+        && !changed_since(project, &stamp)
+}
+
+/// True when some project file was modified after `stamp` was written.
+fn changed_since(project: &Project, stamp: &Path) -> bool {
+    let Ok(since) = std::fs::metadata(stamp).and_then(|m| m.modified()) else {
+        return true;
+    };
+    fn any_newer(
+        root: &Path,
+        entries: &[lemmata_project::Entry],
+        since: std::time::SystemTime,
+    ) -> bool {
+        entries.iter().any(|e| {
+            if e.is_dir {
+                any_newer(root, &e.children, since)
+            } else {
+                std::fs::metadata(root.join(&e.path))
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t > since)
+            }
+        })
+    }
+    any_newer(
+        &project.root,
+        &lemmata_project::tree(&project.root, &project.config.outdir),
+        since,
+    )
+}
+
+/// Records a successful build, and what the bibliography tool read, so the next one can go direct without running it again.
+fn mark_ok(project: &Project) {
+    let biber = project.config.bib == lemmata_project::Bib::Biber;
+    if let Some(fp) = bib_fingerprint(project, biber) {
+        let _ = std::fs::write(out_file(project, "lemmata-bib"), fp);
+    }
+    let _ = std::fs::write(
+        project.outdir_abs().join(OK_STAMP),
+        project.main.to_string_lossy().as_bytes(),
+    );
+}
 
 /// The part of latexmk that matters, without latexmk: run the engine, run
 /// biber or bibtex once when citations need it, and run the engine again
@@ -654,6 +809,7 @@ pub fn clean(project: &Project) -> std::io::Result<usize> {
             "the build folder was not created by Lemmata, so it is left alone",
         ));
     }
+    let _ = std::fs::remove_file(outdir.join(OK_STAMP));
     clean_dir(&outdir, &project.pdf_path())
 }
 
@@ -783,6 +939,176 @@ mod tests {
         assert!(args.contains(&"-usepretex=\\PassOptionsToPackage{draft}{graphicx}".to_string()));
     }
 
+    /// A project whose latexmk and pdflatex only record that they ran (in `calls`) and write a log and PDF.
+    /// Either fails, leaving a log, while a file `fail` exists in the project.
+    #[cfg(unix)]
+    struct Fake {
+        dir: tempfile::TempDir,
+        tools: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl Fake {
+        fn new() -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("main.tex"), "\\documentclass{article}").unwrap();
+            let tools = dir.path().join("tools");
+            std::fs::create_dir_all(&tools).unwrap();
+            let body = |name: &str| {
+                format!(
+                    "#!/bin/sh\nout=.lemmata/build\nfor a in \"$@\"; do case $a in -output-directory=*) out=${{a#-output-directory=}};; -outdir=*) out=${{a#-outdir=}};; esac; done\necho {name} >> calls\necho done > $out/main.log\necho pdf > $out/main.pdf\n[ -f fail ] && exit 1\nexit 0\n"
+                )
+            };
+            for name in ["latexmk", "pdflatex"] {
+                let p = tools.join(name);
+                std::fs::write(&p, body(name)).unwrap();
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            Fake { dir, tools }
+        }
+        /// Builds after an edit, like a rebuild in the app (with nothing changed, latexmk handles it).
+        async fn build(&self) -> Outcome {
+            // File times are only a few milliseconds fine; an edit right after a build could look older.
+            std::thread::sleep(Duration::from_millis(30));
+            let main = self.dir.path().join("main.tex");
+            let mut text = std::fs::read_to_string(&main).unwrap_or_default();
+            text.push_str("% edit\n");
+            std::fs::write(&main, text).unwrap();
+            let p = Project::open(self.dir.path()).unwrap();
+            let opts = BuildOptions {
+                latexmk: &self.tools.join("latexmk"),
+                bin_dir: Some(&self.tools),
+                installer: None,
+                miktex: false,
+                perl_dir: None,
+            };
+            let (_tx, rx) = oneshot::channel();
+            build(&p, &opts, rx).await.unwrap()
+        }
+        fn calls(&self) -> String {
+            let c = std::fs::read_to_string(self.dir.path().join("calls")).unwrap_or_default();
+            let _ = std::fs::remove_file(self.dir.path().join("calls"));
+            c.lines().collect::<Vec<_>>().join(" ")
+        }
+        fn outdir(&self) -> PathBuf {
+            self.dir.path().join(".lemmata/build")
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_warm_rebuild_skips_latexmk() {
+        let f = Fake::new();
+        let first = f.build().await;
+        assert_eq!(first.status, Status::Success);
+        assert_eq!(f.calls(), "latexmk");
+        let second = f.build().await;
+        assert_eq!(second.status, Status::Success);
+        assert!(second.pdf.is_some() && !second.latexmk_failed);
+        assert!(second.diagnostics.is_empty());
+        assert_eq!(f.calls(), "pdflatex");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn latexmk_returns_after_a_failure_and_after_clearing_the_cache() {
+        let f = Fake::new();
+        f.build().await;
+        f.calls();
+        // The direct build fails, so latexmk gets to try as well.
+        std::fs::write(f.dir.path().join("fail"), "").unwrap();
+        assert_eq!(f.build().await.status, Status::Failed);
+        assert_eq!(f.calls(), "pdflatex latexmk");
+        std::fs::remove_file(f.dir.path().join("fail")).unwrap();
+        assert_eq!(f.build().await.status, Status::Success);
+        assert_eq!(f.calls(), "latexmk");
+        assert_eq!(f.build().await.status, Status::Success);
+        assert_eq!(f.calls(), "pdflatex");
+        clean(&Project::open(f.dir.path()).unwrap()).unwrap();
+        f.build().await;
+        assert_eq!(f.calls(), "latexmk");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_latexmkrc_keeps_latexmk_in_charge() {
+        for rc in ["latexmkrc", ".latexmkrc"] {
+            let f = Fake::new();
+            std::fs::write(f.dir.path().join(rc), "$pdflatex = 'x';").unwrap();
+            f.build().await;
+            f.build().await;
+            f.build().await;
+            assert_eq!(f.calls(), "latexmk latexmk latexmk", "{rc}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn index_files_keep_latexmk_in_charge() {
+        let f = Fake::new();
+        f.build().await;
+        assert_eq!(f.calls(), "latexmk");
+        std::fs::write(f.outdir().join("main.idx"), "").unwrap();
+        f.build().await;
+        assert_eq!(f.calls(), "latexmk");
+        std::fs::remove_file(f.outdir().join("main.idx")).unwrap();
+        f.build().await;
+        assert_eq!(f.calls(), "pdflatex");
+    }
+
+    /// With real TeX: the second build is direct, and still has the PDF and resolved citations and references.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn two_real_builds_resolve_citations() {
+        let (Ok(pdflatex), Ok(biber), Ok(latexmk)) = (
+            which::which("pdflatex"),
+            which::which("biber"),
+            which::which("latexmk"),
+        ) else {
+            return;
+        };
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("main.tex"),
+            "\\documentclass{article}\n\\usepackage[backend=biber]{biblatex}\n\\addbibresource{r.bib}\n\\begin{document}\nSee \\cite{k} and Section~\\ref{s}.\n\\section{A}\\label{s}\n\\printbibliography\n\\end{document}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.path().join("r.bib"),
+            "@book{k, author={Doe, Jane}, title={T}, year={2020}, publisher={P}}\n",
+        )
+        .unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let bin = pdflatex.parent().unwrap().to_path_buf();
+        let biber_dir = biber.parent().unwrap().to_path_buf();
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: Some(&bin),
+            installer: None,
+            miktex: false,
+            perl_dir: Some(&biber_dir),
+        };
+        for round in 0..2 {
+            if round == 1 {
+                // A rebuild follows an edit; with nothing changed there is nothing to build.
+                std::thread::sleep(Duration::from_millis(30));
+                let main = p.root.join(&p.main);
+                let text = std::fs::read_to_string(&main).unwrap();
+                std::fs::write(&main, format!("{text}% edit\n")).unwrap();
+            }
+            let (_tx, rx) = oneshot::channel();
+            let out = build(&p, &opts, rx).await.unwrap();
+            let messages: Vec<&str> = out.diagnostics.iter().map(|x| x.message.as_str()).collect();
+            assert_eq!(out.status, Status::Success, "round {round}: {messages:?}");
+            assert!(out.pdf.is_some_and(|f| f.is_file()), "round {round}");
+            assert!(messages.is_empty(), "round {round}: {messages:?}");
+            if round == 0 {
+                assert!(p.outdir_abs().join(OK_STAMP).is_file());
+            }
+        }
+    }
+
     /// latexmk dies without a log (Perl blocked); the engine is run directly, twice because the first log asks for a rerun.
     #[cfg(unix)]
     #[tokio::test]
@@ -831,6 +1157,46 @@ mod tests {
             .expect("a note about the fallback");
         assert_eq!(note.severity, lemmata_log::Severity::Info);
         assert!(note.message.contains("blocked"), "{}", note.message);
+    }
+
+    /// After one fallback, the caller can skip latexmk: this latexmk would leave a marker if it ran.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn skip_latexmk_goes_straight_to_the_engine() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let tools = d.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = tools.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let latexmk = script("latexmk", "touch latexmk-ran\nexit 1\n");
+        script(
+            "pdflatex",
+            "out=.lemmata/build\nfor a in \"$@\"; do case $a in -output-directory=*) out=${a#-output-directory=};; esac; done\necho done > $out/main.log\necho pdf > $out/main.pdf\n",
+        );
+        let p = Project::open(d.path()).unwrap();
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: Some(&tools),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let (_tx, rx) = oneshot::channel();
+        let out = build_with(&p, &opts, rx, true, false).await.unwrap();
+        assert_eq!(out.status, Status::Success);
+        assert!(out.latexmk_failed);
+        assert!(!d.path().join("latexmk-ran").exists());
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|x| x.message.contains("built with pdflatex directly"))
+        );
     }
 
     /// With real TeX: the direct build needs biber and a second pass to resolve
@@ -968,11 +1334,12 @@ mod tests {
         run().await;
         assert_eq!(
             count("pdflatex") - latex_first,
-            1,
-            "an unchanged build is one pass"
+            0,
+            "an unchanged project isn't built again"
         );
         assert_eq!(count("biber"), biber_first, "and biber is not asked again");
         // A new citation changes what biber reads, so it runs again.
+        std::thread::sleep(Duration::from_millis(30)); // file times are only a few ms fine
         let text = std::fs::read_to_string(d.path().join("chapters/method.tex")).unwrap();
         std::fs::write(
             d.path().join("chapters/method.tex"),

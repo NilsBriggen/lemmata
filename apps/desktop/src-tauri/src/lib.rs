@@ -21,7 +21,8 @@ use lemmata_tex::{BuildOptions, Outcome};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::ipc::Response;
 use tauri::{Emitter, Manager, State};
 use tokio::sync::oneshot;
@@ -46,6 +47,11 @@ pub(crate) struct AppState {
     /// the one it replaced (and its child processes) has fully stopped.
     build_lock: tokio::sync::Mutex<()>,
     detection: Mutex<Option<Detection>>,
+    /// The detection started at launch, handed to the first `tex_status` (or
+    /// build) so the webview doesn't start a second one.
+    startup_detection: Mutex<Option<Arc<OnceLock<Detection>>>>,
+    /// latexmk could not run earlier: builds go straight to the engine. Reset by every new detection.
+    latexmk_broken: AtomicBool,
     /// Folders the user pointed us at in onboarding.
     extra_tex_dirs: Mutex<Vec<PathBuf>>,
     pub(crate) project: Mutex<Option<Project>>,
@@ -78,18 +84,54 @@ struct TexStatus {
     instructions: BTreeMap<String, Instructions>,
 }
 
+/// Detects TeX, remembers the result and gives latexmk another chance.
+fn run_detection(state: &AppState) -> Detection {
+    let extra = state.extra_tex_dirs.lock_safe().clone();
+    let detection = lemmata_tex::detect(&extra);
+    *state.detection.lock_safe() = Some(detection.clone());
+    state.latexmk_broken.store(false, Ordering::Relaxed);
+    detection
+}
+
+/// Starts detecting in the background at launch, so it's done or under way
+/// when the webview asks.
+fn start_detection(app: &tauri::AppHandle) {
+    let cell = Arc::new(OnceLock::new());
+    *app.state::<AppState>().startup_detection.lock_safe() = Some(cell.clone());
+    let app = app.clone();
+    std::thread::spawn(move || {
+        cell.get_or_init(|| run_detection(&app.state::<AppState>()));
+    });
+}
+
+/// The launch detection if it hasn't been used yet (waiting for it when it's
+/// still running), otherwise a fresh one.
+fn first_or_fresh_detection(state: &AppState, take: bool) -> Detection {
+    let cell = {
+        let mut slot = state.startup_detection.lock_safe();
+        if take { slot.take() } else { slot.clone() }
+    };
+    match cell {
+        Some(cell) => cell.get_or_init(|| run_detection(state)).clone(),
+        None => run_detection(state),
+    }
+}
+
 #[tauri::command(async)]
 fn tex_status(state: State<AppState>, extra_dir: Option<String>) -> TexStatus {
+    let mut fresh = false;
     if let Some(dir) = extra_dir {
         let mut extra = state.extra_tex_dirs.lock_safe();
         let dir = PathBuf::from(dir);
         if !extra.contains(&dir) {
             extra.insert(0, dir);
         }
+        fresh = true;
     }
-    let extra = state.extra_tex_dirs.lock_safe().clone();
-    let detection = lemmata_tex::detect(&extra);
-    *state.detection.lock_safe() = Some(detection.clone());
+    if fresh {
+        state.startup_detection.lock_safe().take();
+    }
+    let detection = first_or_fresh_detection(&state, true);
     TexStatus {
         detection,
         os: lemmata_tex::os::detect(),
@@ -252,6 +294,7 @@ async fn build(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     shell_escape: bool,
+    force: bool,
 ) -> CmdResult<Outcome> {
     let generation = cancel_running(&state);
     // Wait for the cancelled build to kill latexmk and its children before starting another in the same folder.
@@ -267,6 +310,7 @@ async fn build(
             duration_ms: 0,
             pdf: None,
             diagnostics: Vec::new(),
+            latexmk_failed: false,
         });
     }
     let (tx, rx) = oneshot::channel();
@@ -279,9 +323,10 @@ async fn build(
         .ok_or("No project is open.")?;
     // A downloaded project's lemmata.toml can't run programs on its own: the user must have allowed it.
     project.config.shell_escape &= shell_escape;
-    let detection = match state.detection.lock_safe().clone() {
+    let known = state.detection.lock_safe().clone();
+    let detection = match known {
         Some(d) => d,
-        None => lemmata_tex::detect(&state.extra_tex_dirs.lock_safe()),
+        None => first_or_fresh_detection(&state, false),
     };
     let latexmk = detection
         .tool("latexmk")
@@ -298,7 +343,13 @@ async fn build(
         ),
         perl_dir: detection.tool("perl").and_then(|p| p.parent()),
     };
-    let outcome = lemmata_tex::build(&project, &opts, rx).await.map_err(err)?;
+    let skip_latexmk = state.latexmk_broken.load(Ordering::Relaxed);
+    let outcome = lemmata_tex::build_with(&project, &opts, rx, skip_latexmk, force)
+        .await
+        .map_err(err)?;
+    if outcome.latexmk_failed {
+        state.latexmk_broken.store(true, Ordering::Relaxed);
+    }
     Ok(outcome)
 }
 
@@ -322,13 +373,52 @@ fn read_pdf(state: State<AppState>) -> CmdResult<Response> {
     Ok(Response::new(bytes))
 }
 
+/// Whether the PDF was written at least a second after the last change to any
+/// source file (the build folder and hidden folders don't count).
+fn pdf_newer_than_sources(root: &Path, outdir: &str, pdf: &Path) -> bool {
+    fn newest(entries: &[Entry]) -> u64 {
+        entries
+            .iter()
+            .map(|e| {
+                if e.is_dir {
+                    newest(&e.children)
+                } else {
+                    e.modified
+                }
+            })
+            .max()
+            .unwrap_or(0)
+    }
+    let Some(pdf_secs) = std::fs::metadata(pdf)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+    else {
+        return false;
+    };
+    pdf_secs > newest(&lemmata_project::tree(root, outdir))
+}
+
+/// True when the open project's PDF is up to date, so opening it needn't build.
+#[tauri::command(async)]
+fn pdf_is_current(state: State<AppState>) -> CmdResult<bool> {
+    let (root, outdir, pdf) = {
+        let guard = state.project.lock_safe();
+        let p = guard.as_ref().ok_or("No project is open.")?;
+        (p.root.clone(), p.config.outdir.clone(), p.pdf_path())
+    };
+    Ok(pdf_newer_than_sources(&root, &outdir, &pdf))
+}
+
 fn synctex_and_pdf(state: &State<AppState>) -> CmdResult<(PathBuf, PathBuf, PathBuf)> {
     let synctex = state
         .detection
         .lock_safe()
         .as_ref()
         .and_then(|d| d.tool("synctex").map(Path::to_path_buf))
-        .ok_or("synctex was not found.")?;
+        // The .synctex.gz is read in process; the program is only a fallback when that fails.
+        .unwrap_or_else(|| PathBuf::from("synctex"));
     let guard = state.project.lock_safe();
     let p = guard.as_ref().ok_or("No project is open.")?;
     Ok((synctex, p.pdf_path(), p.root.clone()))
@@ -773,13 +863,14 @@ pub fn run() {
         .setup(|app| {
             #[cfg(debug_assertions)]
             automation::start(app.handle());
-            let _ = app;
+            start_detection(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             #[cfg(debug_assertions)]
             automation::automation_reply,
             tex_status,
+            pdf_is_current,
             open_project,
             project_info_cmd,
             watching,
@@ -880,5 +971,35 @@ mod tests {
             super::percent_decode("%2Fhome%2Fa%2FMa%C3%AEtrise%20x"),
             "/home/a/Maîtrise x"
         );
+    }
+
+    #[test]
+    fn pdf_is_current_only_when_newer_than_every_source() {
+        use std::time::{Duration, SystemTime};
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let at = |p: &std::path::Path, secs_ago: u64| {
+            let f = std::fs::File::options().write(true).open(p).unwrap();
+            f.set_modified(SystemTime::now() - Duration::from_secs(secs_ago))
+                .unwrap();
+        };
+        std::fs::create_dir_all(root.join("sections")).unwrap();
+        std::fs::create_dir_all(root.join(".lemmata/build")).unwrap();
+        let (main, sec) = (root.join("main.tex"), root.join("sections/a.tex"));
+        let pdf = root.join(".lemmata/build/main.pdf");
+        for p in [&main, &sec, &pdf] {
+            std::fs::write(p, "x").unwrap();
+        }
+        let current = || super::pdf_newer_than_sources(root, ".lemmata/build", &pdf);
+        at(&main, 100);
+        at(&sec, 50);
+        at(&pdf, 10);
+        assert!(current());
+        at(&sec, 5); // edited after the PDF, in a subfolder
+        assert!(!current());
+        at(&sec, 10); // same second as the PDF: not provably current
+        assert!(!current());
+        std::fs::remove_file(&pdf).unwrap();
+        assert!(!current());
     }
 }
