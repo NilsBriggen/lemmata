@@ -4,7 +4,11 @@
 //   % !TeX lang = fr
 // Anything the spell checker has no dictionary for is ignored.
 
-const KNOWN = new Set(["en", "en-GB", "de", "de-CH", "fr"]);
+// Bundled languages, then the ones downloaded on demand (the app fetches a
+// missing dictionary when it is chosen in Preferences).
+const KNOWN = new Set(["en", "en-GB", "de", "de-CH", "fr", "es", "it", "pt-PT", "pt-BR", "nl", "pl", "sv", "da", "nb", "cs", "ru", "uk", "tr", "el"]);
+// Other codes for the same dictionary: bare Portuguese is European, no is Bokmål.
+const ALIASES: Record<string, string> = { pt: "pt-PT", no: "nb" };
 
 /** "de_DE" → "de", "en_GB" → "en-GB", "de-CH" → "de-CH"; null when unsupported. */
 export function normalizeLanguage(code: string): string | null {
@@ -15,7 +19,8 @@ export function normalizeLanguage(code: string): string | null {
   const exact = r ? `${l}-${r}` : l;
   if (KNOWN.has(exact)) return exact;
   // "de-DE", "en-US", "fr-CA" use the plain dictionary of their language.
-  return KNOWN.has(l) ? l : null;
+  const plain = ALIASES[l] ?? l;
+  return KNOWN.has(plain) ? plain : null;
 }
 
 /** The language a file asks for in its first lines, or null. */
