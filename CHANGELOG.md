@@ -1,6 +1,17 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 2.0.0-rc.3 (2026-10-15)
+
+### Added
+- \be offers \begin on its own, then the environment list
+- Recently deleted restores deleted files, also after a restart; Project settings lists dictionary words and ignored grammar rules so they can be removed; hover cards for an unknown citation or label offer a search
+- Git and Cite buttons, a grouped main menu, side panels that always show, a ⋯ menu in a narrow PDF toolbar, dark PDF pages in Preferences, and clickable word count, compiler and language in the status bar
+
+### Fixed
+- The template bars are as rounded as the category cards
+- Inserted figures, tables and lists keep the cursor's indentation
+- Switching layouts while the PDF resizes no longer throws an error
 ## 2.0.0-rc.2 (2026-10-15)
 
 ### Added
