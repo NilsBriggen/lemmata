@@ -2,6 +2,16 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { fitScale, regionSize, type Region } from "./layout";
 
+let lib: Promise<typeof import("pdfjs-dist")> | undefined;
+
+/** pdf.js and its worker, fetched on first use so they stay out of the startup bundle. */
+export function loadPdfjs() {
+  return (lib ??= Promise.all([import("pdfjs-dist"), import("pdfjs-dist/build/pdf.worker.min.mjs?url")]).then(([pdfjs, worker]) => {
+    pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
+    return pdfjs;
+  }));
+}
+
 /** Returns false when a newer request replaced this one, so the caller can ignore it. */
 export async function renderRegion(
   doc: PDFDocumentProxy,

@@ -28,14 +28,14 @@
   // Renders the build's PDF with PDF.js. A new PDF replaces the old one page
   // by page in place, so the reader keeps their position across rebuilds.
   import { onDestroy, onMount } from "svelte";
-  import * as pdfjs from "pdfjs-dist";
-  import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-  import type { PDFPageProxy, RenderTask } from "pdfjs-dist";
+  import type { PDFPageProxy, RenderTask, TextLayer } from "pdfjs-dist";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import type { PdfBox } from "./api";
+  import { loadPdfjs } from "./presenter/render";
   import { settings } from "./settings.svelte";
 
-  pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+  /** Set by load(); every later use of pdf.js happens after a document exists. */
+  let lib: Awaited<ReturnType<typeof loadPdfjs>> | null = null;
 
   export interface OutlineNode { title: string; dest: unknown; url: string | null; items: OutlineNode[] }
 
@@ -68,7 +68,9 @@
 
   interface Slot {
     n: number;
-    page: PDFPageProxy;
+    doc: PDFDocumentProxy;
+    /** Fetched lazily; until then w/h are page 1's size. */
+    page: PDFPageProxy | null;
     wrap: HTMLDivElement;
     /** Page size in PDF points. */
     w: number;
@@ -76,7 +78,12 @@
     scale: number;
     token: number;
     task: RenderTask | null;
-    text: pdfjs.TextLayer | null;
+    text: TextLayer | null;
+    /** 0 nothing drawn, 1 rendering, 2 canvas in place. */
+    state: 0 | 1 | 2;
+    /** The text/link layer was built (or is being built) for the current scale. */
+    decorated: boolean;
+    cancelIdle: (() => void) | null;
   }
   interface Hit { page: number; rects: { x: number; y: number; w: number; h: number }[] }
 
@@ -87,6 +94,10 @@
   /** Pages near the viewport; only these hold a canvas, text layer and links. */
   const near = new Set<number>();
   let io: IntersectionObserver | null = null;
+  /** Wider margin: a page that leaves it gives its canvas back. */
+  let far: IntersectionObserver | null = null;
+  /** Largest canvas backing store, in pixels. */
+  const MAX_PIXELS = 16e6;
   /** "width" and "page" fit the pane; a number is a fixed scale (1 = 100%). */
   let fit = $state<Fit>("width");
   let highlight = $state<{ page: number; left: number; top: number; width: number; height: number } | null>(null);
@@ -113,24 +124,38 @@
     return fit * PT;
   }
 
-  function observer() {
-    return (io ??= new IntersectionObserver(
+  function observe(wrap: HTMLElement) {
+    io ??= new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
           const n = Number((e.target as HTMLElement).dataset.page);
           if (e.isIntersecting) {
             near.add(n);
             renderSlot(n);
-          } else {
-            near.delete(n);
-            releaseSlot(n);
-          }
+          } else near.delete(n);
         }
         nearPages = [...near];
       },
-      { root: scroller, rootMargin: "100% 0px" },
-    ));
+      { root: scroller, rootMargin: "50% 0px" },
+    );
+    far ??= new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) if (!e.isIntersecting) releaseSlot(Number((e.target as HTMLElement).dataset.page));
+      },
+      { root: scroller, rootMargin: "200% 0px" },
+    );
+    io.observe(wrap);
+    far.observe(wrap);
   }
+
+  const idle = (fn: () => void) => {
+    if ("requestIdleCallback" in window) {
+      const h = requestIdleCallback(fn, { timeout: 1000 });
+      return () => cancelIdleCallback(h);
+    }
+    const h = setTimeout(fn, 150);
+    return () => clearTimeout(h);
+  };
 
   export function getDocument() {
     return doc;
@@ -138,7 +163,8 @@
 
   export async function load(data: Uint8Array) {
     const seq = ++loadSeq;
-    const next = await pdfjs.getDocument({ data }).promise;
+    lib = await loadPdfjs();
+    const next = await lib.getDocument({ data }).promise;
     if (seq !== loadSeq) {
       next.loadingTask.destroy();
       return;
@@ -156,24 +182,37 @@
     if (hits.length) lastQuery && search(lastQuery, false);
   }
 
-  /** Sizes every page's box, so layout and scroll position are final before
-   *  anything is drawn. Boxes are reused across loads to keep the position. */
+  /** Sizes every page's box from page 1 (or what is already known), so layout
+   *  is final before anything is drawn. Other pages correct themselves when
+   *  fetched (see ensurePage). Boxes are reused across loads to keep the position. */
   async function layout(seq: number): Promise<boolean> {
     if (!doc) return false;
     const d = doc;
-    const pages = await Promise.all(Array.from({ length: d.numPages }, (_, i) => d.getPage(i + 1)));
+    const first = await d.getPage(1);
     if (seq !== loadSeq) return false;
+    const base = first.getViewport({ scale: 1 });
+    const prev = slots;
+    for (const s of prev) {
+      s.token++;
+      s.task?.cancel();
+      s.text?.cancel();
+      s.cancelIdle?.();
+    }
     while (pagesEl.children.length > d.numPages) {
       const last = pagesEl.lastElementChild as HTMLElement;
       io?.unobserve(last);
+      far?.unobserve(last);
       near.delete(Number(last.dataset.page));
       last.remove();
     }
-    slots.length = 0;
-    pages.forEach((page, i) => {
+    slots = [];
+    for (let i = 0; i < d.numPages; i++) {
       const n = i + 1;
-      const base = page.getViewport({ scale: 1 });
-      const scale = scaleFor(base.width, base.height);
+      const old = prev[i]?.doc === d ? prev[i] : null;
+      const page = old?.page ?? (i === 0 ? first : null);
+      const w = page ? (old?.w ?? base.width) : base.width;
+      const h = page ? (old?.h ?? base.height) : base.height;
+      const scale = scaleFor(w, h);
       scales[i] = scale;
       if (n === 1) percent = Math.round((scale / PT) * 100);
       let wrap = pagesEl.children[i] as HTMLDivElement | undefined;
@@ -182,16 +221,39 @@
         wrap.className = "page";
         wrap.dataset.page = String(n);
         pagesEl.appendChild(wrap);
-        observer().observe(wrap);
+        observe(wrap);
       }
-      wrap.style.width = `${base.width * scale}px`;
-      wrap.style.height = `${base.height * scale}px`;
-      slots.push({ n, page, wrap, w: base.width, h: base.height, scale, token: 0, task: null, text: null });
-      // Pages out of view keep nothing from the previous document.
-      if (!near.has(n)) clearLayers(wrap, true);
-    });
+      wrap.style.width = `${w * scale}px`;
+      wrap.style.height = `${h * scale}px`;
+      slots.push({ n, doc: d, page, wrap, w, h, scale, token: 0, task: null, text: null, state: 0, decorated: false, cancelIdle: null });
+      // Text and links are at the old scale; pages out of view keep nothing from the previous document.
+      clearLayers(wrap, !near.has(n));
+    }
     layoutVersion++;
     return true;
+  }
+
+  /** The page proxy; a page whose size differs from the guess resizes its box,
+   *  keeping the scroll position when it sits above the viewport. */
+  async function ensurePage(slot: Slot): Promise<PDFPageProxy | null> {
+    if (slot.page) return slot.page;
+    const page = await slot.doc.getPage(slot.n);
+    if (slots[slot.n - 1] !== slot) return null;
+    slot.page = page;
+    const v = page.getViewport({ scale: 1 });
+    if (Math.abs(v.width - slot.w) > 0.01 || Math.abs(v.height - slot.h) > 0.01) {
+      const { wrap } = slot;
+      const before = wrap.offsetHeight;
+      const above = wrap.offsetTop + before <= scroller.scrollTop;
+      slot.w = v.width;
+      slot.h = v.height;
+      slot.scale = scales[slot.n - 1] = scaleFor(v.width, v.height);
+      wrap.style.width = `${v.width * slot.scale}px`;
+      wrap.style.height = `${v.height * slot.scale}px`;
+      if (above) scroller.scrollTop += wrap.offsetHeight - before;
+      layoutVersion++;
+    }
+    return page;
   }
 
   function clearLayers(wrap: HTMLElement, canvasToo: boolean) {
@@ -205,39 +267,69 @@
     slot.token++;
     slot.task?.cancel();
     slot.text?.cancel();
-    slot.task = slot.text = null;
+    slot.cancelIdle?.();
+    slot.task = slot.text = slot.cancelIdle = null;
+    slot.state = 0;
+    slot.decorated = false;
     clearLayers(slot.wrap, true);
   }
 
   async function renderSlot(n: number) {
     const slot = slots[n - 1];
-    if (!slot) return;
+    if (!slot || slot.state) return;
+    slot.state = 1;
     const token = ++slot.token;
-    slot.task?.cancel();
-    slot.text?.cancel();
-    const viewport = slot.page.getViewport({ scale: slot.scale * dpr() });
+    const page = await ensurePage(slot).catch(() => null); // the document was replaced under us
+    if (!page || token !== slot.token) return;
+    const viewport = page.getViewport({ scale: slot.scale * dpr() });
+    // Huge zoom or pages: shrink the backing store; CSS stretches it back.
+    const k = Math.min(1, Math.sqrt(MAX_PIXELS / (viewport.width * viewport.height)));
     const canvas = document.createElement("canvas");
-    canvas.width = Math.floor(viewport.width);
-    canvas.height = Math.floor(viewport.height);
-    const task = slot.page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport });
+    canvas.width = Math.max(1, Math.floor(viewport.width * k));
+    canvas.height = Math.max(1, Math.floor(viewport.height * k));
+    const ctx = canvas.getContext("2d")!;
+    const task = page.render({ canvas, canvasContext: ctx, viewport: k < 1 ? page.getViewport({ scale: slot.scale * dpr() * k }) : viewport });
     slot.task = task;
     try {
       await task.promise;
     } catch (e) {
-      if (e instanceof pdfjs.RenderingCancelledException) return;
+      if ((e as { name?: string })?.name === "RenderingCancelledException") return;
+      slot.state = 0;
       throw e;
     }
+    // Swap on a frame boundary so the old canvas stays up until the new one can replace it.
+    await new Promise((r) => requestAnimationFrame(r));
     if (token !== slot.token || slots[n - 1] !== slot) return;
-    slot.wrap.querySelectorAll("canvas").forEach((c) => c.remove());
+    slot.task = null;
+    slot.state = 2;
+    clearLayers(slot.wrap, true);
     slot.wrap.prepend(canvas);
-    await decorate(slot, token);
+    slot.cancelIdle = idle(() => {
+      slot.cancelIdle = null;
+      decorate(slot);
+    });
   }
 
-  /** The selectable text layer and clickable links over a rendered page. */
-  async function decorate(slot: Slot, token: number) {
-    const { wrap, page } = slot;
+  /** The selectable text layer and clickable links over a page, built when the
+   *  page is idle and visible, or at once when the pointer goes down on it. */
+  async function decorate(slot: Slot) {
+    if (slot.decorated || slots[slot.n - 1] !== slot) return;
+    try {
+      await buildLayers(slot);
+    } catch {
+      /* the document was replaced while this was building */
+    }
+  }
+
+  async function buildLayers(slot: Slot) {
+    slot.decorated = true;
+    slot.cancelIdle?.();
+    slot.cancelIdle = null;
+    const token = slot.token;
+    const { wrap } = slot;
+    const page = await ensurePage(slot);
+    if (!page || token !== slot.token) return;
     const viewport = page.getViewport({ scale: slot.scale });
-    clearLayers(wrap, false);
     wrap.style.setProperty("--scale-factor", String(slot.scale));
     wrap.style.setProperty("--total-scale-factor", String(slot.scale));
     wrap.style.setProperty("--user-unit", "1");
@@ -245,15 +337,8 @@
     const textDiv = document.createElement("div");
     textDiv.className = "textLayer";
     wrap.append(textDiv);
-    const layer = new pdfjs.TextLayer({ textContentSource: page.streamTextContent(), container: textDiv, viewport });
+    const layer = new lib!.TextLayer({ textContentSource: page.streamTextContent(), container: textDiv, viewport });
     slot.text = layer;
-    try {
-      await layer.render();
-    } catch {
-      return; // cancelled by a newer render
-    }
-    if (token !== slot.token) return;
-
     const annotations = await page.getAnnotations({ intent: "display" });
     if (token !== slot.token) return;
     const links = document.createElement("div");
@@ -275,6 +360,17 @@
       links.append(el);
     }
     wrap.append(links);
+    try {
+      await layer.render();
+    } catch {
+      /* cancelled by a newer render */
+    }
+  }
+
+  function onPointerDown(e: PointerEvent) {
+    const wrap = (e.target as HTMLElement).closest(".page") as HTMLElement | null;
+    const slot = wrap && slots[Number(wrap.dataset.page) - 1];
+    if (slot) decorate(slot);
   }
 
   /** Scrolls to a PDF destination: a name or an explicit [page, "XYZ", x, y, zoom]. */
@@ -287,6 +383,7 @@
       const index = typeof ref === "object" && ref !== null ? await doc.getPageIndex(ref as never) : Number(ref);
       const slot = slots[index];
       if (!slot) return;
+      await ensurePage(slot);
       const kind = explicit[1]?.name;
       const top = kind === "XYZ" ? explicit[3] : kind === "FitH" || kind === "FitBH" ? explicit[2] : null;
       const y = typeof top === "number" ? (slot.h - top) * slot.scale : 0;
@@ -492,13 +589,14 @@
 
   onDestroy(() => {
     io?.disconnect();
+    far?.disconnect();
     if (doc) retire(doc);
   });
 </script>
 
 <div class="pdf" class:dark-pages={settings.pdfDark}>
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events, a11y_no_noninteractive_tabindex -->
-  <div class="scroller" tabindex="0" bind:this={scroller} onscroll={onScroll} onclick={handleClick} ondblclick={handleClick} onwheel={onWheel}>
+  <div class="scroller" tabindex="0" bind:this={scroller} onscroll={onScroll} onpointerdown={onPointerDown} onclick={handleClick} ondblclick={handleClick} onwheel={onWheel}>
     <div class="pages" bind:this={pagesEl}></div>
     {#if highlight}
       {@const wrap = pagesEl.children[highlight.page - 1] as HTMLElement | undefined}

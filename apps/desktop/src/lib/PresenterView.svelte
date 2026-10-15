@@ -3,16 +3,12 @@
   // notes, a timer and the clock. It runs in its own window and follows the
   // audience window through events, so either side can change slide.
   import { onMount } from "svelte";
-  import * as pdfjs from "pdfjs-dist";
-  import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
   import type { PDFDocumentProxy } from "pdfjs-dist";
   import { api } from "./api";
   import { clampPage, formatElapsed, regions, type Region } from "./presenter/layout";
-  import { renderRegion } from "./presenter/render";
+  import { loadPdfjs, renderRegion } from "./presenter/render";
   import { onEnd, onPage, sendEnd, sendPage } from "./presenter/sync";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-
-  pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
   let doc = $state<PDFDocumentProxy | null>(null);
   let page = $state(1);
@@ -96,7 +92,7 @@
     const stops: Array<() => void> = [];
     (async () => {
       try {
-        doc = await pdfjs.getDocument({ data: await api.readPdf() }).promise;
+        doc = await (await loadPdfjs()).getDocument({ data: await api.readPdf() }).promise;
         const first = await doc.getPage(1);
         const v = first.getViewport({ scale: 1 });
         ({ slide: slideRegion, notes: notesRegion } = regions(v.width, v.height));
