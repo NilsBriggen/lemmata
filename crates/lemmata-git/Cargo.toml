@@ -1,0 +1,15 @@
+[package]
+name = "lemmata-git"
+description = "Git panel backend: status, commit, sync, branches, history and clone through the system git"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+which.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
