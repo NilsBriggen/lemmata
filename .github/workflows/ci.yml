@@ -4,6 +4,8 @@ name: CI
 # commit and publishes only if it passes.
 on:
   workflow_call:
+  # By hand on any branch: Actions → CI → Run workflow.
+  workflow_dispatch:
   pull_request:
     paths-ignore:
       - "docs/**"
