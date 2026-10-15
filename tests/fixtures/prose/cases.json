@@ -19,5 +19,10 @@
   {"name": "accented words", "tex": "naïve café Über Größe", "words": ["naïve", "café", "Über", "Größe"]},
   {"name": "hyphens and apostrophes", "tex": "well-known state-of-the-art don't", "words": ["well-known", "state-of-the-art", "don't"]},
   {"name": "trailing hyphen is trimmed", "tex": "rock- and 'quoted' roll", "words": ["rock", "and", "quoted", "roll"]},
-  {"name": "digits are not words", "tex": "x2 42 abc123def", "words": ["x", "abc", "def"]}
+  {"name": "digits are not words", "tex": "x2 42 abc123def", "words": ["x", "abc", "def"]},
+  {"name": "verb with pipe delimiter", "tex": "Use \\verb|x = 1| here", "words": ["Use", "here"]},
+  {"name": "starred verb with plus delimiter", "tex": "\\verb*+a b+ text", "words": ["text"]},
+  {"name": "verb delimiter may be a brace-like character", "tex": "\\verb!{x y}! kept", "words": ["kept"]},
+  {"name": "verb with dollar sign is not maths", "tex": "cost \\verb|$| now", "words": ["cost", "now"]},
+  {"name": "verb without closing delimiter skips the line", "tex": "see \\verb#open code", "words": ["see"]}
 ]

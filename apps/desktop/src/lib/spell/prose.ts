@@ -16,7 +16,7 @@ const NON_PROSE_ARGS = new Set([
   "addtolength", "hspace", "vspace", "graphicspath", "color", "textcolor", "definecolor", "colorbox",
   "hypersetup", "pagestyle", "thispagestyle", "setcounter", "addtocounter", "usetheme", "usecolortheme",
   "setmainfont", "setsansfont", "setmonofont", "geometry", "newpage", "clearpage", "printbibliography",
-  "bibitem", "lstinline", "verb", "texttt",
+  "bibitem", "lstinline", "texttt",
 ]);
 
 export interface ProseState {
@@ -102,6 +102,16 @@ export function lineWords(line: string, state: ProseState, offset = 0): Word[] {
         continue;
       }
       i += 1 + name.length;
+      if (name === "verb") {
+        // Any character delimits the code, unless no closing one is on the line.
+        if (code[i] === "*") i++;
+        if (i < code.length) {
+          const d = String.fromCodePoint(code.codePointAt(i)!);
+          const p = code.indexOf(d, i + d.length);
+          i = p < 0 ? code.length : p + d.length;
+        }
+        continue;
+      }
       if (name === "begin") {
         const b = braced(code, i);
         if (b) {

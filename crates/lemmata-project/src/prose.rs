@@ -97,7 +97,6 @@ const NON_PROSE_ARGS: &[&str] = &[
     "printbibliography",
     "bibitem",
     "lstinline",
-    "verb",
     "texttt",
 ];
 
@@ -170,6 +169,19 @@ pub fn words(line: &str, state: &mut State) -> Vec<(usize, usize)> {
                     continue;
                 }
                 i += 1 + name.len();
+                if name == "verb" {
+                    // Any character delimits the code, unless no closing one is on the line.
+                    if code[i..].starts_with('*') {
+                        i += 1;
+                    }
+                    if let Some(d) = code[i..].chars().next() {
+                        let body = i + d.len_utf8();
+                        i = code[body..]
+                            .find(d)
+                            .map_or(b.len(), |p| body + p + d.len_utf8());
+                    }
+                    continue;
+                }
                 if name == "begin" {
                     if let Some((env, len)) = braced_at(code, i) {
                         i += len;

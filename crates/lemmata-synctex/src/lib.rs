@@ -69,7 +69,14 @@ pub fn backward(
 }
 
 fn run(synctex: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new(synctex).args(args).output()?;
+    let mut cmd = Command::new(synctex);
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output()?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     if !out.status.success() && !stdout.contains("SyncTeX result begin") {
         return Err(Error::Failed(
