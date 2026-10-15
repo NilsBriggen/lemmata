@@ -92,6 +92,18 @@ pub fn parse_status(z: &str, prefix: &str) -> Vec<FileStatus> {
     out
 }
 
+/// The git program, if there is a usable one. On macOS, /usr/bin/git is a stub
+/// that opens an install dialog when the Command Line Tools are missing, and
+/// Lemmata calls git after every save, so it only counts when they are there.
+fn find_git() -> Option<PathBuf> {
+    let git = which::which("git").ok()?;
+    if cfg!(target_os = "macos") && git == Path::new("/usr/bin/git") {
+        let tools = Command::new("xcode-select").arg("-p").output();
+        return tools.is_ok_and(|o| o.status.success()).then_some(git);
+    }
+    Some(git)
+}
+
 /// No console window flashes up on Windows.
 fn no_window(c: &mut Command) {
     #[cfg(windows)]
@@ -106,7 +118,7 @@ fn no_window(c: &mut Command) {
 /// folder isn't in a git repository (or git isn't installed). Never changes
 /// anything in the repository.
 pub fn working_status(root: &Path) -> Vec<FileStatus> {
-    let Ok(git) = which::which("git") else {
+    let Some(git) = find_git() else {
         return Vec::new();
     };
     let run = |args: &[&str]| {
@@ -149,7 +161,7 @@ impl History {
     /// Opens history for a project folder: Lemmata's own store if it has one,
     /// else the git repository the folder is (inside of).
     pub fn open(root: &Path) -> Result<History> {
-        let git = which::which("git").map_err(|_| Error::NoGit)?;
+        let git = find_git().ok_or(Error::NoGit)?;
         let store = root.join(STORE);
         if store.join("HEAD").is_file() {
             let h = History {
@@ -183,7 +195,7 @@ impl History {
     /// Creates Lemmata's own snapshot store in `.lemmata/history` and opens
     /// it. Nothing else in the project folder changes.
     pub fn init(root: &Path) -> Result<History> {
-        let git = which::which("git").map_err(|_| Error::NoGit)?;
+        let git = find_git().ok_or(Error::NoGit)?;
         let store = root.join(STORE);
         std::fs::create_dir_all(&store)?;
         let mut init = Command::new(&git);
@@ -458,7 +470,7 @@ fn parse_entry(entry: &str) -> Option<Snapshot> {
 mod tests {
     #[test]
     fn working_status_sees_real_changes() {
-        let Ok(git) = which::which("git") else { return };
+        let Some(git) = find_git() else { return };
         let d = tempfile::tempdir().unwrap();
         let g = |args: &[&str]| {
             let ok = Command::new(&git)
@@ -501,6 +513,13 @@ mod tests {
         // Outside a repository there is simply nothing to show.
         let plain = tempfile::tempdir().unwrap();
         assert!(working_status(plain.path()).is_empty());
+    }
+
+    #[test]
+    fn find_git_matches_path_off_macos() {
+        if !cfg!(target_os = "macos") {
+            assert_eq!(find_git(), which::which("git").ok());
+        }
     }
 
     #[test]

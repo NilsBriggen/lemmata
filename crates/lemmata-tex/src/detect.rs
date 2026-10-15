@@ -157,22 +157,31 @@ fn known_dirs() -> Vec<PathBuf> {
         dirs.push(PathBuf::from("/Library/TeX/texbin"));
         dirs.push(PathBuf::from("/opt/homebrew/bin"));
         dirs.push(PathBuf::from("/usr/local/bin"));
+        dirs.push(PathBuf::from("/opt/local/bin")); // MacPorts
     }
     if cfg!(unix) {
         // Vanilla TeX Live: /usr/local/texlive/<year>/bin/<platform>, newest year first.
         dirs.extend(year_dirs(Path::new("/usr/local/texlive"), |y| {
             y.join("bin")
         }));
-        if let Some(home) = std::env::var_os("HOME") {
-            dirs.extend(year_dirs(&PathBuf::from(home).join("texlive"), |y| {
-                y.join("bin")
-            }));
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            dirs.extend(year_dirs(&home.join("texlive"), |y| y.join("bin")));
+            // TinyTeX lives under ~/Library on macOS and ~/.TinyTeX elsewhere.
+            let tiny = if cfg!(target_os = "macos") {
+                "Library/TinyTeX"
+            } else {
+                ".TinyTeX"
+            };
+            dirs.extend(subdirs(&home.join(tiny).join("bin")));
         }
         dirs.push(PathBuf::from("/usr/bin"));
     }
     if cfg!(windows) {
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
             dirs.push(PathBuf::from(local).join(r"Programs\MiKTeX\miktex\bin\x64"));
+        }
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            dirs.push(PathBuf::from(appdata).join(r"TinyTeX\bin\windows"));
         }
         dirs.push(PathBuf::from(r"C:\Program Files\MiKTeX\miktex\bin\x64"));
         dirs.extend(year_dirs(Path::new(r"C:\texlive"), |y| y.join("bin")));
@@ -195,14 +204,15 @@ fn year_dirs(root: &Path, bin: impl Fn(&Path) -> PathBuf) -> Vec<PathBuf> {
         .collect();
     years.sort();
     years.reverse();
-    years
-        .iter()
-        .flat_map(|y| {
-            std::fs::read_dir(bin(y))
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.ok().map(|e| e.path()))
-        })
+    years.iter().flat_map(|y| subdirs(&bin(y))).collect()
+}
+
+/// The folders directly inside `dir`, or none when it doesn't exist.
+fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.is_dir())
         .collect()
 }
@@ -323,6 +333,23 @@ mod tests {
             }
         );
         assert_eq!(parse_version("something else"), Distribution::Unknown);
+    }
+
+    #[test]
+    fn lists_only_platform_folders() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("x86_64-linux")).unwrap();
+        std::fs::create_dir(d.path().join("universal-darwin")).unwrap();
+        std::fs::write(d.path().join("readme.txt"), "").unwrap();
+        let mut got = subdirs(d.path());
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                d.path().join("universal-darwin"),
+                d.path().join("x86_64-linux")
+            ]
+        );
     }
 
     #[test]
