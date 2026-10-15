@@ -4,9 +4,12 @@
 
 export interface Shortcut {
   id: string;
+  /** Empty for pointer actions in the "Mouse" group: shown, never matched. */
   keys: string;
+  /** A second key for the same action, e.g. F1 next to Ctrl+Shift+/. */
+  alt?: string;
   label: string;
-  group: "Project" | "Editing" | "Writing" | "PDF" | "Navigation" | "Files";
+  group: "Project" | "Editing" | "Writing" | "PDF" | "Navigation" | "Files" | "Mouse";
 }
 
 export const SHORTCUTS: Shortcut[] = [
@@ -22,7 +25,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "prev-tab", keys: "Ctrl-Shift-Tab", label: "Previous tab", group: "Navigation" },
   { id: "goto-heading", keys: "Mod-Shift-o", label: "Go to a section", group: "Navigation" },
   { id: "reopen-tab", keys: "Mod-Shift-t", label: "Reopen the last closed tab", group: "Navigation" },
-  { id: "shortcuts", keys: "Mod-Shift-/", label: "Keyboard shortcuts", group: "Navigation" },
+  { id: "shortcuts", keys: "Mod-Shift-/", alt: "F1", label: "Keyboard shortcuts", group: "Navigation" },
   { id: "cite", keys: "Mod-Shift-c", label: "Insert citation", group: "Writing" },
   { id: "symbols", keys: "Mod-Shift-m", label: "Insert symbol", group: "Writing" },
   { id: "bold", keys: "Mod-b", label: "Bold", group: "Writing" },
@@ -61,6 +64,10 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "tree-select-all", keys: "Mod-a", label: "Select all files", group: "Files" },
   { id: "tree-new-file", keys: "Mod-n", label: "New file in the selected folder", group: "Files" },
   { id: "tree-new-folder", keys: "Mod-Shift-n", label: "New folder", group: "Files" },
+  { id: "mouse-dblclick", keys: "", label: "Double-click in the PDF: jump to the source", group: "Mouse" },
+  { id: "mouse-ctrl-click", keys: "", label: "Ctrl+click in the PDF: jump to the source", group: "Mouse" },
+  { id: "mouse-right-file", keys: "", label: "Right-click a file: file actions", group: "Mouse" },
+  { id: "mouse-right-word", keys: "", label: "Right-click a misspelled word: suggestions", group: "Mouse" },
 ];
 
 export const keysOf = (id: string): string => SHORTCUTS.find((s) => s.id === id)?.keys ?? "";
@@ -76,9 +83,24 @@ export function display(keys: string): string {
   return isMac ? [...mods, shown].join("") : [...mods, shown].join("+");
 }
 
-/** Does a keyboard event match a shortcut in the table? */
+/** "Mod-Shift-/" and "F1" as shown in the sheet, joined with " / ". */
+export const keyLabel = (s: Shortcut): string => [s.keys, s.alt ?? ""].filter(Boolean).map(display).join(" / ");
+
+/** Does a search-box query match a shortcut's label or its key text? */
+export function matchesQuery(s: Shortcut, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const keys = [s.keys, s.alt ?? "", keyLabel(s)].join(" ").toLowerCase();
+  return s.label.toLowerCase().includes(q) || keys.includes(q);
+}
+
+/** Does a keyboard event match a shortcut in the table, on either key? */
 export function matches(e: KeyboardEvent, id: string): boolean {
-  const spec = keysOf(id);
+  const s = SHORTCUTS.find((x) => x.id === id);
+  return !!s && [s.keys, s.alt ?? ""].some((spec) => matchSpec(e, spec));
+}
+
+function matchSpec(e: KeyboardEvent, spec: string): boolean {
   if (!spec) return false;
   const parts = spec.split(/-(?=.)/);
   const key = parts.pop()!;
