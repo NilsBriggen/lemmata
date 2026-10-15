@@ -305,4 +305,32 @@ mod tests {
         assert!(texts(r"\begin{verbatim} code here", &mut s).is_empty());
         assert_eq!(texts(r"more code \end{verbatim} text", &mut s), ["text"]);
     }
+
+    /// Shared with the editor's spell checker (apps/desktop/src/lib/spell/prose.test.ts).
+    #[test]
+    fn matches_shared_cases() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/prose/cases.json"
+        );
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert!(!cases.is_empty());
+        for c in cases {
+            let mut s = State::default();
+            let got: Vec<String> = c["tex"]
+                .as_str()
+                .unwrap()
+                .split('\n')
+                .flat_map(|line| texts(line, &mut s))
+                .collect();
+            let want: Vec<&str> = c["words"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| w.as_str().unwrap())
+                .collect();
+            assert_eq!(got, want, "{}", c["name"]);
+        }
+    }
 }

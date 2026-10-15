@@ -1,3 +1,4 @@
+import casesText from "../../../../../tests/fixtures/prose/cases.json?raw";
 import { describe, expect, it } from "vitest";
 import { lineWords, type ProseState } from "./prose";
 
@@ -32,5 +33,16 @@ describe("prose words", () => {
       { from: 100, to: 101, text: "a" },
       { from: 110, to: 114, text: "bold" },
     ]);
+  });
+});
+
+// Shared with crates/lemmata-project/src/prose.rs (word counts).
+const cases: { name: string; tex: string; words: string[] }[] = JSON.parse(
+  casesText,
+);
+describe("shared prose cases", () => {
+  it.each(cases)("$name", ({ tex, words }) => {
+    const s: ProseState = { env: null, display: null };
+    expect(tex.split("\n").flatMap((line) => texts(line, s))).toEqual(words);
   });
 });

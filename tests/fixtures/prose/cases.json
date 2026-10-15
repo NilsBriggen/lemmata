@@ -1,0 +1,23 @@
+[
+  {"name": "plain words", "tex": "Hello there, world.", "words": ["Hello", "there", "world"]},
+  {"name": "comment is dropped", "tex": "visible % hidden words", "words": ["visible"]},
+  {"name": "escaped percent is not a comment", "tex": "50\\% of the data % gone", "words": ["of", "the", "data"]},
+  {"name": "command names are not words", "tex": "\\textbf{bold} and \\emph{italic}\\footnote{note text}", "words": ["bold", "and", "italic", "note", "text"]},
+  {"name": "inline math", "tex": "if $x \\in A$ then", "words": ["if", "then"]},
+  {"name": "inline math with \\( \\)", "tex": "if \\(x \\in A\\) then", "words": ["if", "then"]},
+  {"name": "display math on one line", "tex": "before \\[ x = y \\] after", "words": ["before", "after"]},
+  {"name": "display math across lines", "tex": "Then \\[\na + b\n\\] done", "words": ["Then", "done"]},
+  {"name": "$$ across lines", "tex": "a $$\nx y\n$$ b", "words": ["a", "b"]},
+  {"name": "equation environment", "tex": "Before \\begin{equation}\n  E = mc^2 \\text{energy}\n\\end{equation} after", "words": ["Before", "after"]},
+  {"name": "starred align environment", "tex": "Go \\begin{align*}\nx &= y\n\\end{align*} on", "words": ["Go", "on"]},
+  {"name": "verbatim environment", "tex": "\\begin{verbatim} code here\nmore code \\end{verbatim} text", "words": ["text"]},
+  {"name": "prose environment is kept", "tex": "\\begin{itemize}\n\\item First point\n\\end{itemize}", "words": ["First", "point"]},
+  {"name": "cite and ref arguments", "tex": "see \\cite[p.~3]{knuth84}, \\ref{fig:one} and \\eqref{eq:a}", "words": ["see", "and"]},
+  {"name": "includegraphics", "tex": "\\includegraphics[width=5cm]{figures/plot} Caption text", "words": ["Caption", "text"]},
+  {"name": "usepackage", "tex": "\\usepackage[utf8]{inputenc} Hello", "words": ["Hello"]},
+  {"name": "section title", "tex": "\\section{Introduction to proofs}", "words": ["Introduction", "to", "proofs"]},
+  {"name": "accented words", "tex": "naïve café Über Größe", "words": ["naïve", "café", "Über", "Größe"]},
+  {"name": "hyphens and apostrophes", "tex": "well-known state-of-the-art don't", "words": ["well-known", "state-of-the-art", "don't"]},
+  {"name": "trailing hyphen is trimmed", "tex": "rock- and 'quoted' roll", "words": ["rock", "and", "quoted", "roll"]},
+  {"name": "digits are not words", "tex": "x2 42 abc123def", "words": ["x", "abc", "def"]}
+]
