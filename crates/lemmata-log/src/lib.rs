@@ -7,8 +7,10 @@
 
 pub mod launcher;
 pub mod packages;
+mod rules;
 
 use regex::Regex;
+use rules::{Engine, Source};
 use serde::Serialize;
 use std::sync::LazyLock;
 
@@ -63,6 +65,7 @@ static FILE_LINE_ERROR: LazyLock<Regex> = LazyLock::new(|| {
 });
 static BANG_ERROR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^! (.*)$").unwrap());
 static CONTEXT_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^l\.(\d+)").unwrap());
+static CONTEXT_TEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^l\.\d+ (.*)$").unwrap());
 static LATEX_WARNING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:LaTeX|Class \S+|Package \S+) Warning: (.*)$").unwrap());
 static PACKAGE_CONT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\(\S+\)\s+(.*)$").unwrap());
@@ -71,15 +74,8 @@ static INPUT_LINE: LazyLock<Regex> =
 static BAD_BOX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^((?:Over|Under)full \\[hv]box \([^)]*\)).*?(?:at lines? (\d+)(?:--\d+)?|has occurred while \\output is active)").unwrap()
 });
-static MISSING_FILE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"File [`']([^']+)' not found").unwrap());
 static CITATION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Citation [`']([^']+)' (?:on page \d+ )?undefined").unwrap());
-static CONTEXT_TEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^l\.\d+ (.*)$").unwrap());
-static LAST_COMMAND: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\\([A-Za-z@]+)\*?[^\\]*$").unwrap());
-static ENVIRONMENT_UNDEFINED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"Environment (\S+) undefined").unwrap());
 static MULTIPLY_DEFINED: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Label [`']([^']+)' multiply defined").unwrap());
 static REFERENCE: LazyLock<Regex> =
@@ -96,6 +92,7 @@ pub fn parse(log: &str) -> Vec<Diagnostic> {
     let lines = unwrap_lines(log);
     let mut out: Vec<Diagnostic> = Vec::new();
     let mut files = FileStack::default();
+    let engine = Engine::detect(&lines);
     let mut i = 0;
 
     while i < lines.len() {
@@ -104,9 +101,13 @@ pub fn parse(log: &str) -> Vec<Diagnostic> {
         if let Some(c) = FILE_LINE_ERROR.captures(line) {
             let msg = c[3].trim().to_string();
             if !NOISE.contains(&msg.as_str()) {
-                let mut d = error(Some(c[1].to_string()), c[2].parse().ok(), msg);
-                add_package_fix(&mut d, &lines[i + 1..]);
-                out.push(d);
+                out.push(error(
+                    Some(c[1].to_string()),
+                    c[2].parse().ok(),
+                    &msg,
+                    &lines[i + 1..],
+                    &engine,
+                ));
             }
             i += 1;
             continue;
@@ -114,17 +115,15 @@ pub fn parse(log: &str) -> Vec<Diagnostic> {
 
         if let Some(c) = BANG_ERROR.captures(line) {
             let msg = c[1].trim().to_string();
-            // The "l.<n>" context line follows, after TeX's help text,
-            // before the next error starts.
-            let line_no = lines[i + 1..]
-                .iter()
-                .take(20)
-                .take_while(|l| !l.starts_with("! "))
-                .find_map(|l| CONTEXT_LINE.captures(l).and_then(|c| c[1].parse().ok()));
             if !NOISE.contains(&msg.as_str()) {
-                let mut d = error(files.top(), line_no, msg);
-                add_package_fix(&mut d, &lines[i + 1..]);
-                out.push(d);
+                // Without -file-line-error the line comes from the "l.<n>" context, which
+                // TeX may print after a follow-up "file:line:" message.
+                let line_no = lines[i + 1..]
+                    .iter()
+                    .take(20)
+                    .take_while(|l| !l.starts_with("! "))
+                    .find_map(|l| CONTEXT_LINE.captures(l).and_then(|c| c[1].parse().ok()));
+                out.push(error(files.top(), line_no, &msg, &lines[i + 1..], &engine));
             }
             i += 1;
             continue;
@@ -188,41 +187,72 @@ fn soften_shell_escape(d: &mut Diagnostic) {
     }
 }
 
-/// For an undefined command or environment we know a package for, suggest
-/// loading it. `after` is the log text following the error line.
-fn add_package_fix(d: &mut Diagnostic, after: &[String]) {
-    let found = match &d.kind {
-        Kind::UndefinedControlSequence => after
+/// What follows an error line in the log, up to the next error: the
+/// continuation of the message, and TeX's view of the source line.
+struct ErrorContext {
+    /// Further lines of the message, joined.
+    message_rest: String,
+    /// The source line up to where TeX stopped, and what it hadn't read yet.
+    before: String,
+    after: String,
+}
+
+impl ErrorContext {
+    fn of(after: &[String]) -> ErrorContext {
+        let body: Vec<&str> = after
             .iter()
             .take(20)
             .take_while(|l| !l.starts_with("! ") && !FILE_LINE_ERROR.is_match(l))
-            .find_map(|l| CONTEXT_TEXT.captures(l))
-            .and_then(|c| LAST_COMMAND.captures(&c[1]).map(|m| m[1].to_string()))
-            .and_then(|name| {
-                packages::for_command(&name).map(|p| (format!("\\{name}"), p.to_string()))
-            }),
-        _ => ENVIRONMENT_UNDEFINED.captures(&d.message).and_then(|c| {
-            let name = c[1].to_string();
-            packages::for_environment(&name)
-                .map(|p| (format!("The {name} environment"), p.to_string()))
-        }),
-    };
-    if let Some((what, package)) = found {
-        d.fix = Some(Fix {
-            explanation: format!("{what} comes from the {package} package."),
-            command: None,
-            package: Some(package),
-        });
+            .map(String::as_str)
+            .collect();
+        // Package errors continue on indented or "(package)" lines until a blank one.
+        let message_rest = body
+            .iter()
+            .take_while(|l| {
+                !l.trim().is_empty() && (l.starts_with(' ') || PACKAGE_CONT.is_match(l))
+            })
+            .map(|l| {
+                PACKAGE_CONT
+                    .captures(l)
+                    .map_or(l.trim(), |c| c.get(1).unwrap().as_str().trim())
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let at = body.iter().position(|l| CONTEXT_LINE.is_match(l));
+        let before = at
+            .and_then(|p| CONTEXT_TEXT.captures(body[p]))
+            .map_or(String::new(), |c| c[1].to_string());
+        let after = at
+            .and_then(|p| body.get(p + 1))
+            .filter(|l| l.starts_with(' '))
+            .map_or(String::new(), |l| l.trim().to_string());
+        ErrorContext {
+            message_rest,
+            before,
+            after,
+        }
     }
 }
 
-fn error(file: Option<String>, line: Option<u32>, message: String) -> Diagnostic {
+fn error(
+    file: Option<String>,
+    line: Option<u32>,
+    message: &str,
+    after: &[String],
+    engine: &Engine,
+) -> Diagnostic {
     // "LaTeX Error:" adds nothing next to the error badge in the UI.
-    let message = message
-        .strip_prefix("LaTeX Error: ")
-        .map(str::to_string)
-        .unwrap_or(message);
-    let (kind, hint) = classify_error(&message);
+    let message = message.strip_prefix("LaTeX Error: ").unwrap_or(message);
+    let ctx = ErrorContext::of(after);
+    let text = format!("{message} {}", ctx.message_rest)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let haystack = format!("{text}\n{}\n{}", ctx.before, ctx.after);
+    let (kind, message, hint, fix) = match rules::explain(&haystack, engine, Source::Tex) {
+        Some(e) => (e.kind, e.message, Some(e.hint), e.fix),
+        None => (Kind::Other, text, None, None),
+    };
     Diagnostic {
         severity: Severity::Error,
         kind,
@@ -230,7 +260,7 @@ fn error(file: Option<String>, line: Option<u32>, message: String) -> Diagnostic
         line,
         message,
         hint,
-        fix: None,
+        fix,
     }
 }
 
@@ -284,43 +314,6 @@ fn warning(file: Option<String>, text: String) -> Diagnostic {
         hint,
         fix: None,
     }
-}
-
-fn classify_error(msg: &str) -> (Kind, Option<String>) {
-    if let Some(c) = MISSING_FILE.captures(msg) {
-        let name = c[1].to_string();
-        let hint = if name.ends_with(".sty") || name.ends_with(".cls") {
-            format!("{name} isn't installed. Install the TeX package that provides it.")
-        } else {
-            format!("{name} doesn't exist. Check the file name and path.")
-        };
-        return (Kind::MissingFile { name }, Some(hint));
-    }
-    let hint = match msg {
-        m if m.starts_with("Undefined control sequence") => {
-            return (
-                Kind::UndefinedControlSequence,
-                Some("A command isn't defined. Check its spelling, or load the package that provides it.".into()),
-            );
-        }
-        m if m.starts_with("Missing $ inserted") => {
-            "A math command is used outside math mode. Wrap it in $...$."
-        }
-        m if m.starts_with("Too many }'s") => "There's a closing brace } without a matching {.",
-        m if m.starts_with("Missing } inserted") => "A { is never closed.",
-        m if m.contains("Environment") && m.contains("undefined") => {
-            "This environment doesn't exist. Check the spelling, or load the package that defines it."
-        }
-        m if m.contains("\\begin{") && m.contains("ended by \\end{") => {
-            "\\begin and \\end don't match. Check that every environment is closed in the right order."
-        }
-        m if m.starts_with("File ended while scanning") => {
-            "A brace or argument is never closed before the end of the file."
-        }
-        m if m.starts_with("Runaway argument") => "An argument is missing its closing brace.",
-        _ => return (Kind::Other, None),
-    };
-    (Kind::Other, Some(hint.into()))
 }
 
 /// Re-joins lines TeX wrapped at [`WRAP`] characters.
@@ -382,13 +375,9 @@ static BIBER_SYNTAX: LazyLock<Regex> = LazyLock::new(|| {
 });
 static BIBER_ENTRY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"didn't find a database entry for '([^']+)'").unwrap());
-static BIBER_MISSING: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"Cannot find '([^']+)'").unwrap());
 static BIBTEX_ENTRY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"^Warning--I didn't find a database entry for "([^"]+)""#).unwrap()
 });
-static BIBTEX_OPEN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^I couldn't open database file (\S+)").unwrap());
 static BIBTEX_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^---line (\d+) of file (\S+)").unwrap());
 
@@ -408,6 +397,18 @@ fn bib_diag(
         message,
         hint: Some(hint.into()),
         fix: None,
+    }
+}
+
+fn blg_rule_diag(e: rules::Explained) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        kind: e.kind,
+        file: None,
+        line: None,
+        message: e.message,
+        hint: Some(e.hint),
+        fix: e.fix,
     }
 }
 
@@ -445,15 +446,8 @@ pub fn parse_blg(blg: &str) -> Vec<Diagnostic> {
                     format!("Citation '{}' is not in your bibliography.", &m[1]),
                     "No entry with this key in your .bib files. Check the key's spelling.",
                 ));
-            } else if let Some(m) = BIBER_MISSING.captures(msg) {
-                out.push(bib_diag(
-                    Severity::Error,
-                    Kind::MissingFile { name: m[1].to_string() },
-                    None,
-                    None,
-                    format!("Bibliography file '{}' was not found.", &m[1]),
-                    "Check the name in \\addbibresource{} or \\bibliography{}, and that the file is in the project.",
-                ));
+            } else if let Some(e) = rules::explain(msg, &Engine::UNKNOWN, Source::Blg) {
+                out.push(blg_rule_diag(e));
             } else if severity == Severity::Error {
                 out.push(bib_diag(
                     severity,
@@ -475,18 +469,13 @@ pub fn parse_blg(blg: &str) -> Vec<Diagnostic> {
                 format!("Citation '{}' is not in your bibliography.", &c[1]),
                 "No entry with this key in your .bib files. Check the key's spelling.",
             ));
-        } else if let Some(c) = BIBTEX_OPEN.captures(line) {
-            out.push(bib_diag(
-                Severity::Error,
-                Kind::MissingFile {
-                    name: c[1].to_string(),
-                },
-                None,
-                None,
-                format!("Bibliography file '{}' was not found.", &c[1]),
-                "Check the name in \\bibliography{}, and that the file is in the project.",
-            ));
-        } else if let Some(c) = BIBTEX_LINE.captures(line) {
+        } else if let Some(e) = rules::explain(line, &Engine::UNKNOWN, Source::Blg) {
+            out.push(blg_rule_diag(e));
+        } else if let Some(c) = BIBTEX_LINE
+            .captures(line)
+            // "---line 4 of file main.aux" only locates a problem in the .aux file, already reported.
+            .filter(|c| !c[2].ends_with(".aux"))
+        {
             // The complaint is on the previous line: "I was expecting a `,' or a `}'".
             let what = lines
                 .get(i.wrapping_sub(1))
@@ -706,5 +695,334 @@ mod tests {
                 name: "nope.bib".into()
             }
         );
+    }
+
+    // Error explanations, one test per rule, on logs from real TeX Live runs.
+
+    macro_rules! fixture {
+        ($name:literal) => {
+            include_str!(concat!("../../../tests/fixtures/logs/", $name))
+        };
+    }
+
+    /// The first error in `log` whose message contains `needle`.
+    fn error_like(log: &str, needle: &str) -> Diagnostic {
+        let d = parse(log);
+        d.iter()
+            .find(|d| d.severity == Severity::Error && d.message.contains(needle))
+            .unwrap_or_else(|| panic!("no error containing {needle:?} in {d:#?}"))
+            .clone()
+    }
+
+    fn hint(d: &Diagnostic) -> &str {
+        d.hint.as_deref().expect("hint")
+    }
+
+    fn at_main(d: &Diagnostic, line: u32) {
+        assert_eq!(d.file.as_deref(), Some("./main.tex"), "{d:?}");
+        assert_eq!(d.line, Some(line), "{d:?}");
+    }
+
+    #[test]
+    fn unicode_character_in_pdflatex_suggests_the_command_and_package() {
+        let d = error_like(fixture!("unicode-character.log"), "character ✓");
+        at_main(&d, 3);
+        assert!(hint(&d).contains("\\checkmark"), "{d:?}");
+        assert!(!hint(&d).contains("inputenc"));
+        assert_eq!(d.fix.unwrap().package.as_deref(), Some("amssymb"));
+    }
+
+    #[test]
+    fn unknown_unicode_character_suggests_another_engine() {
+        let log = fixture!("unicode-character.log").replace("✓ (U+2713)", "★ (U+2605)");
+        let d = error_like(&log, "character ★");
+        assert!(hint(&d).contains("XeLaTeX or LuaLaTeX"), "{d:?}");
+        assert!(d.fix.is_none());
+    }
+
+    #[test]
+    fn unicode_character_with_an_old_latex_suggests_inputenc() {
+        let log = fixture!("unicode-character.log")
+            .replace("LaTeX2e <2025-11-01>", "LaTeX2e <2017-04-15>");
+        let d = error_like(&log, "character ✓");
+        assert!(hint(&d).contains("\\usepackage[utf8]{inputenc}"), "{d:?}");
+    }
+
+    #[test]
+    fn unicode_character_in_xelatex_points_at_the_font() {
+        let log = fixture!("unicode-character.log").replace("This is pdfTeX", "This is XeTeX");
+        let d = error_like(&log, "character ✓");
+        assert!(hint(&d).contains("\\setmainfont"), "{d:?}");
+        assert!(!hint(&d).contains("inputenc"));
+    }
+
+    #[test]
+    fn missing_number() {
+        let d = error_like(fixture!("missing-number.log"), "number or length");
+        at_main(&d, 3);
+        assert!(hint(&d).contains("empty or misspelled"));
+        let unit = error_like(fixture!("missing-number.log"), "missing its unit");
+        assert!(hint(&unit).contains("2cm"));
+    }
+
+    #[test]
+    fn misplaced_alignment_tab() {
+        let d = error_like(fixture!("misplaced-tab.log"), "& was used outside a table");
+        at_main(&d, 3);
+        assert!(hint(&d).contains("\\&"));
+    }
+
+    #[test]
+    fn extra_alignment_tab() {
+        let d = error_like(fixture!("extra-tab.log"), "more cells");
+        at_main(&d, 4);
+        assert!(hint(&d).contains("column specification"));
+    }
+
+    #[test]
+    fn option_clash_names_the_package() {
+        let d = error_like(fixture!("option-clash.log"), "inputenc");
+        at_main(&d, 5);
+        assert!(d.message.contains("loaded twice"));
+        assert!(hint(&d).contains("\\PassOptionsToPackage{...}{inputenc}"));
+    }
+
+    #[test]
+    fn fontspec_font_not_found() {
+        let d = error_like(
+            fixture!("fontspec-font-missing.log"),
+            "Nonexistent Font XYZ",
+        );
+        at_main(&d, 4);
+        assert!(d.message.contains("is not installed"), "{}", d.message);
+        assert!(hint(&d).contains("installed on this computer"));
+    }
+
+    #[test]
+    fn xetex_font_not_loadable() {
+        let d = parse(fixture!("fontspec-font-missing.log"));
+        let e = d
+            .iter()
+            .find(|d| d.message.contains("could not be found"))
+            .unwrap();
+        assert!(e.message.contains("Nonexistent Font XYZ"));
+        assert!(hint(e).contains("XeLaTeX and LuaLaTeX"));
+    }
+
+    #[test]
+    fn tfm_font_not_found() {
+        let d = error_like(fixture!("font-not-loadable.log"), "nonexistentfont");
+        at_main(&d, 4);
+        assert!(d.message.contains("could not be found"));
+        assert!(hint(&d).contains("fontspec"));
+    }
+
+    #[test]
+    fn fontspec_in_pdflatex_asks_for_another_engine() {
+        let d = error_like(fixture!("fontspec-needs-xetex.log"), "fontspec needs");
+        assert_eq!(d.line, Some(101));
+        assert!(hint(&d).contains("XeLaTeX or LuaLaTeX"));
+    }
+
+    #[test]
+    fn minted_shell_escape_off_in_version_2() {
+        let d = error_like(
+            fixture!("minted-shell-escape.log"),
+            "minted needs shell escape",
+        );
+        at_main(&d, 3);
+        assert!(hint(&d).contains("shell escape in Project settings"));
+    }
+
+    #[test]
+    fn minted_shell_escape_off_in_version_3() {
+        let d = error_like(
+            fixture!("minted-executable-disabled.log"),
+            "can't run its highlighter",
+        );
+        at_main(&d, 6);
+        assert!(hint(&d).contains("shell escape in Project settings"));
+    }
+
+    #[test]
+    fn minted_helper_not_on_path() {
+        let d = error_like(fixture!("minted-executable-missing.log"), "latexminted");
+        at_main(&d, 6);
+        assert!(hint(&d).contains("PATH"));
+    }
+
+    #[test]
+    fn pygmentize_missing() {
+        let d = error_like(fixture!("minted-pygmentize.log"), "pygmentize");
+        at_main(&d, 3);
+        let fix = d.fix.unwrap();
+        assert_eq!(fix.command.as_deref(), Some("pip install Pygments"));
+    }
+
+    #[test]
+    fn minted_follow_up_errors_point_back_to_the_first() {
+        let d = error_like(fixture!("minted-pygmentize.log"), "no highlighted code");
+        assert!(hint(&d).contains("first minted error"));
+    }
+
+    #[test]
+    fn underscore_outside_math() {
+        let d = error_like(
+            fixture!("missing-dollar-underscore.log"),
+            "_ was used outside",
+        );
+        at_main(&d, 3);
+        assert!(hint(&d).contains("\\_"));
+    }
+
+    #[test]
+    fn math_command_outside_math() {
+        let d = error_like(fixture!("missing-dollar.log"), "\\alpha");
+        at_main(&d, 3);
+        assert!(hint(&d).contains("$\\alpha$"), "{}", hint(&d));
+    }
+
+    #[test]
+    fn paragraph_ended_before_argument_was_complete() {
+        let d = error_like(fixture!("paragraph-ended.log"), "blank line");
+        at_main(&d, 5);
+        assert!(hint(&d).contains("missing its }"));
+    }
+
+    #[test]
+    fn too_many_closing_braces() {
+        let d = error_like(fixture!("too-many-braces.log"), "without a matching {");
+        at_main(&d, 3);
+        assert!(hint(&d).contains("closing brace"));
+    }
+
+    #[test]
+    fn extra_brace_or_forgotten_dollar() {
+        let d = error_like(fixture!("extra-brace.log"), "} closes something");
+        at_main(&d, 3);
+        assert!(hint(&d).contains("every $"));
+    }
+
+    #[test]
+    fn begin_ended_by_another_end() {
+        let d = error_like(fixture!("environment-mismatch.log"), "\\begin{itemize}");
+        at_main(&d, 5);
+        assert!(d.message.contains("\\end{enumerate}"));
+        assert!(hint(&d).contains("\\end{itemize}"));
+    }
+
+    #[test]
+    fn undefined_environment_from_a_real_log_suggests_amsmath() {
+        let d = error_like(
+            fixture!("environment-undefined.log"),
+            "no environment called align",
+        );
+        at_main(&d, 3);
+        assert_eq!(d.fix.unwrap().package.as_deref(), Some("amsmath"));
+    }
+
+    #[test]
+    fn undefined_command_is_named() {
+        let d = parse(UNDEFINED);
+        let e = d.iter().find(|d| d.severity == Severity::Error).unwrap();
+        assert!(e.message.contains("\\maximise"), "{}", e.message);
+        assert!(hint(e).contains("\\maximise"));
+        assert!(e.fix.is_none());
+    }
+
+    #[test]
+    fn dimension_too_large() {
+        let d = error_like(fixture!("dimension-too-large.log"), "bigger than TeX");
+        at_main(&d, 3);
+        assert!(hint(&d).contains("\\hspace"));
+    }
+
+    #[test]
+    fn capacity_exceeded_blames_recursion() {
+        let d = error_like(fixture!("capacity-exceeded.log"), "ran out of room");
+        at_main(&d, 4);
+        assert!(d.message.contains("input stack size"));
+        assert!(hint(&d).contains("calls itself"));
+    }
+
+    #[test]
+    fn floats_lost() {
+        let d = error_like(fixture!("floats-lost.log"), "was lost");
+        at_main(&d, 4);
+        assert!(hint(&d).contains("footnote"));
+    }
+
+    #[test]
+    fn too_many_unprocessed_floats() {
+        let d = error_like(fixture!("too-many-floats.log"), "waiting for a place");
+        assert!(hint(&d).contains("\\clearpage"));
+    }
+
+    #[test]
+    fn preamble_only_command_is_named() {
+        let d = error_like(fixture!("preamble-only.log"), "only works before");
+        at_main(&d, 3);
+        assert!(d.message.contains("\\usepackage"));
+        assert!(hint(&d).contains("preamble"));
+    }
+
+    #[test]
+    fn missing_begin_document() {
+        let d = error_like(fixture!("missing-begin-document.log"), "starts before");
+        at_main(&d, 2);
+        assert!(hint(&d).contains("\\begin{document}"));
+        let aux = error_like(fixture!("missing-begin-document.log"), "main.aux");
+        assert!(hint(&aux).contains("first error"));
+    }
+
+    #[test]
+    fn float_in_a_box() {
+        let d = error_like(fixture!("not-outer-par-mode.log"), "can't float");
+        at_main(&d, 3);
+        assert!(hint(&d).contains("\\fbox"));
+    }
+
+    #[test]
+    fn illegal_parameter_number() {
+        let d = error_like(fixture!("illegal-parameter.log"), "\\foo");
+        at_main(&d, 3);
+        assert!(hint(&d).contains("##1"));
+    }
+
+    #[test]
+    fn biber_cannot_find_the_bib_file() {
+        let d = parse_blg(fixture!("biber-missing-bib.blg"));
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!(
+            d[0].kind,
+            Kind::MissingFile {
+                name: "nope.bib".into()
+            }
+        );
+        assert!(d[0].message.contains("'nope.bib' was not found"));
+        assert!(hint(&d[0]).contains("addbibresource"));
+    }
+
+    #[test]
+    fn bibtex_cannot_open_the_database() {
+        // "---line 4 of file main.aux" only repeats the same problem.
+        let d = parse_blg(fixture!("bibtex-missing-bib.blg"));
+        assert_eq!(d.len(), 2, "{d:?}");
+        assert!(matches!(d[1].kind, Kind::UndefinedCitation { .. }));
+        assert_eq!(
+            d[0].kind,
+            Kind::MissingFile {
+                name: "nope.bib".into()
+            }
+        );
+        assert!(hint(&d[0]).contains("\\bibliography"));
+    }
+
+    #[test]
+    fn package_errors_join_their_continuation_lines() {
+        let log = "./main.tex:4: Package foo Error: \n(foo)                Something broke\n(foo)                badly.\n\nl.4 x\n";
+        let d = parse(log);
+        assert_eq!(d[0].message, "Package foo Error: Something broke badly.");
+        assert_eq!(d[0].line, Some(4));
     }
 }

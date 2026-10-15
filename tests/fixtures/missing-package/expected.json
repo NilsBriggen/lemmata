@@ -7,7 +7,7 @@
       "type": "missing-file"
     },
     "line": 4,
-    "message": "File `lemmata-does-not-exist.sty' not found.",
+    "message": "The package file lemmata-does-not-exist.sty was not found.",
     "severity": "error"
   }
 ]

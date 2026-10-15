@@ -1,0 +1,66 @@
+This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026/Arch Linux) (preloaded format=pdflatex 2026.10.13)  15 OCT 2026 12:24
+entering extended mode
+ restricted \write18 enabled.
+ file:line:error style messages enabled.
+ %&-line parsing enabled.
+**main.tex
+(./main.tex
+LaTeX2e <2025-11-01>
+L3 programming layer <2026-01-19>
+(/usr/share/texmf-dist/tex/latex/base/article.cls
+Document Class: article 2025/01/22 v1.4n Standard LaTeX document class
+(/usr/share/texmf-dist/tex/latex/base/size10.clo
+File: size10.clo 2025/01/22 v1.4n Standard LaTeX file (size option)
+)
+\c@part=\count275
+\c@section=\count276
+\c@subsection=\count277
+\c@subsubsection=\count278
+\c@paragraph=\count279
+\c@subparagraph=\count280
+\c@figure=\count281
+\c@table=\count282
+\abovecaptionskip=\skip49
+\belowcaptionskip=\skip50
+\bibindent=\dimen148
+)
+
+./main.tex:2: LaTeX Error: Missing \begin{document}.
+
+See the LaTeX manual or LaTeX Companion for explanation.
+Type  H <return>  for immediate help.
+ ...                                              
+                                                  
+l.2 x
+     
+You're in trouble here.  Try typing  <return>  to proceed.
+If that doesn't work, type  X <return>  to quit.
+
+[1
+
+{/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}]
+\gdef \@abspage@last{1}
+./main.tex:3: I can't find file `main.aux'.
+\enddocument ...keatletter \@@input \jobname .aux 
+                                                  \fi \UseOneTimeHook {enddo...
+l.3 \end{document}
+                  
+(Press Enter to retry, or Control-D to exit)
+Please type another input file name
+./main.tex:3: Emergency stop.
+\enddocument ...keatletter \@@input \jobname .aux 
+                                                  \fi \UseOneTimeHook {enddo...
+l.3 \end{document}
+                  
+*** (job aborted, file error in nonstop mode)
+
+ 
+Here is how much of TeX's memory you used:
+ 245 strings out of 469515
+ 2953 string characters out of 5470806
+ 433756 words of memory out of 5000000
+ 28988 multiletter control sequences out of 15000+600000
+ 627721 words of font info for 40 fonts, out of 8000000 for 9000
+ 14 hyphenation exceptions out of 8191
+ 35i,5n,38p,124b,135s stack positions out of 10000i,1000n,20000p,200000b,200000s
+./main.tex:3:  ==> Fatal error occurred, no output PDF file produced!

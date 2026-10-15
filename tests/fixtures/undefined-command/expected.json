@@ -6,12 +6,12 @@
       "explanation": "\\mathbb comes from the amssymb package.",
       "package": "amssymb"
     },
-    "hint": "A command isn't defined. Check its spelling, or load the package that provides it.",
+    "hint": "\\mathbb comes from the amssymb package: add \\usepackage{amssymb} to the preamble.",
     "kind": {
       "type": "undefined-control-sequence"
     },
     "line": 3,
-    "message": "Undefined control sequence.",
+    "message": "LaTeX doesn't know the command \\mathbb.",
     "severity": "error"
   },
   {
@@ -21,32 +21,32 @@
       "explanation": "The align environment comes from the amsmath package.",
       "package": "amsmath"
     },
-    "hint": "This environment doesn't exist. Check the spelling, or load the package that defines it.",
+    "hint": "The align environment comes from the amsmath package: add \\usepackage{amsmath} to the preamble.",
     "kind": {
       "type": "other"
     },
     "line": 4,
-    "message": "Environment align undefined.",
+    "message": "There is no environment called align.",
     "severity": "error"
   },
   {
     "file": "./main.tex",
-    "hint": null,
+    "hint": "& only separates cells in tabular, align and similar environments. To print an ampersand, write \\&.",
     "kind": {
       "type": "other"
     },
     "line": 5,
-    "message": "Misplaced alignment tab character &.",
+    "message": "An & was used outside a table.",
     "severity": "error"
   },
   {
     "file": "./main.tex",
-    "hint": "\\begin and \\end don't match. Check that every environment is closed in the right order.",
+    "hint": "\\begin and \\end don't match. Change one of them, or add the missing \\end{document}; environments must close in the reverse order they were opened.",
     "kind": {
       "type": "other"
     },
     "line": 6,
-    "message": "\\begin{document} ended by \\end{align}.",
+    "message": "\\begin{document} is closed by \\end{align}.",
     "severity": "error"
   }
 ]

@@ -1,0 +1,9 @@
+[0] Config.pm:329> INFO - This is Biber 2.22
+[0] Config.pm:332> INFO - Logfile is 'main.blg'
+[24] biber:342> INFO - === Thu Oct 15, 2026, 12:26:39
+[31] Biber.pm:421> INFO - Reading 'main.bcf'
+[52] Biber.pm:1002> INFO - Found 1 citekeys in bib section 0
+[58] Biber.pm:4487> INFO - Processing section 0
+[62] Biber.pm:4680> INFO - Looking for bibtex file 'nope.bib' for section 0
+[98] Utils.pm:480> ERROR - Cannot find 'nope.bib'!
+[98] Biber.pm:137> INFO - ERRORS: 1

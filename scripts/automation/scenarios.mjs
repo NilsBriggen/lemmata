@@ -53,7 +53,7 @@ export const scenarios = {
     await lem("key", { combo: "Control+s" });
     await sleep(lem, 300);
     let s = await lem("idle", { timeout: 120_000 });
-    if (!s.diagnostics.some((d) => d.severity === "error" && /Undefined control sequence/.test(d.message)))
+    if (!s.diagnostics.some((d) => d.severity === "error" && d.message.includes("undefinedcommandxyz")))
       throw new Error(`the error wasn't listed: ${await describe(lem)}`);
     await lem("key", { combo: "Control+z" });
     await lem("key", { combo: "Control+s" });
