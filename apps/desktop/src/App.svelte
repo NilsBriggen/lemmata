@@ -633,7 +633,7 @@
 
   /** `force`: the user asked for it, so build even if nothing changed. */
   async function runBuild(force = false) {
-    clearTimeout(buildTimer);
+    clearTimeout(buildTimer); buildTimer = undefined;
     if (!tex?.detection.ready) {
       if (!toldNoTex) {
         toldNoTex = true;
@@ -954,7 +954,7 @@
   async function beforeRestore() {
     await saveAll(false);
     buffers.cancelAll();
-    clearTimeout(buildTimer);
+    clearTimeout(buildTimer); buildTimer = undefined;
     if (unsaved().length) throw new Error(`${unsaved().join(", ")} could not be saved, so nothing was restored.`);
   }
 
@@ -1499,6 +1499,7 @@
             active,
             dirty: buffers.unsaved,
             building,
+            buildQueued: buildTimer !== undefined,
             status: outcome?.status ?? null,
             diagnostics: diagnostics.map(({ severity, message, file, line }) => ({ severity, message, file, line })),
             layout: settings.layout,

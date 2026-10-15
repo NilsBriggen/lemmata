@@ -32,6 +32,8 @@ export interface AppState {
   showPdf: boolean;
   hasPdf: boolean;
   logsOpen: boolean;
+  /** An automatic build is waiting for the typing pause before it starts. */
+  buildQueued: boolean;
   notice: string | null;
   /** The latest notices, newest first (the list under the bell). */
   notices: string[];
@@ -184,7 +186,7 @@ export function install(host: Host) {
       const end = Date.now() + timeout;
       while (Date.now() < end) {
         const s = host.state();
-        if (!s.building && s.dirty.filter((d) => !s.conflicts.includes(d)).length === 0) return s;
+        if (!s.building && !s.buildQueued && s.dirty.filter((d) => !s.conflicts.includes(d)).length === 0) return s;
         await settle(100);
       }
       throw new Error("The app did not become idle.");
