@@ -3,10 +3,19 @@
 // doesn't handle goes to texlab.
 import { snippet, type Completion, type CompletionContext, type CompletionResult, type CompletionSource } from "@codemirror/autocomplete";
 import { ENVIRONMENTS, COMMANDS, type Env } from "./data";
-import { tokens } from "./environments";
+import { tokens as scanTokens } from "./environments";
 import { inMath } from "./mathContext";
 import { mathCompletions, mathLabels } from "./mathCommands";
 import type { BibEntry, LabelInfo } from "../api";
+import type { Text } from "@codemirror/state";
+
+/** \begin/\end tokens per document; a `Text` is immutable, so one scan serves every request on it. */
+const tokenCache = new WeakMap<Text, ReturnType<typeof scanTokens>>();
+function tokens(doc: Text) {
+  let t = tokenCache.get(doc);
+  if (!t) tokenCache.set(doc, (t = scanTokens(doc)));
+  return t;
+}
 
 /** What the editor can look up about the open project. */
 export interface Providers {
@@ -53,6 +62,22 @@ export function withPackage(apply: Completion["apply"], pkg: string | undefined,
   };
 }
 
+const textCommands = (math: boolean): Completion[] =>
+  COMMANDS.filter((x) => !mathLabels.has(x.label)).map((x) => ({
+    label: x.label,
+    detail: x.detail,
+    type: "function",
+    boost: math ? -10 : 5,
+    apply: snippet(x.apply),
+  }));
+
+// In maths, symbols and maths structures come first; in prose, text commands do.
+const MATH_FIRST = [...mathCompletions(20), ...textCommands(true)];
+const PROSE_FIRST = [...mathCompletions(-40), ...textCommands(false)];
+
+/** Labels the local source offers for a command; the language server's duplicates are dropped. */
+const LOCAL_LABELS = new Set([...MATH_FIRST.map((c) => c.label), ...ENVIRONMENTS.map((e) => `\\begin{${e.name}}`)]);
+
 /** Overleaf-style: typing \beg offers every environment as a whole \begin{…}…\end{…} block. */
 function beginBlocks(getProviders: () => Providers | null): Completion[] {
   return ENVIRONMENTS.map((e) => ({
@@ -77,6 +102,9 @@ export function latexCompletions(
   getProviders: () => Providers | null,
   fallback: (ctx: CompletionContext) => Promise<CompletionResult | null> | CompletionResult | null,
 ): CompletionSource {
+  const blocks = beginBlocks(getProviders);
+  const MATH_LIST = [...MATH_FIRST, ...blocks];
+  const PROSE_LIST = [...PROSE_FIRST, ...blocks];
   return async (ctx) => {
     const line = ctx.state.doc.lineAt(ctx.pos);
     const before = line.text.slice(0, ctx.pos - line.from);
@@ -165,37 +193,41 @@ export function latexCompletions(
       return { from, options: names.map((n) => ({ label: n, type: "namespace" })), validFor: /^[\w-]*$/ };
     }
 
+    // Commands: local items only, so they never wait for texlab (see lspCommandCompletions).
     const cmd = CMD.exec(before);
     if (cmd && (cmd[0].length > 1 || ctx.explicit)) {
       const from = ctx.pos - cmd[0].length;
-      // In maths, symbols and maths structures come first; in prose, text commands do.
-      const math = inMath(ctx.state.doc, ctx.pos);
-      const mathItems = mathCompletions(math ? 20 : -40);
-      const text: Completion[] = COMMANDS.filter((x) => !mathLabels.has(x.label)).map((x) => ({
-        label: x.label,
-        detail: x.detail,
-        type: "function",
-        boost: math ? -10 : 5,
-        apply: snippet(x.apply),
-      }));
-      const ours = [...mathItems, ...text, ...beginBlocks(getProviders), ...endForOpenEnvironment(ctx.state, ctx.pos)];
-      let merged = ours;
-      try {
-        const theirs = await fallback(ctx);
-        if (theirs) {
-          const seen = new Set(ours.map((o) => o.label));
-          merged = ours.concat(theirs.options.filter((o) => !seen.has(o.label)));
-        }
-      } catch {
-        /* texlab not running; ours are enough */
-      }
-      return { from, options: merged, validFor: /^\\[A-Za-z]*$/ };
+      const end = endForOpenEnvironment(ctx.state, ctx.pos);
+      const base = inMath(ctx.state.doc, ctx.pos) ? MATH_LIST : PROSE_LIST;
+      return { from, options: end.length ? base.concat(end) : base, validFor: /^\\[A-Za-z]*$/ };
     }
 
     try {
       return await fallback(ctx);
     } catch {
       return null;
+    }
+  };
+}
+
+/**
+ * texlab's command completions as a source of their own, so they arrive when they arrive instead of
+ * holding up the local ones. Register it next to `latexCompletions` in `override`.
+ */
+export function lspCommandCompletions(fallback: (ctx: CompletionContext) => Promise<CompletionResult | null> | CompletionResult | null): CompletionSource {
+  return async (ctx) => {
+    const line = ctx.state.doc.lineAt(ctx.pos);
+    const before = line.text.slice(0, ctx.pos - line.from);
+    const cmd = CMD.exec(before);
+    if (!cmd || (cmd[0].length < 2 && !ctx.explicit)) return null;
+    // Contexts latexCompletions answers itself (\begin{, \ref{, …) are not command completion.
+    if ([ENV, REF, CITE, FILE, PKG].some((r) => r.test(before))) return null;
+    try {
+      const theirs = await fallback(ctx);
+      const options = theirs?.options.filter((o) => !LOCAL_LABELS.has(o.label));
+      return options?.length ? { from: ctx.pos - cmd[0].length, options, validFor: /^\\[A-Za-z]*$/ } : null;
+    } catch {
+      return null; // texlab not running; the local items are enough
     }
   };
 }

@@ -2,7 +2,7 @@
   // CodeMirror 6 with one EditorState per open file, so each tab keeps its
   // own undo history and selection.
   import { onMount, onDestroy } from "svelte";
-  import { EditorState, EditorSelection, Prec, type Extension } from "@codemirror/state";
+  import { Compartment, EditorState, EditorSelection, Prec, type Extension } from "@codemirror/state";
   import {
     EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter,
     drawSelection, highlightSpecialChars, rectangularSelection, crosshairCursor,
@@ -14,7 +14,7 @@
   import { setDiagnostics, lintGutter, lintKeymap, nextDiagnostic, previousDiagnostic, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
   import { serverCompletionSource } from "@codemirror/lsp-client";
   import { environmentSync, closeEnvironment, unmatchedEnvironments } from "./editor/environments";
-  import { latexCompletions, type Providers } from "./editor/completions";
+  import { latexCompletions, lspCommandCompletions, type Providers } from "./editor/completions";
   import { previews } from "./editor/mathCommands";
   import { renderTex } from "./writing/katexRender";
   import { folding, foldKeymap, foldRange } from "./editor/folding";
@@ -63,6 +63,14 @@
   const states = new Map<string, EditorState>();
   /** Language-server extensions per file, set once texlab is running. */
   let lspFor: ((path: string) => Extension) | null = null;
+  /** The language server's extension lives in its own slot, so starting it doesn't rebuild every open file. */
+  const lspSlot = new Compartment();
+  let lspGeneration = 0;
+  /** Which language server setup each file's state was last given. */
+  const lspGenerationOf = new Map<string, number>();
+  const lspExtension = (path: string) => (lspFor && /\.(tex|bib|sty|cls)$/.test(path) ? lspFor(path) : []);
+  /** Defined once: StreamLanguage.define builds a new language each call. */
+  const stexLanguage = StreamLanguage.define(stex);
 
   const texHighlight = HighlightStyle.define([
     { tag: [t.tagName, t.keyword], color: "var(--accent)" },
@@ -211,12 +219,12 @@
       highlightSelectionMatches(),
       lintGutter(),
       settings.wordWrap ? EditorView.lineWrapping : [],
-      tex ? StreamLanguage.define(stex) : [],
+      tex ? stexLanguage : [],
       tex
         ? EditorState.languageData.of(() => [{ commentTokens: { line: "%" }, closeBrackets: { brackets: ["(", "[", "{", "$"] } }])
         : [],
       syntaxHighlighting(texHighlight),
-      lspFor && /\.(tex|bib|sty|cls)$/.test(path) ? lspFor(path) : [],
+      lspSlot.of(lspExtension(path)),
       tex && settings.autocomplete
         ? autocompletion({
             // A small rendered glyph next to every maths item.
@@ -239,6 +247,8 @@
                 () => providers,
                 async (ctx) => (lspFor ? serverCompletionSource(ctx) : null),
               ),
+              // texlab's extra commands arrive on their own, so local ones never wait for it.
+              lspCommandCompletions(async (ctx) => (lspFor ? serverCompletionSource(ctx) : null)),
               snippetCompletions(() => settings.snippets),
             ],
           })
@@ -375,13 +385,23 @@
 
   export function open(path: string, text: string) {
     if (!view) return;
+    // Already showing this file (an outline click, a jump from the PDF): nothing to rebuild.
+    if (path === currentPath && view.state.doc.length === text.length && view.state.doc.toString() === text) {
+      view.focus();
+      return;
+    }
     if (currentPath) states.set(currentPath, view.state);
     let state = states.get(path);
     if (!state || state.doc.toString() !== text) {
       state = EditorState.create({ doc: text, extensions: extensions(path) });
+      lspGenerationOf.set(path, lspGeneration);
     }
     currentPath = path;
     view.setState(state);
+    if (lspGenerationOf.get(path) !== lspGeneration) {
+      lspGenerationOf.set(path, lspGeneration);
+      view.dispatch({ effects: lspSlot.reconfigure(lspExtension(path)) });
+    }
     const folds = pendingFolds.get(path);
     if (folds) {
       pendingFolds.delete(path);
@@ -429,19 +449,26 @@
 
   /** Use a language server for files opened from now on; drops cached
    *  states so every file picks it up. */
+  /** Swaps the language server in the open file; other open files pick it up when shown, keeping their undo history. */
   export function setLanguageServer(fn: ((path: string) => Extension) | null) {
     lspFor = fn;
-    states.clear();
+    lspGeneration++;
     if (view && currentPath) {
-      const doc = view.state.doc.toString();
-      const sel = view.state.selection;
-      view.setState(EditorState.create({ doc, selection: sel, extensions: extensions(currentPath) }));
+      lspGenerationOf.set(currentPath, lspGeneration);
+      view.dispatch({ effects: lspSlot.reconfigure(lspExtension(currentPath)) });
     }
   }
 
   /** Rebuilds every open file's editor setup, e.g. after the keymap changes. */
   export function refreshExtensions() {
-    setLanguageServer(lspFor);
+    states.clear();
+    lspGenerationOf.clear();
+    if (view && currentPath) {
+      lspGenerationOf.set(currentPath, lspGeneration);
+      const doc = view.state.doc.toString();
+      const sel = view.state.selection;
+      view.setState(EditorState.create({ doc, selection: sel, extensions: extensions(currentPath) }));
+    }
   }
 
   /** Inserts citation keys: into the braces when the cursor is inside a

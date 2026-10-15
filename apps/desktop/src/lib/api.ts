@@ -137,12 +137,15 @@ export const api = {
   projectInfo: () => invoke<ProjectInfo>("project_info_cmd"),
   setConfig: (config: Config) => invoke<ProjectInfo>("set_config", { config }),
   createMain: (dir: string) => invoke<void>("create_main", { dir }),
+  /** The project's PDF is newer than every source file: opening it needs no build. */
+  pdfIsCurrent: () => invoke<boolean>("pdf_is_current"),
   watching: () => invoke<boolean>("watching"),
   readText: (path: string) => invoke<string>("read_text", { path }),
   /** `expected`: hash (contentHash) of the text last read or written; the save is refused if the disk differs. */
   writeText: (path: string, content: string, expected?: number) => invoke<void>("write_text", { path, content, expected: expected ?? null }),
   /** `shellEscape`: the user allowed it for this project; lemmata.toml alone can't turn it on. */
-  build: (shellEscape: boolean) => invoke<Outcome>("build", { shellEscape }),
+  /** `force`: build even if no project file changed since the last good build (an explicit Recompile). */
+  build: (shellEscape: boolean, force = false) => invoke<Outcome>("build", { shellEscape, force }),
   readPdf: async () => new Uint8Array(await invoke<ArrayBuffer>("read_pdf")),
   synctexForward: (path: string, line: number, column: number) =>
     invoke<PdfBox[]>("synctex_forward", { path, line, column }),

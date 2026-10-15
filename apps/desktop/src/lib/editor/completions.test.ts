@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
-import { envSnippet, latexCompletions, withPackage, type Providers } from "./completions";
+import { envSnippet, latexCompletions, lspCommandCompletions, withPackage, type Providers } from "./completions";
 import { ENVIRONMENTS } from "./data";
 
 const providers: Providers = {
@@ -107,16 +107,29 @@ describe("latex completions", () => {
     expect(labels(await complete("\\usepackage[utf8]{"))).toEqual(["amsmath", "graphicx"]);
   });
 
-  it("offers commands and merges the language server's", async () => {
+  it("offers commands locally and the language server's extras from a separate source", async () => {
     const state = EditorState.create({ doc: "\\sec" });
-    const source = latexCompletions(
-      () => providers,
-      async () => ({ from: 0, options: [{ label: "\\section" }, { label: "\\sectionmark" }] }),
-    );
-    const r = (await source(new CompletionContext(state, 4, false))) as CompletionResult;
-    const l = r.options.map((o) => o.label);
-    expect(l.filter((x) => x === "\\section").length).toBe(1); // ours wins, no duplicate
-    expect(l).toContain("\\sectionmark");
+    const fallback = async () => ({ from: 0, options: [{ label: "\\section" }, { label: "\\sectionmark" }] });
+    const ctx = new CompletionContext(state, 4, false);
+    const local = (await latexCompletions(() => providers, fallback)(ctx)) as CompletionResult;
+    expect(local.options.map((o) => o.label)).toContain("\\section");
+    const lsp = (await lspCommandCompletions(fallback)(ctx)) as CompletionResult;
+    expect(lsp.options.map((o) => o.label)).toEqual(["\\sectionmark"]); // ours wins, no duplicate
+    expect(lsp.from).toBe(0);
+  });
+
+  it("does not wait for the language server", async () => {
+    const never = () => new Promise<CompletionResult | null>(() => {});
+    const ctx = new CompletionContext(EditorState.create({ doc: "\\sec" }), 4, false);
+    const r = await Promise.race([latexCompletions(() => providers, never)(ctx), new Promise((res) => setTimeout(() => res("timeout"), 50))]);
+    expect((r as CompletionResult).options.map((o) => o.label)).toContain("\\section");
+  });
+
+  it("keeps the language server's command source out of \\begin{ and other lists", async () => {
+    const fallback = async () => ({ from: 0, options: [{ label: "x" }] });
+    for (const doc of ["\\begin{al", "\\ref{a\\b", "hello"]) {
+      expect(await lspCommandCompletions(fallback)(new CompletionContext(EditorState.create({ doc }), doc.length, false))).toBeNull();
+    }
   });
 
   it("stays quiet for plain words", async () => {

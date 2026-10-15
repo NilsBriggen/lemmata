@@ -84,6 +84,7 @@
   let dialog = $state<null | "figure" | "table" | "symbols" | "words" | "shortcuts">(null);
   const hint = (id: string) => display(keysOf(id));
   let selectionWords = $state(0);
+  let selectionTimer: ReturnType<typeof setTimeout> | undefined;
   let palette = $state<null | "commands" | "files" | "environments" | "headings" | "symbols">(null);
   let savingTemplate = $state(false);
   let renaming = $state<{ kind: "label" | "cite"; name: string } | null>(null);
@@ -221,9 +222,11 @@
       .watching()
       .then((ok) => ok || showNotice("Lemmata can't watch this project for changes made by other programs, so it won't notice them. Reopen the project, or close other programs that watch many files.", { tone: "error" }))
       .catch(() => {});
-    // The file first: texlab can take a moment to start, and nothing here needs it.
+    // The existing PDF shows right away; nothing below needs it.
+    api.readPdf().then((b) => pdf?.load(b)).catch(() => {});
     await openFile(project.main);
-    await startLsp(project.root);
+    // texlab starts in the background; completion and hover arrive when it's ready.
+    void startLsp(project.root);
     applySpellLanguage();
     setMathMacros(contents.get(project.main) ?? "");
     refreshOutline();
@@ -232,28 +235,39 @@
     lastSnapshot = 0; // the first save of a session takes a snapshot
     choosingMain = project.main_candidates.length > 1 && !project.config.main;
     askShellEscape = project.config.shell_escape && !shellEscapeAllowed();
-    // Show the existing PDF right away, then rebuild.
-    api.readPdf().then((b) => pdf?.load(b)).catch(() => {});
-    runBuild();
+    // Nothing changed since the last build: the PDF on disk is current, so skip a build (seconds on slow PCs).
+    if (!(await api.pdfIsCurrent().catch(() => false))) runBuild();
   }
 
   // Completion data for \ref, \cite, file names and packages. Labels and
   // citation keys change as the user types, so they're cached only briefly.
+  /** Stale-while-revalidate: once loaded, answers at once with the last list and refreshes it in the background when older than `ttl`. */
   function cached<T>(load: () => Promise<T>, ttl: number): () => Promise<T> {
     let at = 0;
-    let value: Promise<T> | null = null;
+    let last: T | undefined;
+    let pending: Promise<T> | null = null;
+    let root: string | undefined;
     return () => {
-      if (!value || Date.now() - at > ttl) {
-        at = Date.now();
-        value = load().catch((e) => {
-          // Don't remember the failure: the next request tries again.
-          value = null;
-          at = 0;
-          reportOnce("completions", `Completion lists for \\ref and \\cite couldn't be loaded: ${errorMessage(e)}`);
-          return [] as unknown as T;
-        });
+      // Another project: its lists start from scratch.
+      if (project?.root !== root) {
+        root = project?.root;
+        last = undefined;
+        pending = null;
       }
-      return value;
+      if (!pending && (last === undefined || Date.now() - at > ttl)) {
+        at = Date.now();
+        const forRoot = root;
+        pending = load()
+          .then((v) => (forRoot === root ? (last = v) : v))
+          .catch((e) => {
+            // Don't remember the failure: the next request tries again.
+            at = 0;
+            reportOnce("completions", `Completion lists for \\ref and \\cite couldn't be loaded: ${errorMessage(e)}`);
+            return last ?? ([] as unknown as T);
+          })
+          .finally(() => (pending = null));
+      }
+      return last !== undefined ? Promise.resolve(last) : pending!;
     };
   }
   const providers: Providers = {
@@ -476,7 +490,8 @@
     if (build && paths.length) runBuild();
   }
 
-  async function runBuild() {
+  /** `force`: the user asked for it, so build even if nothing changed. */
+  async function runBuild(force = false) {
     clearTimeout(buildTimer);
     if (!tex?.detection.ready) {
       if (!toldNoTex) {
@@ -488,7 +503,7 @@
     const seq = ++buildSeq;
     building = true;
     try {
-      const result = await api.build(shellEscapeAllowed());
+      const result = await api.build(shellEscapeAllowed(), force === true);
       if (seq !== buildSeq || result.status === "cancelled") return;
       outcome = result;
       lastCompiled = Date.now();
@@ -570,14 +585,14 @@
 
   async function setBuildOption(patch: Partial<Config>) {
     if (!project) return;
-    if (await configure({ ...project.config, main: project.main, ...patch })) saveAll(false).then(runBuild);
+    if (await configure({ ...project.config, main: project.main, ...patch })) saveAll(false).then(() => runBuild());
   }
 
   async function cleanCache() {
     try {
       const n = await api.cleanBuild();
       showNotice(n ? "Cleared the cached files." : "Nothing to clear.", { tone: "ok" });
-      saveAll(false).then(runBuild);
+      saveAll(false).then(() => runBuild());
     } catch (e) {
       showNotice(errorMessage(e));
     }
@@ -620,6 +635,18 @@
     for (const [path, lines] of Object.entries(folds)) editor?.setFolds(path, lines);
     treeView.collapsed = Object.fromEntries((session.collapsed ?? []).map((p) => [p, true]));
     const known = new Set(allFiles(project?.tree ?? []));
+    // Read the tabs' files in parallel; opening them in order is then instant.
+    await Promise.all(
+      session.tabs
+        .filter((t) => known.has(t) && !contents.has(t) && !isViewer(t))
+        .map((t) =>
+          api.readText(t).then((text) => {
+            if (contents.has(t)) return;
+            contents.set(t, text);
+            lastSaved.set(t, text);
+          }, () => {}),
+        ),
+    );
     for (const t of session.tabs) if (known.has(t) && t !== active) await openFile(t);
     if (session.active && known.has(session.active)) {
       await openFile(session.active);
@@ -956,7 +983,7 @@
 
   const commandItems = $derived<PaletteItem[]>(
     [
-      { id: "recompile", label: "Recompile", detail: hint("recompile"), run: () => saveAll(false).then(runBuild) },
+      { id: "recompile", label: "Recompile", detail: hint("recompile"), run: () => saveAll(false).then(() => runBuild(true)) },
       { id: "open-file", label: "Open file…", detail: hint("quick-open"), run: () => (palette = "files") },
       { id: "search", label: "Search in project", detail: hint("search"), run: openSearch },
       { id: "cite", label: "Insert citation", detail: hint("cite"), run: () => (citeOpen = true) },
@@ -1239,7 +1266,7 @@
     else if (hit("shortcuts")) dialog = "shortcuts";
     else if (hit("snapshot")) snapshotLabel = "";
     else if (hit("save")) saveAll();
-    else if (hit("recompile")) saveAll(false).then(runBuild);
+    else if (hit("recompile")) saveAll(false).then(() => runBuild(true));
     else if (active && hit("close-tab")) closeTab(active);
     else if (hit("reopen-tab")) reopenClosed();
     else if (hit("next-tab")) cycleTab(1);
@@ -1513,7 +1540,7 @@
       onToggleSidebar={() => updateSettings({ sidebarOpen: !settings.sidebarOpen })}
       onHistory={() => (historyOpen = !historyOpen)}
       onProjectSettings={() => (settingsOpen = true)}
-      onRecompile={() => saveAll(false).then(runBuild)}
+      onRecompile={() => saveAll(false).then(() => runBuild(true))}
       onStop={stopBuild}
       onAutoCompile={(on) => updateSettings({ autoCompile: on })}
       draft={project.config.draft ?? false}
@@ -1628,7 +1655,12 @@
             onPasteImage={pasteImage}
             onNeedsPackage={needsPackage}
             onWrapEnvironment={() => (palette = "environments")}
-            onSelection={(t) => (selectionWords = countWords(t))}
+            onSelection={(t) => {
+              // Dragging a selection fires this on every move; count once it rests.
+              clearTimeout(selectionTimer);
+              if (!t) selectionWords = 0;
+              else selectionTimer = setTimeout(() => (selectionWords = countWords(t)), 120);
+            }}
             onFoldsChange={() => foldsVersion++}
             onPastedTable={(undo) => showNotice("Pasted as a table.", { label: "Paste as text instead", run: undo })}
           />
