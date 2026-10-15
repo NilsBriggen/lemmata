@@ -18,6 +18,8 @@ pub enum Error {
     NotADirectory(PathBuf),
     #[error("no .tex file with \\documentclass found in {0}")]
     NoMainFile(PathBuf),
+    #[error("The main file {} set in lemmata.toml doesn't exist.", .0.display())]
+    MainMissing(PathBuf),
     #[error("could not read {path}: {source}")]
     Io {
         path: PathBuf,
@@ -27,6 +29,8 @@ pub enum Error {
     Config(#[from] toml::de::Error),
     #[error("could not write lemmata.toml: {0}")]
     ConfigWrite(#[from] toml::ser::Error),
+    #[error("lemmata.toml is invalid: {0}")]
+    ConfigEdit(#[from] toml_edit::TomlError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -175,7 +179,7 @@ impl Project {
         if !root.is_dir() {
             return Err(Error::NotADirectory(root.to_path_buf()));
         }
-        let root = root.canonicalize().map_err(|source| Error::Io {
+        let root = canonical(root).map_err(|source| Error::Io {
             path: root.into(),
             source,
         })?;
@@ -186,7 +190,13 @@ impl Project {
         }
         let main_candidates = find_main_candidates(&root, &config.outdir);
         let main = match &config.main {
-            Some(m) => PathBuf::from(m),
+            Some(m) => {
+                let m = PathBuf::from(m);
+                if !main_inside(&root, &m) {
+                    return Err(Error::MainMissing(m));
+                }
+                m
+            }
             None => pick_main(&main_candidates).ok_or_else(|| Error::NoMainFile(root.clone()))?,
         };
         Ok(Project {
@@ -215,10 +225,102 @@ impl Project {
         self.pdf_path().with_extension("log")
     }
 
+    /// Writes the settings into lemmata.toml, changing only the keys that
+    /// differ so the user's comments, key order and unknown keys survive.
     pub fn save_config(&self) -> Result<()> {
-        let text = toml::to_string_pretty(&self.config)?;
         let path = self.root.join(CONFIG_FILE);
-        fs::write(&path, text).map_err(|source| Error::Io { path, source })
+        let old_text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(source) => return Err(Error::Io { path, source }),
+        };
+        let old: toml::Table = toml::from_str(&old_text)?;
+        let new = toml::Table::try_from(&self.config)?;
+        let mut doc = old_text.parse::<toml_edit::DocumentMut>()?;
+        let new_doc = toml::to_string_pretty(&new)?.parse::<toml_edit::DocumentMut>()?;
+        for (key, item) in new_doc.iter() {
+            if old.get(key) == new.get(key) {
+                continue;
+            }
+            let mut item = item.clone();
+            // Keep a trailing comment like `engine = "xelatex" # for the font`.
+            if let (Some(was), Some(now)) =
+                (doc.get(key).and_then(|i| i.as_value()), item.as_value_mut())
+            {
+                *now.decor_mut() = was.decor().clone();
+            }
+            doc.insert(key, item);
+        }
+        // Optional settings that are now unset or default are not serialised.
+        for key in CONFIG_KEYS {
+            if old.contains_key(*key) && !new.contains_key(*key) {
+                doc.remove(key);
+            }
+        }
+        write_atomic(&path, &doc.to_string()).map_err(|source| Error::Io { path, source })
+    }
+}
+
+/// Every key `Config` can write; anything else in the file is the user's.
+const CONFIG_KEYS: &[&str] = &[
+    "main",
+    "engine",
+    "bib",
+    "shell_escape",
+    "outdir",
+    "spellcheck",
+    "words",
+    "figures_dir",
+    "draft",
+    "stop_on_error",
+    "timeout_secs",
+    "targets",
+];
+
+/// A crash mid-write must not leave a half-written file, so write beside it
+/// and rename over.
+fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, text)
+        .and_then(|()| fs::rename(&tmp, path))
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&tmp);
+        })
+}
+
+/// Is `main` (relative to `root`) an existing file inside the project?
+fn main_inside(root: &Path, main: &Path) -> bool {
+    main.is_relative()
+        && !main
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        && canonical(&root.join(main)).is_ok_and(|p| p.starts_with(root) && p.is_file())
+}
+
+/// `canonicalize`, minus the `\\?\` prefix Windows adds, which breaks path
+/// comparisons and looks odd in the UI.
+fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+    let p = path.canonicalize()?;
+    #[cfg(windows)]
+    let p = PathBuf::from(strip_verbatim(&p.to_string_lossy()));
+    Ok(p)
+}
+
+/// `\\?\C:\x` becomes `C:\x` and `\\?\UNC\srv\share` becomes `\\srv\share`.
+/// Other verbatim paths (volume GUIDs) can't be written any shorter.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn strip_verbatim(path: &str) -> String {
+    let Some(rest) = path.strip_prefix(r"\\?\") else {
+        return path.to_string();
+    };
+    if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        format!(r"\\{unc}")
+    } else if rest.as_bytes().get(1) == Some(&b':') {
+        rest.to_string()
+    } else {
+        path.to_string()
     }
 }
 
@@ -296,7 +398,12 @@ pub fn tree(root: &Path, outdir: &str) -> Vec<Entry> {
             .map(|e| {
                 let path = e.path();
                 let meta = e.metadata().ok();
-                let is_dir = path.is_dir();
+                // file_type() doesn't follow links. A linked folder is shown as
+                // a folder but never entered: a link to "." or to ~ would loop
+                // or walk the whole disk on every build.
+                let ft = e.file_type().ok();
+                let real_dir = ft.is_some_and(|t| t.is_dir());
+                let is_dir = real_dir || ft.is_some_and(|t| t.is_symlink()) && path.is_dir();
                 let rel = path
                     .strip_prefix(root)
                     .unwrap_or(&path)
@@ -312,7 +419,7 @@ pub fn tree(root: &Path, outdir: &str) -> Vec<Entry> {
                         .and_then(|m| m.modified().ok())
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map_or(0, |d| d.as_secs()),
-                    children: if is_dir {
+                    children: if real_dir {
                         walk(&path, root, outdir)
                     } else {
                         Vec::new()
@@ -685,6 +792,115 @@ mod tests {
         assert_eq!(main.size, 5);
         assert!(main.modified > 1_600_000_000);
         assert_eq!(t[0].size, 0, "folders have no size");
+    }
+
+    #[test]
+    fn explicit_main_must_be_a_file_inside_the_project() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "main.tex", "\\documentclass{article}");
+        write(d.path(), "sub/ok.tex", "x");
+        fs::create_dir(d.path().join("dir.tex")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        write(outside.path(), "out.tex", "x");
+        let abs = outside.path().join("out.tex");
+        let abs = abs.to_string_lossy().replace('\\', "/");
+        for bad in ["gone.tex", "dir.tex", "../out.tex", abs.as_str()] {
+            write(d.path(), CONFIG_FILE, &format!("main = \"{bad}\"\n"));
+            match Project::open(d.path()) {
+                Err(Error::MainMissing(m)) => assert_eq!(m, PathBuf::from(bad)),
+                other => panic!("{bad}: {other:?}"),
+            }
+        }
+        let msg = Error::MainMissing("gone.tex".into()).to_string();
+        assert_eq!(
+            msg,
+            "The main file gone.tex set in lemmata.toml doesn't exist."
+        );
+        write(d.path(), CONFIG_FILE, "main = \"sub/ok.tex\"\n");
+        assert_eq!(
+            Project::open(d.path()).unwrap().main,
+            PathBuf::from("sub/ok.tex")
+        );
+    }
+
+    #[test]
+    fn strips_the_windows_verbatim_prefix() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Users\a"), r"C:\Users\a");
+        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\x"), r"\\srv\share\x");
+        assert_eq!(strip_verbatim(r"\\?\Volume{1}\x"), r"\\?\Volume{1}\x");
+        assert_eq!(strip_verbatim("/home/a"), "/home/a");
+        assert_eq!(strip_verbatim(r"C:\a"), r"C:\a");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_does_not_follow_symlinked_folders() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "main.tex", "\\documentclass{article}");
+        write(d.path(), "real/a.tex", "");
+        std::os::unix::fs::symlink(".", d.path().join("loop")).unwrap();
+        std::os::unix::fs::symlink("real", d.path().join("alias")).unwrap();
+        let t = tree(d.path(), ".lemmata/build");
+        let names: Vec<_> = t.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["alias", "loop", "real", "main.tex"]);
+        for link in &t[..2] {
+            assert!(link.is_dir && link.children.is_empty(), "{}", link.name);
+        }
+        assert_eq!(t[2].children.len(), 1);
+    }
+
+    #[test]
+    fn save_config_keeps_comments_and_unknown_keys() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "main.tex", "\\documentclass{article}");
+        write(
+            d.path(),
+            CONFIG_FILE,
+            "# my project\nfuture_option = 42\nengine = \"xelatex\" # for the font\nwords = [\"foo\"]\n",
+        );
+        let mut p = Project::open(d.path()).unwrap();
+        p.config.bib = Bib::Bibtex;
+        p.config.words.clear();
+        p.save_config().unwrap();
+        let text = fs::read_to_string(d.path().join(CONFIG_FILE)).unwrap();
+        assert!(
+            text.starts_with("# my project\nfuture_option = 42\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("engine = \"xelatex\" # for the font"),
+            "{text}"
+        );
+        assert!(
+            text.contains("bib = \"bibtex\"") && !text.contains("words"),
+            "{text}"
+        );
+        assert!(!d.path().join("lemmata.toml.tmp").exists());
+        let again = Project::open(d.path()).unwrap();
+        assert_eq!(
+            (again.config.engine, again.config.bib),
+            (Engine::Xelatex, Bib::Bibtex)
+        );
+        // Changing a value that has a trailing comment keeps the comment.
+        p.config.engine = Engine::Lualatex;
+        p.save_config().unwrap();
+        let text = fs::read_to_string(d.path().join(CONFIG_FILE)).unwrap();
+        assert!(
+            text.contains("engine = \"lualatex\" # for the font"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn save_config_creates_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "main.tex", "\\documentclass{article}");
+        Project::open(d.path()).unwrap().save_config().unwrap();
+        assert!(
+            fs::read_to_string(d.path().join(CONFIG_FILE))
+                .unwrap()
+                .contains("engine")
+        );
     }
 
     #[test]
