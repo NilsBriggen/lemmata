@@ -1,6 +1,8 @@
 //! Tauri commands the frontend calls. All file paths crossing the IPC
 //! boundary are relative to the open project's root.
 
+#[cfg(debug_assertions)]
+mod automation;
 mod bib;
 mod export;
 mod figures;
@@ -707,7 +709,15 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
+        .setup(|app| {
+            #[cfg(debug_assertions)]
+            automation::start(app.handle());
+            let _ = app;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(debug_assertions)]
+            automation::automation_reply,
             tex_status,
             open_project,
             project_info_cmd,

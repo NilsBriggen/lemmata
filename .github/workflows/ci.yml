@@ -30,6 +30,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter lemmata-desktop build
+      - name: The normal build has no test automation
+        run: "! grep -rl __lemmata apps/desktop/dist"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: pnpm check
@@ -152,7 +154,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Install tauri-driver
         run: cargo install tauri-driver --locked --version 2.1.0
-      - name: Build the app (debug, frontend embedded)
+      - name: Build the app (debug, frontend embedded, with the test automation API)
         run: pnpm --filter lemmata-desktop tauri build --debug --no-bundle
+        env:
+          VITE_LEMMATA_TEST: "1"
       - name: Run end-to-end tests
         run: xvfb-run --auto-servernum pnpm --filter lemmata-desktop e2e

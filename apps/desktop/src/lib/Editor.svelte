@@ -375,6 +375,14 @@
     view.focus();
   }
 
+  /** No file is open: show nothing and accept no edits (they would belong to no file). */
+  export function close() {
+    if (!view) return;
+    if (currentPath) states.set(currentPath, view.state);
+    currentPath = null;
+    view.setState(EditorState.create({ doc: "", extensions: [EditorState.readOnly.of(true), EditorView.editable.of(false)] }));
+  }
+
   /** Folds waiting for their file to be opened (restored from the last session). */
   const pendingFolds = new Map<string, number[]>();
 

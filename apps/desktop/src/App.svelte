@@ -329,6 +329,7 @@
       const next = tabs.at(-1);
       active = null;
       if (next) openFile(next);
+      else editor?.close();
     }
   }
 
@@ -1139,6 +1140,36 @@
   });
 
   onMount(async () => {
+    // Test automation exists only in development and test builds; the flag is replaced at build time, so a release build drops it.
+    if (import.meta.env.DEV || import.meta.env.VITE_LEMMATA_TEST === "1") {
+      import("./lib/automation").then((m) =>
+        m.install({
+          state: () => ({
+            project: project?.root ?? null,
+            main: project?.main ?? null,
+            tabs: [...tabs],
+            active,
+            dirty: Object.keys(dirty).filter((p) => dirty[p]),
+            building,
+            status: outcome?.status ?? null,
+            diagnostics: diagnostics.map(({ severity, message, file, line }) => ({ severity, message, file, line })),
+            layout: settings.layout,
+            showPdf,
+            hasPdf: pdf?.hasPdf() ?? false,
+            logsOpen,
+            notice: notice?.text ?? null,
+            openError,
+            dialogs: Object.entries({ settingsOpen, prefsOpen, citeOpen, historyOpen, searchOpen, choosingMain, savingTemplate, palette, dialog, renaming, welcome })
+              .filter(([, v]) => !!v)
+              .map(([k, v]) => (typeof v === "string" ? `${k}:${v}` : k)),
+          }),
+          buffers: () => Object.fromEntries(tabs.filter((t) => contents.has(t)).map((t) => [t, contents.get(t)!])),
+          commands: () => commandItems,
+          openProject,
+          openFile,
+        }),
+      );
+    }
     spell.onChange(() => (spellLang = spell.language));
     // Tauri delivers file drops with real paths (DOM drop events don't have them).
     getCurrentWebview()
@@ -1388,7 +1419,13 @@
         {#if viewerActive && active}
           <div class="cm">{#key active}<FileViewer path={active} />{/key}</div>
         {/if}
-        <div class="cm" class:hidden={viewerActive}>
+        {#if !active}
+          <div class="no-file">
+            <p>No file is open.</p>
+            <p class="muted">Pick one in the file tree, or press {hint("quick-open")} to find it.</p>
+          </div>
+        {/if}
+        <div class="cm" class:hidden={viewerActive || !active}>
           <Editor
             bind:this={editor}
             {onChange}
@@ -1698,6 +1735,9 @@
   /* Focus mode: only the editor, as a centred column. */
   .panes.focus .tabstrip { display: none; }
   .cm.hidden { display: none; }
+  .no-file { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: var(--ink); }
+  .no-file p { margin: 0; }
+  .no-file .muted { color: var(--muted); }
   .bell { position: relative; border: none; background: none; color: var(--muted); padding: 0 4px; display: inline-flex; align-items: center; }
   .bell:hover { color: var(--ink); }
   .bell .pip { position: absolute; top: -1px; right: 1px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
