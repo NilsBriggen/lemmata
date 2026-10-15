@@ -53,13 +53,17 @@ export async function walk(lem, { seed, steps = 40, log = () => {} }) {
   };
   try {
     for (let i = 0; i < steps; i++) {
-      const name = pick(names);
+      // A conflict dialog waits for an answer, as it would for a person.
+      const { conflicts } = await lem("state");
+      const name = conflicts.length ? "resolve" : pick(names);
       taken.push(name);
       log(`${i} ${name}`);
-      await actions[name]();
+      if (name === "resolve") await lem("clickText", { text: pick(["Keep my version", "Load the version on disk"]) });
+      else await actions[name]();
       await lem("sleep", { ms: 150 });
       await check(`step ${i} (${name})`);
     }
+    while ((await lem("state")).conflicts.length) await lem("clickText", { text: "Keep my version" });
     await lem("click", { selector: '[title="Editor and PDF"]' });
     await lem("idle", { timeout: 90_000 });
     await check("after the walk settled");

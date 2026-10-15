@@ -188,9 +188,24 @@ fn read_text(state: State<AppState>, path: String) -> CmdResult<String> {
     std::fs::read_to_string(&abs).map_err(|e| format!("Could not open {path}: {e}"))
 }
 
+/// Starts the error of a save refused because the file changed on disk since Lemmata last read or wrote it.
+const CONFLICT: &str = "conflict:";
+
 #[tauri::command(async)]
-fn write_text(state: State<AppState>, path: String, content: String) -> CmdResult<()> {
+/// `expected` is the hash of the text Lemmata last read or wrote. If the file
+/// on disk is different, another program changed it, and nothing is written.
+fn write_text(
+    state: State<AppState>,
+    path: String,
+    content: String,
+    expected: Option<u32>,
+) -> CmdResult<()> {
     let abs = resolve(&state, &path)?;
+    if let (Some(expected), Ok(disk)) = (expected, std::fs::read(&abs))
+        && files::content_hash(&disk) != expected
+    {
+        return Err(format!("{CONFLICT} {path} was changed by another program."));
+    }
     // Write to a hidden sibling first so a crash never leaves a half-written
     // source file; the watcher ignores hidden files. The name keeps the full
     // file name, so main.tex and main.bib can't share a temp file.

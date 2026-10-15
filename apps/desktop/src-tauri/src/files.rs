@@ -756,6 +756,13 @@ pub fn unused_in(files: &[String], sources: &[String], main: &str) -> Vec<String
 /// its own saves from edits made elsewhere.
 pub type Written = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>>;
 
+/// FNV-1a (32 bit), the same as `contentHash` in the frontend (src/lib/contentHash.ts).
+pub fn content_hash(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0x811c_9dc5, |h, &b| {
+        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+    })
+}
+
 pub fn hash_bytes(bytes: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -843,6 +850,13 @@ pub fn watch(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn content_hash_matches_the_frontend() {
+        // The same vectors are checked in src/lib/contentHash.test.ts.
+        assert_eq!(super::content_hash(b""), 0x811c_9dc5);
+        assert_eq!(super::content_hash(b"hello"), 0x4f9f_2cab);
+    }
+
     use super::*;
 
     fn touch(root: &Path, rel: &str, text: &str) {

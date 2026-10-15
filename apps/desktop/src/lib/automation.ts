@@ -32,6 +32,8 @@ export interface AppState {
   logsOpen: boolean;
   notice: string | null;
   openError: string | null;
+  /** Files changed outside with unsaved edits here, waiting for the user's choice. */
+  conflicts: string[];
   dialogs: string[];
 }
 
@@ -154,7 +156,7 @@ export function install(host: Host) {
       const end = Date.now() + timeout;
       while (Date.now() < end) {
         const s = host.state();
-        if (!s.building && s.dirty.length === 0) return s;
+        if (!s.building && s.dirty.filter((d) => !s.conflicts.includes(d)).length === 0) return s;
         await settle(100);
       }
       throw new Error("The app did not become idle.");

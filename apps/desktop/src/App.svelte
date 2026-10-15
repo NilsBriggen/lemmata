@@ -10,6 +10,7 @@
   import Splitter from "./lib/ui/Splitter.svelte";
   import Modal from "./lib/ui/Modal.svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { contentHash } from "./lib/contentHash";
   import { closePresenter } from "./lib/presenter/window";
   import Welcome from "./lib/Welcome.svelte";
   import X from "@lucide/svelte/icons/x";
@@ -106,6 +107,8 @@
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let update = $state<{ version: string; progress: number | null; error: string | null } | null>(null);
   let historyOpen = $state(false);
+  /** Files changed by another program while they had unsaved edits here: not saved until the user decides. */
+  let conflicts = $state<string[]>([]);
   /** History works for the open project: git is installed. Off means snapshots (and undoing replaces) aren't possible. */
   let historyOn = $state(false);
   /** Closing the window with edits that couldn't be saved (or autosave is off): ask first. */
@@ -187,6 +190,7 @@
     tabs = [];
     contents.clear();
     dirty = {};
+    conflicts = [];
     clearSelection();
     pinned = [];
     closedTabs = [];
@@ -376,8 +380,8 @@
     dirty[path] = true;
     if (path === active && project && magicLanguage(text) !== fileLanguage) applySpellLanguage();
     clearTimeout(saveTimers.get(path));
-    // A delay of 0 means: only save on Ctrl+S.
-    if (settings.autosaveMs > 0) saveTimers.set(path, setTimeout(() => save(path, settings.autoCompile, true), settings.autosaveMs));
+    // A delay of 0 means: only save on Ctrl+S. A file in conflict waits for the user.
+    if (settings.autosaveMs > 0 && !conflicts.includes(path)) saveTimers.set(path, setTimeout(() => save(path, settings.autoCompile, true), settings.autosaveMs));
   }
 
   /** Automatic builds wait this long after the last edit, so a build isn't started and cancelled again while typing. */
@@ -388,9 +392,10 @@
   async function save(path: string, build = settings.autoCompile, auto = false) {
     clearTimeout(saveTimers.get(path));
     const text = contents.get(path);
-    if (text === undefined || !dirty[path]) return;
+    if (text === undefined || !dirty[path] || conflicts.includes(path)) return;
+    const known = lastSaved.get(path);
     try {
-      await api.writeText(path, text);
+      await api.writeText(path, text, known === undefined ? undefined : contentHash(known));
       lastSaved.set(path, text);
       refreshGit();
       // Typing continued while the write was in flight: those edits aren't saved yet.
@@ -407,8 +412,23 @@
       // The first save of a session takes a snapshot; later ones follow the timer.
       if (lastSnapshot === 0) takeSnapshot("Automatic snapshot");
     } catch (e) {
-      openError = errorMessage(e);
+      const message = errorMessage(e);
+      if (message.startsWith("conflict:")) addConflict(path);
+      else openError = message;
     }
+  }
+
+  function addConflict(path: string) {
+    clearTimeout(saveTimers.get(path));
+    if (!conflicts.includes(path)) conflicts = [...conflicts, path];
+  }
+
+  /** The user picked a side: their own edits overwrite the disk, or the disk's version replaces them. */
+  async function resolveConflict(path: string, keep: "mine" | "disk") {
+    conflicts = conflicts.filter((c) => c !== path);
+    if (keep === "disk") return reloadFromDisk(path);
+    lastSaved.delete(path); // no expectation: write over the other program's version
+    await save(path, settings.autoCompile);
   }
 
   async function saveAll(build = settings.autoCompile) {
@@ -1027,7 +1047,7 @@
         continue;
       }
       if (dirty[path]) {
-        showNotice(`${path} changed on disk.`, { label: "Load the new version", run: () => reloadFromDisk(path) });
+        addConflict(path);
       } else {
         await reloadFromDisk(path);
       }
@@ -1233,6 +1253,7 @@
             logsOpen,
             notice: notice?.text ?? null,
             openError,
+            conflicts: [...conflicts],
             dialogs: Object.entries({ settingsOpen, prefsOpen, citeOpen, historyOpen, searchOpen, choosingMain, savingTemplate, palette, dialog, renaming, welcome })
               .filter(([, v]) => !!v)
               .map(([k, v]) => (typeof v === "string" ? `${k}:${v}` : k)),
@@ -1627,6 +1648,17 @@
   {onTrashed}
   onUpload={uploadFiles}
 />
+
+{#if conflicts.length}
+  {@const path = conflicts[0]}
+  <Modal title="{path} changed on disk" width={480} onClose={() => {}}>
+    <p class="close-msg">Another program changed this file while it had unsaved edits in Lemmata. Nothing is saved until you choose which version to keep.</p>
+    {#snippet footer()}
+      <button class="btn" onclick={() => resolveConflict(path, "disk")}>Load the version on disk</button>
+      <button class="btn primary" onclick={() => resolveConflict(path, "mine")}>Keep my version</button>
+    {/snippet}
+  </Modal>
+{/if}
 
 {#if closing}
   <Modal title="Close Lemmata?" width={480} onClose={() => (closing = null)}>
