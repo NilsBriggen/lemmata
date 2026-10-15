@@ -145,8 +145,25 @@ jobs:
             synctex
             biber
             biblatex
+            lipsum
             amsmath
             amsfonts
+            amscls
+            tools
+            float
+            colortbl
+            booktabs
+            fancyhdr
+            geometry
+            enumitem
+            mdframed
+            zref
+            needspace
+            etoolbox
+            cleveref
+            koma-script
+            beamer
+            beamertheme-metropolis
             collection-fontsrecommended
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
