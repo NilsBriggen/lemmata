@@ -1,11 +1,19 @@
 <script lang="ts">
-  // Saves the open project as a template for new projects.
+  // Saves a project as a template for new projects; the caller trashes the project when asked.
   import Modal from "./ui/Modal.svelte";
   import { api, errorMessage } from "./api";
 
-  let { projectName, onSaved, onClose }: { projectName: string; onSaved: (name: string) => void; onClose: () => void } = $props();
+  interface Props {
+    /** The project folder. */
+    path: string;
+    projectName: string;
+    onSaved: (name: string, trash: boolean) => void;
+    onClose: () => void;
+  }
+  let { path, projectName, onSaved, onClose }: Props = $props();
   // svelte-ignore state_referenced_locally
   let name = $state(projectName);
+  let trash = $state(false);
   let description = $state("");
   let error = $state<string | null>(null);
   let busy = $state(false);
@@ -15,8 +23,8 @@
     busy = true;
     error = null;
     try {
-      await api.saveAsTemplate(name, description);
-      onSaved(name.trim());
+      await api.saveAsTemplate(path, name, description);
+      onSaved(name.trim(), trash);
     } catch (err) {
       error = errorMessage(err);
       busy = false;
@@ -35,6 +43,7 @@
       <label for="st-desc">Description (optional)</label>
       <input id="st-desc" class="input" bind:value={description} placeholder="Exercise sheets with my usual header" />
     </div>
+    <label class="check"><input type="checkbox" bind:checked={trash} /> Then move the project to the trash</label>
     <p class="hint">Remove any text you don't want in every new project before saving. Templates you save appear when you create a new project.</p>
     {#if error}<p class="error">{error}</p>{/if}
   </form>
@@ -46,6 +55,7 @@
 
 <style>
   form { display: flex; flex-direction: column; gap: 12px; }
+  .check { display: flex; align-items: center; gap: 8px; }
   .hint { color: var(--muted); font-size: 12.5px; margin: 0; }
   .error { color: var(--error); margin: 0; }
 </style>

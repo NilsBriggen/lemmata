@@ -481,6 +481,35 @@ export const scenarios = {
     await lem("idle", { timeout: 120_000 });
   },
 
+  async "turns a project into a template from the start screen"(lem, dir) {
+    const copy = copyFixture(dir, "article");
+    const name = `Template ${path.basename(copy)}`;
+    await lem("openProject", { path: copy });
+    await lem("idle", { timeout: 120_000 });
+    await lem("command", { id: "close" });
+    await until(lem, "the library", () => lem("exists", { selector: ".library" }));
+    await lem("fill", { selector: "#library-search", value: path.basename(copy) });
+    await until(lem, "only that project listed", async () => (await lem("query", { selector: ".library .table .tr:not(.th), .library .grid .card" })).length === 1);
+    await lem("contextmenu", { selector: ".library .table .tr:not(.th), .library .grid .card" });
+    await lem("clickText", { text: "Save as template" });
+    await until(lem, "the dialog", () => lem("exists", { selector: "#st-name" }));
+    await lem("fill", { selector: "#st-name", value: name });
+    await lem("click", { selector: ".check input" });
+    await lem("clickText", { text: "Save template" });
+    await until(lem, "the project in the trash", async () => !fs.existsSync(copy), 15_000);
+    await lem("fill", { selector: "#library-search", value: "" });
+    await lem("clickText", { text: "New project" });
+    await until(lem, "My templates", () => lem("exists", { selector: ".gallery .folder" }));
+    await lem("clickText", { text: "My templates", within: ".gallery" });
+    const del = `[aria-label="Delete template ${name}"]`;
+    await until(lem, "the new template", () => lem("exists", { selector: del }));
+    await lem("click", { selector: del });
+    await until(lem, "the template deleted", async () => !(await lem("exists", { selector: del })));
+    await lem("clickText", { text: "Cancel" });
+    await lem("openProject", { path: dir });
+    await lem("idle", { timeout: 120_000 });
+  },
+
   async "leaves a presentation cleanly when Esc comes at once"(lem) {
     await lem("openFile", { path: "main.tex" });
     await lem("idle", { timeout: 120_000 });

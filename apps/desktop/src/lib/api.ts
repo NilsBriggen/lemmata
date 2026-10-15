@@ -190,7 +190,7 @@ export const api = {
   historyCompare: (a: string, b: string) => invoke<Snapshot["changes"]>("history_compare", { a, b }),
   historyRelabel: (id: string, label: string) => invoke<void>("history_relabel", { id, label }),
   historyRestore: (id: string, path: string) => invoke<void>("history_restore", { id, path }),
-  saveAsTemplate: (name: string, description: string) => invoke<string>("save_as_template", { name, description }),
+  saveAsTemplate: (path: string, name: string, description: string) => invoke<string>("save_as_template", { path, name, description }),
   deleteTemplate: (id: string) => invoke<void>("delete_template", { id }),
   listTemplates: () => invoke<Template[]>("list_templates"),
   /** Fetches the template collection's templates; listTemplates includes them afterwards. */

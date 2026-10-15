@@ -1061,6 +1061,30 @@
     if (await configure({ ...project.config, engine, main: project.main })) runBuild();
   }
 
+  /** The template is copied from disk, so unsaved edits are saved first. */
+  async function saveAsTemplate() {
+    await saveAll(false);
+    savingTemplate = true;
+  }
+
+  async function templateSaved(name: string, trash: boolean) {
+    savingTemplate = false;
+    if (!trash || !project) {
+      showNotice(`Saved the template "${name}". It appears when you create a new project.`, { tone: "ok" });
+      return;
+    }
+    const root = project.root;
+    await closeProject();
+    if (project) return; // closeProject said why it couldn't close
+    try {
+      await api.trashProject(root);
+      recent = forgetProject(root);
+      showNotice(`Saved the template "${name}" and moved the project to the trash.`, { tone: "ok" });
+    } catch (e) {
+      showNotice(`Saved the template "${name}", but the project stays: ${errorMessage(e)}`);
+    }
+  }
+
   async function closeProject() {
     await saveAll(false);
     const left = unsaved();
@@ -1158,7 +1182,7 @@
       { id: "zotero-cite", label: "Cite from Zotero…", run: citeFromZotero },
       { id: "zotero-sync", label: "Sync zotero.bib from Zotero", run: () => syncZotero(true) },
       { id: "export-pdf", label: "Export PDF…", run: exportPdf },
-      { id: "save-template", label: "Save this project as a template…", run: () => (savingTemplate = true) },
+      { id: "save-template", label: "Save this project as a template…", run: saveAsTemplate },
       { id: "export-zip", label: "Export the whole project (.zip)…", run: exportZip },
       { id: "export-arxiv", label: "Export for arXiv (.zip)…", run: () => exportArxiv() },
       { id: "export-arxiv-flat", label: "Export for arXiv as one .tex file (.zip)…", run: () => exportArxiv(false, true) },
@@ -1601,6 +1625,7 @@
     { label: "Search in project", hint: hint("search"), run: openSearch },
     { label: "Insert citation", hint: hint("cite"), run: () => (citeOpen = true) },
     { label: "Word count", run: () => (dialog = "words") },
+    { label: "Save as template…", run: saveAsTemplate },
     { label: "Save a snapshot", hint: hint("snapshot"), run: () => (snapshotLabel = "") },
     { label: "Undo last file operation", run: () => fileActions?.undo() },
     { label: "Export PDF…", run: exportPdf, separator: true },
@@ -2066,11 +2091,9 @@
 
 {#if savingTemplate && project}
   {#await import("./lib/SaveTemplateDialog.svelte") then { default: SaveTemplateDialog }}<SaveTemplateDialog
+    path={project.root}
     projectName={project.name}
-    onSaved={(name) => {
-      savingTemplate = false;
-      showNotice(`Saved the template "${name}". It appears when you create a new project.`, { tone: "ok" });
-    }}
+    onSaved={templateSaved}
     onClose={() => (savingTemplate = false)}
   />{/await}
 {/if}

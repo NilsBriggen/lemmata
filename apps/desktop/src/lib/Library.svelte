@@ -22,10 +22,12 @@
   import SquarePen from "@lucide/svelte/icons/square-pen";
   import Trash2 from "@lucide/svelte/icons/trash";
   import Check from "@lucide/svelte/icons/check";
+  import LayoutTemplate from "@lucide/svelte/icons/layout-template";
   import DropMenu from "./ui/DropMenu.svelte";
   import Modal from "./ui/Modal.svelte";
   import { countIn, createGroup, deleteGroup, forgetPath, inView, moveProject, nameProblem, readGroups, renameGroup, restoreGroup, writeGroups, type Groups, type View } from "./groups";
   import NewProjectDialog from "./NewProjectDialog.svelte";
+  import SaveTemplateDialog from "./SaveTemplateDialog.svelte";
   import ImportDialog from "./ImportDialog.svelte";
   import CloneDialog from "./git/CloneDialog.svelte";
   import GitBranch from "@lucide/svelte/icons/git-branch";
@@ -72,6 +74,24 @@
   /** The menu of one project: open, show, folder, remove, delete. */
   let projectMenu = $state<{ path: string; anchor: HTMLElement } | null>(null);
   let deleting = $state<{ path: string; busy: boolean; error: string | null } | null>(null);
+  /** The project being saved as a template, and the note once it is. */
+  let templating = $state<string | null>(null);
+  let templateNote = $state<string | null>(null);
+  $effect(() => {
+    if (!templateNote) return;
+    const timer = setTimeout(() => (templateNote = null), 8000);
+    return () => clearTimeout(timer);
+  });
+
+  function templateSaved(name: string, trash: boolean) {
+    const path = templating!;
+    templating = null;
+    templateNote = `Template “${name}” saved. It's offered under My templates when you create a project.`;
+    if (trash) {
+      deleting = { path, busy: false, error: null };
+      void deleteProject();
+    }
+  }
   /** The folder just deleted, and the folders as they were before, so Undo can put it back. */
   let undoable = $state.raw<{ id: string; name: string; before: Groups } | null>(null);
   const activeGroup = $derived(groups.groups.find((g) => g.id === view));
@@ -315,6 +335,9 @@
       {/if}
       {#if editing && editing.id === null}{@render editor()}{/if}
     </div>
+    {#if templateNote}
+      <p class="undo" role="status">{templateNote}</p>
+    {/if}
     {#if undoable}
       <p class="undo" role="status">Folder “{undoable.name}” deleted · <button onclick={undoRemove}>Undo</button></p>
     {/if}
@@ -423,6 +446,7 @@
   <DropMenu anchor={projectMenu.anchor} align="end" onClose={() => (projectMenu = null)}>
     <button role="menuitem" onclick={() => p.onOpen(path)}><ExternalLink size={15} /> Open</button>
     <button role="menuitem" onclick={() => revealItemInDir(path).catch(() => {})}><FolderSearch size={15} /> Show in file manager</button>
+    <button role="menuitem" onclick={() => (templating = path)}><LayoutTemplate size={15} /> Save as template…</button>
     <hr />
     <div class="heading">Put in folder</div>
     {#each groups.groups as g (g.id)}
@@ -451,6 +475,10 @@
       <button class="btn primary danger-btn" disabled={deleting?.busy} onclick={deleteProject}>Move to trash</button>
     {/snippet}
   </Modal>
+{/if}
+
+{#if templating}
+  <SaveTemplateDialog path={templating} projectName={nameOf(templating)} onSaved={templateSaved} onClose={() => (templating = null)} />
 {/if}
 
 {#if dialog === "new"}

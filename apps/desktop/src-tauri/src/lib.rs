@@ -524,19 +524,15 @@ async fn refresh_templates(app: tauri::AppHandle) -> CmdResult<usize> {
     online_templates::refresh(&online_templates_dir(&app)?).await
 }
 
-/// Saves the open project as a template for new projects.
+/// Saves a project (the open one, or one from the library) as a template for new projects.
 #[tauri::command(async)]
 fn save_as_template(
     app: tauri::AppHandle,
-    state: State<AppState>,
+    path: String,
     name: String,
     description: String,
 ) -> CmdResult<String> {
-    let p = state
-        .project
-        .lock_safe()
-        .clone()
-        .ok_or("No project is open.")?;
+    let p = Project::open(&path).map_err(err)?;
     projects::save_as_template(
         &user_templates_dir(&app)?,
         &p.root,

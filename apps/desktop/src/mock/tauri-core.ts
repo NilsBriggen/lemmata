@@ -214,6 +214,8 @@ const handlers: Record<string, (a: Args) => unknown> = {
     { id: "user:course-sheet", name: "Course sheet", description: "", category: "", user: true },
   ],
   create_project: (a) => `${a.parent}/${a.name}`,
+  save_as_template: (a) => a.name,
+  delete_template: () => undefined,
   refresh_templates: () => 0,
   create_example: () => "/home/you/.local/share/dev.briggen.lemmata/example",
   inspect_zip: () => ({ bulk: true, projects: ["CA_Assignement_5", "INF_SEC_Assignement_3", "NET_assignment_4", "Homework", "CA_Assignement_4", "DB_Assignement_3"] }),
