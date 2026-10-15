@@ -114,10 +114,21 @@ fn no_window(c: &mut Command) {
     let _ = c;
 }
 
+/// Whether `root` is inside a git repository, judged by a `.git` entry (a
+/// folder, or a file for worktrees) in `root` or a folder above it. Lemmata's
+/// own store is `.lemmata/history`, below `root`, so it never counts.
+fn in_repository(root: &Path) -> bool {
+    root.ancestors().any(|dir| dir.join(".git").exists())
+}
+
 /// Which files of the project differ from the last commit. Empty when the
 /// folder isn't in a git repository (or git isn't installed). Never changes
 /// anything in the repository.
 pub fn working_status(root: &Path) -> Vec<FileStatus> {
+    // Checked without spawning git, since this runs after every save.
+    if !in_repository(root) {
+        return Vec::new();
+    }
     let Some(git) = find_git() else {
         return Vec::new();
     };
@@ -513,6 +524,23 @@ mod tests {
         // Outside a repository there is simply nothing to show.
         let plain = tempfile::tempdir().unwrap();
         assert!(working_status(plain.path()).is_empty());
+    }
+
+    #[test]
+    fn plain_folders_are_recognised_without_git() {
+        let d = tempfile::tempdir().unwrap();
+        let sub = d.path().join("a/b");
+        fs::create_dir_all(&sub).unwrap();
+        assert!(!in_repository(&sub));
+        assert!(working_status(&sub).is_empty());
+        // Lemmata's own store is not a repository for this check.
+        let store = d.path().join(STORE);
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert!(!in_repository(d.path()));
+        // A `.git` file (a worktree) counts, and so does a folder below it.
+        fs::write(d.path().join(".git"), "gitdir: elsewhere\n").unwrap();
+        assert!(in_repository(&sub));
     }
 
     #[test]

@@ -164,13 +164,67 @@
     return "just now";
   }
 
-  onMount(() => {
-    for (const r of p.recent) {
+  // Thumbnails are read when their card or row scrolls into view, a few at a time.
+  // Each project is asked for once; a failed one just keeps its placeholder.
+  const THUMB_IN_FLIGHT = 6;
+  const thumbAsked = new Set<string>();
+  const thumbQueue: string[] = [];
+  const thumbPathOf = new Map<Element, string>();
+  let thumbBusy = 0;
+  let thumbsAlive = true;
+  let thumbObserver: IntersectionObserver | undefined;
+
+  function askThumb(path: string) {
+    if (thumbAsked.has(path)) return;
+    thumbAsked.add(path);
+    thumbQueue.push(path);
+    pumpThumbs();
+  }
+
+  function pumpThumbs() {
+    while (thumbBusy < THUMB_IN_FLIGHT && thumbQueue.length) {
+      const path = thumbQueue.shift()!;
+      thumbBusy++;
       api
-        .loadThumbnail(r.path)
-        .then((png) => (thumbs[r.path] = URL.createObjectURL(new Blob([png.buffer as ArrayBuffer], { type: "image/png" }))))
-        .catch(() => {});
+        .loadThumbnail(path)
+        .then((png) => {
+          if (thumbsAlive) thumbs[path] = URL.createObjectURL(new Blob([png.buffer as ArrayBuffer], { type: "image/png" }));
+        })
+        .catch(() => {})
+        .finally(() => {
+          thumbBusy--;
+          pumpThumbs();
+        });
     }
+  }
+
+  /** Svelte action: asks for the thumbnail of `path` once `el` is near the visible area. */
+  function thumbWhenVisible(el: HTMLElement, path: string) {
+    thumbPathOf.set(el, path);
+    thumbObserver ??= new IntersectionObserver(
+      (entries, observer) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          observer.unobserve(entry.target);
+          askThumb(thumbPathOf.get(entry.target)!);
+        }
+      },
+      { rootMargin: "200px 0px" },
+    );
+    thumbObserver.observe(el);
+    return {
+      destroy() {
+        thumbObserver?.unobserve(el);
+        thumbPathOf.delete(el);
+      },
+    };
+  }
+
+  onMount(() => () => {
+    thumbsAlive = false;
+    thumbObserver?.disconnect();
+    thumbQueue.length = 0;
+    for (const url of Object.values(thumbs)) URL.revokeObjectURL(url);
   });
 
   async function openFolder() {
@@ -309,7 +363,7 @@
         </div>
         {#each shown as r (r.path)}
           <!-- svelte-ignore a11y_interactive_supports_focus (right-click is a shortcut; the ⋯ button is the keyboard way) -->
-          <div class="tr" role="row" oncontextmenu={(e) => contextMenu(e, r.path)}>
+          <div class="tr" role="row" use:thumbWhenVisible={r.path} oncontextmenu={(e) => contextMenu(e, r.path)}>
             <button class="name" role="cell" onclick={() => p.onOpen(r.path)}>
               <span class="mini">{#if thumbs[r.path]}<img src={thumbs[r.path]} alt="" />{:else}<FileText size={16} />{/if}</span>
               <span class="n">{nameOf(r.path)}</span>
@@ -326,7 +380,7 @@
     {:else}
       <div class="grid">
         {#each shown as r (r.path)}
-          <div class="card" role="presentation" oncontextmenu={(e) => contextMenu(e, r.path)}>
+          <div class="card" role="presentation" use:thumbWhenVisible={r.path} oncontextmenu={(e) => contextMenu(e, r.path)}>
             <button class="open" onclick={() => p.onOpen(r.path)}>
               <div class="thumb">
                 {#if thumbs[r.path]}<img src={thumbs[r.path]} alt="" />{:else}<div class="blank"><i></i><i></i><i></i><i></i><i></i></div>{/if}
