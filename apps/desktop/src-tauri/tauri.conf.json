@@ -41,6 +41,15 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "fileAssociations": [
+      {
+        "ext": ["tex"],
+        "name": "LaTeX document",
+        "description": "LaTeX document",
+        "mimeType": "text/x-tex",
+        "role": "Editor"
+      }
+    ],
     "resources": {
       "../../../templates/": "templates/",
       "../../../data/dictionaries/": "dictionaries/"
