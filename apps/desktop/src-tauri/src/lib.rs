@@ -212,7 +212,8 @@ fn open_pdf_externally(app: tauri::AppHandle, state: State<AppState>) -> CmdResu
 fn open_project_file(app: tauri::AppHandle, state: State<AppState>, path: String) -> CmdResult<()> {
     use tauri_plugin_opener::OpenerExt;
     let root = project(&state)?.root;
-    let full = lemmata_project::canonical(Path::new(&path)).map_err(|e| format!("Could not open {path}: {e}"))?;
+    let full = lemmata_project::canonical(Path::new(&path))
+        .map_err(|e| format!("Could not open {path}: {e}"))?;
     // Only files of the open project, never an arbitrary path the page sends.
     if !full.starts_with(&root) || !full.is_file() {
         return Err(format!("{path} is not a file of this project."));
@@ -422,42 +423,16 @@ fn read_pdf(state: State<AppState>) -> CmdResult<Response> {
     Ok(Response::new(bytes))
 }
 
-/// Whether the PDF was written at least a second after the last change to any
-/// source file (the build folder and hidden folders don't count).
-fn pdf_newer_than_sources(root: &Path, outdir: &str, pdf: &Path) -> bool {
-    fn newest(entries: &[Entry]) -> u64 {
-        entries
-            .iter()
-            .map(|e| {
-                if e.is_dir {
-                    newest(&e.children)
-                } else {
-                    e.modified
-                }
-            })
-            .max()
-            .unwrap_or(0)
-    }
-    let Some(pdf_secs) = std::fs::metadata(pdf)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-    else {
-        return false;
-    };
-    pdf_secs > newest(&lemmata_project::tree(root, outdir))
-}
-
 /// True when the open project's PDF is up to date, so opening it needn't build.
 #[tauri::command(async)]
 fn pdf_is_current(state: State<AppState>) -> CmdResult<bool> {
-    let (root, outdir, pdf) = {
-        let guard = state.project.lock_safe();
-        let p = guard.as_ref().ok_or("No project is open.")?;
-        (p.root.clone(), p.config.outdir.clone(), p.pdf_path())
-    };
-    Ok(pdf_newer_than_sources(&root, &outdir, &pdf))
+    // The build's own check: compared with when the last good build began, so an edit saved while it ran isn't taken as built.
+    let project = state
+        .project
+        .lock_safe()
+        .clone()
+        .ok_or("No project is open.")?;
+    Ok(lemmata_tex::up_to_date(&project))
 }
 
 fn synctex_and_pdf(state: &State<AppState>) -> CmdResult<(PathBuf, PathBuf, PathBuf)> {
@@ -1056,35 +1031,5 @@ mod tests {
             super::percent_decode("%2Fhome%2Fa%2FMa%C3%AEtrise%20x"),
             "/home/a/Maîtrise x"
         );
-    }
-
-    #[test]
-    fn pdf_is_current_only_when_newer_than_every_source() {
-        use std::time::{Duration, SystemTime};
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let at = |p: &std::path::Path, secs_ago: u64| {
-            let f = std::fs::File::options().write(true).open(p).unwrap();
-            f.set_modified(SystemTime::now() - Duration::from_secs(secs_ago))
-                .unwrap();
-        };
-        std::fs::create_dir_all(root.join("sections")).unwrap();
-        std::fs::create_dir_all(root.join(".lemmata/build")).unwrap();
-        let (main, sec) = (root.join("main.tex"), root.join("sections/a.tex"));
-        let pdf = root.join(".lemmata/build/main.pdf");
-        for p in [&main, &sec, &pdf] {
-            std::fs::write(p, "x").unwrap();
-        }
-        let current = || super::pdf_newer_than_sources(root, ".lemmata/build", &pdf);
-        at(&main, 100);
-        at(&sec, 50);
-        at(&pdf, 10);
-        assert!(current());
-        at(&sec, 5); // edited after the PDF, in a subfolder
-        assert!(!current());
-        at(&sec, 10); // same second as the PDF: not provably current
-        assert!(!current());
-        std::fs::remove_file(&pdf).unwrap();
-        assert!(!current());
     }
 }

@@ -528,8 +528,8 @@ fn warm_ok(project: &Project) -> bool {
     !needs_tools
 }
 
-/// The last build succeeded, its PDF and log are there, and no project file changed since.
-fn up_to_date(project: &Project) -> bool {
+/// The last build succeeded, its PDF and log are there, and no project file changed since it began.
+pub fn up_to_date(project: &Project) -> bool {
     let stamp = project.outdir_abs().join(OK_STAMP);
     let main = project.main.to_string_lossy();
     std::fs::read_to_string(&stamp).is_ok_and(|s| s == main)
