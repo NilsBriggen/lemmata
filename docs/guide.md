@@ -4,21 +4,22 @@ Lemmata is a LaTeX editor that builds your document as you write and shows the P
 
 ## First launch
 
-Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't find one, it shows the install command for your system. **Open terminal** shows that command in a terminal and waits for you to press Enter; Lemmata never installs anything by itself. Afterwards click **Check again**. If TeX is installed somewhere unusual, choose its `bin` folder.
+Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't find one, it shows the install command for your system. **Open terminal** shows that command in a terminal and waits for you to press Enter; Lemmata never installs anything by itself. Afterwards click **Check again**. If TeX is installed somewhere unusual, choose its `bin` folder. **Continue without compiling** opens Lemmata without TeX: nothing compiles until TeX is found, and Lemmata checks again when you come back to its window. A notice offers **Set up TeX** to return to these steps.
 
 **Windows with MiKTeX:** MiKTeX does not include Perl, and `latexmk` is a Perl script. Also run `winget install StrawberryPerl.StrawberryPerl` and restart Lemmata. The first build downloads the packages your document needs, which can take a minute. If MiKTeX refuses to run because it hasn't checked for updates (in any language, "major issue"), open MiKTeX Console, choose Updates and check for updates, or run `miktex packages update-package-database`; Lemmata shows this command when it happens. If Windows blocks Perl itself (an application control policy such as Smart App Control, error 4551), latexmk can't start; Lemmata then runs `pdflatex` and `biber` directly, with the same extra passes, and says so in the Problems panel. If a build fails before TeX starts, the Problems panel shows what `latexmk` printed.
 
 ## Projects
 
-**Folders on the start screen.** The **Folders** section on the left of the start screen lets you group projects: *New folder* creates one, and a project's menu (its ⋯ button, or right-click it) puts it in a folder, takes it out, or makes a new folder. Click a folder to see only its projects. New and imported projects land in the folder you are looking at. Deleting a folder doesn't delete anything; its projects go back to *No folder* and stay in *All projects*. Folders are only a way to arrange the list: the project folders on disk don't move. The list now remembers up to 200 projects.
+**Folders on the start screen.** The **Folders** section on the left of the start screen lets you group projects: *New folder* creates one, and a project's menu (its ⋯ button, or right-click it) puts it in a folder, takes it out, or makes a new folder. Click a folder to see only its projects. New and imported projects land in the folder you are looking at. Deleting a folder doesn't delete anything; its projects go back to *No folder* and stay in *All projects*. **Undo** brings a deleted folder back for about eight seconds. Folders are only a way to arrange the list: the project folders on disk don't move. The list now remembers up to 200 projects.
 
 **Project menu.** Right-click a project on the start screen, or use its ⋯ button, to open it, show it in your file manager, put it in a folder, remove it from the list (the files stay on disk), or *Delete project…*, which moves the whole project folder to your system's trash after asking. Lemmata only deletes folders that hold a `.tex` file or `lemmata.toml` directly, never your home folder or a folder above it.
 
 - **New project** starts from a template: article, thesis, slides, CV, letter or homework (exercise sheets with problem boxes and a name-and-course header).
-- **Open folder** works with any folder containing a `.tex` file with `\documentclass`. If there are several, Lemmata asks which one is the main document.
+- **Open folder** works with any folder containing a `.tex` file with `\documentclass`. If there are several, Lemmata asks which one is the main document. If there are none, it offers **Create main.tex and open**.
 - **Import Overleaf .zip** takes the zip from Overleaf's *Menu → Download → Source*.
+- **Sort** the list by name or by last opened, with the sort menu next to the search box.
 
-Per-project settings (main file, engine, bibliography tool, spell-check language, shell escape) are stored in `lemmata.toml` in the project folder, so they travel with it.
+Per-project settings (main file, engine, bibliography tool, spell-check language, shell escape, build timeout and build folder) are stored in `lemmata.toml` in the project folder, so they travel with it.
 
 **Several documents in one project.** Under *Project settings → Build targets* you can name more than one main file, for example a paper and its slides, each with its own compiler if you like. With two or more targets, a picker next to the project name in the toolbar switches what Recompile builds.
 
@@ -28,17 +29,21 @@ Per-project settings (main file, engine, bibliography tool, spell-check language
 
 ## Writing and building
 
-Lemmata saves shortly after you stop typing and builds after each save. In **Preferences** you can change the save delay or save only with Ctrl+S, and in the **Recompile** menu you can turn auto-compile off so the document only builds when you press Recompile. The build output goes to `.lemmata/build`, which is kept out of git.
+Lemmata saves shortly after you stop typing and builds after each save. In **Preferences** you can change the save delay or save only with Ctrl+S, and in the **Recompile** menu you can turn auto-compile off so the document only builds when you press Recompile. The build output goes to `.lemmata/build`, which is kept out of git. Under *Project settings → Build folder* you can choose another folder inside the project.
 
 The Recompile menu also has:
 
 - **Fast (draft)**: figures are drawn as empty boxes, which makes big documents build quicker. Switch back to Normal for the final PDF.
 - **Stop at the first error**: instead of pushing on to a complete PDF.
-- **Clear cached files**: deletes auxiliary files, for the odd case where a stale `.aux` confuses LaTeX.
+- **Clear cached files**: deletes auxiliary files, for the odd case where a stale `.aux` confuses LaTeX. It only empties Lemmata's own build folder; a build folder that Lemmata didn't create is left alone.
 
-A build that runs longer than five minutes is stopped and explained (change `timeout_secs` in `lemmata.toml`, or set it to 0 for no limit).
+A build that runs longer than five minutes is stopped and explained. Change the limit under *Project settings → Stop a build after N seconds* (10 to 3600), or set `timeout_secs` in `lemmata.toml`; 0 means no limit.
+
+If a build fails but an older PDF is still there, the PDF pane keeps that PDF and shows a banner with **Show logs**. Clicking the red build result in the status bar also opens the logs. While a build runs, the Recompile button reads **Stop**.
 
 Errors and warnings appear in the **Problems** panel in plain language, with a few lines of source and a hint where one is known. Click one to jump to its line (**F8** and **Shift+F8** step through problems in the editor). Some come with a one-click fix: **Add `\usepackage{amssymb}`** when a command like `\mathbb` is undefined, or the exact install command when a package is missing from your TeX installation. Problems from the bibliography tool (a missing `.bib` file, a broken entry) are listed too.
+
+If a save fails, the tab stays open with your text, the status bar says **Not saved** in red, and the error stays on screen until you dismiss it. With autosave on, closing the window saves unsaved files first. If a file can't be saved, or autosave is off, Lemmata asks before it closes. Switching projects saves first too, and stays where it is if a save fails.
 
 ## The editor
 
@@ -55,7 +60,7 @@ Errors and warnings appear in the **Problems** panel in plain language, with a f
 ## The PDF
 
 - **Double-click** (or Ctrl+click) in the PDF to jump to the source line.
-- **Ctrl+J** in the editor shows the current line in the PDF.
+- **Ctrl+J** in the editor, or the **Go to PDF** button in the editor toolbar, shows the current line in the PDF.
 - Text in the PDF can be **selected and copied**. **Ctrl+F** with the PDF focused searches it and highlights every match.
 - Links in the PDF work: `\ref`, the table of contents and URLs.
 - The **outline** button lists the PDF's bookmarks (load `hyperref` to get them).
@@ -65,7 +70,7 @@ Errors and warnings appear in the **Problems** panel in plain language, with a f
 
 ## Shortcuts
 
-Press **Ctrl+Shift+/** for the full list inside Lemmata. The most used:
+Press **Ctrl+Shift+/** or **F1** for the full list inside Lemmata. It has a search box and also lists mouse actions, such as double-clicking in the PDF. The most used:
 
 | Keys | Action |
 |---|---|
@@ -108,7 +113,7 @@ If one of these needs a package your document doesn't load yet (`graphicx`, `boo
 
 **Going places and renaming.** `Ctrl+Shift+O` jumps to a section by name. *Go to a label or citation…* in the command palette lists every `\label` and every entry in your `.bib` files. *Rename label or citation key…* changes a label or key everywhere at once: the definition, every `\ref`, `\cref` or `\cite` that uses it, and the `.bib` entry. It shows each place first and saves a snapshot, so History can undo it. Put the cursor on the name before opening it and the dialog is filled in for you.
 
-**Snippets.** *Preferences → Snippets* lets you define short triggers that expand to longer text. Type the trigger (two or more letters) and pick it from the completion list; `${}` in the text marks places Tab jumps to.
+**Snippets.** *Preferences → Snippets* lets you define short triggers that expand to longer text. You can also open it with *Edit snippets…* in the command palette. Type the trigger (two or more letters) and pick it from the completion list; `${}` in the text marks places Tab jumps to.
 
 ## Spelling and word count
 
@@ -130,9 +135,9 @@ History is on for every project; it only needs git to be installed. A project th
 
 Right-click in the file tree to create, rename, duplicate or delete files and folders, copy a path, set the main file, or show a file in your file manager. Drag files from your computer onto a folder to add them.
 
-**Selecting.** Click a row, Ctrl-click (⌘-click on a Mac) to add or remove rows, Shift-click for a range. **Drag** the selection onto a folder to move it. Renaming or moving a chapter or figure offers to update the `\input`, `\include` and `\includegraphics` lines that refer to it.
+**Selecting.** Click a row, Ctrl-click (⌘-click on a Mac) to add or remove rows, Shift-click for a range. **Drag** the selection onto a folder to move it. Renaming or moving a chapter or figure offers to update the `\input`, `\include` and `\includegraphics` lines that refer to it. Renaming or moving a file or folder also updates the main document and build targets that point to it, and changing only the capitalisation of a name works on Windows and macOS.
 
-**Keyboard.** Click the tree, then use the arrow keys to move, Left and Right to fold and unfold folders, Enter to open, `F2` to rename, `Delete` to delete, `Ctrl+X`, `Ctrl+C` and `Ctrl+V` to cut, copy and paste, `Ctrl+D` to duplicate, `Ctrl+A` to select all, `Ctrl+N` and `Ctrl+Shift+N` for a new file or folder, and `Ctrl+Z` to undo. Typing a few letters jumps to a matching name.
+**Keyboard.** Click the tree, then use the arrow keys to move, Left and Right to fold and unfold folders, Enter to open, `F2` to rename, `Delete` to delete, `Ctrl+X`, `Ctrl+C` and `Ctrl+V` to cut, copy and paste, `Ctrl+D` to duplicate, `Ctrl+A` to select all, `Ctrl+N` and `Ctrl+Shift+N` for a new file or folder, and `Ctrl+Z` to undo. Typing a few letters jumps to a matching name. **Shift+F10** or the **Menu** key opens the menu for the selected file or the focused tab.
 
 **Undo.** Moves, renames, deletes, duplicates, pastes and new files can be undone with the *Undo* button in the notice, `Ctrl+Z` in the tree, or *Undo the last file operation* in the command palette. Deleted files wait in `.lemmata/trash` inside the project for a week, then disappear. If you prefer your computer's trash, choose *System trash* under *Deleted files* in Preferences; those deletions can't be undone from Lemmata.
 
@@ -140,19 +145,21 @@ Right-click in the file tree to create, rename, duplicate or delete files and fo
 
 **Tabs.** Right-click a tab to pin it: pinned tabs stay at the left, show a pin instead of a close button, and survive *Close others* and *Close all*. `Ctrl+Shift+T` reopens the last closed tab. Folded sections are remembered per file.
 
-Images and PDFs in the project open in a viewer tab. Tabs can be dragged to reorder; middle-click or Ctrl+W closes one.
+Images and PDFs in the project open in a viewer tab. Text formats such as `csv`, `json`, `yaml`, `py`, `Makefile` and `.latexmkrc` open in the editor, and project search covers them too. Tabs can be dragged to reorder; middle-click or Ctrl+W closes one.
 
-Files changed by other programs (another editor, `git pull`) reload automatically. If you have unsaved changes to the same file, Lemmata asks first; it never mistakes its own autosaves for outside changes. If a file or folder is deleted outside Lemmata, its tabs close and a short notice tells you.
+Files changed by other programs (another editor, `git pull`) reload automatically, unless you have unsaved changes to the same file. Then autosave pauses for that file and Lemmata asks: **Keep my version** or **Load the version on disk**. Nothing is saved until you choose. Lemmata never mistakes its own autosaves for outside changes. If a file or folder is deleted outside Lemmata, its tabs close and a short notice tells you.
 
 ## Exporting
 
 - **Export PDF** saves a copy of the PDF.
 - **Export the whole project (.zip)** packs every file of the project (not hidden files or the build folder) plus the latest PDF, for a backup or to send to someone.
-- **Export for arXiv** builds the project, then zips exactly the files the build used plus the compiled bibliography (`.bbl`), with comments removed. That's ready to upload to arXiv.
+- **Export for arXiv** builds the project, then zips exactly the files the build used plus the compiled bibliography (`.bbl`), with comments removed (but not a `%` inside verbatim environments, `\verb` or URLs). If the document doesn't build without errors, Lemmata warns first and offers **Export anyway**. That's ready to upload to arXiv.
 
 ## Shell escape
 
-Some packages (`minted`, `svg`) need to run programs during the build. Because a document could run any command, this is off by default. Turn it on in project settings only for projects you trust.
+Some packages (`minted`, `svg`) need to run programs during the build. Because a document could run any command, this is off by default. Turn it on in *Project settings* only for projects you trust; doing so counts as allowing it.
+
+A project's `lemmata.toml` can't turn it on by itself. If it does, Lemmata asks when you open the project: **Allow for this project** lets the document run programs, and **Build without it** builds without shell escape. Until you allow it, builds run without it. If you choose **Build without it**, Lemmata asks again the next time you open the project.
 
 ## Updates
 
