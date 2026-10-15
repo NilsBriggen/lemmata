@@ -1,16 +1,26 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 2.0.0-rc.2 (2026-10-15)
+
+### Added
+- New project starts with six kinds of document, then their templates
+- Save as template from a project's menu, and optionally trash the project
+
+### Fixed
+- A very large image after another one is no longer blank in the PDF
 ## 2.0.0-rc.1 (2026-10-15)
 
 ### Added
-- Command-line tool: lint, wordcount, bib, outline and export --zip
+- Lint, wordcount, bib, outline and export --zip
 - Tectonic as an optional engine, downloaded on demand
 - Git panel with commit, pull, push, branches and clone
 - Review changes against a snapshot, and a compiled PDF diff
+- Template gallery with 14 more templates
 - 14 more spell-check languages, downloaded on demand
 - Export for arXiv as one .tex file
 - Open .tex files and project folders from the system
+- Wire the 2.0 features into the app
 - A short What's new window after an update
 - Templates from a template collection, beyond the six built in
 - Offer a missing dictionary when a project or file asks for its language
