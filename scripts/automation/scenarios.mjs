@@ -128,7 +128,10 @@ export const scenarios = {
     await lem("command", { id: "bib-manager" });
     await until(lem, "the bibliography manager", async () => (await lem("text", { selector: "[role=dialog]" }).catch(() => "")).includes("schulman2017ppo"));
     await lem("click", { selector: '[role=dialog] [aria-label="Close"]' });
-    if (await lem("exists", { selector: "[role=dialog]" })) throw new Error("the bibliography manager didn't close");
+    // A dialog may take a moment to go; one still open after that names itself in the error.
+    await until(lem, "the bibliography manager to close", async () => !(await lem("exists", { selector: "[role=dialog]" })), 5_000).catch(async () => {
+      throw new Error(`a dialog is still open: ${JSON.stringify(await lem("query", { selector: "[role=dialog]" }))}`);
+    });
     await lem("idle", { timeout: 120_000 });
     await check(lem, "after TODOs and the manager");
   },
