@@ -204,20 +204,45 @@ pub async fn refresh(cache: &Path) -> Result<usize, String> {
     let entries = parse(&fetch(&client, &format!("{base}index.json")).await?)?;
     let save = |e: std::io::Error| format!("Couldn't save the templates: {e}");
     std::fs::create_dir_all(cache).map_err(save)?;
-    for (id, f) in missing(cache, &entries) {
-        let bytes = fetch(&client, &format!("{base}templates/{id}/{}", f.path)).await?;
-        if bytes.len() as u64 != f.size || sha256(&bytes) != f.sha256 {
-            return Err(format!(
-                "A file of the {id} template didn't match the template list, so it wasn't kept. Try again later."
-            ));
+    // A few downloads at a time: one after another, a first visit takes half a minute.
+    const PARALLEL: usize = 8;
+    let mut todo = missing(cache, &entries)
+        .into_iter()
+        .map(|(id, f)| (id.to_string(), f.path.clone(), f.size, f.sha256.clone()))
+        .collect::<Vec<_>>()
+        .into_iter();
+    let mut running = tokio::task::JoinSet::new();
+    let start = |running: &mut tokio::task::JoinSet<Result<(), String>>,
+                 (id, path, size, hash): (String, String, u64, String)| {
+        let (client, url, target) = (
+            client.clone(),
+            format!("{base}templates/{id}/{path}"),
+            cache.join(&id).join(&path),
+        );
+        running.spawn(async move {
+            let bytes = fetch(&client, &url).await?;
+            if bytes.len() as u64 != size || sha256(&bytes) != hash {
+                return Err(format!(
+                    "A file of the {id} template didn't match the template list, so it wasn't kept. Try again later."
+                ));
+            }
+            let save = |e: std::io::Error| format!("Couldn't save the templates: {e}");
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(save)?;
+            }
+            let tmp = target.with_extension("part");
+            std::fs::write(&tmp, &bytes).map_err(save)?;
+            std::fs::rename(&tmp, &target).map_err(save)
+        });
+    };
+    for job in todo.by_ref().take(PARALLEL) {
+        start(&mut running, job);
+    }
+    while let Some(done) = running.join_next().await {
+        done.map_err(|e| e.to_string())??;
+        if let Some(job) = todo.next() {
+            start(&mut running, job);
         }
-        let target = cache.join(id).join(&f.path);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(save)?;
-        }
-        let tmp = target.with_extension("part");
-        std::fs::write(&tmp, &bytes).map_err(save)?;
-        std::fs::rename(&tmp, &target).map_err(save)?;
     }
     tidy(cache, &entries).map_err(save)?;
     Ok(entries.len())

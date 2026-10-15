@@ -6,6 +6,7 @@
   import FileText from "@lucide/svelte/icons/file-text";
   import Search from "@lucide/svelte/icons/search";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
+  import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Trash2 from "@lucide/svelte/icons/trash";
   import Star from "@lucide/svelte/icons/star";
   import Modal from "./ui/Modal.svelte";
@@ -31,34 +32,45 @@
   let error = $state<string | null>(null);
 
   let query = $state("");
-  let category = $state("All");
+  /** Showing the folder of publisher templates instead of the everyday sections. */
+  let inFolder = $state(false);
   /** The template collection: being fetched, or why it couldn't be. */
   let online = $state<{ loading: boolean; error: string | null }>({ loading: true, error: null });
 
-  const ORDER = ["Papers", "Theses & books", "Presentations", "Posters", "Letters & CV", "Teaching", "Basics", "My templates"];
+  // Everyday kinds of document first, a few templates each; the publishers' own templates
+  // (IEEE, ACM, Springer, …) are in one folder, since most people never need them.
+  const ORDER = ["My templates", "Papers", "School", "Theses & reports", "Presentations", "Posters", "Letters & CV"];
+  const FOLDER = "Journals & conferences";
   const catOf = (t: Template) => t.category || "Other";
-  const categories = $derived(
-    [...new Set(templates.map(catOf))].sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99)),
+  const sections = $derived(
+    [...new Set(templates.map(catOf))]
+      .filter((c) => c !== FOLDER)
+      .sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99))
+      .map((c) => [c, templates.filter((t) => catOf(t) === c)] as const),
   );
+  const folder = $derived(templates.filter((t) => catOf(t) === FOLDER));
   // Every word of the query must appear in the name, description, tags or category.
-  const shown = $derived.by(() => {
+  const matches = $derived.by(() => {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
     return templates.filter((t) => {
-      if (category !== "All" && catOf(t) !== category) return false;
       const hay = [t.name, t.description, catOf(t), ...(t.tags ?? [])].join(" ").toLowerCase();
       return words.every((w) => hay.includes(w));
     });
   });
+  /** A template chosen by a link opens the folder when that's where it is. */
+  const showChosen = () => (inFolder = folder.some((t) => t.id === chosen));
 
   onMount(async () => {
     templates = await api.listTemplates().catch(() => []);
     chosen = linked(templates) ?? templates[0]?.id ?? "article";
+    if (initialTemplate) showChosen();
     parent = defaultParent || (await documentDir().catch(() => ""));
     // The collection's templates arrive in the background; ones seen before are already listed.
     try {
       await api.refreshTemplates();
       templates = await api.listTemplates();
       chosen = (initialTemplate && linked(templates)) || chosen;
+      if (initialTemplate) showChosen();
       online = { loading: false, error: null };
     } catch (err) {
       online = { loading: false, error: errorMessage(err) };
@@ -69,7 +81,6 @@
     try {
       await api.deleteTemplate(t.id);
       templates = templates.filter((x) => x.id !== t.id);
-      if (category !== "All" && !templates.some((x) => catOf(x) === category)) category = "All";
       if (chosen === t.id) chosen = templates[0]?.id ?? "article";
     } catch (err) {
       error = errorMessage(err);
@@ -95,48 +106,60 @@
   }
 </script>
 
+{#snippet card(t: Template)}
+  <div class="tpl">
+    <button type="button" role="radio" aria-checked={chosen === t.id} class:on={chosen === t.id} onclick={() => (chosen = t.id)}>
+      <span class="thumb">
+        {#if t.preview}
+          <img src={t.preview} alt="" loading="lazy" />
+        {:else}
+          {#if t.user}<Star size={28} />{:else}<FileText size={28} />{/if}
+        {/if}
+      </span>
+      <b>{t.name}</b>
+      <span class="desc">{t.description || (t.user ? "Your template" : "")}</span>
+    </button>
+    {#if t.user}
+      <button type="button" class="del" aria-label="Delete template {t.name}" title="Delete this template" onclick={() => remove(t)}><Trash2 size={14} /></button>
+    {/if}
+  </div>
+{/snippet}
+
 <Modal title="New project" subtitle="Start from a template. It's a normal folder you can open in any editor." width={900} {onClose}>
   <form id="new-project" onsubmit={create}>
     <div class="gallery">
-      <nav class="cats" aria-label="Categories">
-        {#each ["All", ...categories] as c (c)}
-          <button type="button" class:on={category === c} aria-pressed={category === c} onclick={() => (category = c)}>
-            {c}<span class="n">{c === "All" ? templates.length : templates.filter((t) => catOf(t) === c).length}</span>
-          </button>
-        {/each}
-      </nav>
-      <div class="main">
-        <label class="search">
-          <Search size={15} />
-          <input class="input" type="search" bind:value={query} placeholder="Search templates, e.g. ieee, poster, thesis" aria-label="Search templates" />
-        </label>
-        {#if online.loading}
-          <p class="online">Getting more templates…</p>
-        {:else if online.error}
-          <p class="online" title={online.error}>More templates are online, but they couldn't be loaded right now.</p>
-        {/if}
-        <div class="templates" role="radiogroup" aria-label="Template">
-          {#each shown as t (t.id)}
-            <div class="tpl">
-              <button type="button" role="radio" aria-checked={chosen === t.id} class:on={chosen === t.id} onclick={() => (chosen = t.id)}>
-                <span class="thumb">
-                  {#if t.preview}
-                    <img src={t.preview} alt="" loading="lazy" />
-                  {:else}
-                    {#if t.user}<Star size={28} />{:else}<FileText size={28} />{/if}
-                  {/if}
-                </span>
-                <b>{t.name}</b>
-                <span class="desc">{t.description || (t.user ? "Your template" : "")}</span>
-              </button>
-              {#if t.user}
-                <button type="button" class="del" aria-label="Delete template {t.name}" title="Delete this template" onclick={() => remove(t)}><Trash2 size={14} /></button>
-              {/if}
-            </div>
-          {:else}
-            <p class="none">No template matches "{query}".</p>
+      <label class="search">
+        <Search size={15} />
+        <input class="input" type="search" bind:value={query} placeholder="Search templates, e.g. thesis, poster, ieee" aria-label="Search templates" />
+      </label>
+      {#if online.loading}
+        <p class="online">Getting more templates…</p>
+      {:else if online.error}
+        <p class="online" title={online.error}>More templates are online, but they couldn't be loaded right now.</p>
+      {/if}
+      <div class="list" role="radiogroup" aria-label="Template">
+        {#if query.trim()}
+          <div class="templates">
+            {#each matches as t (t.id)}{@render card(t)}{:else}<p class="none">No template matches "{query}".</p>{/each}
+          </div>
+        {:else if inFolder}
+          <button type="button" class="back" onclick={() => (inFolder = false)}><ArrowLeft size={14} /> All templates</button>
+          <h3>{FOLDER}</h3>
+          <p class="hint">Templates with a publisher's own class, for submitting to their journals and conferences.</p>
+          <div class="templates">{#each folder as t (t.id)}{@render card(t)}{/each}</div>
+        {:else}
+          {#each sections as [name, list] (name)}
+            <h3>{name}</h3>
+            <div class="templates">{#each list as t (t.id)}{@render card(t)}{/each}</div>
           {/each}
-        </div>
+          {#if folder.length}
+            <h3>More</h3>
+            <button type="button" class="folder" onclick={() => (inFolder = true)}>
+              <FolderOpen size={22} />
+              <span><b>{FOLDER}</b><span class="desc">IEEE, ACM, Springer, Elsevier and more: {folder.length} templates with a publisher's own class</span></span>
+            </button>
+          {/if}
+        {/if}
       </div>
     </div>
     <div class="row">
@@ -163,20 +186,21 @@
 
 <style>
   form { display: flex; flex-direction: column; gap: 16px; }
-  .gallery { display: flex; gap: 16px; height: min(420px, 52vh); }
-  .cats { display: flex; flex-direction: column; gap: 2px; width: 150px; flex: none; overflow-y: auto; }
-  .cats button {
-    display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 10px; text-align: left;
-    background: transparent; border: 0; border-radius: var(--r-sm); color: var(--muted); cursor: pointer;
-  }
-  .cats button:hover { background: var(--surface-2); color: var(--ink); }
-  .cats button.on { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--ink); font-weight: 600; }
-  .n { font-size: 11px; color: var(--faint); font-weight: 400; }
-  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+  .gallery { display: flex; flex-direction: column; gap: 10px; height: min(440px, 54vh); }
+  .list { flex: 1; min-height: 0; overflow-y: auto; padding: 2px; }
+  h3 { margin: 14px 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .list > h3:first-child, .back + h3 { margin-top: 2px; }
+  .hint { margin: -4px 0 10px; color: var(--muted); }
+  .back { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 8px; padding: 2px 6px; border: 0; background: none; color: var(--accent); cursor: pointer; border-radius: var(--r-sm); }
+  .back:hover { background: var(--surface-2); }
+  .folder { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; text-align: left; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); color: var(--ink); cursor: pointer; }
+  .folder:hover { border-color: var(--border-strong); }
+  .folder :global(svg) { color: var(--accent); flex: none; }
+  .folder > span { display: flex; flex-direction: column; gap: 2px; }
   .search { position: relative; display: block; }
   .search :global(svg) { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
   .search .input { width: 100%; padding-left: 32px; }
-  .templates { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; padding: 2px; }
+  .templates { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; padding: 2px; }
   .none { grid-column: 1 / -1; color: var(--muted); margin: 8px 0; }
   .online { margin: -4px 0 0; font-size: 12px; color: var(--muted); }
   .tpl { position: relative; display: flex; }
@@ -191,11 +215,12 @@
   .templates button:hover { border-color: var(--border-strong); }
   .templates button.on { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
   .thumb {
-    display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 3 / 4; margin-bottom: 4px;
+    display: flex; align-items: center; justify-content: center; width: 100%; height: 92px; margin-bottom: 4px;
     background: var(--surface-2); border-radius: var(--r-sm); color: var(--faint); overflow: hidden;
   }
   /* Pages are white whatever the theme; the border keeps them from melting into dark cards. */
-  .thumb img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
+  /* The top of page 1 (title, first lines) is what tells templates apart, at a size that fits several rows. */
+  .thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; background: #fff; }
   .desc { color: var(--muted); font-size: 12px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .row { display: flex; gap: 8px; }
   .grow { flex: 1; }
