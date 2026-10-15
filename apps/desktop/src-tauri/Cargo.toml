@@ -22,6 +22,7 @@ lemmata-pkgmap.workspace = true
 lemmata-history.workspace = true
 lemmata-spell.workspace = true
 lemmata-bib.workspace = true
+lemmata-grammar.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net"] }

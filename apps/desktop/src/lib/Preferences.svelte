@@ -50,6 +50,12 @@
     if (!d || d.name === "unknown") return "No TeX distribution found";
     return d.name === "texlive" ? `TeX Live ${d.year ?? ""}` : `MiKTeX ${d.version ?? ""}`;
   });
+  let grammarStatus = $state<string | null>(null);
+  async function testGrammar() {
+    grammarStatus = "checking…";
+    const { grammar } = await import("./grammar/service");
+    grammarStatus = (await grammar.ping(settings.grammar, settings.grammarUrl)) ?? "connected";
+  }
 </script>
 
 <Modal title="Preferences" subtitle="These apply to every project." width={600} {onClose}>
@@ -114,6 +120,23 @@
         <option value="off">Off</option>
       </select>
     </div>
+    <div class="row">
+      <label for="pref-grammar">Grammar check</label>
+      <select id="pref-grammar" class="input" value={settings.grammar} onchange={(e) => set("grammar", e.currentTarget.value as "off" | "local" | "custom")}>
+        <option value="off">Off</option>
+        <option value="local">LanguageTool on this computer</option>
+        <option value="custom">LanguageTool at an address…</option>
+      </select>
+    </div>
+    {#if settings.grammar === "custom"}
+      <div class="row">
+        <label for="pref-grammar-url">Server address</label>
+        <input id="pref-grammar-url" class="input mono" value={settings.grammarUrl} onchange={(e) => set("grammarUrl", e.currentTarget.value.trim())} />
+      </div>
+    {/if}
+    {#if settings.grammar !== "off"}
+      <p class="note">Your text goes to {settings.grammar === "local" ? "the LanguageTool server on this computer (http://localhost:8081)" : "this server"} and nowhere else. <button class="link" onclick={testGrammar}>Test the connection</button>{#if grammarStatus} — {grammarStatus}{/if}</p>
+    {/if}
   </section>
 
   <section>
@@ -213,4 +236,6 @@
   .buttons { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .muted { color: var(--muted); margin: 0; }
   .version { color: var(--faint); font-size: 12px; margin-right: auto; }
+  .note { margin: 0; color: var(--muted); font-size: 12.5px; }
+  .link { border: none; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
 </style>

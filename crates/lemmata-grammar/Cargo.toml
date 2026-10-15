@@ -1,0 +1,16 @@
+[package]
+name = "lemmata-grammar"
+description = "Grammar checking through a LanguageTool server the user runs or names"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls-no-provider", "charset", "http2", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[dev-dependencies]
+tokio.workspace = true
