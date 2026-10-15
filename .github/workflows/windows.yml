@@ -27,6 +27,8 @@ env:
 
 jobs:
   build:
+    # The version bump of a release changes nothing the tests cover; its code was tested on the commit before.
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -51,6 +53,7 @@ jobs:
         run: pwsh scripts/windows-smoke.ps1 target/release/lemmata.exe
 
   e2e:
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
     # windows-latest (Server 2025) breaks msedgedriver with WebView2 apps ("DevToolsActivePort file
     # doesn't exist"); 2022 works. https://github.com/actions/runner-images/issues/14738
     runs-on: windows-2022
