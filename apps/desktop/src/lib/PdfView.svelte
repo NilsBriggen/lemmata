@@ -184,6 +184,8 @@
     pageCount = next.numPages;
     if (await layout(seq)) for (const n of near) renderSlot(n);
     if (old) retire(old);
+    // Switching layouts can remove the viewer while a PDF is still loading.
+    if (!scroller) return;
     if (pendingScroll !== null) {
       scroller.scrollTop = pendingScroll * scroller.scrollHeight;
       pendingScroll = null;
@@ -198,7 +200,7 @@
     if (!doc) return false;
     const d = doc;
     const first = await d.getPage(1);
-    if (seq !== loadSeq) return false;
+    if (seq !== loadSeq || !scroller) return false;
     appliedLayout = pageLayout;
     twoUp = pageLayout !== "single" && d.numPages > 1;
     const base = first.getViewport({ scale: 1 });
@@ -249,7 +251,7 @@
   async function ensurePage(slot: Slot): Promise<PDFPageProxy | null> {
     if (slot.page) return slot.page;
     const page = await slot.doc.getPage(slot.n);
-    if (slots[slot.n - 1] !== slot) return null;
+    if (slots[slot.n - 1] !== slot || !scroller) return null;
     slot.page = page;
     const v = page.getViewport({ scale: 1 });
     if (Math.abs(v.width - slot.w) > 0.01 || Math.abs(v.height - slot.h) > 0.01) {
@@ -499,13 +501,14 @@
   }
 
   export function getPosition(): { fit: Fit; scroll: number } {
-    return { fit, scroll: scroller.scrollTop / Math.max(1, scroller.scrollHeight) };
+    return { fit, scroll: scroller ? scroller.scrollTop / Math.max(1, scroller.scrollHeight) : 0 };
   }
 
   /** Restores zoom and scroll; applied after the next PDF loads if none is shown yet. */
   export async function setPosition(pos: { fit: Fit; scroll: number }) {
     fit = pos.fit;
     if (doc && (await layout(loadSeq))) for (const n of near) renderSlot(n);
+    if (!scroller) return;
     scroller.scrollTop = pos.scroll * scroller.scrollHeight;
     pendingScroll = doc ? null : pos.scroll;
   }
@@ -562,10 +565,11 @@
 
   /** Changes the zoom, keeping the same part of the document in view. */
   export async function setFit(next: Fit) {
+    if (!scroller) return; // a resize can arrive after a layout switch removed the viewer
     const ratio = scroller.scrollTop / Math.max(1, scroller.scrollHeight);
     fit = typeof next === "number" ? Math.min(4, Math.max(0.25, next)) : next;
     if (await layout(loadSeq)) for (const n of near) renderSlot(n);
-    scroller.scrollTop = ratio * scroller.scrollHeight;
+    if (scroller) scroller.scrollTop = ratio * scroller.scrollHeight;
   }
 
   export function zoomBy(factor: number) {
@@ -595,7 +599,10 @@
       resizeTimer = setTimeout(() => setFit(fit), 120);
     });
     ro.observe(scroller);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      clearTimeout(resizeTimer);
+    };
   });
 
   // A changed layout re-lays the pages out, keeping the same part in view.
@@ -604,8 +611,8 @@
     const n = untrack(() => currentPage);
     untrack(() => setFit(fit)).then(() => {
       // Rows move when pages pair up, so keep the page rather than the scroll ratio.
-      const el = pagesEl.children[n - 1] as HTMLElement | undefined;
-      if (el) scroller.scrollTop = el.offsetTop - 12;
+      const el = pagesEl?.children[n - 1] as HTMLElement | undefined;
+      if (el && scroller) scroller.scrollTop = el.offsetTop - 12;
     });
   });
 
