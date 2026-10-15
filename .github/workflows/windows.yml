@@ -1,7 +1,8 @@
 name: Windows
 
 # Builds a document on Windows with a real MiKTeX in the situations that have
-# broken for users (Perl missing, Perl failing to start) and reports timings.
+# broken for users (Perl missing, Perl failing to start) and reports timings,
+# and runs the app's end-to-end tests on Windows (WebView2).
 # It runs on pushes to main that touch the build code (the paths below) and by hand:
 # Actions → Windows → Run workflow.
 on:
@@ -13,6 +14,8 @@ on:
       - "crates/lemmata-cli/**"
       - "crates/lemmata-log/**"
       - "crates/lemmata-project/**"
+      - "apps/desktop/**"
+      - "scripts/automation/**"
       - "scripts/windows-smoke.ps1"
       - ".github/workflows/windows.yml"
 
@@ -45,3 +48,46 @@ jobs:
       - name: Build documents in each scenario
         shell: pwsh
         run: pwsh scripts/windows-smoke.ps1 target/release/lemmata.exe
+
+  e2e:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install MiKTeX
+        shell: pwsh
+        run: |
+          choco install miktex --no-progress -y
+          $bin = "C:\Program Files\MiKTeX\miktex\bin\x64"
+          if (-not (Test-Path "$bin\pdflatex.exe")) { throw "MiKTeX was not installed where expected" }
+          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          & "$bin\initexmf.exe" --admin --set-config-value "[MPM]AutoInstall=1"
+      # The first build on a fresh MiKTeX installs packages for over a minute; do it before the tests' timeouts start.
+      - name: Warm up MiKTeX
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "warmup"
+          Copy-Item -Recurse tests/fixtures/article $dir
+          Push-Location $dir
+          latexmk -pdf -interaction=nonstopmode main.tex
+          Pop-Location
+          exit 0 # the fixture has deliberate warnings; only the package installs matter here
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked --version 2.1.0
+      - name: Build the app (debug, frontend embedded, with the test automation API)
+        run: pnpm --filter lemmata-desktop tauri build --debug --no-bundle
+        env:
+          VITE_LEMMATA_TEST: "1"
+      # The runner image ships an Edge WebDriver matching its Edge; WebView2 follows the same version.
+      - name: Run end-to-end tests
+        run: pnpm --filter lemmata-desktop e2e

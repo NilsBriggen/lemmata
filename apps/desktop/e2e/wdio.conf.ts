@@ -22,7 +22,9 @@ export const config: WebdriverIO.Config = {
   waitforTimeout: 60_000,
   beforeSession() {
     const bin = path.join(os.homedir(), ".cargo", "bin", process.platform === "win32" ? "tauri-driver.exe" : "tauri-driver");
-    driver = spawn(bin, [], { stdio: [null, process.stdout, process.stderr] });
+    // On Windows, tauri-driver needs Edge's WebDriver; GitHub's runner image says where it is.
+    const edge = process.platform === "win32" && process.env.EDGEWEBDRIVER ? ["--native-driver", path.join(process.env.EDGEWEBDRIVER, "msedgedriver.exe")] : [];
+    driver = spawn(bin, edge, { stdio: [null, process.stdout, process.stderr] });
   },
   afterSession() {
     driver?.kill();
