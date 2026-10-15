@@ -11,11 +11,15 @@
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import Search from "@lucide/svelte/icons/search";
   import ListTree from "@lucide/svelte/icons/list-tree";
+  import PanelLeft from "@lucide/svelte/icons/panel-left";
+  import ExternalLink from "@lucide/svelte/icons/external-link";
   import Presentation from "@lucide/svelte/icons/presentation";
   import X from "@lucide/svelte/icons/x";
   import ChevronUp from "@lucide/svelte/icons/chevron-up";
-  import PdfView, { type Fit, type OutlineNode } from "./PdfView.svelte";
+  import PdfView, { type Fit, type OutlineNode, type PageLayout } from "./PdfView.svelte";
   import PdfOutline from "./PdfOutline.svelte";
+  import PdfThumbnails from "./PdfThumbnails.svelte";
+  import type { PDFDocumentProxy } from "pdfjs-dist";
   import PresentationMode from "./Presentation.svelte";
   import Problems from "./Problems.svelte";
   import DropMenu from "./ui/DropMenu.svelte";
@@ -38,6 +42,11 @@
     onAddPackage: (pkg: string) => void;
     getSource: (file: string) => Promise<string | null>;
     onExport: () => void;
+    /** Opens the PDF in the system's default viewer; the button shows only when set. */
+    onOpenExternally?: () => void;
+    /** Single page or spreads (see PageLayout); the pane follows this and reports the user's choice. */
+    pageLayout?: PageLayout;
+    onPageLayout?: (layout: PageLayout) => void;
   }
   let p: Props = $props();
 
@@ -56,7 +65,18 @@
   let matchCount = $state(0);
   let matchIndex = $state(0);
   let searchInput = $state<HTMLInputElement>();
-  let outlineOpen = $state(false);
+  /** The side area: the document outline or page thumbnails. */
+  let side = $state<"outline" | "thumbs" | null>(null);
+  let layout = $state<PageLayout>("single");
+  $effect(() => {
+    layout = p.pageLayout ?? "single";
+  });
+  const setLayout = (l: PageLayout) => {
+    layout = l;
+    p.onPageLayout?.(l);
+  };
+  /** The loaded document, for the thumbnails; replaced on every rebuild. */
+  let thumbDoc = $state.raw<PDFDocumentProxy | null>(null);
   let outline = $state<OutlineNode[]>([]);
   let presenting = $state(false);
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -66,15 +86,16 @@
 
   export const load = async (data: Uint8Array) => {
     await view?.load(data);
-    if (outlineOpen) refreshOutline();
+    thumbDoc = view?.getDocument() ?? null;
+    if (side === "outline") refreshOutline();
   };
 
   async function refreshOutline() {
     outline = (await view?.getOutline()) ?? [];
   }
-  async function toggleOutline() {
-    outlineOpen = !outlineOpen;
-    if (outlineOpen) await refreshOutline();
+  async function toggleSide(which: "outline" | "thumbs") {
+    side = side === which ? null : which;
+    if (side === "outline") await refreshOutline();
   }
 
   export function openSearch() {
@@ -151,9 +172,13 @@
       </div>
       <div class="group end">
         <button class="btn ghost icon sm" class:on={searchOpen} aria-pressed={searchOpen} title="Search in the PDF ({display(keysOf("pdf-search"))})" aria-label="Search in the PDF" onclick={() => (searchOpen ? closeSearch() : openSearch())}><Search size={15} /></button>
-        <button class="btn ghost icon sm optional" class:on={outlineOpen} aria-pressed={outlineOpen} title="Document outline" aria-label="Document outline" onclick={toggleOutline}><ListTree size={15} /></button>
+        <button class="btn ghost icon sm optional" class:on={side === "outline"} aria-pressed={side === "outline"} title="Document outline" aria-label="Document outline" onclick={() => toggleSide("outline")}><ListTree size={15} /></button>
+        <button class="btn ghost icon sm optional" class:on={side === "thumbs"} aria-pressed={side === "thumbs"} title="Page thumbnails" aria-label="Page thumbnails" onclick={() => toggleSide("thumbs")}><PanelLeft size={15} /></button>
         <button class="btn ghost icon sm optional" title="Present full screen" aria-label="Present full screen" onclick={() => (presenting = true)}><Presentation size={15} /></button>
         <button class="btn ghost icon sm" class:on={settings.pdfDark} aria-pressed={settings.pdfDark} title="Dark pages in dark mode" aria-label="Dark pages" onclick={() => updateSettings({ pdfDark: !settings.pdfDark })}><Moon size={15} /></button>
+        {#if p.onOpenExternally}
+          <button class="btn ghost icon sm optional" title="Open in the system's PDF viewer" aria-label="Open in external viewer" onclick={p.onOpenExternally}><ExternalLink size={15} /></button>
+        {/if}
         <button class="btn ghost icon sm" title="Export PDF" aria-label="Export PDF" onclick={p.onExport}><Download size={15} /></button>
       </div>
     {/if}
@@ -172,9 +197,11 @@
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="body" onkeydown={onPaneKey}>
-    {#if outlineOpen && !p.logsOpen}
-      <aside class="outline" aria-label="Document outline">
-        {#if outline.length}
+    {#if side && !p.logsOpen}
+      <aside class="outline" aria-label={side === "outline" ? "Document outline" : "Page thumbnails"}>
+        {#if side === "thumbs"}
+          <PdfThumbnails doc={thumbDoc} current={currentPage} onGo={(n) => view?.gotoPage(n)} />
+        {:else if outline.length}
           <PdfOutline nodes={outline} onGo={(n) => (n.dest ? view?.goTo(n.dest) : null)} />
         {:else}
           <p>This PDF has no bookmarks. Load <code>hyperref</code> to get them from your sections.</p>
@@ -187,8 +214,8 @@
         <button class="btn sm" onclick={() => p.onLogs(true)}>Show logs</button>
       </div>
     {/if}
-    <div class="pdf" class:hidden={p.logsOpen} class:with-outline={outlineOpen && !p.logsOpen}>
-      <PdfView bind:this={view} bind:pageCount bind:currentPage bind:percent bind:matchCount bind:matchIndex building={p.building} failed={p.failed} onShowLogs={() => p.onLogs(true)} onSourceClick={p.onSourceClick} />
+    <div class="pdf" class:hidden={p.logsOpen} class:with-outline={side && !p.logsOpen}>
+      <PdfView bind:this={view} bind:pageCount bind:currentPage bind:percent bind:matchCount bind:matchIndex pageLayout={layout} building={p.building} failed={p.failed} onShowLogs={() => p.onLogs(true)} onSourceClick={p.onSourceClick} />
     </div>
     {#if p.logsOpen}
       <div class="pdf"><Problems diagnostics={p.diagnostics} status={p.status ?? null} buildId={p.buildId} onGoto={p.onGoto} onAddPackage={p.onAddPackage} getSource={p.getSource} /></div>
@@ -204,6 +231,10 @@
   <DropMenu anchor={zoomBtn} onClose={() => (zoomMenu = false)}>
     <button role="menuitem" onclick={() => fit("width")}>Fit width</button>
     <button role="menuitem" onclick={() => fit("page")}>Fit page</button>
+    <hr />
+    <button role="menuitemradio" aria-checked={layout === "single"} onclick={() => setLayout("single")}>Single page</button>
+    <button role="menuitemradio" aria-checked={layout === "spread"} onclick={() => setLayout("spread")}>Two pages</button>
+    <button role="menuitemradio" aria-checked={layout === "spread-first"} onclick={() => setLayout("spread-first")}>Start with two pages</button>
     <hr />
     {#each [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as z (z)}
       <button role="menuitem" onclick={() => fit(z)}>{z * 100}%</button>

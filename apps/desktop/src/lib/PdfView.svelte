@@ -1,6 +1,8 @@
 <script lang="ts" module>
   import type { PDFDocumentProxy } from "pdfjs-dist";
   export type Fit = "width" | "page" | number;
+  /** One page per row, or spreads: "spread" leaves page 1 alone (2–3, 4–5 …, like a book), "spread-first" pairs 1–2, 3–4 … */
+  export type PageLayout = "single" | "spread" | "spread-first";
 
   // A running presentation keeps rendering from a document a rebuild has replaced,
   // so destroying it waits until the presentation lets go.
@@ -27,7 +29,7 @@
 <script lang="ts">
   // Renders the build's PDF with PDF.js. A new PDF replaces the old one page
   // by page in place, so the reader keeps their position across rebuilds.
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import type { PDFPageProxy, RenderTask, TextLayer } from "pdfjs-dist";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import type { PdfBox } from "./api";
@@ -44,6 +46,7 @@
     onSourceClick: (page: number, x: number, y: number) => void;
     pageCount?: number;
     currentPage?: number;
+    pageLayout?: PageLayout;
     /** Current scale in percent of the PDF's real size, for display. */
     percent?: number;
     /** Search results: how many, and which one is current (1-based, 0 when none). */
@@ -59,6 +62,7 @@
     building = false,
     failed = false,
     onShowLogs,
+    pageLayout = "single",
     pageCount = $bindable(0),
     currentPage = $bindable(1),
     percent = $bindable(100),
@@ -100,6 +104,10 @@
   const MAX_PIXELS = 16e6;
   /** "width" and "page" fit the pane; a number is a fixed scale (1 = 100%). */
   let fit = $state<Fit>("width");
+  /** Pages are laid out side by side (a spread layout and more than one page). */
+  let twoUp = $state(false);
+  let appliedLayout: PageLayout = "single";
+  const GAP = 14;
   let highlight = $state<{ page: number; left: number; top: number; width: number; height: number } | null>(null);
   let loadSeq = 0;
   /** Bumped whenever page boxes move, so overlays recompute their positions. */
@@ -117,7 +125,8 @@
   const PT = 96 / 72;
 
   function scaleFor(w: number, h: number) {
-    const availW = Math.max(160, scroller.clientWidth - 48);
+    const cols = twoUp ? 2 : 1;
+    const availW = Math.max(160, (scroller.clientWidth - 48 - GAP * (cols - 1)) / cols);
     const availH = Math.max(160, scroller.clientHeight - 40);
     if (fit === "width") return availW / w;
     if (fit === "page") return Math.min(availW / w, availH / h);
@@ -190,6 +199,8 @@
     const d = doc;
     const first = await d.getPage(1);
     if (seq !== loadSeq) return false;
+    appliedLayout = pageLayout;
+    twoUp = pageLayout !== "single" && d.numPages > 1;
     const base = first.getViewport({ scale: 1 });
     const prev = slots;
     for (const s of prev) {
@@ -587,6 +598,17 @@
     return () => ro.disconnect();
   });
 
+  // A changed layout re-lays the pages out, keeping the same part in view.
+  $effect(() => {
+    if (pageLayout === appliedLayout || !untrack(() => doc)) return;
+    const n = untrack(() => currentPage);
+    untrack(() => setFit(fit)).then(() => {
+      // Rows move when pages pair up, so keep the page rather than the scroll ratio.
+      const el = pagesEl.children[n - 1] as HTMLElement | undefined;
+      if (el) scroller.scrollTop = el.offsetTop - 12;
+    });
+  });
+
   onDestroy(() => {
     io?.disconnect();
     far?.disconnect();
@@ -597,7 +619,7 @@
 <div class="pdf" class:dark-pages={settings.pdfDark}>
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events, a11y_no_noninteractive_tabindex -->
   <div class="scroller" tabindex="0" bind:this={scroller} onscroll={onScroll} onpointerdown={onPointerDown} onclick={handleClick} ondblclick={handleClick} onwheel={onWheel}>
-    <div class="pages" bind:this={pagesEl}></div>
+    <div class="pages" class:two={twoUp} class:first={pageLayout === "spread-first"} bind:this={pagesEl}></div>
     {#if highlight}
       {@const wrap = pagesEl.children[highlight.page - 1] as HTMLElement | undefined}
       {#if wrap}
@@ -649,6 +671,11 @@
   .scroller { flex: 1; overflow: auto; position: relative; }
   .scroller:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .pages { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 18px 24px 40px; }
+  .pages.two { display: grid; grid-template-columns: repeat(2, max-content); justify-content: center; align-items: start; }
+  .pages.two :global(.page) { justify-self: start; }
+  /* Left column: even pages after a lone cover, odd pages when pairing from 1. */
+  .pages.two:not(.first) :global(.page:nth-child(even)), .pages.two.first :global(.page:nth-child(odd)) { justify-self: end; }
+  .pages.two:not(.first) :global(.page:first-child) { grid-column: 2; }
   .pages :global(.page) { position: relative; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 6px 18px -6px rgba(0, 0, 0, 0.25); flex: none; }
   .pages :global(.page canvas) { width: 100%; height: 100%; display: block; }
   /* Dark pages only while the app itself is dark. */
