@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 2.0.1 (2026-10-15)
+
+### Fixed
+- Linux AppImage: git push, pull and clone over HTTPS work again. Programs Lemmata starts (git, latexmk, texlab, the terminal, the PDF viewer, the browser) now use the system's libraries instead of the AppImage's
+
 ## 2.0.0 (2026-10-15)
 
 ### Added
