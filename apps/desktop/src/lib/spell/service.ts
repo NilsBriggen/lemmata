@@ -31,6 +31,9 @@ class SpellService {
   private known = new Map<string, boolean>();
   private listeners = new Set<Listener>();
   private loading: Promise<void> = Promise.resolve();
+  /** What the backend was last asked to load; setLanguage skips an identical request. */
+  private target = "";
+  private personal = new Set<string>();
 
   get language() {
     return this.lang;
@@ -50,6 +53,10 @@ class SpellService {
   /** Switches language ("off" to disable) and loads personal words. */
   setLanguage(lang: string, words: string[]) {
     const target = lang in LANGUAGES ? lang : "off";
+    const personal = new Set(words);
+    if (target === this.target && personal.size === this.personal.size && words.every((w) => this.personal.has(w))) return;
+    this.target = target;
+    this.personal = personal;
     this.known.clear();
     this.loading = invoke("spell_set_language", { lang: target, words })
       .then(() => {
@@ -57,6 +64,7 @@ class SpellService {
       })
       .catch((e) => {
         console.warn("spell check unavailable:", e);
+        this.target = ""; // allow a retry
         this.lang = "off";
       })
       .finally(() => this.emit());
@@ -86,6 +94,7 @@ class SpellService {
   /** Accepts a word for this session; the app persists it in lemmata.toml. */
   add(word: string) {
     this.known.set(word, true);
+    this.personal.add(word); // the app then reloads with it in the list: not a change
     invoke("spell_add", { word }).catch(() => {});
     this.emit();
   }
