@@ -14,6 +14,7 @@ for (let i = 0; i < Number(runs); i++) {
   await app.call("openProject", { path: dir });
   await app.call("idle", { timeout: 120000 });
   open.push(ms(t));
+  await app.call("openFile", { path: "main.tex" }); // the edit must go into the document, not whatever tab was active
   await app.call("cursor", { at: "end" });
   await app.call("type", { text: "\n%" });
   t = performance.now();
