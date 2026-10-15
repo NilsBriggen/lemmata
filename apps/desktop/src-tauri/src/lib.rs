@@ -7,14 +7,11 @@ mod bib;
 mod export;
 mod figures;
 mod files;
-mod git;
 mod grammar;
 mod history;
 mod lsp;
-mod open_with;
 mod projects;
 mod spell;
-mod tectonic;
 mod terminal;
 mod tools;
 mod updates;
@@ -207,21 +204,6 @@ fn open_pdf_externally(app: tauri::AppHandle, state: State<AppState>) -> CmdResu
         .map_err(|e| format!("Could not open the PDF: {e}"))
 }
 
-/// Opens a file inside the project (e.g. the PDF of tracked changes) with the system's default program.
-#[tauri::command(async)]
-fn open_project_file(app: tauri::AppHandle, state: State<AppState>, path: String) -> CmdResult<()> {
-    use tauri_plugin_opener::OpenerExt;
-    let root = project(&state)?.root;
-    let full = lemmata_project::canonical(Path::new(&path)).map_err(|e| format!("Could not open {path}: {e}"))?;
-    // Only files of the open project, never an arbitrary path the page sends.
-    if !full.starts_with(&root) || !full.is_file() {
-        return Err(format!("{path} is not a file of this project."));
-    }
-    app.opener()
-        .open_path(full.to_string_lossy(), None::<&str>)
-        .map_err(|e| format!("Could not open {path}: {e}"))
-}
-
 /// False when the file watcher couldn't start (e.g. the system's watch limit is reached).
 #[tauri::command(async)]
 fn watching(state: State<AppState>) -> bool {
@@ -365,18 +347,6 @@ async fn build(
         Some(d) => d,
         None => first_or_fresh_detection(&state, false),
     };
-    // Tectonic when chosen, or as the fallback on a machine without TeX.
-    if project.config.engine == lemmata_project::Engine::Tectonic
-        || (detection.tool("latexmk").is_none() && detection.tectonic.is_some())
-    {
-        let exe = detection.tectonic.as_deref().ok_or(
-            "Tectonic is not installed. Install it from the start screen, or choose another compiler in the project settings.",
-        )?;
-        let _ = app.emit("build-started", ());
-        return lemmata_tex::tectonic::build(&project, exe, rx, force)
-            .await
-            .map_err(err);
-    }
     let latexmk = detection
         .tool("latexmk")
         .ok_or("latexmk was not found. Install TeX Live first.")?;
@@ -897,9 +867,11 @@ pub fn run() {
     // A second launch focuses the running app instead of fighting over its settings. Not in debug
     // builds, so a test build can run next to an installed Lemmata.
     #[cfg(not(debug_assertions))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-        // A second launch with a file or folder opens it in the running app (and focuses it).
-        open_with::on_second_launch(app, &args, &cwd);
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
     }));
     builder
         .plugin(tauri_plugin_dialog::init())
@@ -911,9 +883,7 @@ pub fn run() {
         .setup(|app| {
             #[cfg(debug_assertions)]
             automation::start(app.handle());
-            tectonic::init(app.handle());
             start_detection(app.handle());
-            open_with::init(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -925,25 +895,6 @@ pub fn run() {
             project_info_cmd,
             watching,
             open_pdf_externally,
-            open_with::take_open_request,
-            history::history_latexdiff,
-            open_project_file,
-            tectonic::tectonic_status,
-            tectonic::tectonic_install,
-            git::git_overview,
-            git::git_init,
-            git::git_stage,
-            git::git_unstage,
-            git::git_stage_all,
-            git::git_commit,
-            git::git_fetch,
-            git::git_pull,
-            git::git_push,
-            git::git_branches,
-            git::git_switch,
-            git::git_create_branch,
-            git::git_log,
-            git::git_clone,
             set_config,
             read_text,
             write_text,
@@ -992,8 +943,6 @@ pub fn run() {
             spell::spell_check,
             spell::spell_suggest,
             spell::spell_add,
-            spell::spell_available,
-            spell::spell_download,
             updates::update_check,
             updates::update_install,
             bib::bib_entries,
@@ -1036,11 +985,6 @@ pub fn run() {
         .expect("error while building Lemmata")
         .run(|app, event| {
             // Quitting mid-build must not leave latexmk, pdflatex and biber running.
-            // macOS hands files over as an event, not as arguments.
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = &event {
-                open_with::on_opened(app, urls);
-            }
             if let tauri::RunEvent::Exit = event {
                 cancel_running(&app.state::<AppState>());
                 std::thread::sleep(std::time::Duration::from_millis(400));

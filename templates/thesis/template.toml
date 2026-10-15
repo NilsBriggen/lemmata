@@ -1,5 +1,3 @@
 name = "Thesis"
 description = "A report with a title page, chapters in separate files and a bibliography."
 order = 2
-category = "Theses & books"
-tags = ["thesis", "report", "dissertation"]

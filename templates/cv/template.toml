@@ -1,5 +1,3 @@
 name = "CV"
 description = "A clean one-page curriculum vitae."
 order = 4
-category = "Letters & CV"
-tags = ["resume", "curriculum vitae"]

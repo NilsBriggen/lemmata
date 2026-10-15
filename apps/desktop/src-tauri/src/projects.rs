@@ -12,14 +12,7 @@ pub struct Template {
     pub description: String,
     /// Saved by the user from one of their projects, so it can be deleted.
     pub user: bool,
-    /// Gallery section; user templates are always "My templates".
-    pub category: String,
-    pub tags: Vec<String>,
-    /// Page 1 as a `data:image/png;base64,` URL, when the template ships a preview.png.
-    pub preview: Option<String>,
 }
-
-pub const USER_CATEGORY: &str = "My templates";
 
 /// Ids of user templates start with this, so they can't clash with bundled ones.
 pub const USER_PREFIX: &str = "user:";
@@ -30,10 +23,6 @@ struct TemplateMeta {
     description: String,
     #[serde(default)]
     order: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    category: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    tags: Vec<String>,
 }
 
 /// Checks that `path` may be moved to the trash as a whole project: a folder
@@ -70,8 +59,6 @@ pub fn deletable_project(path: &Path, home: Option<&Path>) -> Result<PathBuf, St
 
 /// Metadata file inside each template folder; not copied into projects.
 const META: &str = "template.toml";
-/// Gallery thumbnail of a bundled template; not copied into projects either.
-const PREVIEW: &str = "preview.png";
 pub const EXAMPLE: &str = "example";
 
 /// Copies the example document into `dir` (the app's own data folder), or
@@ -109,16 +96,6 @@ fn list_templates(dir: &Path, user: bool) -> Vec<Template> {
             } else {
                 folder
             };
-            let category = match (user, meta.category) {
-                (false, Some(c)) if !c.trim().is_empty() => c,
-                (false, _) => "Other".to_string(),
-                (true, _) => USER_CATEGORY.to_string(),
-            };
-            // Only bundled templates ship a thumbnail: a user's own project may have a preview.png of its own.
-            let preview = (!user)
-                .then(|| fs::read(e.path().join(PREVIEW)).ok())
-                .flatten()
-                .map(|png| format!("data:image/png;base64,{}", base64(&png)));
             Some((
                 meta.order,
                 Template {
@@ -126,34 +103,12 @@ fn list_templates(dir: &Path, user: bool) -> Vec<Template> {
                     name: meta.name,
                     description: meta.description,
                     user,
-                    category,
-                    tags: meta.tags,
-                    preview,
                 },
             ))
         })
         .collect();
     found.sort_by_key(|(order, t)| (*order, t.name.clone()));
     found.into_iter().map(|(_, t)| t).collect()
-}
-
-/// Standard base64; the thumbnails are the only thing that needs it.
-fn base64(bytes: &[u8]) -> String {
-    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for c in bytes.chunks(3) {
-        let n = (c[0] as u32) << 16
-            | (*c.get(1).unwrap_or(&0) as u32) << 8
-            | *c.get(2).unwrap_or(&0) as u32;
-        for i in 0..4 {
-            if i <= c.len() {
-                out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 /// A folder name the user typed: no separators, not empty, not "." or "..".
@@ -198,9 +153,6 @@ pub fn create_from_template(
     let target = fresh_target(parent, name)?;
     copy_dir(&source, &target).map_err(|e| format!("Could not create the project: {e}"))?;
     let _ = fs::remove_file(target.join(META));
-    if !id.starts_with(USER_PREFIX) {
-        let _ = fs::remove_file(target.join(PREVIEW));
-    }
     Ok(target)
 }
 
@@ -271,8 +223,6 @@ pub fn save_as_template(
             name: name.to_string(),
             description: description.trim().to_string(),
             order: 1000,
-            category: None,
-            tags: vec![],
         };
         fs::write(
             dest.join(META),
@@ -566,41 +516,17 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let t = d.path().join("templates/article");
         fs::create_dir_all(&t).unwrap();
-        fs::write(
-            t.join(META),
-            "name = \"Article\"\ndescription = \"x\"\ncategory = \"Papers\"\ntags = [\"a\", \"b\"]\n",
-        )
-        .unwrap();
-        fs::write(t.join(PREVIEW), b"ab").unwrap();
+        fs::write(t.join(META), "name = \"Article\"\ndescription = \"x\"\n").unwrap();
         fs::write(t.join("main.tex"), "\\documentclass{article}").unwrap();
         let (bundled, user) = (d.path().join("templates"), d.path().join("user"));
-        let listed = &list_all(&bundled, &user)[0];
-        assert_eq!(listed.name, "Article");
-        assert_eq!((listed.category.as_str(), listed.tags.len()), ("Papers", 2));
-        assert_eq!(
-            listed.preview.as_deref(),
-            Some("data:image/png;base64,YWI=")
-        );
+        assert_eq!(list_all(&bundled, &user)[0].name, "Article");
 
         let p = create_from_template(&bundled, &user, "article", d.path(), "My Paper").unwrap();
         assert!(p.join("main.tex").is_file());
         assert!(!p.join(META).exists());
-        assert!(!p.join(PREVIEW).exists());
         assert!(create_from_template(&bundled, &user, "article", d.path(), "My Paper").is_err());
         assert!(create_from_template(&bundled, &user, "../x", d.path(), "q").is_err());
         assert!(create_from_template(&bundled, &user, "user:../x", d.path(), "q").is_err());
-    }
-
-    #[test]
-    fn encodes_base64() {
-        assert_eq!(base64(b""), "");
-        assert_eq!(base64(b"a"), "YQ==");
-        assert_eq!(base64(b"ab"), "YWI=");
-        assert_eq!(base64(b"abc"), "YWJj");
-        assert_eq!(
-            base64(b"Many hands make light work."),
-            "TWFueSBoYW5kcyBtYWtlIGxpZ2h0IHdvcmsu"
-        );
     }
 
     #[test]

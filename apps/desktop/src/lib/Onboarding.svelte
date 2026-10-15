@@ -1,14 +1,13 @@
 <script lang="ts">
   // Shown when no usable TeX installation was found. Lemmata never runs
   // the install itself: it shows the command for this system and checks again.
-  import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { onMount, untrack } from "svelte";
+  import { untrack } from "svelte";
   import CircleCheck from "@lucide/svelte/icons/circle-check";
   import CircleX from "@lucide/svelte/icons/circle-x";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import { updateSettings } from "./settings.svelte";
-  import { errorMessage, type TexStatus } from "./api";
+  import type { TexStatus } from "./api";
   import CommandBox from "./CommandBox.svelte";
 
   interface Props {
@@ -30,35 +29,6 @@
   const isCommand = $derived(!command.startsWith("Install "));
   const found = $derived(status.detection.tools.filter((t) => t.path).length);
 
-
-  // Tectonic needs no TeX installation: Lemmata downloads the pinned release and it fetches packages itself.
-  let tectonicMb = $state(30);
-  let tectonicSupported = $state(true);
-  let installing = $state(false);
-  let tectonicError = $state<string | null>(null);
-
-  onMount(async () => {
-    try {
-      const t = await invoke<{ supported: boolean; download_mb: number | null }>("tectonic_status");
-      tectonicSupported = t.supported;
-      if (t.download_mb) tectonicMb = t.download_mb;
-    } catch {
-      // Keep the defaults: the button reports its own error if the download is not possible.
-    }
-  });
-
-  async function useTectonic() {
-    installing = true;
-    tectonicError = null;
-    try {
-      await invoke("tectonic_install");
-      onRecheck();
-    } catch (e) {
-      tectonicError = errorMessage(e);
-    } finally {
-      installing = false;
-    }
-  }
 
   async function chooseFolder() {
     const dir = await open({ directory: true, title: "Choose the folder that contains pdflatex and latexmk" });
@@ -115,23 +85,7 @@
     {/if}
     {#if inst.note}<p class="note">{inst.note}</p>{/if}
     {#if inst.link}<p class="note">Installer and instructions: <code>{inst.link}</code></p>{/if}
-    <p class="note">Open terminal shows the command and waits for you to press Enter. Lemmata never installs TeX Live by itself.</p>
-
-    {#if tectonicSupported}
-      <section class="alt">
-        <div>
-          <b>Or use Tectonic: nothing to install</b>
-          <span>
-            A small LaTeX engine. Lemmata downloads it (~{tectonicMb} MB) and it fetches each package the first time a
-            document needs it, so the first build needs an internet connection. biblatex with biber isn't supported; use BibTeX.
-          </span>
-        </div>
-        <button class="btn" disabled={installing || checking} onclick={useTectonic}>
-          {installing ? "Downloading…" : "Use Tectonic (no install)"}
-        </button>
-      </section>
-      {#if tectonicError}<p class="err" role="alert">{tectonicError}</p>{/if}
-    {/if}
+    <p class="note">Open terminal shows the command and waits for you to press Enter. Lemmata never installs anything by itself.</p>
 
     <footer>
       <span>Installed somewhere else? <button class="link" onclick={chooseFolder}>Choose the TeX bin folder</button></span>
@@ -172,11 +126,6 @@
   .size button.on { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
   .size span { color: var(--muted); font-size: 12.5px; }
   .note { color: var(--muted); margin: 0; }
-  .alt { display: flex; align-items: center; gap: 16px; padding: 12px 14px; border: 1px dashed var(--border); border-radius: var(--r-lg); background: var(--surface-2); }
-  .alt div { display: flex; flex-direction: column; gap: 2px; margin-right: auto; }
-  .alt span { color: var(--muted); font-size: 12.5px; max-width: 62ch; }
-  .alt .btn { flex: none; }
-  .err { color: var(--error); margin: 0; }
   footer { margin-top: 6px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
   footer > span { margin-right: auto; color: var(--muted); }
   footer .btn span { display: inline-flex; }

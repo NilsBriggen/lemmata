@@ -1,5 +1,0 @@
-name = "IEEE conference"
-description = "Two-column conference paper with the IEEEtran class (IEEE conference proceedings)."
-order = 20
-category = "Papers"
-tags = ["ieee", "ieeetran", "conference", "two-column", "engineering"]

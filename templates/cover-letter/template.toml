@@ -1,5 +1,0 @@
-name = "Cover letter"
-description = "A job-application cover letter with a sender block, paragraphs that say what to write, and no extra class."
-order = 50
-category = "Letters & CV"
-tags = ["application", "job", "motivation letter"]

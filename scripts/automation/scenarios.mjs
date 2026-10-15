@@ -207,58 +207,6 @@ export const scenarios = {
     if ((await lem("editorText")) !== fs.readFileSync(file, "utf8")) throw new Error("Load the version on disk did not load it");
     await check(lem, "after loading theirs");
   },
-
-  async "creates a project from the template gallery and builds it"(lem, dir) {
-    const name = `${path.basename(dir)}-gallery`;
-    fs.rmSync(path.join(path.dirname(dir), name), { recursive: true, force: true });
-    await lem("command", { id: "close" });
-    await until(lem, "the library", () => lem("exists", { selector: ".library" }));
-    await lem("clickText", { text: "New project" });
-    await until(lem, "the gallery", () => lem("exists", { selector: '[aria-label="Search templates"]' }));
-    await lem("fill", { selector: '[aria-label="Search templates"]', value: "blank" });
-    await until(lem, "the search to narrow the list", async () => (await lem("query", { selector: ".templates [role=radio]" })).length === 1);
-    await lem("click", { selector: ".templates [role=radio]" });
-    await lem("fill", { selector: "#np-name", value: name });
-    await lem("fill", { selector: "#np-parent", value: path.dirname(dir) });
-    await lem("clickText", { text: "Create project" });
-    await until(lem, "the new project", async () => (await lem("state")).project?.endsWith(name), 30_000);
-    const s = await lem("idle", { timeout: 120_000 });
-    if (s.status !== "success" || !s.hasPdf) throw new Error(`the new project did not build: ${await describe(lem)}`);
-    await check(lem, "after creating from a template");
-    await lem("openProject", { path: dir });
-    await lem("idle", { timeout: 120_000 });
-  },
-
-  async "commits a saved edit from the Git panel"(lem, dir) {
-    const copy = copyFixture(dir, "article");
-    await lem("openProject", { path: copy });
-    await lem("idle", { timeout: 120_000 });
-    await lem("command", { id: "git" });
-    const panel = () => lem("text", { selector: "aside.git" });
-    await until(lem, "the Git panel", async () => (await lem("exists", { selector: "aside.git" })) && /git repository|Changes|No changes/.test(await panel()));
-    // Never commit into a repository the temp folder happens to sit in.
-    if (!(await panel()).includes("isn't in a git repository")) throw new Error(`the copy is already in a repository: ${await panel()}`);
-    await lem("clickText", { text: "Turn this project into a git repository", within: "aside.git" });
-    await until(lem, "the repository", async () => /now a git repository|doesn't know who you are/.test(await panel()));
-    if ((await panel()).includes("doesn't know who you are")) throw new Error("git has no user name and email here; set them (git config --global) to run this scenario");
-    await lem("openFile", { path: "main.tex" });
-    await lem("cursor", { at: "start" });
-    await lem("type", { text: "% committed from the panel\n" });
-    await lem("key", { combo: "Control+s" });
-    await until(lem, "the saved edit in the panel", async () => (await panel()).includes("main.tex"));
-    await lem("clickText", { text: "Stage all", within: "aside.git" });
-    await until(lem, "the staged file", async () => (await panel()).includes("Commit 1 file"));
-    await lem("fill", { selector: 'aside.git textarea[aria-label="Commit message"]', value: "Edit from the panel" });
-    await lem("click", { selector: "aside.git .commitbox button" });
-    await until(lem, "the commit", async () => {
-      const t = await panel();
-      return t.includes("Edit from the panel") && t.includes("No changes");
-    });
-    await check(lem, "after committing");
-    await lem("click", { selector: 'aside.git [aria-label="Close Git"]' });
-    await lem("openProject", { path: dir });
-    await lem("idle", { timeout: 120_000 });
-  },
 };
 
 // Local runner: a debug build started by scripts/automation/launch.sh.

@@ -1,5 +1,0 @@
-name = "Two-column article"
-description = "A generic two-column paper with a full-width title block, for venues without their own class."
-order = 25
-category = "Papers"
-tags = ["twocolumn", "generic", "paper"]

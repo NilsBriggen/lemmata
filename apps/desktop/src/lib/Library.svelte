@@ -27,8 +27,6 @@
   import { countIn, createGroup, deleteGroup, forgetPath, inView, moveProject, nameProblem, readGroups, renameGroup, restoreGroup, writeGroups, type Groups, type View } from "./groups";
   import NewProjectDialog from "./NewProjectDialog.svelte";
   import ImportDialog from "./ImportDialog.svelte";
-  import CloneDialog from "./git/CloneDialog.svelte";
-  import GitBranch from "@lucide/svelte/icons/git-branch";
   import { api, errorMessage } from "./api";
   import type { Recent } from "./recent";
   import { settings, updateSettings } from "./settings.svelte";
@@ -50,7 +48,7 @@
 
   let query = $state("");
   let thumbs = $state<Record<string, string>>({});
-  let dialog = $state<null | "new" | "clone" | { zip: string }>(null);
+  let dialog = $state<null | "new" | { zip: string }>(null);
 
   // Folders: named groups of projects. They only organise this list.
   let groups = $state<Groups>(readGroups());
@@ -278,7 +276,6 @@
     <button class="btn primary lg new" onclick={() => (dialog = "new")}><Plus size={17} /> New project</button>
     <nav>
       <button class="nav" onclick={openFolder}><FolderOpen size={16} /> Open folder…</button>
-      <button class="nav" onclick={() => (dialog = "clone")}><GitBranch size={16} /> Clone a repository…</button>
       <button class="nav" onclick={importZip}><FileArchive size={16} /> Import from Overleaf…</button>
       <button class="nav" onclick={p.onExample}><Sparkles size={16} /> Example document</button>
     </nav>
@@ -443,8 +440,6 @@
 
 {#if dialog === "new"}
   <NewProjectDialog {defaultParent} onCreated={(path) => ((dialog = null), filed([path]), p.onOpen(path))} onClose={() => (dialog = null)} />
-{:else if dialog === "clone"}
-  <CloneDialog {defaultParent} onCloned={(path) => ((dialog = null), filed([path]), p.onOpen(path))} onClose={() => (dialog = null)} />
 {:else if dialog}
   <ImportDialog zip={dialog.zip} {defaultParent} onImported={(paths) => ((dialog = null), filed(paths), p.onImported(paths))} onClose={() => (dialog = null)} />
 {/if}

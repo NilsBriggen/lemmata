@@ -1,5 +1,3 @@
 name = "Homework"
 description = "Exercise sheets: shaded problem boxes, solutions, and a header with your name and course."
 order = 6
-category = "Teaching"
-tags = ["exercise", "problem set", "assignment"]

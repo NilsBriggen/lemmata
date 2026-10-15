@@ -1,5 +1,0 @@
-name = "Elsevier journal"
-description = "Manuscript for Elsevier journals with elsarticle: highlights, keywords and numbered references."
-order = 23
-category = "Papers"
-tags = ["elsevier", "elsarticle", "journal", "preprint"]

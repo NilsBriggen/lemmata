@@ -1,5 +1,0 @@
-name = "Book"
-description = "A book with parts, chapters, front matter, appendix and a bibliography (KOMA-Script scrbook)."
-order = 12
-category = "Theses & books"
-tags = ["book", "scrbook", "manuscript", "monograph"]

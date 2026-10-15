@@ -1,3 +1,0 @@
-main = "main.tex"
-engine = "pdflatex"
-bib = "bibtex"

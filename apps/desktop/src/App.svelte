@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
-  import { api, errorMessage, type Target, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus, type OpenTarget } from "./lib/api";
+  import { api, errorMessage, type Target, type Entry, type Config, type Diagnostic, type Engine, type Heading, type Outcome, type ProjectInfo, type TexStatus } from "./lib/api";
   import Library from "./lib/Library.svelte";
   import Editor from "./lib/Editor.svelte";
   import PdfPane from "./lib/PdfPane.svelte";
@@ -108,8 +108,6 @@
   let snippetsOpen = $state(false);
   let bibManagerOpen = $state(false);
   let todosOpen = $state(false);
-  let gitOpen = $state(false);
-  let gitVersion = $state(0);
   /** Review comments of the open project, and the panel showing them. */
   let threads = $state<Thread[]>([]);
   let reviewOpen = $state(false);
@@ -285,38 +283,6 @@
     historyOpen = false;
     // The panel sits where the PDF is.
     if (settings.layout === "editor") updateSettings({ layout: "split" });
-  }
-
-  function openGit() {
-    gitOpen = true;
-    reviewOpen = historyOpen = todosOpen = false;
-    if (settings.layout === "editor") updateSettings({ layout: "split" });
-  }
-
-  /** After a commit, pull or branch switch: files may differ on disk. */
-  async function afterGitChange() {
-    await refreshTree();
-    refreshGit();
-    for (const t of tabs) if (!dirty[t] && !isViewer(t)) await reloadFromDisk(t);
-    refreshOutline();
-    runBuild();
-  }
-
-  /** Writes text a review put back (a rejected change) through the save path, then shows it in the editor. */
-  async function applyText(path: string, text: string) {
-    const known = lastSaved.get(path);
-    await api.writeText(path, text, known === undefined ? undefined : contentHash(known));
-    await reloadFromDisk(path);
-    runBuild();
-  }
-
-  /** Opens a project, and a file in it, that the OS asked us to open. */
-  async function openTarget(t: OpenTarget) {
-    const before = project;
-    welcome = false;
-    await openProject(t.project_root);
-    // Only when the project really opened (it stays as it was if saving the old one failed).
-    if (t.file && project && project !== before) await openFile(t.file);
   }
 
   /** Re-indents the open file with latexindent or tex-fmt, as one undoable edit. */
@@ -833,7 +799,6 @@
     clearTimeout(gitTimer);
     gitTimer = setTimeout(() => {
       if (project) api.gitStatus().then(setGitStatus).catch(() => setGitStatus([]));
-      if (gitOpen) gitVersion++;
     }, 600);
   }
 
@@ -1127,7 +1092,6 @@
       { id: "comment", label: "Add a comment", detail: hint("comment"), run: addComment },
       { id: "comments", label: "Show comments", run: openReview },
       { id: "bib-manager", label: "Bibliography manager…", run: () => (bibManagerOpen = true) },
-      { id: "git", label: "Git: commit, pull, push…", run: openGit },
       { id: "todos", label: "Show TODOs", run: () => ((todosOpen = true), (reviewOpen = false), (historyOpen = false)) },
       { id: "format", label: "Format document", run: formatDocument },
       { id: "sync", label: "Show this line in the PDF", detail: hint("sync"), run: () => active && syncForward(active, editor?.currentLine() ?? 1, 0) },
@@ -1146,7 +1110,6 @@
       { id: "save-template", label: "Save this project as a template…", run: () => (savingTemplate = true) },
       { id: "export-zip", label: "Export the whole project (.zip)…", run: exportZip },
       { id: "export-arxiv", label: "Export for arXiv (.zip)…", run: () => exportArxiv() },
-      { id: "export-arxiv-flat", label: "Export for arXiv as one .tex file (.zip)…", run: () => exportArxiv(false, true) },
       { id: "project-settings", label: "Project settings", run: () => (settingsOpen = true) },
       { id: "preferences", label: "Preferences", run: () => (prefsOpen = true) },
       { id: "guide", label: "Open the user guide", run: () => openGuide() },
@@ -1250,8 +1213,7 @@
     }
   }
 
-  /** `flatten` inlines \input/\include files and the bibliography into the main file. */
-  async function exportArxiv(anyway = false, flatten = false) {
+  async function exportArxiv(anyway = false) {
     if (!project) return;
     await saveAll(false);
     await runBuild();
@@ -1259,15 +1221,15 @@
     if (!anyway && outcome?.status !== "success") {
       showNotice("The document doesn't build without errors, so arXiv would likely reject it. Fix the errors in Logs first.", {
         label: "Export anyway",
-        run: () => exportArxiv(true, flatten),
+        run: () => exportArxiv(true),
       });
       return;
     }
     const dest = await saveDialog({ title: "Export for arXiv", defaultPath: `${project.name}-arxiv.zip`, filters: [{ name: "Zip", extensions: ["zip"] }] });
     if (!dest) return;
     try {
-      const n = await api.exportArxiv(dest, true, flatten);
-      showNotice(flatten ? `Exported ${n} files with the sources merged into one .tex file and comments removed.` : `Exported ${n} files with comments removed, including the compiled bibliography.`);
+      const n = await api.exportArxiv(dest, true);
+      showNotice(`Exported ${n} files with comments removed, including the compiled bibliography.`);
     } catch (e) {
       showNotice(errorMessage(e));
     }
@@ -1563,15 +1525,7 @@
       setInterval(() => settings.checkForUpdates && !update && checkForUpdates(), UPDATE_INTERVAL_MS);
     }
     // Existing users (with projects) never see the welcome.
-    // A file or folder opened from the OS (double-click, "Open with", a second launch) wins over the last project.
-    listen<OpenTarget>("open-request", (e) => openTarget(e.payload)).catch((e) =>
-      reportOnce("open", `Opening files from other programs won't work: ${errorMessage(e)}`),
-    );
-    const request = await api.takeOpenRequest().catch(() => null);
-    if (request) {
-      if (!settings.firstRunDone) updateSettings({ firstRunDone: true });
-      await openTarget(request);
-    } else if (!settings.firstRunDone && recent.length === 0) {
+    if (!settings.firstRunDone && recent.length === 0) {
       welcome = true;
     } else {
       if (!settings.firstRunDone) updateSettings({ firstRunDone: true });
@@ -1591,10 +1545,8 @@
     { label: "Export PDF…", run: exportPdf, separator: true },
     { label: "Export project (.zip)…", run: exportZip },
     { label: "Export for arXiv…", run: () => exportArxiv() },
-    { label: "Export for arXiv as one file…", run: () => exportArxiv(false, true) },
     { label: "Preferences", run: () => (prefsOpen = true), separator: true },
     { label: "Keyboard shortcuts", hint: hint("shortcuts"), run: () => (dialog = "shortcuts") },
-    { label: "Git…", run: openGit },
     { label: "User guide", run: () => openGuide() },
     { label: "Report a problem…", run: startReport },
   ]);
@@ -1858,7 +1810,7 @@
           />
         {/if}
         <div class="preview" style:width={showEditor ? `${settings.pdfWidth}px` : undefined} class:wide={!showEditor}>
-          <div class="fill" class:hidden={historyOpen || reviewOpen || todosOpen || gitOpen}>
+          <div class="fill" class:hidden={historyOpen || reviewOpen || todosOpen}>
             <PdfPane
               bind:this={pdf}
               {diagnostics}
@@ -1881,13 +1833,7 @@
               onExport={exportPdf}
             />
           </div>
-          {#if gitOpen}
-            <div class="fill">
-              {#await import("./lib/git/GitPanel.svelte") then { default: GitPanel }}
-                <GitPanel version={gitVersion} beforeGit={() => saveAll(false)} onChanged={afterGitChange} onClose={() => (gitOpen = false)} />
-              {/await}
-            </div>
-          {:else if todosOpen}
+          {#if todosOpen}
             <div class="fill">
               {#await import("./lib/Todos.svelte") then { default: Todos }}<Todos onOpen={gotoProblem} />{/await}
               <button class="btn ghost icon sm close-todos" aria-label="Close TODOs" onclick={() => (todosOpen = false)}><X size={15} /></button>
@@ -1914,7 +1860,7 @@
               />
             </div>
           {:else if historyOpen}
-            <div class="fill">{#await import("./lib/HistoryPanel.svelte") then { default: HistoryPanel }}<HistoryPanel version={historyVersion} {currentText} {beforeRestore} beforeChange={beforeRestore} {applyText} onOpenPdf={(p) => api.openProjectFile(p).catch((e) => showNotice(errorMessage(e), { tone: "error" }))} {onRestored} {onRestoredAll} onClose={() => (historyOpen = false)} />{/await}</div>
+            <div class="fill">{#await import("./lib/HistoryPanel.svelte") then { default: HistoryPanel }}<HistoryPanel version={historyVersion} {currentText} {beforeRestore} {onRestored} {onRestoredAll} onClose={() => (historyOpen = false)} />{/await}</div>
           {/if}
         </div>
       {/if}

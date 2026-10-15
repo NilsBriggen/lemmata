@@ -16,7 +16,6 @@ lemmata-synctex = { path = "crates/lemmata-synctex" }
 lemmata-project = { path = "crates/lemmata-project" }
 lemmata-pkgmap = { path = "crates/lemmata-pkgmap" }
 lemmata-history = { path = "crates/lemmata-history" }
-lemmata-git = { path = "crates/lemmata-git" }
 lemmata-spell = { path = "crates/lemmata-spell" }
 lemmata-bib = { path = "crates/lemmata-bib" }
 lemmata-grammar = { path = "crates/lemmata-grammar" }
