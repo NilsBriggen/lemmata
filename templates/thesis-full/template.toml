@@ -1,0 +1,5 @@
+name = "Thesis with front matter"
+description = "A thesis with title page, declaration, abstract, acknowledgements, lists of figures and tables, and appendix."
+order = 13
+category = "Theses & books"
+tags = ["thesis", "dissertation", "abstract", "declaration", "front matter"]

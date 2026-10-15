@@ -1,0 +1,5 @@
+name = "Slides (classic)"
+description = "A Beamer talk in a plain 16:9 theme: columns, blocks, a TikZ diagram and a backup section."
+order = 41
+category = "Presentations"
+tags = ["beamer", "talk", "tikz", "default theme"]

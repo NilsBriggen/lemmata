@@ -1,0 +1,5 @@
+name = "Research poster"
+description = "An A0 portrait conference poster with tikzposter: blocks, columns, figure and references."
+order = 40
+category = "Posters"
+tags = ["tikzposter", "a0", "conference", "portrait"]

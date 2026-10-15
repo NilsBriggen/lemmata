@@ -1,3 +1,5 @@
 name = "Example"
 description = "A short tour of what Lemmata can do."
 order = 99
+category = "Basics"
+tags = []

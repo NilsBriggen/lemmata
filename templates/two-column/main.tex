@@ -1,0 +1,63 @@
+\documentclass[10pt,a4paper,twocolumn]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2cm,columnsep=0.7cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\addbibresource{refs.bib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}
+
+\title{Title of the Paper}
+\author{First Author\thanks{Example University} \and Second Author\thanks{Example Institute}}
+\date{\today}
+
+\begin{document}
+
+% The optional argument of \twocolumn sets the title block and abstract across both columns.
+\twocolumn[
+  \begin{@twocolumnfalse}
+    \maketitle
+    \begin{abstract}
+      Summarise the paper in about 150 words: problem, method, main result.
+    \end{abstract}
+    \vspace{1em}
+  \end{@twocolumnfalse}
+]
+
+\section{Introduction}
+State the problem and what you contribute. Cite with \verb|\cite|, for example~\cite{knuth84}.
+Narrow columns need short paragraphs and compact figures.
+
+\section{Method}\label{sec:method}
+Define the approach. A numbered equation:
+\begin{equation}
+  \hat{\theta} = \arg\min_\theta \sum_{i=1}^{n} \ell\bigl(f_\theta(x_i), y_i\bigr).
+  \label{eq:erm}
+\end{equation}
+\Cref{eq:erm} is referred to with \verb|\cref|.
+
+\section{Results}
+Use \texttt{figure*} and \texttt{table*} for floats that need the full page width.
+
+\begin{table}[t]
+  \centering
+  \caption{A one-column table.}
+  \begin{tabular}{lrr}
+    \toprule
+    Method & Accuracy & Time (s) \\
+    \midrule
+    Baseline & 0.81 & 12 \\
+    Ours & 0.87 & 15 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Conclusion}
+Wrap up in a few sentences.
+
+\printbibliography
+
+\end{document}
