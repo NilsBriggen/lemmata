@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.3.1 (2026-10-15)
+
+### Fixed
+- Stopping a build only signals the build's own processes
 ## 1.3.0 (2026-10-15)
 
 ### Added
