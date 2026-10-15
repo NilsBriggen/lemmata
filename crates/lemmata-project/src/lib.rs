@@ -329,7 +329,7 @@ fn main_inside(root: &Path, main: &Path) -> bool {
 
 /// `canonicalize`, minus the `\\?\` prefix Windows adds, which breaks path
 /// comparisons and looks odd in the UI.
-fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
     let p = path.canonicalize()?;
     #[cfg(windows)]
     let p = PathBuf::from(strip_verbatim(&p.to_string_lossy()));

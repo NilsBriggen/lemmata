@@ -474,7 +474,8 @@ fn synctex_backward(
     let Some(loc) = lemmata_synctex::backward(&synctex, &pdf, page, x, y).map_err(err)? else {
         return Ok(None);
     };
-    let file = loc.file.canonicalize().unwrap_or(loc.file);
+    // Plain form, like the project root: with `\\?\` it would never be inside the project on Windows.
+    let file = lemmata_project::canonical(&loc.file).unwrap_or(loc.file);
     let (path, inside_project) = match file.strip_prefix(&root) {
         Ok(rel) => (rel_string(rel), true),
         Err(_) => (file.to_string_lossy().into_owned(), false),

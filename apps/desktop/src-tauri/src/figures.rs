@@ -68,7 +68,7 @@ pub fn import_figure(state: State<AppState>, path: String) -> CmdResult<String> 
             src.display()
         ));
     }
-    if let Ok(canon) = src.canonicalize()
+    if let Ok(canon) = lemmata_project::canonical(&src)
         && canon.starts_with(&p.root)
     {
         return Ok(rel(&p, &canon));
