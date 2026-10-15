@@ -239,7 +239,9 @@ export const scenarios = {
     await lem("openFile", { path: "main.tex" });
     await lem("cursor", { at: "start" });
     await lem("type", { text: "% !TeX spellcheck = es\n" });
-    await until(lem, "the offer to download", async () => ((await lem("state")).notice ?? "").includes("needs its dictionary"));
+    await until(lem, "the offer to download", async () => ((await lem("state")).notice ?? "").includes("needs its dictionary")).catch(async () => {
+      throw new Error(`no offer to download; latest notices: ${JSON.stringify((await lem("state")).notices)}`);
+    });
     await lem("clickText", { text: "Download", within: ".toasts" });
     // The dictionary itself, not a notice (a later one can replace it); a failure says why.
     const installed = async () => (await lem("invoke", { cmd: "spell_available" })).find((d) => d.code === "es")?.installed;
@@ -374,7 +376,9 @@ export const scenarios = {
     await lem("contextmenu", { selector: ".library .table .tr:not(.th), .library .grid .card" });
     await lem("clickText", { text: "Delete project" });
     await lem("clickText", { text: "Move to trash" });
-    await until(lem, "the project gone", async () => !fs.existsSync(copy), 15_000);
+    await until(lem, "the project gone", async () => !fs.existsSync(copy), 15_000).catch(async () => {
+      throw new Error(`the project folder is still there; the dialog says: ${await lem("text", { selector: "[role=dialog]" }).catch(() => "(no dialog)")}`);
+    });
     await until(lem, "the list without it", async () => (await lem("query", { selector: ".library .table .tr:not(.th), .library .grid .card" })).length === 0);
     await lem("fill", { selector: "#library-search", value: "" });
     await lem("openProject", { path: dir });

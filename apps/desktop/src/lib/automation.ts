@@ -33,6 +33,8 @@ export interface AppState {
   hasPdf: boolean;
   logsOpen: boolean;
   notice: string | null;
+  /** The latest notices, newest first (the list under the bell). */
+  notices: string[];
   openError: string | null;
   /** Files changed outside with unsaved edits here, waiting for the user's choice. */
   conflicts: string[];

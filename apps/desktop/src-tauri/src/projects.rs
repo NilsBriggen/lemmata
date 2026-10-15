@@ -50,8 +50,8 @@ pub(crate) struct TemplateMeta {
 /// with a .tex file or lemmata.toml directly inside, and not the home folder
 /// or a folder above it (a stray .tex file there must not take it all).
 pub fn deletable_project(path: &Path, home: Option<&Path>) -> Result<PathBuf, String> {
-    let dir = path
-        .canonicalize()
+    // The plain form, like the open project's root: with Windows' \\?\ it would never match it.
+    let dir = lemmata_project::canonical(path)
         .map_err(|e| format!("Could not find {}: {e}", path.display()))?;
     let refuse = || {
         format!(
@@ -60,7 +60,7 @@ pub fn deletable_project(path: &Path, home: Option<&Path>) -> Result<PathBuf, St
         )
     };
     let above_home = home
-        .and_then(|h| h.canonicalize().ok())
+        .and_then(|h| lemmata_project::canonical(h).ok())
         .is_some_and(|h| h.starts_with(&dir));
     if !dir.is_dir() || dir.parent().is_none() || above_home {
         return Err(refuse());

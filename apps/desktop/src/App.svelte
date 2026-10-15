@@ -711,9 +711,12 @@
 
   /** `extra` is either an action button or just a tone. */
   function showNotice(text: string, extra?: { label: string; run: () => void } | { tone: "ok" | "info" | "error" }) {
-    clearTimeout(noticeTimer);
     notices = [{ text, time: Date.now() }, ...notices].slice(0, 30);
-    notice = extra && "label" in extra ? { text, action: extra } : { text, tone: extra?.tone };
+    const next = extra && "label" in extra ? { text, action: extra } : { text, tone: extra?.tone };
+    // A passing note doesn't push away an offer still waiting for a click; it stays in the list under the bell.
+    if (notice?.action && !next.action && next.tone !== "error") return;
+    clearTimeout(noticeTimer);
+    notice = next;
     // Errors and offers to act stay until dismissed; they're easy to miss in 8 seconds.
     if (!notice.action && notice.tone !== "error") noticeTimer = setTimeout(() => (notice = null), 8000);
   }
@@ -1505,6 +1508,7 @@
             notice: notice?.text ?? null,
             openError,
             conflicts: [...buffers.conflicts],
+            notices: notices.slice(0, 5).map((n) => n.text),
             dialogs: Object.entries({ settingsOpen, prefsOpen, citeOpen, historyOpen, searchOpen, choosingMain, savingTemplate, palette, dialog, renaming, welcome, bibManagerOpen, todosOpen, reviewOpen, snippetsOpen })
               .filter(([, v]) => !!v)
               .map(([k, v]) => (typeof v === "string" ? `${k}:${v}` : k)),
@@ -1961,7 +1965,7 @@
       <div class="toast" class:error={notice.tone === "error"} role={notice.tone === "error" ? "alert" : "status"}>
         <span class="t-ico" class:ok={notice.tone === "ok"}>{#if notice.tone === "ok"}<CircleCheck size={16} />{:else}<Info size={16} />{/if}</span>
         <span class="t-text">{notice.text}</span>
-        {#if notice.action}<button class="btn sm" onclick={() => { notice?.action?.run(); notice = null; }}>{notice.action.label}</button>{/if}
+        {#if notice.action}<button class="btn sm" onclick={() => { const act = notice?.action; notice = null; act?.run(); }}>{notice.action.label}</button>{/if}
         <button class="btn ghost icon sm" aria-label="Dismiss" onclick={() => (notice = null)}><X size={14} /></button>
       </div>
     {/if}

@@ -748,8 +748,18 @@ fn trash_project(app: tauri::AppHandle, state: State<AppState>, path: String) ->
         *state.watcher.lock_safe() = None;
         *state.project.lock_safe() = None;
     }
-    trash::delete(&dir)
-        .map_err(|e| format!("Could not move {} to the trash: {e}", dir.display()))?;
+    // Windows refuses while a process still has the folder open; the language server was only just told to quit.
+    let mut tries = 0;
+    while let Err(e) = trash::delete(&dir) {
+        tries += 1;
+        if tries == 5 {
+            return Err(format!(
+                "Could not move {} to the trash: {e}",
+                dir.display()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
     if let Ok(thumb) = thumbnail_path(&app, &path) {
         let _ = std::fs::remove_file(thumb);
     }
