@@ -365,7 +365,10 @@ const NO_IDENTITY: &str = "Git doesn't know who you are yet, so it can't sign a 
     git config --global user.email \"you@example.com\"";
 
 fn check_identity(git: &Path, dir: &Path) -> Result<()> {
-    let o = exec(git, Some(dir), &["var", "GIT_AUTHOR_IDENT"], LOCAL)?;
+    // No guessing from the login and computer name: on a Mac that gives something like
+    // you@Your-MacBook.local, which git accepts and GitHub or Overleaf can't link to anyone.
+    let args = ["-c", "user.useConfigOnly=true", "var", "GIT_AUTHOR_IDENT"];
+    let o = exec(git, Some(dir), &args, LOCAL)?;
     if o.ok { Ok(()) } else { msg(NO_IDENTITY) }
 }
 
