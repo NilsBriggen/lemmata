@@ -1136,7 +1136,7 @@
       { id: "shortcuts", label: "Keyboard shortcuts", detail: hint("shortcuts"), run: () => (dialog = "shortcuts") },
       { id: "snapshot", label: "Save a snapshot", detail: hint("snapshot"), run: () => (snapshotLabel = "") },
       { id: "history", label: "Show history", run: () => (historyOpen = true) },
-      { id: "comment", label: "Add a comment", detail: hint("comment"), run: addComment },
+      { id: "comment", label: "Add a comment", detail: hint("add-comment"), run: addComment },
       { id: "comments", label: "Show comments", run: openReview },
       { id: "bib-manager", label: "Bibliography manager…", run: () => (bibManagerOpen = true) },
       { id: "git", label: "Git: commit, pull, push…", run: openGit },
@@ -1393,7 +1393,7 @@
     else if (active && hit("symbols")) dialog = "symbols";
     else if (hit("shortcuts")) dialog = "shortcuts";
     else if (hit("snapshot")) snapshotLabel = "";
-    else if (hit("comment")) addComment();
+    else if (hit("add-comment")) addComment();
     else if (hit("save")) saveAll();
     else if (hit("recompile")) saveAll(false).then(() => runBuild(true));
     else if (active && hit("close-tab")) closeTab(active);

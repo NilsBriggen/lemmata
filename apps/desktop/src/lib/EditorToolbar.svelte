@@ -80,7 +80,7 @@
   {#if p.onSyncToPdf}
     <span class="sep"></span>
     <div class="group">
-      {#if p.onComment}<button class="btn ghost sm" title={tip("Add a comment on the selection", "comment")} disabled={p.disabled} onclick={p.onComment}><MessageSquarePlus size={16} /> Comment</button>{/if}
+      {#if p.onComment}<button class="btn ghost sm" title={tip("Add a comment on the selection", "add-comment")} disabled={p.disabled} onclick={p.onComment}><MessageSquarePlus size={16} /> Comment</button>{/if}
       <button class="btn ghost sm" title={tip("Go to PDF", "sync")} disabled={p.disabled} onclick={p.onSyncToPdf}><Locate size={16} /> Go to PDF</button>
     </div>
   {/if}

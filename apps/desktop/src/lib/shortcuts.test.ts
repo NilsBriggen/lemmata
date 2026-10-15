@@ -5,6 +5,12 @@ const key = (k: string, mods: Partial<KeyboardEvent> = {}) =>
   ({ key: k, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...mods }) as KeyboardEvent;
 
 describe("shortcut matching", () => {
+  it("gives every shortcut its own id", () => {
+    // Lookups by id return the first match: a shared id makes the second entry's keys do the first one's job.
+    const ids = SHORTCUTS.map((s) => s.id);
+    expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([]);
+  });
+
   it("opens the shortcut sheet on either Mod-Shift-/ or F1", () => {
     expect(matches(key("?", { ctrlKey: true, metaKey: true, shiftKey: true }), "shortcuts")).toBe(true);
     expect(matches(key("F1"), "shortcuts")).toBe(true);
