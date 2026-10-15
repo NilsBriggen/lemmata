@@ -51,7 +51,7 @@
   import { setMathMacros } from "./lib/writing/math";
   import { figureSnippet } from "./lib/writing/table";
   import { startLanguageServer, type LanguageServer } from "./lib/lsp";
-  import { detectLanguage, spell } from "./lib/spell/service";
+  import { detectLanguage, downloadNote, spell } from "./lib/spell/service";
   import { forgetProject, recentEntries, rememberProject, rememberProjects, type Recent } from "./lib/recent";
 
   const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -426,6 +426,29 @@
     const lang = fileLanguage ?? project.config.spellcheck ?? fallback;
     spell.setLanguage(lang, project.config.words ?? []);
     grammar.configure(settings.grammar, settings.grammarUrl, lang);
+    if (lang !== "off") offerDictionary(lang);
+  }
+
+  /** A language chosen in the project or a magic comment whose dictionary isn't here yet: offered once per session. */
+  const offeredDictionaries = new Set<string>();
+  async function offerDictionary(lang: string) {
+    if (offeredDictionaries.has(lang)) return;
+    offeredDictionaries.add(lang);
+    const d = (await spell.dictionaries()).find((x) => x.code === lang);
+    if (!d || d.installed) return;
+    showNotice(`Spell check in ${d.label} needs its dictionary${downloadNote(d)}.`, {
+      label: "Download",
+      run: async () => {
+        showNotice(`Downloading the ${d.label} dictionary…`, { tone: "info" });
+        try {
+          await spell.download(lang);
+          applySpellLanguage();
+          showNotice(`Spell check in ${d.label} is on.`, { tone: "ok" });
+        } catch (e) {
+          showNotice(errorMessage(e), { tone: "error" });
+        }
+      },
+    });
   }
 
   // Turning grammar checking on or off (or changing its server) in Preferences applies at once.

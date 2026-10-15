@@ -234,6 +234,20 @@ export const scenarios = {
     await lem("openFile", { path: "main.tex" });
   },
 
+  async "offers the dictionary a file asks for, and turns spell check on"(lem) {
+    // Needs the internet: Spanish (about 1 MB) comes from the LibreOffice dictionaries.
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { at: "start" });
+    await lem("type", { text: "% !TeX spellcheck = es\n" });
+    await until(lem, "the offer to download", async () => ((await lem("state")).notice ?? "").includes("needs its dictionary"));
+    await lem("clickText", { text: "Download", within: ".toasts" });
+    await until(lem, "spell check in Spanish", async () => ((await lem("state")).notice ?? "").includes("is on"), 60_000);
+    await lem("key", { combo: "Control+z" });
+    await lem("key", { combo: "Control+s" });
+    await lem("idle", { timeout: 120_000 });
+    await check(lem, "after downloading a dictionary");
+  },
+
   async "creates a project from the template gallery and builds it"(lem, dir) {
     const name = `${path.basename(dir)}-gallery`;
     fs.rmSync(path.join(path.dirname(dir), name), { recursive: true, force: true });
