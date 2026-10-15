@@ -31,11 +31,18 @@ impl Speller {
         }
         let swiss = lang == "de-CH";
         let folder = dir.join(if swiss { "de" } else { lang });
-        let read = |name: &str| {
-            std::fs::read_to_string(folder.join(name))
+        // en-GB ships no index.aff of its own: it is byte-identical to en's.
+        let affix_folder = if lang == "en-GB" {
+            dir.join("en")
+        } else {
+            folder.clone()
+        };
+        let read = |base: &Path, name: &str| {
+            std::fs::read_to_string(base.join(name))
                 .map_err(|e| Error(format!("Could not read the {lang} dictionary: {e}")))
         };
-        let dict = spellbook::Dictionary::new(&read("index.aff")?, &read("index.dic")?)
+        let aff = read(&affix_folder, "index.aff")?;
+        let dict = spellbook::Dictionary::new(&aff, &read(&folder, "index.dic")?)
             .map_err(|e| Error(format!("The {lang} dictionary is invalid: {e}")))?;
         Ok(Speller {
             dict,
@@ -112,8 +119,9 @@ mod tests {
         let en = Speller::load(&dir(), "en").unwrap();
         assert!(en.check("methods") && !en.check("recieve"));
         assert_eq!(en.suggest("recieve")[0], "receive");
+        // en-GB has no index.aff of its own, so this also checks the en fallback.
         let gb = Speller::load(&dir(), "en-GB").unwrap();
-        assert!(gb.check("colour"));
+        assert!(gb.check("colour") && gb.check("methods") && !gb.check("recieve"));
     }
 
     #[test]

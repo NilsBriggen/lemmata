@@ -27,3 +27,12 @@ regex = "1"
 which = "8"
 walkdir = "2"
 tempfile = "3"
+
+[profile.release]
+strip = true
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

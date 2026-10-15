@@ -37,6 +37,11 @@ fetch() { # asset -> extracted binary path
     *.zip) unzip -q -o "$work/$asset" -d "$work/${asset%%.*}" ;;
     *) tar xzf "$work/$asset" -C "$work/${asset%%.*}" ;;
   esac
+  # Strip only now: the checksum above covers the downloaded archive, not the binary.
+  case $asset in
+    *linux*) strip "$work/${asset%%.*}/texlab" 2>/dev/null || true ;;
+    *macos*) strip -x "$work/${asset%%.*}/texlab" 2>/dev/null || true ;;
+  esac
   ls "$work/${asset%%.*}"/texlab*
 }
 

@@ -86,6 +86,9 @@ jobs:
             bundles: nsis,msi
     runs-on: ${{ matrix.runner }}
     env:
+      # LTO only for real releases; PR builds in ci.yml stay fast.
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       # Empty until there is an Apple Developer account; Tauri then skips signing.

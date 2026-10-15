@@ -24,8 +24,19 @@ const mocks = (mode: string) =>
       )
     : {};
 
+// Tauri's webviews all read WOFF2, so drop the WOFF and TTF fallbacks that
+// KaTeX and @fontsource declare. A regex miss leaves the CSS untouched.
+const woff2Only = {
+  name: "woff2-only",
+  enforce: "pre" as const,
+  transform(code: string, id: string) {
+    if (!/node_modules\/(katex|@fontsource\/[^/]+)\/.*\.css$/.test(id)) return null;
+    return code.replace(/,\s*url\([^)]*\.(?:woff|ttf)\)\s*format\(["']?(?:woff|truetype)["']?\)/g, "");
+  },
+};
+
 export default defineConfig(({ mode }) => ({
-  plugins: [svelte()],
+  plugins: [woff2Only, svelte()],
   resolve: { alias: mocks(mode) },
   // Tauri expects a fixed port and doesn't want the screen cleared.
   clearScreen: false,

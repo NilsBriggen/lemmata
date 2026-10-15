@@ -1,9 +1,19 @@
 name: CI
 
+# Docs-only changes skip CI. CHANGELOG.md is not ignored, and a release commit also touches Cargo.toml, so the
+# run that release.yml's ci-gate waits for always exists. Tag a code commit, not a docs-only one.
 on:
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "!CHANGELOG.md"
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "!CHANGELOG.md"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -60,9 +70,12 @@ jobs:
       # The desktop crate embeds the built frontend, so build it before cargo.
       - run: pnpm --filter lemmata-desktop build
       - run: cargo test --workspace
+      # Release profile on one OS is enough to catch a broken release build; the frontend is already built above.
       - name: Build the app without bundling
-        run: pnpm --filter lemmata-desktop tauri build --no-bundle
+        if: runner.os == 'Linux'
+        run: pnpm --filter lemmata-desktop tauri build --no-bundle --config '{"build":{"beforeBuildCommand":""}}'
 
+  # One TeX Live install and one CLI build serve both the fixture and the template checks.
   tex-integration:
     runs-on: ubuntu-22.04
     steps:
@@ -78,29 +91,6 @@ jobs:
             biber
             biblatex
             lipsum
-            amsmath
-            collection-fontsrecommended
-      - name: Build the CLI
-        run: cargo build -p lemmata-cli
-      - name: lemmata doctor
-        run: target/debug/lemmata doctor
-      - name: Compile fixtures and compare diagnostics
-        run: scripts/check-fixtures.sh target/debug/lemmata
-
-  templates:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: TeX-Live/setup-texlive-action@v4
-        with:
-          packages: |
-            scheme-basic
-            latexmk
-            synctex
-            biber
-            biblatex
             amsmath
             amsfonts
             amscls
@@ -122,6 +112,10 @@ jobs:
             collection-fontsrecommended
       - name: Build the CLI
         run: cargo build -p lemmata-cli
+      - name: lemmata doctor
+        run: target/debug/lemmata doctor
+      - name: Compile fixtures and compare diagnostics
+        run: scripts/check-fixtures.sh target/debug/lemmata
       - name: Build every template
         run: scripts/check-templates.sh target/debug/lemmata
 

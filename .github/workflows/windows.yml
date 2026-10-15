@@ -2,7 +2,8 @@ name: Windows
 
 # Builds a document on Windows with a real MiKTeX in the situations that have
 # broken for users (Perl missing, Perl failing to start) and reports timings.
-# Run it by hand when touching the build code: Actions → Windows → Run workflow.
+# It runs on pushes to main that touch the build code (the paths below) and by hand:
+# Actions → Windows → Run workflow.
 on:
   workflow_dispatch:
   push:
@@ -31,6 +32,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build the command-line tool
         run: cargo build --release -p lemmata-cli
+      # Not cached: the choco install writes to Program Files, ProgramData and the registry, so restoring only
+      # the install dir would give a broken MiKTeX. The install is also not the slow part worth risking that for.
       - name: Install MiKTeX
         shell: pwsh
         run: |
