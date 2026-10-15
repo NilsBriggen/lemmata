@@ -15,7 +15,7 @@
   import { display, keysOf, matches } from "./shortcuts";
   import { settings, updateSettings } from "./settings.svelte";
   import { cursorTo, click, moveCursor, selectAll, select, targets, tree as view, collapseAll, expandAll } from "./treeSelection.svelte";
-  import { findEntry, flatten, parentOf, sortEntries, type SortMode } from "./treeModel";
+  import { findEntry, flatten, isTextFile, isViewerFile, parentOf, sortEntries, type SortMode } from "./treeModel";
   import { dragState } from "./treeDrag.svelte";
 
   interface Props {
@@ -55,6 +55,13 @@
   let typed = "";
   let typedTimer: ReturnType<typeof setTimeout>;
 
+  /** Opens the file menu at the cursor row (or the whole tree when nothing is selected). */
+  function menuAtCursor(cur: Entry | undefined, tree: HTMLElement) {
+    const row = cur && tree.querySelector<HTMLElement>(`[data-path="${CSS.escape(cur.path)}"]`);
+    const r = (row ?? tree).getBoundingClientRect();
+    p.onContext(cur ?? null, r.left + 24, row ? r.bottom : r.top + 8);
+  }
+
   function onKey(e: KeyboardEvent) {
     if ((e.target as HTMLElement).closest("input, textarea")) return;
     const a = p.actions;
@@ -89,8 +96,14 @@
           e.preventDefault();
           if (!cur) return;
           if (cur.is_dir) view.collapsed[cur.path] = !view.collapsed[cur.path];
-          else p.onOpen(cur.path);
+          // Same rule as a click: text files and viewable files open, others don't.
+          else if (isTextFile(cur.path) || isViewerFile(cur.path)) p.onOpen(cur.path);
           return;
+        case "ContextMenu":
+        case "F10":
+          if (e.key === "F10" && !e.shiftKey) break;
+          e.preventDefault();
+          return menuAtCursor(cur, e.currentTarget as HTMLElement);
         case "Escape":
           view.selected = view.cursor ? [view.cursor] : [];
           return;

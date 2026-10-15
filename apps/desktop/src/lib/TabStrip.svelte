@@ -4,6 +4,8 @@
   import X from "@lucide/svelte/icons/x";
   import FileImage from "@lucide/svelte/icons/file-image";
   import Pin from "@lucide/svelte/icons/pin";
+  import { tick } from "svelte";
+  import { menuNav } from "./ui/DropMenu.svelte";
 
   interface Props {
     tabs: string[];
@@ -25,6 +27,8 @@
   let strip = $state<HTMLDivElement>();
   let drag = $state<{ path: string; over: number } | null>(null);
   let menu = $state<{ path: string; x: number; y: number } | null>(null);
+  let menuEl = $state<HTMLDivElement>();
+  let opener: Element | null = null;
   let swallow = false;
 
   const isViewer = (p: string) => /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(p);
@@ -62,7 +66,26 @@
 
   function context(e: MouseEvent, path: string) {
     e.preventDefault();
-    menu = { path, x: e.clientX, y: e.clientY };
+    openAt(path, e.clientX, e.clientY);
+  }
+
+  function openAt(path: string, x: number, y: number) {
+    opener = document.activeElement;
+    menu = { path, x, y };
+    void tick().then(() => menuEl?.querySelector("button")?.focus());
+  }
+
+  /** ContextMenu key or Shift+F10 on a focused tab opens its menu at the tab. */
+  function tabKey(e: KeyboardEvent, path: string) {
+    if (e.key !== "ContextMenu" && !(e.key === "F10" && e.shiftKey)) return;
+    e.preventDefault();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    openAt(path, r.left, r.bottom);
+  }
+
+  function closeMenu(refocus = false) {
+    menu = null;
+    if (refocus) (opener as HTMLElement | null)?.focus?.();
   }
 
   function act(kind: "close" | "others" | "right" | "all") {
@@ -75,12 +98,12 @@
   }
 </script>
 
-<svelte:window onmousedown={(e) => menu && !(e.target as Element).closest(".tab-menu") && (menu = null)} onkeydown={(e) => menu && e.key === "Escape" && (menu = null)} />
+<svelte:window onmousedown={(e) => menu && !(e.target as Element).closest(".tab-menu") && (menu = null)} onkeydown={(e) => menu && e.key === "Escape" && closeMenu(true)} />
 
 <div class="tabs" bind:this={strip} role="tablist">
   {#each tabs as t, i (t)}
     {#if drag && drag.over === i && drag.path !== t}<span class="marker"></span>{/if}
-    <div class="tab" class:on={t === active} class:moving={drag?.path === t} class:pinned={isPinned(t)} role="presentation" onpointerdown={(e) => press(e, t)} oncontextmenu={(e) => context(e, t)} onauxclick={(e) => e.button === 1 && (e.preventDefault(), !isPinned(t) && onClose(t))}>
+    <div class="tab" class:on={t === active} class:moving={drag?.path === t} class:pinned={isPinned(t)} role="presentation" onpointerdown={(e) => press(e, t)} oncontextmenu={(e) => context(e, t)} onkeydown={(e) => tabKey(e, t)} onauxclick={(e) => e.button === 1 && (e.preventDefault(), !isPinned(t) && onClose(t))}>
       <button class="name" role="tab" aria-selected={t === active} onclick={() => !swallow && onSelect(t)} title={t}>
         {#if isViewer(t)}<FileImage size={13} />{/if}
         {t.split("/").pop()}
@@ -100,7 +123,7 @@
 </div>
 
 {#if menu}
-  <div class="menu tab-menu" role="menu" style:left="{menu.x}px" style:top="{menu.y}px">
+  <div class="menu tab-menu" role="menu" tabindex="-1" bind:this={menuEl} onkeydown={(e) => (e.key === "Tab" ? (e.preventDefault(), closeMenu(true)) : menuNav(e, menuEl))} style:left="{menu.x}px" style:top="{menu.y}px">
     <button role="menuitem" onclick={() => { const p = menu!.path; menu = null; onPin?.(p); }}>{isPinned(menu.path) ? "Unpin" : "Pin"}</button>
     <hr />
     <button role="menuitem" onclick={() => act("close")}>Close</button>

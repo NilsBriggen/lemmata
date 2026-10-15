@@ -21,6 +21,7 @@
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { tick } from "svelte";
   import Modal from "./ui/Modal.svelte";
+  import { menuNav } from "./ui/DropMenu.svelte";
   import { api, errorMessage, type Entry } from "./api";
   import { UndoLog } from "./fileUndo";
   import { baseName, copyName, findEntry, joinPath, namesIn, parentOf, topLevel } from "./treeModel";
@@ -52,6 +53,7 @@
   const log = new UndoLog();
   let menu = $state<{ entry: Entry | null; x: number; y: number } | null>(null);
   let menuEl = $state<HTMLDivElement>();
+  let opener: Element | null = null;
   let dialog = $state<
     | { kind: "new"; dir: boolean; folder: string; name: string }
     | { kind: "rename"; entry: Entry; name: string; refs: Ref[]; update: boolean }
@@ -68,7 +70,14 @@
   const failure = (e: unknown) => onNotice(errorMessage(e));
   const undoAction = { label: "Undo", run: () => void undo() };
 
+  /** Closes the menu; from the keyboard, focus goes back to where it was. */
+  function closeMenu(refocus = false) {
+    menu = null;
+    if (refocus) (opener as HTMLElement | null)?.focus?.();
+  }
+
   export async function openMenu(entry: Entry | null, x: number, y: number) {
+    opener = document.activeElement;
     menu = { entry, x, y };
     await tick();
     if (!menuEl) return;
@@ -336,13 +345,13 @@
   );
 </script>
 
-<svelte:window onmousedown={(e) => menu && !(e.target as Element).closest(".tree-menu") && (menu = null)} onkeydown={(e) => menu && e.key === "Escape" && (menu = null)} />
+<svelte:window onmousedown={(e) => menu && !(e.target as Element).closest(".tree-menu") && (menu = null)} onkeydown={(e) => menu && e.key === "Escape" && closeMenu(true)} />
 
 {#if menu}
   {@const target = menu.entry}
   {@const picked = target ? targets(target.path) : []}
   {@const many = picked.length > 1}
-  <div class="menu tree-menu" role="menu" bind:this={menuEl} style:left="{menu.x}px" style:top="{menu.y}px">
+  <div class="menu tree-menu" role="menu" bind:this={menuEl} tabindex="-1" onkeydown={(e) => (e.key === "Tab" ? (e.preventDefault(), closeMenu(true)) : menuNav(e, menuEl))} style:left="{menu.x}px" style:top="{menu.y}px">
     {#if many}<div class="heading">{picked.length} items selected</div>{/if}
     {#if !many}
       <button role="menuitem" onclick={() => choose(() => newItem(false, folderOf(target)))}><FilePlus size={15} /> New file</button>

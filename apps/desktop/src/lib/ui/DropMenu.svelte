@@ -1,3 +1,15 @@
+<script module lang="ts">
+  /** Arrow keys (wrapping), Home and End move focus between a menu's enabled buttons. */
+  export function menuNav(e: KeyboardEvent, root: HTMLElement | undefined) {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    e.preventDefault();
+    const items = [...(root?.querySelectorAll<HTMLElement>("button:not(:disabled)") ?? [])];
+    const i = items.indexOf(document.activeElement as HTMLElement);
+    const next = e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : e.key === "ArrowDown" ? (i + 1) % items.length : i <= 0 ? items.length - 1 : i - 1;
+    items[next]?.focus();
+  }
+</script>
+
 <script lang="ts">
   // A menu that opens below (or above) the element that triggered it.
   import { onMount, type Snippet } from "svelte";
@@ -31,17 +43,9 @@
       window.removeEventListener("keydown", esc, true);
     };
   });
-
-  function nav(e: KeyboardEvent) {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    e.preventDefault();
-    const items = [...(menu?.querySelectorAll<HTMLElement>("button:not(:disabled)") ?? [])];
-    const i = items.indexOf(document.activeElement as HTMLElement);
-    items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
-  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="menu" role="menu" tabindex="-1" bind:this={menu} style:left="{pos.left}px" style:top="{pos.top}px" onkeydown={nav} onclick={(e) => (e.target as Element).closest("button") && onClose()}>
+<div class="menu" role="menu" tabindex="-1" bind:this={menu} style:left="{pos.left}px" style:top="{pos.top}px" onkeydown={(e) => menuNav(e, menu)} onclick={(e) => (e.target as Element).closest("button") && onClose()}>
   {@render children()}
 </div>
