@@ -19,6 +19,14 @@ export function loadPdfjs() {
   }));
 }
 
+/**
+ * Opens a PDF. Images over 16 megapixels are scaled down first: older WebKitGTK (the one
+ * the AppImage bundles) leaves a figure that size blank, and no screen needs more.
+ */
+export async function openPdf(data: Uint8Array | ArrayBuffer) {
+  return (await loadPdfjs()).getDocument({ data, canvasMaxAreaInBytes: 16e6 * 4 }).promise;
+}
+
 /** Returns false when a newer request replaced this one, so the caller can ignore it. */
 export async function renderRegion(
   doc: PDFDocumentProxy,

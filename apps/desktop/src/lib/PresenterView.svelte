@@ -6,7 +6,7 @@
   import type { PDFDocumentProxy } from "pdfjs-dist";
   import { api } from "./api";
   import { clampPage, formatElapsed, regions, type Region } from "./presenter/layout";
-  import { loadPdfjs, renderRegion } from "./presenter/render";
+  import { openPdf, renderRegion } from "./presenter/render";
   import { onEnd, onPage, sendEnd, sendPage } from "./presenter/sync";
   import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -92,7 +92,7 @@
     const stops: Array<() => void> = [];
     (async () => {
       try {
-        doc = await (await loadPdfjs()).getDocument({ data: await api.readPdf() }).promise;
+        doc = await openPdf(await api.readPdf());
         const first = await doc.getPage(1);
         const v = first.getViewport({ scale: 1 });
         ({ slide: slideRegion, notes: notesRegion } = regions(v.width, v.height));

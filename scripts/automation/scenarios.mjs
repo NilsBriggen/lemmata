@@ -4,6 +4,7 @@
 // Each takes `lem(method, params)` and the open project's folder.
 import fs from "node:fs";
 import path from "node:path";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const fixtures = fileURLToPath(new URL("../../tests/fixtures/", import.meta.url));
@@ -14,6 +15,40 @@ function copyFixture(dir, name) {
   fs.rmSync(to, { recursive: true, force: true });
   fs.cpSync(path.join(fixtures, name), to, { recursive: true });
   return to;
+}
+
+/** A solid gray RGB PNG of any size (compresses to a few hundred KB even at 25 megapixels). */
+function grayPng(w, h) {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
+    return n >>> 0;
+  });
+  const crc = (buf) => {
+    let c = 0xffffffff;
+    for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const sum = Buffer.alloc(4);
+    sum.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, sum]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+  const row = Buffer.alloc(1 + 3 * w, 0x80);
+  row[0] = 0; // no filter
+  const raw = Buffer.concat(Array.from({ length: h }, () => row));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlib.deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
 /** The app's state in a failure message, so CI logs say what the app was doing. */
@@ -396,6 +431,34 @@ export const scenarios = {
       await until(lem, "the original text back", async () => (await lem("editorText")) === original);
     }
     await lem("idle", { timeout: 120_000 });
+  },
+
+  async "draws a very large image after another large one"(lem, dir) {
+    // The WebKitGTK of Ubuntu 22.04 (and so the AppImage) drew the second one blank:
+    // 6 then 25 megapixels, like a circuit diagram after a wide one.
+    const big = path.join(path.dirname(dir), `${path.basename(dir)}-big-images`);
+    fs.rmSync(big, { recursive: true, force: true });
+    fs.mkdirSync(big);
+    fs.writeFileSync(path.join(big, "wide.png"), grayPng(4488, 1400));
+    fs.writeFileSync(path.join(big, "tall.png"), grayPng(4912, 5208));
+    fs.writeFileSync(
+      path.join(big, "main.tex"),
+      "\\documentclass{article}\n\\usepackage{graphicx}\n\\begin{document}\n\\noindent\\includegraphics[width=\\linewidth]{wide.png}\n" +
+        "\\newpage\n\\noindent\\includegraphics[width=\\linewidth]{tall.png}\n\\end{document}\n",
+    );
+    await lem("openProject", { path: big });
+    const s = await lem("idle", { timeout: 120_000 });
+    if (s.status !== "success") throw new Error(`the build failed: ${await describe(lem)}`);
+    const canvas = '.page[data-page="2"] canvas';
+    await until(lem, "page 2 drawn", async () => {
+      await lem("click", { selector: '[aria-label="Next page"]' }).catch(() => {});
+      return lem("exists", { selector: canvas });
+    }, 30_000);
+    // The image fills the text width from the top margin: its middle is gray, not white.
+    await until(lem, "the image on page 2", async () => (await lem("ink", { selector: canvas, area: [0.3, 0.2, 0.7, 0.4] })) > 0.9, 15_000);
+    await lem("openProject", { path: dir });
+    await lem("idle", { timeout: 120_000 });
+    fs.rmSync(big, { recursive: true, force: true });
   },
 
   async "deletes a project from the start screen"(lem, dir) {

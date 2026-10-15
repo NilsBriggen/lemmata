@@ -33,7 +33,7 @@
   import type { PDFPageProxy, RenderTask, TextLayer } from "pdfjs-dist";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import type { PdfBox } from "./api";
-  import { loadPdfjs } from "./presenter/render";
+  import { loadPdfjs, openPdf } from "./presenter/render";
   import { settings } from "./settings.svelte";
 
   /** Set by load(); every later use of pdf.js happens after a document exists. */
@@ -173,7 +173,7 @@
   export async function load(data: Uint8Array) {
     const seq = ++loadSeq;
     lib = await loadPdfjs();
-    const next = await lib.getDocument({ data }).promise;
+    const next = await openPdf(data);
     if (seq !== loadSeq) {
       next.loadingTask.destroy();
       return;

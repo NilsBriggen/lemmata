@@ -170,6 +170,19 @@ export function install(host: Host) {
         display: getComputedStyle(el).display,
         rect: (({ x, y, width, height }) => [x, y, width, height].map(Math.round))(el.getBoundingClientRect()),
       })),
+    /** Share of non-white pixels in a canvas, in `area` (fractions x0, y0, x1, y1) or all of it: is something drawn there? */
+    ink: ({ selector, area = [0, 0, 1, 1] }: { selector: string; area?: number[] }) => {
+      const c = element(selector) as HTMLCanvasElement;
+      const [x0, y0, x1, y1] = area;
+      const w = Math.max(1, Math.round((x1 - x0) * c.width));
+      const h = Math.max(1, Math.round((y1 - y0) * c.height));
+      const d = c.getContext("2d")!.getImageData(Math.round(x0 * c.width), Math.round(y0 * c.height), w, h).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] < 720) n++;
+      return n / (w * h);
+    },
+    /** A canvas as a PNG data URL, to look at what was drawn. */
+    canvasImage: ({ selector }: { selector: string }) => (element(selector) as HTMLCanvasElement).toDataURL("image/png"),
     /** The page's style sheets: where each comes from, whether it applies, and how many rules the browser kept. */
     sheets: () =>
       [...document.styleSheets].map((sh) => {
