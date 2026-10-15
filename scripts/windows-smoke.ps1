@@ -27,13 +27,15 @@ function Fresh([string]$name) {
 function Build([string]$dir, [string]$scenario, [string]$step, [bool]$expectFallback) {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $text = (& $Cli build $dir 2>&1 | Out-String)
+    $code = $LASTEXITCODE
     $sw.Stop()
-    $pdf = Test-Path (Join-Path $dir ".lemmata/build/main.pdf")
+    # This build's own result: the PDF of an earlier build may still be there.
+    $pdf = ($code -eq 0) -and ($text -match "main\.pdf in \d+ ms")
     $fellBack = $text -match "built with pdflatex directly"
     Write-Host "::group::$scenario / $step ($([math]::Round($sw.Elapsed.TotalSeconds, 1)) s)"
     Write-Host $text
     Write-Host "::endgroup::"
-    if (-not $pdf) { $script:failures += "${scenario} / ${step}: no PDF was written" }
+    if (-not $pdf) { $script:failures += "${scenario} / ${step}: the build wrote no PDF" }
     if ($fellBack -ne $expectFallback) { $script:failures += "${scenario} / ${step}: expected fallback=$expectFallback, got $fellBack" }
     $script:results += [pscustomobject]@{ Scenario = $scenario; Step = $step; Seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1); Pdf = $pdf; Direct = $fellBack }
 }

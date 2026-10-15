@@ -329,7 +329,7 @@ pub async fn build_with(
     }
 
     if status == Status::Success && fresh {
-        mark_ok(project);
+        mark_ok(project, started_at);
         if fmt_failed {
             format::reject(project);
         }
@@ -375,12 +375,15 @@ fn read_log(project: &Project) -> Vec<Diagnostic> {
     d
 }
 
-/// Whether `path` was written by a build that began at `started_at`. Allows 2 s
-/// of slack because FAT/exFAT and network shares round modification times.
+/// File times can trail the clock: FAT/exFAT and network shares round them, and
+/// Linux stamps them from a coarse clock a few milliseconds behind.
+const MTIME_SLACK: Duration = Duration::from_secs(2);
+
+/// Whether `path` was written by a build that began at `started_at`.
 fn written_since(path: &Path, started_at: SystemTime) -> bool {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
-        .is_ok_and(|t| t + Duration::from_secs(2) >= started_at)
+        .is_ok_and(|t| t + MTIME_SLACK >= started_at)
 }
 
 /// Puts the TeX and Perl folders first on PATH.
@@ -510,7 +513,8 @@ fn up_to_date(project: &Project) -> bool {
         && !changed_since(project, &stamp)
 }
 
-/// True when some project file was modified after `stamp` was written.
+/// True when some project file was modified after the time on `stamp`, the start of the last good build
+/// (or up to `MTIME_SLACK` before it: at worst one build too many, never an edit left out).
 fn changed_since(project: &Project, stamp: &Path) -> bool {
     let Ok(since) = std::fs::metadata(stamp).and_then(|m| m.modified()) else {
         return true;
@@ -526,7 +530,7 @@ fn changed_since(project: &Project, stamp: &Path) -> bool {
             } else {
                 std::fs::metadata(root.join(&e.path))
                     .and_then(|m| m.modified())
-                    .is_ok_and(|t| t > since)
+                    .is_ok_and(|t| t + MTIME_SLACK >= since)
             }
         })
     }
@@ -538,15 +542,18 @@ fn changed_since(project: &Project, stamp: &Path) -> bool {
 }
 
 /// Records a successful build, and what the bibliography tool read, so the next one can go direct without running it again.
-fn mark_ok(project: &Project) {
+fn mark_ok(project: &Project, started_at: SystemTime) {
     let biber = project.config.bib == lemmata_project::Bib::Biber;
     if let Some(fp) = bib_fingerprint(project, biber) {
         let _ = std::fs::write(out_file(project, "lemmata-bib"), fp);
     }
-    let _ = std::fs::write(
-        project.outdir_abs().join(OK_STAMP),
-        project.main.to_string_lossy().as_bytes(),
-    );
+    let stamp = project.outdir_abs().join(OK_STAMP);
+    let _ = std::fs::write(&stamp, project.main.to_string_lossy().as_bytes());
+    // Dated when the build began: a file saved while it ran was maybe not read, so it still counts as changed.
+    let _ = std::fs::File::options()
+        .write(true)
+        .open(&stamp)
+        .and_then(|f| f.set_modified(started_at));
 }
 
 /// The engine's arguments for one pass writing to `outdir`, from the format `fmt` if given.
@@ -1166,6 +1173,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_edit_saved_during_a_build_still_counts_as_changed() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        let stamp = p.outdir_abs().join(OK_STAMP);
+        // Nothing touched since well before the build began: up to date.
+        mark_ok(
+            &p,
+            SystemTime::now() + MTIME_SLACK + Duration::from_millis(50),
+        );
+        assert!(!changed_since(&p, &stamp));
+        // Saved while the build ran, which then finished.
+        let started = SystemTime::now();
+        std::fs::write(p.root.join(&p.main), "\\documentclass{article}% edit").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        mark_ok(&p, started);
+        assert!(changed_since(&p, &stamp));
+    }
+
     /// latexmk dies without a log (Perl blocked); the engine is run directly, twice because the first log asks for a rerun.
     #[cfg(unix)]
     #[tokio::test]
@@ -1341,6 +1369,22 @@ mod tests {
             }
         }
         copy(&fixture, d.path());
+        // Files saved just before a build count as changed (MTIME_SLACK); a real project's are older.
+        fn age(dir: &Path) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                if e.path().is_dir() {
+                    age(&e.path());
+                } else {
+                    let old = SystemTime::now() - Duration::from_secs(60);
+                    std::fs::File::options()
+                        .write(true)
+                        .open(e.path())
+                        .unwrap()
+                        .set_modified(old)
+                        .unwrap();
+                }
+            }
+        }
         let tools = tempfile::tempdir().unwrap();
         let calls = tools.path().join("calls");
         let wrap = |name: &str, real: &Path| {
@@ -1361,6 +1405,7 @@ mod tests {
         let latexmk = d.path().join("latexmk-fake");
         std::fs::write(&latexmk, "#!/bin/sh\nexit 1\n").unwrap();
         std::fs::set_permissions(&latexmk, std::fs::Permissions::from_mode(0o755)).unwrap();
+        age(d.path());
         let mut p = Project::open(d.path()).unwrap();
         // A precompiled preamble is made with pdflatex in the background, which would count too.
         p.config.fast_preamble = false;
