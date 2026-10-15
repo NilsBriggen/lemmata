@@ -72,12 +72,14 @@ fn braced_len(r: &str) -> usize {
 
 /// Finds where a real comment starts on `line`, skipping `\verb`, `\url`,
 /// `\href` and inline verbatim environments. Also returns the name of a
-/// verbatim environment that is still open at the end of the line.
-fn scan_line(line: &str) -> (Option<usize>, Option<String>) {
+/// verbatim environment that is still open at the end of the line, and the
+/// byte ranges of the skipped parts.
+fn scan_line(line: &str) -> (Option<usize>, Option<String>, Vec<std::ops::Range<usize>>) {
+    let mut skipped = Vec::new();
     let mut i = 0;
     while let Some(c) = line[i..].chars().next() {
         if c == '%' {
-            return (Some(i), None);
+            return (Some(i), None, skipped);
         }
         if c != '\\' {
             i += c.len_utf8();
@@ -93,12 +95,16 @@ fn scan_line(line: &str) -> (Option<usize>, Option<String>) {
             if let Some(d) = r.chars().next() {
                 let body = &r[d.len_utf8()..];
                 let end = body.find(d).map_or(body.len(), |k| k + d.len_utf8());
-                i = rest_start(body) + end;
+                let next = rest_start(body) + end;
+                skipped.push(i..next);
+                i = next;
                 continue;
             }
         }
         if let Some(r) = ["url{", "href{"].iter().find_map(|c| after.strip_prefix(c)) {
-            i = rest_start(r) + braced_len(r);
+            let next = rest_start(r) + braced_len(r);
+            skipped.push(i..next);
+            i = next;
             continue;
         }
         if let Some(r) = after.strip_prefix("begin{")
@@ -108,15 +114,22 @@ fn scan_line(line: &str) -> (Option<usize>, Option<String>) {
             let end = format!("\\end{{{}}}", &r[..n]);
             let body = &r[n + 1..];
             match body.find(&end) {
-                Some(k) => i = rest_start(body) + k + end.len(),
-                None => return (None, Some(r[..n].to_string())),
+                Some(k) => {
+                    let next = rest_start(body) + k + end.len();
+                    skipped.push(i..next);
+                    i = next;
+                }
+                None => {
+                    skipped.push(i..line.len());
+                    return (None, Some(r[..n].to_string()), skipped);
+                }
             }
             continue;
         }
         // Any other escape (`\%`, `\\`): the next character is not special.
         i += 1 + after.chars().next().map_or(0, char::len_utf8);
     }
-    (None, None)
+    (None, None, skipped)
 }
 
 /// Removes `%` comments (keeping `\%`), dropping lines that were only a comment.
@@ -133,7 +146,7 @@ pub fn strip_comments(tex: &str) -> String {
             out.push('\n');
             continue;
         }
-        let (cut, opened) = scan_line(line);
+        let (cut, opened, _) = scan_line(line);
         open = opened;
         match cut {
             Some(0) => continue,
@@ -195,10 +208,278 @@ pub fn export_zip(state: State<AppState>, dest: String, with_pdf: bool) -> CmdRe
     Ok(count)
 }
 
+/// How deep `\input` nesting may go before flattening gives up.
+const MAX_DEPTH: usize = 32;
+
+/// Replaces `\printbibliography` in a flattened file: biblatex output needs
+/// its package, so the command and the .bbl stay.
+const BIBLATEX_NOTE: &str = "% Lemmata: biblatex is kept as is; keep the .bbl next to this file.";
+
+/// A flattened main file: its new text, the project files it absorbed (to
+/// leave out of the zip), and whether the .bbl text replaced `\bibliography`.
+#[derive(Debug)]
+struct Flattened {
+    text: String,
+    inlined: BTreeSet<PathBuf>,
+    bbl_used: bool,
+}
+
+/// `name` joined onto `base` (both relative to the project root), with `.`
+/// and `..` folded. None for macros, absolute paths and paths that leave the
+/// project, so an arXiv zip never holds files from outside it.
+fn resolve(base: &Path, name: &str) -> Option<PathBuf> {
+    if name.is_empty() || name.contains(['\\', '#']) {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for c in base.join(name).components() {
+        match c {
+            std::path::Component::Normal(s) => out.push(s),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+    (!out.as_os_str().is_empty()).then_some(out)
+}
+
+/// The `{...}` argument at or after `p` in `s` (spaces allowed before it):
+/// its text, and the index just past its closing `}`.
+fn braced_arg(s: &str, p: usize) -> Option<(&str, usize)> {
+    let trimmed = s[p..].trim_start_matches([' ', '\t']);
+    let start = s.len() - trimmed.len();
+    let body = trimmed.strip_prefix('{')?;
+    let mut depth = 1;
+    for (n, c) in body.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&body[..n], start + 1 + n + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The part of a subfile that `\subfile` prints: its document body.
+fn subfile_body(text: &str) -> &str {
+    const BEGIN: &str = "\\begin{document}";
+    let start = text.find(BEGIN).map_or(0, |k| k + BEGIN.len());
+    let end = text[start..]
+        .find("\\end{document}")
+        .map_or(text.len(), |k| start + k);
+    &text[start..end]
+}
+
+struct Flattener<'a> {
+    read: &'a dyn Fn(&Path) -> Option<String>,
+    bbl: Option<&'a str>,
+    /// The main file's folder: `\import` paths are relative to it.
+    top: PathBuf,
+    /// Files being expanded, outermost first. Seeing one again is a cycle.
+    stack: Vec<PathBuf>,
+    inlined: BTreeSet<PathBuf>,
+    bbl_used: bool,
+}
+
+impl Flattener<'_> {
+    /// `text`, a file in folder `base`, with its inputs expanded. Comments and
+    /// verbatim parts are copied as they are.
+    fn expand(&mut self, text: &str, base: &Path) -> Result<String, String> {
+        let mut out = String::with_capacity(text.len());
+        let mut open: Option<String> = None;
+        for line in text.lines() {
+            let mut line = line;
+            if let Some(env) = open.take() {
+                let end = format!("\\end{{{env}}}");
+                let Some(k) = line.find(&end) else {
+                    open = Some(env);
+                    out.push_str(line);
+                    out.push('\n');
+                    continue;
+                };
+                out.push_str(&line[..k + end.len()]);
+                line = &line[k + end.len()..];
+            }
+            let (cut, opened, skipped) = scan_line(line);
+            open = opened;
+            let code = &line[..cut.unwrap_or(line.len())];
+            let (mut i, mut j) = (0, 0);
+            while let Some(d) = code[j..].find('\\') {
+                let k = j + d;
+                if skipped.iter().any(|r| r.contains(&k)) {
+                    j = k + 1;
+                    continue;
+                }
+                match self.command(code, k, base)? {
+                    Some((rep, end)) => {
+                        out.push_str(&line[i..k]);
+                        out.push_str(&rep);
+                        i = end;
+                        j = end;
+                    }
+                    // Step over an escaped character too, so `\\input` is not a command.
+                    None => j = k + 1 + code[k + 1..].chars().next().map_or(0, char::len_utf8),
+                }
+            }
+            out.push_str(&line[i..]);
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    /// What replaces the command at `code[k..]`, and the index just past it.
+    /// None leaves the command as it is.
+    fn command(
+        &mut self,
+        code: &str,
+        k: usize,
+        base: &Path,
+    ) -> Result<Option<(String, usize)>, String> {
+        let name: String = code[k + 1..]
+            .chars()
+            .take_while(char::is_ascii_alphabetic)
+            .collect();
+        let arity = match name.as_str() {
+            "input" | "include" | "subfile" | "bibliography" => 1,
+            "import" | "subimport" => 2,
+            "printbibliography" => 0,
+            _ => return Ok(None),
+        };
+        let mut p = k + 1 + name.len();
+        let mut args = Vec::new();
+        for _ in 0..arity {
+            let Some((arg, next)) = braced_arg(code, p) else {
+                return Ok(None);
+            };
+            args.push(arg);
+            p = next;
+        }
+        match name.as_str() {
+            "printbibliography" => {
+                return Ok(Some((format!("{BIBLATEX_NOTE}\n\\printbibliography"), p)));
+            }
+            "bibliography" => {
+                let Some(bbl) = self.bbl else {
+                    return Ok(None);
+                };
+                self.bbl_used = true;
+                return Ok(Some((bbl.trim_end().to_string(), p)));
+            }
+            _ => {}
+        }
+        // `\import` paths are relative to the main file's folder, `\subimport`
+        // paths to the current one. The file itself is looked up from there.
+        let (new_base, file) = if name == "import" || name == "subimport" {
+            let top = if name == "import" {
+                self.top.as_path()
+            } else {
+                base
+            };
+            let Some(dir) = resolve(top, args[0].trim()) else {
+                return Ok(None);
+            };
+            (dir, args[1])
+        } else {
+            (base.to_path_buf(), args[0])
+        };
+        let Some(target) = resolve(&new_base, file.trim()) else {
+            return Ok(None);
+        };
+        let Some((rel, text)) = self.find(&target) else {
+            return Ok(None);
+        };
+        if self.stack.contains(&rel) {
+            return Err(format!(
+                "{} includes itself, so \\{name} would loop forever.",
+                rel.display()
+            ));
+        }
+        if self.stack.len() > MAX_DEPTH {
+            return Err(format!(
+                "Files nest more than {MAX_DEPTH} levels deep, at {}.",
+                rel.display()
+            ));
+        }
+        let src = if name == "subfile" {
+            subfile_body(&text)
+        } else {
+            text.as_str()
+        };
+        self.stack.push(rel.clone());
+        let body = self.expand(src, &new_base);
+        self.stack.pop();
+        let body = body?;
+        self.inlined.insert(rel);
+        let body = body.trim_end_matches('\n');
+        let rep = if name == "include" {
+            format!("\\clearpage\n{body}\n\\clearpage")
+        } else {
+            body.to_string()
+        };
+        Ok(Some((rep, p)))
+    }
+
+    /// The first of `target.tex` and `target` that can be read, with its text.
+    /// A name that already ends in `.tex` is only tried as it is.
+    fn find(&self, target: &Path) -> Option<(PathBuf, String)> {
+        let mut with_tex = target.as_os_str().to_owned();
+        with_tex.push(".tex");
+        let cands = if target.extension().is_some_and(|e| e == "tex") {
+            vec![target.to_path_buf()]
+        } else {
+            vec![PathBuf::from(with_tex), target.to_path_buf()]
+        };
+        cands
+            .into_iter()
+            .find_map(|c| (self.read)(&c).map(|t| (c, t)))
+    }
+}
+
+/// Inlines the inputs of the main file `files[0]` (paths relative to the
+/// project root), and the .bbl text in place of `\bibliography` when `bbl` is
+/// given. A missing or unsafe input is left as it is.
+fn flatten_tex(
+    main: &Path,
+    read: &dyn Fn(&Path) -> Option<String>,
+    bbl: Option<&str>,
+) -> Result<Flattened, String> {
+    let text = read(main).ok_or_else(|| format!("Can't read {}.", main.display()))?;
+    let top = main.parent().unwrap_or(Path::new("")).to_path_buf();
+    let mut f = Flattener {
+        read,
+        bbl,
+        top: top.clone(),
+        stack: vec![main.to_path_buf()],
+        inlined: BTreeSet::new(),
+        bbl_used: false,
+    };
+    let text = f.expand(&text, &top)?;
+    Ok(Flattened {
+        text,
+        inlined: f.inlined,
+        bbl_used: f.bbl_used,
+    })
+}
+
 /// Zips the files the last build used, plus the .bbl (arXiv doesn't run
-/// biber), ready to upload to arXiv.
+/// biber), ready to upload to arXiv. With `flatten`, the main file has its
+/// inputs inlined, and the files inlined are left out of the zip.
 #[tauri::command(async)]
-pub fn export_arxiv(state: State<AppState>, dest: String, strip: bool) -> CmdResult<usize> {
+pub fn export_arxiv(
+    state: State<AppState>,
+    dest: String,
+    strip: bool,
+    flatten: Option<bool>,
+) -> CmdResult<usize> {
     let p = project(&state)?;
     let stem = p
         .main
@@ -211,14 +492,34 @@ pub fn export_arxiv(state: State<AppState>, dest: String, strip: bool) -> CmdRes
         "Build the project once before exporting, so Lemmata knows which files it uses.".to_string()
     })?;
     let files = used_files(&fls, &p.root, p.config.outdir.trim_start_matches("./"));
+    let bbl = std::fs::read(outdir.join(format!("{stem}.bbl"))).ok();
+    let flat = if flatten.unwrap_or(false) {
+        let read = |rel: &Path| {
+            std::fs::read(p.root.join(rel))
+                .ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+        };
+        let bbl_text = bbl
+            .as_deref()
+            .map(|b| String::from_utf8_lossy(b).into_owned());
+        Some(flatten_tex(&p.main, &read, bbl_text.as_deref())?)
+    } else {
+        None
+    };
 
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&dest).map_err(err)?);
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
     let mut count = 0;
     for rel in &files {
+        if flat.as_ref().is_some_and(|f| f.inlined.contains(rel)) {
+            continue;
+        }
         let name = rel.to_string_lossy().replace('\\', "/");
-        let bytes = std::fs::read(p.root.join(rel)).map_err(err)?;
+        let bytes = match &flat {
+            Some(f) if *rel == p.main => f.text.as_bytes().to_vec(),
+            _ => std::fs::read(p.root.join(rel)).map_err(err)?,
+        };
         let bytes = if strip && name.ends_with(".tex") {
             strip_comments(&String::from_utf8_lossy(&bytes)).into_bytes()
         } else {
@@ -234,7 +535,8 @@ pub fn export_arxiv(state: State<AppState>, dest: String, strip: bool) -> CmdRes
         .parent()
         .map(|d| d.to_string_lossy().replace('\\', "/"))
         .unwrap_or_default();
-    if let Ok(bbl) = std::fs::read(outdir.join(format!("{stem}.bbl"))) {
+    let bbl_inlined = flat.as_ref().is_some_and(|f| f.bbl_used);
+    if let Some(bbl) = bbl.filter(|_| !bbl_inlined) {
         let name = if main_dir.is_empty() {
             format!("{stem}.bbl")
         } else {
@@ -363,5 +665,176 @@ mod tests {
             .into_iter()
             .collect();
         assert_eq!(got, [PathBuf::from("a.tex"), PathBuf::from("main.tex")]);
+    }
+
+    /// Flattens the first file, with the others readable as project files.
+    fn run(files: &[(&str, &str)], bbl: Option<&str>) -> Result<Flattened, String> {
+        let read = |p: &Path| {
+            files
+                .iter()
+                .find(|(n, _)| Path::new(n) == p)
+                .map(|(_, t)| t.to_string())
+        };
+        flatten_tex(Path::new(files[0].0), &read, bbl)
+    }
+
+    fn text(files: &[(&str, &str)]) -> String {
+        run(files, None).unwrap().text
+    }
+
+    #[test]
+    fn flatten_expands_nested_inputs() {
+        let f = run(
+            &[
+                ("main.tex", "\\input{a}\n"),
+                ("a.tex", "A \\input{b} A\n"),
+                ("b.tex", "B\n"),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(f.text, "A B A\n");
+        assert_eq!(
+            f.inlined.into_iter().collect::<Vec<_>>(),
+            [PathBuf::from("a.tex"), PathBuf::from("b.tex")]
+        );
+    }
+
+    #[test]
+    fn flatten_include_adds_clearpage() {
+        assert_eq!(
+            text(&[("main.tex", "\\include{ch}\n"), ("ch.tex", "CH\n")]),
+            "\\clearpage\nCH\n\\clearpage\n"
+        );
+    }
+
+    #[test]
+    fn flatten_input_without_extension() {
+        assert_eq!(
+            text(&[
+                ("main.tex", "\\input{a}\n\\input{b.tex}\n"),
+                ("a.tex", "A\n"),
+                ("b.tex", "B\n"),
+            ]),
+            "A\nB\n"
+        );
+    }
+
+    #[test]
+    fn flatten_leaves_comments_alone() {
+        let f = run(
+            &[
+                ("main.tex", "% \\input{a}\n\\input{a} % \\input{a}\n"),
+                ("a.tex", "A\n"),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(f.text, "% \\input{a}\nA % \\input{a}\n");
+        assert_eq!(f.inlined.len(), 1);
+    }
+
+    #[test]
+    fn flatten_leaves_verbatim_alone() {
+        assert_eq!(
+            text(&[
+                (
+                    "main.tex",
+                    "\\begin{verbatim}\n\\input{a}\n\\end{verbatim}\n\\input{a}\nx \\verb|\\input{a}| y\n"
+                ),
+                ("a.tex", "A\n"),
+            ]),
+            "\\begin{verbatim}\n\\input{a}\n\\end{verbatim}\nA\nx \\verb|\\input{a}| y\n"
+        );
+    }
+
+    #[test]
+    fn flatten_import_and_subimport_change_the_folder() {
+        // \import is relative to the main folder, \subimport to the current one.
+        assert_eq!(
+            text(&[
+                ("main.tex", "\\import{sec}{intro}\n"),
+                (
+                    "sec/intro.tex",
+                    "\\subimport{sub}{x}\n\\import{other}{y}\n\\input{z}\n"
+                ),
+                ("sec/sub/x.tex", "X\n"),
+                ("other/y.tex", "Y\n"),
+                ("sec/z.tex", "Z\n"),
+            ]),
+            "X\nY\nZ\n"
+        );
+        // A main file in a subfolder: \import is relative to that folder.
+        let f = run(
+            &[
+                ("thesis/main.tex", "\\import{ch}{a}\n"),
+                ("thesis/ch/a.tex", "A\n"),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(f.text, "A\n");
+        assert!(f.inlined.contains(Path::new("thesis/ch/a.tex")));
+    }
+
+    #[test]
+    fn flatten_stops_on_cycles() {
+        let err = run(
+            &[
+                ("main.tex", "\\input{a}\n"),
+                ("a.tex", "\\input{b}\n"),
+                ("b.tex", "\\input{a}\n"),
+            ],
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("loop forever"), "{err}");
+        let err = run(&[("main.tex", "\\input{main}\n")], None).unwrap_err();
+        assert!(err.contains("loop forever"), "{err}");
+    }
+
+    #[test]
+    fn flatten_never_reads_outside_the_project() {
+        let src = "\\input{../secret}\n\\input{/etc/x}\n";
+        assert_eq!(text(&[("main.tex", src), ("secret.tex", "S\n")]), src);
+    }
+
+    #[test]
+    fn flatten_subfile_takes_only_the_body() {
+        assert_eq!(
+            text(&[
+                ("main.tex", "\\subfile{s}\n"),
+                (
+                    "s.tex",
+                    "\\documentclass{article}\n\\begin{document}\nS\n\\end{document}\n"
+                ),
+            ]),
+            "\nS\n"
+        );
+    }
+
+    #[test]
+    fn flatten_inlines_bibtex_bibliography() {
+        let bbl = "\\begin{thebibliography}{1}\n\\end{thebibliography}\n";
+        let f = run(
+            &[(
+                "main.tex",
+                "Text \\bibliography{refs}\n% \\bibliography{x}\n",
+            )],
+            Some(bbl),
+        )
+        .unwrap();
+        assert_eq!(
+            f.text,
+            "Text \\begin{thebibliography}{1}\n\\end{thebibliography}\n% \\bibliography{x}\n"
+        );
+        assert!(f.bbl_used);
+    }
+
+    #[test]
+    fn flatten_keeps_biblatex_bibliography() {
+        let f = run(&[("main.tex", "\\printbibliography\n")], Some("bbl")).unwrap();
+        assert_eq!(f.text, format!("{BIBLATEX_NOTE}\n\\printbibliography\n"));
+        assert!(!f.bbl_used);
     }
 }
