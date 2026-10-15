@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to Lemmata.
+## 1.4.0 (2026-10-15)
+
+### Faster
+- Read SyncTeX data in process
+- Faster start and rebuilds
+- Lighter PDF viewer, loaded when needed
+- Incremental spell checking
+- No git outside repositories; thumbnails as they come into view
+- Open projects and complete without waiting
 ## 1.3.1 (2026-10-15)
 
 ### Fixed
