@@ -14,6 +14,7 @@
   import { setDiagnostics, lintGutter, lintKeymap, nextDiagnostic, previousDiagnostic, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
   import { serverCompletionSource } from "@codemirror/lsp-client";
   import { environmentSync, closeEnvironment, unmatchedEnvironments } from "./editor/environments";
+  import { endSnippetCursors } from "./editor/snippetCursors";
   import { latexCompletions, lspCommandCompletions, type Providers } from "./editor/completions";
   import { previews } from "./editor/mathCommands";
   import { renderTex } from "./writing/katexRender";
@@ -216,6 +217,7 @@
       history(),
       drawSelection(),
       EditorState.allowMultipleSelections.of(true),
+      endSnippetCursors,
       rectangularSelection(),
       crosshairCursor(),
       indentOnInput(),
