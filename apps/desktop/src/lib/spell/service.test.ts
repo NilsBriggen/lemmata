@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
-import { spell } from "./service";
+import { detectLanguage, downloadNote, spell } from "./service";
 
 const calls = (cmd: string) => invoke.mock.calls.filter((c) => c[0] === cmd);
 
@@ -43,5 +43,27 @@ describe("spell service cache", () => {
     spell.setLanguage("de", ["xbad", "xother"]);
     expect(calls("spell_set_language")).toHaveLength(before);
     expect(spell.status("xother")).toBe(true);
+  });
+});
+
+describe("detectLanguage", () => {
+  const babel = (o: string) => `\\usepackage[${o}]{babel}`;
+  it("recognises the downloadable languages", () => {
+    expect(detectLanguage(babel("english,spanish"))).toBe("es");
+    expect(detectLanguage(babel("brazilian"))).toBe("pt-BR");
+    expect(detectLanguage(babel("portuguese"))).toBe("pt-PT");
+    expect(detectLanguage(babel("norsk"))).toBe("nb");
+    expect(detectLanguage("\\setmainlanguage{russian}")).toBe("ru");
+    expect(detectLanguage(babel("ngerman"))).toBe("de");
+    expect(detectLanguage("")).toBe("en");
+  });
+});
+
+describe("downloadNote", () => {
+  const d = { code: "es", label: "Español", installed: false, bundled: false, size_kb: 880 };
+  it("names the size only for languages that aren't installed", () => {
+    expect(downloadNote(d)).toBe(" (downloads 1 MB)");
+    expect(downloadNote({ ...d, size_kb: 36000 })).toBe(" (downloads 35 MB)");
+    expect(downloadNote({ ...d, installed: true })).toBe("");
   });
 });

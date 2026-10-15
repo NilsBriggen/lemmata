@@ -8,3 +8,13 @@ repository.workspace = true
 
 [dependencies]
 spellbook = "0.4"
+serde.workspace = true
+# Same reqwest/rustls line as lemmata-bib: ring is the only TLS crypto stack.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "charset", "http2", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+ring = "0.17"
+encoding_rs = "0.8"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

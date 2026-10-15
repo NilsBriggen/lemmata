@@ -10,7 +10,7 @@
   import SnippetsDialog from "./SnippetsDialog.svelte";
   import { INDENTS, validIndent } from "./editor/indent";
   import { settings, updateSettings, DEFAULTS, type Settings } from "./settings.svelte";
-  import { LANGUAGES } from "./spell/service";
+  import { LANGUAGES, spell, downloadNote, type Dictionary } from "./spell/service";
   import type { Detection } from "./api";
 
   interface Props {
@@ -26,6 +26,30 @@
   let updateMessage = $state<string | null>(null);
   let checking = $state(false);
   getVersion().then((v) => (version = v)).catch(() => {});
+
+  // Spell-check languages that aren't installed are fetched when chosen.
+  let dicts = $state<Dictionary[]>([]);
+  let downloading = $state<string | null>(null);
+  let spellError = $state<string | null>(null);
+  spell.dictionaries().then((d) => (dicts = d));
+
+  async function chooseSpell(select: HTMLSelectElement) {
+    const code = select.value;
+    spellError = null;
+    const d = dicts.find((x) => x.code === code);
+    if (!d || d.installed) return set("spellDefault", code);
+    downloading = code;
+    try {
+      await spell.download(code);
+      dicts = await spell.dictionaries();
+      set("spellDefault", code);
+    } catch (e) {
+      spellError = e instanceof Error ? e.message : String(e);
+      select.value = settings.spellDefault;
+    } finally {
+      downloading = null;
+    }
+  }
 
   function set<K extends keyof Settings>(key: K, value: Settings[K]) {
     updateSettings({ [key]: value } as Partial<Settings>);
@@ -114,12 +138,20 @@
     </div>
     <div class="row">
       <label for="pref-spell">Spell check</label>
-      <select id="pref-spell" class="input" value={settings.spellDefault} onchange={(e) => set("spellDefault", e.currentTarget.value)}>
+      <select id="pref-spell" class="input" value={settings.spellDefault} disabled={downloading !== null} onchange={(e) => chooseSpell(e.currentTarget)}>
         <option value="auto">Match the document's language</option>
-        {#each Object.entries(LANGUAGES) as [code, l] (code)}<option value={code}>{l.label}</option>{/each}
+        {#each Object.entries(LANGUAGES) as [code, l] (code)}
+          {@const d = dicts.find((x) => x.code === code)}
+          <option value={code}>{l.label}{d ? downloadNote(d) : ""}</option>
+        {/each}
         <option value="off">Off</option>
       </select>
     </div>
+    {#if downloading}
+      <p class="note" role="status">Downloading the {LANGUAGES[downloading]?.label} dictionary…</p>
+    {:else if spellError}
+      <p class="note error" role="alert">{spellError}</p>
+    {/if}
     <div class="row">
       <label for="pref-grammar">Grammar check</label>
       <select id="pref-grammar" class="input" value={settings.grammar} onchange={(e) => set("grammar", e.currentTarget.value as "off" | "local" | "custom")}>
@@ -237,5 +269,6 @@
   .muted { color: var(--muted); margin: 0; }
   .version { color: var(--faint); font-size: 12px; margin-right: auto; }
   .note { margin: 0; color: var(--muted); font-size: 12.5px; }
+  .note.error { color: var(--error); }
   .link { border: none; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
 </style>
