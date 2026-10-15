@@ -1045,7 +1045,12 @@ mod tests {
         again.config.grammar_ignore.clear();
         again.save_config().unwrap();
         let text = fs::read_to_string(d.path().join(CONFIG_FILE)).unwrap();
-        assert!(text.contains("synctex") && !text.contains("lemmata\"") && !text.contains("grammar_ignore"), "{text}");
+        assert!(
+            text.contains("synctex")
+                && !text.contains("lemmata\"")
+                && !text.contains("grammar_ignore"),
+            "{text}"
+        );
     }
 
     #[test]
