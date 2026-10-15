@@ -9,6 +9,7 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import Splitter from "./lib/ui/Splitter.svelte";
   import Modal from "./lib/ui/Modal.svelte";
+  import SnippetsDialog from "./lib/SnippetsDialog.svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { contentHash } from "./lib/contentHash";
   import { closePresenter } from "./lib/presenter/window";
@@ -65,8 +66,13 @@
 
   let tex = $state<TexStatus | null>(null);
   let checking = $state(false);
+  /** The user chose to work without TeX for now: the app opens, builds wait until TeX is found. */
+  let withoutTex = $state(false);
+  let toldNoTex = false;
   let project = $state<ProjectInfo | null>(null);
   let openError = $state<string | null>(null);
+  /** A folder that couldn't open because it has no main document. */
+  let noMainIn = $state<string | null>(null);
   let recent = $state<Recent[]>(recentEntries());
   /** First-run welcome: shown once, or when asked for from the library. */
   let welcome = $state(false);
@@ -107,6 +113,7 @@
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let update = $state<{ version: string; progress: number | null; error: string | null } | null>(null);
   let historyOpen = $state(false);
+  let snippetsOpen = $state(false);
   /** Files changed by another program while they had unsaved edits here: not saved until the user decides. */
   let conflicts = $state<string[]>([]);
   /** Files whose last save failed: the status bar says so in red. */
@@ -175,9 +182,12 @@
 
   async function recheck(extraDir?: string) {
     checking = true;
+    const wasReady = !!tex?.detection.ready;
     try {
       tex = await api.texStatus(extraDir);
       saveTexCache(tex);
+      // TeX was installed while working without it: compile what's open.
+      if (!wasReady && tex.detection.ready && project) runBuild();
     } finally {
       checking = false;
     }
@@ -193,10 +203,12 @@
         return;
       }
     }
+    noMainIn = null;
     try {
       project = await api.openProject(path);
     } catch (e) {
       openError = errorMessage(e);
+      if (openError.includes("\\documentclass found")) noMainIn = path;
       return;
     }
     recent = rememberProject(project.root);
@@ -219,6 +231,10 @@
     outcome = null;
     headings = [];
     ensureHistory();
+    api
+      .watching()
+      .then((ok) => ok || showNotice("Lemmata can't watch this project for changes made by other programs, so it won't notice them. Reopen the project, or close other programs that watch many files.", { tone: "error" }))
+      .catch(() => {});
     // The file first: texlab can take a moment to start, and nothing here needs it.
     await openFile(project.main);
     await startLsp(project.root);
@@ -476,6 +492,13 @@
 
   async function runBuild() {
     clearTimeout(buildTimer);
+    if (!tex?.detection.ready) {
+      if (!toldNoTex) {
+        toldNoTex = true;
+        showNotice("TeX isn't installed yet, so nothing is compiled. Your edits are saved as usual.", { label: "Set up TeX", run: () => (withoutTex = false) });
+      }
+      return;
+    }
     const seq = ++buildSeq;
     building = true;
     try {
@@ -953,6 +976,7 @@
       { id: "cite", label: "Insert citation", detail: hint("cite"), run: () => (citeOpen = true) },
       { id: "figure", label: "Insert figure…", run: () => (dialog = "figure") },
       { id: "table", label: "Insert table…", run: () => (dialog = "table") },
+      { id: "snippets", label: "Edit snippets…", run: () => (snippetsOpen = true) },
       { id: "symbols", label: "Insert symbol…", detail: hint("symbols"), run: () => (dialog = "symbols") },
       { id: "wrap-env", label: "Wrap selection in an environment…", detail: hint("wrap-env"), run: () => (palette = "environments") },
       { id: "words", label: "Word count", run: () => (dialog = "words") },
@@ -974,10 +998,10 @@
       { id: "export-pdf", label: "Export PDF…", run: exportPdf },
       { id: "save-template", label: "Save this project as a template…", run: () => (savingTemplate = true) },
       { id: "export-zip", label: "Export the whole project (.zip)…", run: exportZip },
-      { id: "export-arxiv", label: "Export for arXiv (.zip)…", run: exportArxiv },
+      { id: "export-arxiv", label: "Export for arXiv (.zip)…", run: () => exportArxiv() },
       { id: "project-settings", label: "Project settings", run: () => (settingsOpen = true) },
       { id: "preferences", label: "Preferences", run: () => (prefsOpen = true) },
-      { id: "guide", label: "Open the user guide", run: () => openUrl("https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md") },
+      { id: "guide", label: "Open the user guide", run: () => openGuide() },
       { id: "report", label: "Report a problem…", run: startReport },
       { id: "close", label: "Close project", run: closeProject },
     ].filter(() => project),
@@ -1035,6 +1059,11 @@
     report = { system: systemSummary(version, tex), log: errorSummary(diagnostics) };
   }
 
+  const GUIDE_URL = "https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md";
+  function openGuide() {
+    openUrl(GUIDE_URL).catch((e) => showNotice(`Could not open the guide (${errorMessage(e)}). It's at ${GUIDE_URL}`, { tone: "error" }));
+  }
+
   function openSearch() {
     focusMode = false;
     searchOpen = true;
@@ -1073,10 +1102,18 @@
     }
   }
 
-  async function exportArxiv() {
+  async function exportArxiv(anyway = false) {
     if (!project) return;
-    await saveAll();
+    await saveAll(false);
     await runBuild();
+    // arXiv compiles the upload itself; a document that fails here fails there too.
+    if (!anyway && outcome?.status !== "success") {
+      showNotice("The document doesn't build without errors, so arXiv would likely reject it. Fix the errors in Logs first.", {
+        label: "Export anyway",
+        run: () => exportArxiv(true),
+      });
+      return;
+    }
     const dest = await saveDialog({ title: "Export for arXiv", defaultPath: `${project.name}-arxiv.zip`, filters: [{ name: "Zip", extensions: ["zip"] }] });
     if (!dest) return;
     try {
@@ -1292,6 +1329,10 @@
   }
 
   onMount(async () => {
+    // Installing TeX happens in another window; notice it when the user comes back.
+    window.addEventListener("focus", () => {
+      if (tex && !tex.detection.ready && !checking) recheck(settings.texDir ?? undefined).catch(() => {});
+    });
     // Closing the window saves first. With autosave on that is silent; otherwise, or when saving fails, it asks.
     getCurrentWindow()
       .onCloseRequested(async (e) => {
@@ -1391,10 +1432,10 @@
     { label: "Undo last file operation", run: () => fileActions?.undo() },
     { label: "Export PDF…", run: exportPdf, separator: true },
     { label: "Export project (.zip)…", run: exportZip },
-    { label: "Export for arXiv…", run: exportArxiv },
+    { label: "Export for arXiv…", run: () => exportArxiv() },
     { label: "Preferences", run: () => (prefsOpen = true), separator: true },
     { label: "Keyboard shortcuts", hint: hint("shortcuts"), run: () => (dialog = "shortcuts") },
-    { label: "User guide", run: () => openUrl("https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md") },
+    { label: "User guide", run: () => openGuide() },
     { label: "Report a problem…", run: startReport },
   ]);
 
@@ -1449,12 +1490,14 @@
       if (paths.length === 1) openProject(paths[0]);
       else showNotice(`Imported ${paths.length} projects.`, { tone: "ok" });
     }} />
-{:else if !tex.detection.ready}
-  <Onboarding status={tex} {checking} onRecheck={recheck} />
+{:else if !tex.detection.ready && !withoutTex}
+  <Onboarding status={tex} {checking} onRecheck={recheck} onSkip={() => (withoutTex = true)} />
 {:else if !project}
   <Library
     {recent}
     error={openError}
+    {noMainIn}
+    onCreateMain={(dir) => api.createMain(dir).then(() => openProject(dir)).catch((e) => (openError = errorMessage(e)))}
     onOpen={openProject}
     onForget={(p) => (recent = forgetProject(p))}
     onImported={(paths) => {
@@ -1609,16 +1652,22 @@
           {#if selectionWords}<span title="Words in the selection">{selectionWords} selected</span>{/if}
           {#if active}<span class:save-failed={failedSaves.includes(active)}>{failedSaves.includes(active) ? "Not saved" : dirty[active] ? "Unsaved" : "Saved"}</span>{/if}
           <span class="grow"></span>
-          {#if lspStarting}<span class="starting" title="The language server is starting"><span class="spin-dot"></span>Starting completion</span>{:else if !lspAvailable}<span title="texlab wasn't found, so completion and hover are off">No completion</span>{/if}
+          {#if lspStarting}<span class="starting" title="The language server is starting"><span class="spin-dot"></span>Starting completion</span>{:else if !lspAvailable}<button class="status-link" title="Why is completion off?" onclick={() => showNotice("Completion, hover and go to definition come from texlab, which ships with Lemmata but didn't start. Reinstall Lemmata, or install texlab yourself (your package manager, or cargo install texlab), then reopen the project.")}>No completion</button>{/if}
           {#if tex.detection.outdated}<span class="warn" title="Some packages may lack newer features">Old TeX Live</span>{/if}
           {#if project.config.draft}<span class="warn" title="Figures are drawn as boxes. Switch to Normal in the Recompile menu for the final PDF.">Draft mode</span>{/if}
           {#if spellLang !== "off"}<span title="Spell-check language">{spellLang}</span>{/if}
           {#if totalWords}<span title="Words in the document body, without commands, maths or comments">{words.format(totalWords)} words</span>{/if}
           <span>{project.config.engine === "pdflatex" ? "pdfLaTeX" : project.config.engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"}</span>
           {#if outcome && !building}
-            <span class={outcome.status === "success" ? "ok" : "bad"} title={lastCompiled ? `Finished at ${new Date(lastCompiled).toLocaleTimeString()}` : undefined}>
-              {outcome.status === "success" ? `Compiled in ${(outcome.duration_ms / 1000).toFixed(1)} s` : outcome.status === "timeout" ? "Stopped: took too long" : errors ? `${errors} error${errors === 1 ? "" : "s"}` : "Compile failed"}
-            </span>
+            {#if outcome.status === "success"}
+              <span class="ok" title={lastCompiled ? `Finished at ${new Date(lastCompiled).toLocaleTimeString()}` : undefined}>Compiled in {(outcome.duration_ms / 1000).toFixed(1)} s</span>
+            {:else}
+              <!-- The failure opens the logs that explain it. -->
+              <button class="bad status-link" title="Show the logs" onclick={() => {
+                logsOpen = true;
+                if (settings.layout === "editor") updateSettings({ layout: "split" });
+              }}>{outcome.status === "timeout" ? "Stopped: took too long" : outcome.status === "cancelled" ? "Stopped" : errors ? `${errors} error${errors === 1 ? "" : "s"}` : "Compile failed"}</button>
+            {/if}
           {/if}
           <button class="bell" bind:this={bellBtn} aria-label="Recent notifications" title="Recent notifications" onclick={() => ((noticesOpen = !noticesOpen), (seenNotices = notices.length))}>
             <Bell size={13} />{#if notices.length > seenNotices}<span class="pip"></span>{/if}
@@ -1645,6 +1694,7 @@
               {diagnostics}
               {building}
               failed={!!outcome && outcome.status !== "success" && !outcome.pdf}
+              status={outcome?.status ?? null}
               buildId={buildSeq}
               {logsOpen}
               onLogs={(o) => {
@@ -1717,6 +1767,8 @@
   {onTrashed}
   onUpload={uploadFiles}
 />
+
+{#if snippetsOpen}<SnippetsDialog onClose={() => (snippetsOpen = false)} />{/if}
 
 {#if askShellEscape && project}
   <Modal title="Allow this project to run programs?" width={500} onClose={() => allowShellEscape(false)}>
@@ -1937,6 +1989,7 @@
   .close-msg { margin: 0 0 8px; color: var(--muted); }
   .close-files { margin: 0; padding-left: 18px; font: 12.5px var(--f-mono); }
   .danger-btn { background: var(--error) !important; border-color: var(--error) !important; color: #fff !important; }
+  .status-link { border: none; background: none; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
   .save-failed { color: var(--error); font-weight: 600; }
   .toast.error { border-color: var(--error); }
   .toast.error .t-ico { color: var(--error); }

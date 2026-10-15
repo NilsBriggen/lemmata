@@ -147,6 +147,12 @@ fn open_project(
     Ok(info)
 }
 
+/// False when the file watcher couldn't start (e.g. the system's watch limit is reached).
+#[tauri::command(async)]
+fn watching(state: State<AppState>) -> bool {
+    state.watcher.lock_safe().is_some()
+}
+
 #[tauri::command(async)]
 fn project_info_cmd(state: State<AppState>) -> CmdResult<ProjectInfo> {
     let guard = state.project.lock_safe();
@@ -429,6 +435,27 @@ fn create_project(
         Path::new(&parent),
         &name,
     )
+}
+
+/// Starts a folder that has no main document: writes a minimal main.tex, never over an existing one.
+#[tauri::command(async)]
+fn create_main(dir: String) -> CmdResult<()> {
+    let dir = Path::new(&dir);
+    if !dir.is_dir() {
+        return Err(format!("{} is not a folder.", dir.display()));
+    }
+    let main = dir.join("main.tex");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&main)
+        .and_then(|mut f| {
+            std::io::Write::write_all(
+                &mut f,
+                b"\\documentclass{article}\n\n\\begin{document}\n\nStart writing here.\n\n\\end{document}\n",
+            )
+        })
+        .map_err(|e| format!("Could not create {}: {e}", main.display()))
 }
 
 /// The example document, created in Lemmata's data folder on first use.
@@ -755,6 +782,7 @@ pub fn run() {
             tex_status,
             open_project,
             project_info_cmd,
+            watching,
             set_config,
             read_text,
             write_text,
@@ -782,6 +810,7 @@ pub fn run() {
             import_overleaf_zip,
             inspect_zip,
             create_example,
+            create_main,
             stop_build,
             read_log,
             add_files,

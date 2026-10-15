@@ -209,6 +209,8 @@ const handlers: Record<string, (a: Args) => unknown> = {
   inspect_zip: () => ({ bulk: true, projects: ["CA_Assignement_5", "INF_SEC_Assignement_3", "NET_assignment_4", "Homework", "CA_Assignement_4", "DB_Assignement_3"] }),
   import_overleaf_zip: (a) => ["CA_Assignement_5", "INF_SEC_Assignement_3", "NET_assignment_4", "Homework", "CA_Assignement_4", "DB_Assignement_3"].map((n) => `${a.parent}/${n}`),
   trash_project: () => undefined,
+  watching: () => true,
+  create_main: () => undefined,
   load_thumbnail: async () => {
     throw "No thumbnail yet.";
   },

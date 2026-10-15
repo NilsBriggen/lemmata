@@ -100,7 +100,8 @@
     <div class="compile">
       <button class="btn primary main" onclick={p.building ? p.onStop : p.onRecompile} title={p.building ? "Stop compiling" : `Recompile (${display(keysOf("recompile"))})`}>
         <span class:spin={p.building}><RefreshCw size={15} /></span>
-        {p.building ? "Compiling…" : "Recompile"}
+        <!-- While building, the button stops the build, so it says so. -->
+        {p.building ? "Stop" : "Recompile"}
       </button>
       <button class="btn primary caret" bind:this={compileBtn} aria-label="Compile options" aria-haspopup="menu" aria-expanded={open === "compile"} onclick={() => (open = open === "compile" ? null : "compile")}>
         <ChevronDown size={15} />
@@ -131,12 +132,12 @@
 
 {#if open === "compile" && compileBtn}
   <DropMenu anchor={compileBtn} align="end" onClose={() => (open = null)}>
-    <div class="heading">Auto compile</div>
+    <div class="heading">Compile</div>
     <button role="menuitemradio" aria-checked={p.autoCompile} onclick={() => p.onAutoCompile(true)}>
-      <span class="tick">{#if p.autoCompile}<Check size={14} />{/if}</span> On, after each save
+      <span class="tick">{#if p.autoCompile}<Check size={14} />{/if}</span> After every save
     </button>
     <button role="menuitemradio" aria-checked={!p.autoCompile} onclick={() => p.onAutoCompile(false)}>
-      <span class="tick">{#if !p.autoCompile}<Check size={14} />{/if}</span> Off, only when I recompile
+      <span class="tick">{#if !p.autoCompile}<Check size={14} />{/if}</span> Only when I recompile
     </button>
     <hr />
     <div class="heading">Compiler</div>

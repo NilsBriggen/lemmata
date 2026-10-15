@@ -11,6 +11,8 @@
 
   interface Props {
     diagnostics: Diagnostic[];
+    /** Outcome of the last build ("success", "failed", "cancelled", "timeout"), or null before the first. */
+    status: string | null;
     /** Changes after every build, so the raw log reloads. */
     buildId: number;
     onGoto: (file: string, line: number) => void;
@@ -19,7 +21,7 @@
     /** Source text of a project file, for the excerpts. */
     getSource: (file: string) => Promise<string | null>;
   }
-  let { diagnostics, buildId, onGoto, onAddPackage, getSource }: Props = $props();
+  let { diagnostics, status, buildId, onGoto, onAddPackage, getSource }: Props = $props();
 
   let tab = $state<"problems" | "log">("problems");
   let showInfo = $state(false);
@@ -54,8 +56,12 @@
     <div class="list">
       {#if !errors.length && !warnings.length}
         <div class="clear">
-          <CircleCheck size={28} />
-          <p><b>No errors or warnings.</b></p>
+          {#if status === "success" || status === "failed"}
+            <CircleCheck size={28} />
+            <p><b>No errors or warnings.</b></p>
+          {:else}
+            <p><b>{status === "cancelled" ? "The last build was stopped before it finished." : status === "timeout" ? "The last build took too long and was stopped." : "Nothing has been built yet."}</b></p>
+          {/if}
           {#if infos.length}<p>{infos.length} layout note{infos.length === 1 ? "" : "s"} about overfull or underfull lines below.</p>{/if}
         </div>
       {/if}

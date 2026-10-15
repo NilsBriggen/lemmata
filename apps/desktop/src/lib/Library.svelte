@@ -34,6 +34,9 @@
   interface Props {
     recent: Recent[];
     error: string | null;
+    /** The folder that failed to open because it has no main document; offers to create one. */
+    noMainIn?: string | null;
+    onCreateMain?: (dir: string) => void;
     onOpen: (path: string) => void;
     onForget: (path: string) => void;
     onImported: (paths: string[]) => void;
@@ -271,7 +274,12 @@
       </div>
     </header>
 
-    {#if p.error}<p class="error" role="alert">{p.error}</p>{/if}
+    {#if p.error}
+      <p class="error" role="alert">
+        {p.noMainIn ? "This folder has no main document: no .tex file in it starts with \\documentclass." : p.error}
+        {#if p.noMainIn && p.onCreateMain}<button class="btn sm" onclick={() => p.onCreateMain?.(p.noMainIn!)}>Create main.tex and open</button>{/if}
+      </p>
+    {/if}
 
     {#if p.recent.length === 0}
       <div class="empty">

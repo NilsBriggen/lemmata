@@ -136,6 +136,8 @@ export const api = {
   openProject: (path: string) => invoke<ProjectInfo>("open_project", { path }),
   projectInfo: () => invoke<ProjectInfo>("project_info_cmd"),
   setConfig: (config: Config) => invoke<ProjectInfo>("set_config", { config }),
+  createMain: (dir: string) => invoke<void>("create_main", { dir }),
+  watching: () => invoke<boolean>("watching"),
   readText: (path: string) => invoke<string>("read_text", { path }),
   /** `expected`: hash (contentHash) of the text last read or written; the save is refused if the disk differs. */
   writeText: (path: string, content: string, expected?: number) => invoke<void>("write_text", { path, content, expected: expected ?? null }),

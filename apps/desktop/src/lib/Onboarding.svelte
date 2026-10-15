@@ -14,8 +14,10 @@
     status: TexStatus;
     checking: boolean;
     onRecheck: (extraDir?: string) => void;
+    /** Opens the app anyway: projects can be edited, nothing compiles until TeX is found. */
+    onSkip?: () => void;
   }
-  let { status, checking, onRecheck }: Props = $props();
+  let { status, checking, onRecheck, onSkip }: Props = $props();
 
   const order = ["arch", "debian", "fedora", "suse", "macos", "windows", "other"];
   // Starts on this computer's platform; the user can switch tabs.
@@ -87,6 +89,7 @@
 
     <footer>
       <span>Installed somewhere else? <button class="link" onclick={chooseFolder}>Choose the TeX bin folder</button></span>
+      {#if onSkip}<button class="btn lg" onclick={onSkip}>Continue without compiling</button>{/if}
       <button class="btn primary lg" disabled={checking} onclick={() => onRecheck()}><span class:spin={checking}><RefreshCw size={16} /></span> {checking ? "Checking…" : "Check again"}</button>
     </footer>
   </main>

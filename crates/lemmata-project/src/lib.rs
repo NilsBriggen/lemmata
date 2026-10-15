@@ -16,6 +16,7 @@ pub const CONFIG_FILE: &str = "lemmata.toml";
 pub enum Error {
     #[error("{0} is not a folder")]
     NotADirectory(PathBuf),
+    // The app recognises this message (App.svelte openProject) to offer creating a main.tex.
     #[error("no .tex file with \\documentclass found in {0}")]
     NoMainFile(PathBuf),
     #[error("The main file {} set in lemmata.toml doesn't exist.", .0.display())]

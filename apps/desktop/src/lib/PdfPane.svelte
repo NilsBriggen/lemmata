@@ -28,6 +28,8 @@
     building: boolean;
     /** The last build ended without writing a PDF. */
     failed?: boolean;
+    /** Outcome of the last build, or null before the first one. */
+    status?: string | null;
     buildId: number;
     logsOpen: boolean;
     onLogs: (open: boolean) => void;
@@ -179,11 +181,17 @@
         {/if}
       </aside>
     {/if}
+    {#if p.failed && pageCount > 0 && !p.logsOpen && !p.building}
+      <div class="stale" role="status">
+        <span>The latest build failed{errors ? ` with ${errors} error${errors === 1 ? "" : "s"}` : ""}. This is the last PDF that built.</span>
+        <button class="btn sm" onclick={() => p.onLogs(true)}>Show logs</button>
+      </div>
+    {/if}
     <div class="pdf" class:hidden={p.logsOpen} class:with-outline={outlineOpen && !p.logsOpen}>
       <PdfView bind:this={view} bind:pageCount bind:currentPage bind:percent bind:matchCount bind:matchIndex building={p.building} failed={p.failed} onShowLogs={() => p.onLogs(true)} onSourceClick={p.onSourceClick} />
     </div>
     {#if p.logsOpen}
-      <div class="pdf"><Problems diagnostics={p.diagnostics} buildId={p.buildId} onGoto={p.onGoto} onAddPackage={p.onAddPackage} getSource={p.getSource} /></div>
+      <div class="pdf"><Problems diagnostics={p.diagnostics} status={p.status ?? null} buildId={p.buildId} onGoto={p.onGoto} onAddPackage={p.onAddPackage} getSource={p.getSource} /></div>
     {/if}
   </div>
 </section>
@@ -242,4 +250,5 @@
   .search input:focus { outline: none; border-color: var(--accent); }
   .search .count { font-size: 12px; min-width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
   .pdf.hidden { visibility: hidden; }
+  .stale { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; background: var(--error-soft); color: var(--ink); border-bottom: 1px solid var(--border); font-size: 12.5px; }
 </style>
