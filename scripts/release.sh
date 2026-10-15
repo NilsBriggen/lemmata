@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: scripts/release.sh 0.3.0        (or 0.3.0-beta.1)
-# Bumps every version field, regenerates CHANGELOG.md, commits and tags.
+# Bumps every version field, adds the new version to CHANGELOG.md, commits and tags.
 # Push with `git push --follow-tags` to start .github/workflows/release.yml.
 set -euo pipefail
 
@@ -15,7 +15,9 @@ sed -i.bak -E "0,/^version = \".*\"/s//version = \"$version\"/" Cargo.toml && rm
 sed -i.bak -E "s/\"version\": \"[^\"]*\"/\"version\": \"$version\"/" apps/desktop/package.json && rm apps/desktop/package.json.bak
 cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace >/dev/null
 
-git cliff --tag "v$version" -o CHANGELOG.md
+# Only the new version's section is added on top, so sections edited by hand stay as they are.
+section=$(git cliff --unreleased --tag "v$version" --strip header)
+{ head -n 3 CHANGELOG.md; echo "$section"; echo; tail -n +4 CHANGELOG.md; } > CHANGELOG.md.new && mv CHANGELOG.md.new CHANGELOG.md
 git add Cargo.toml Cargo.lock apps/desktop/package.json CHANGELOG.md
 git commit -m "chore(release): v$version"
 git tag -a "v$version" -m "Lemmata $version"
