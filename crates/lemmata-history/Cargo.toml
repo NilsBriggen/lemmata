@@ -9,6 +9,8 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+lemmata-log.workspace = true
+lemmata-pkgmap.workspace = true
 which.workspace = true
 
 [dev-dependencies]

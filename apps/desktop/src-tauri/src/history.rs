@@ -158,6 +158,7 @@ pub fn history_latexdiff(state: State<AppState>, id: String) -> CmdResult<PathBu
         latexdiff: &latexdiff,
         latexmk,
         engine_flag: engine.latexmk_flag(),
+        installer: Some(detection.installer(lemmata_tex::os::detect().family)),
         extra_args: if miktex {
             vec![format!("-{0}={0} --enable-installer %O %S", engine.binary()).into()]
         } else {

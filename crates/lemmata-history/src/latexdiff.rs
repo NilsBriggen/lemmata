@@ -16,6 +16,8 @@ pub struct Tools<'a> {
     pub latexmk: &'a Path,
     /// latexmk's engine flag: `-pdf`, `-xelatex` or `-lualatex`.
     pub engine_flag: &'a str,
+    /// How packages are installed here, for the hint when one is missing.
+    pub installer: Option<lemmata_pkgmap::Installer<'a>>,
     /// Extra latexmk arguments (MiKTeX's unattended package installs).
     pub extra_args: Vec<OsString>,
     /// Folders put first on PATH: the TeX bin folder, Perl's.
@@ -67,9 +69,12 @@ fn run(mut cmd: Command, out: &Path, err: &Path, timeout: Duration) -> Result<bo
     // A group of its own, so a timeout can stop latexmk and the engine it started.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| Error::Tool(format!("could not start {:?}: {e}", cmd.get_program())))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        Error::Tool(format!(
+            "Couldn't start {}: {e}",
+            Path::new(cmd.get_program()).display()
+        ))
+    })?;
     let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
@@ -91,21 +96,66 @@ fn run(mut cmd: Command, out: &Path, err: &Path, timeout: Duration) -> Result<bo
     }
 }
 
-fn tail(path: &Path) -> String {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+fn last_lines(text: &str) -> String {
     let lines: Vec<_> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(8)..].join("\n")
 }
 
-/// The first TeX errors in a log, which say more than its end.
-fn tex_errors(log: &Path) -> String {
-    let text = std::fs::read_to_string(log).unwrap_or_default();
-    let errors: Vec<_> = text
-        .lines()
-        .filter(|l| l.starts_with('!') || l.contains(":error:") || l.contains(": Emergency stop"))
-        .take(3)
-        .collect();
-    errors.join("\n")
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
+/// Why the diff document didn't compile, in plain words. A missing package says how to install it.
+fn explain_tex_failure(
+    log: &str,
+    latexmk_out: &str,
+    installer: Option<lemmata_pkgmap::Installer>,
+) -> String {
+    let first = lemmata_log::parse(log)
+        .into_iter()
+        .find(|d| d.severity == lemmata_log::Severity::Error);
+    let Some(d) = first else {
+        return format!(
+            "The PDF of the changes couldn't be made. {}",
+            last_lines(latexmk_out)
+        );
+    };
+    if let lemmata_log::Kind::MissingFile { name } = &d.kind {
+        let fix = installer.and_then(|i| lemmata_pkgmap::fix_for(name, i));
+        let how = match fix.as_ref().map(|f| (&f.explanation, &f.command)) {
+            Some((why, Some(cmd))) => format!("{why} Install it with `{cmd}` and try again."),
+            Some((why, None)) => format!("{why} Install it and try again."),
+            None => match lemmata_pkgmap::lookup(name) {
+                Some(p) => format!(
+                    "It is part of the TeX Live package \"{}\". Install that with your TeX distribution and try again.",
+                    p.package
+                ),
+                None => "Install it with your TeX distribution and try again.".into(),
+            },
+        };
+        return format!(
+            "The PDF of the changes needs {name}, which isn't installed. latexdiff's markup uses it. {how}"
+        );
+    }
+    let hint = d.hint.map(|h| format!(" {h}")).unwrap_or_default();
+    format!(
+        "The PDF of the changes couldn't be made. TeX says: {}{hint}",
+        d.message
+    )
+}
+
+/// Why latexdiff itself failed, in plain words.
+fn explain_latexdiff_failure(stderr: &str) -> String {
+    if let Some(module) = stderr
+        .split("Can't locate ")
+        .nth(1)
+        .and_then(|r| r.split_whitespace().next())
+    {
+        return format!(
+            "latexdiff couldn't run because its Perl module {module} is missing. Reinstall latexdiff or Perl with your package manager so that the module is available."
+        );
+    }
+    format!("latexdiff failed. {}", last_lines(stderr))
 }
 
 /// Marks the changes between the snapshot already unpacked at
@@ -121,9 +171,54 @@ pub fn latexdiff_pdf(root: &Path, main: &Path, tools: &Tools) -> Result<PathBuf>
             main.display()
         )));
     }
+    if !root.join(main).is_file() {
+        return Err(Error::Tool(format!(
+            "{} doesn't exist any more, so there is nothing to compare the snapshot with.",
+            main.display()
+        )));
+    }
     let result = diff_and_compile(root, main, &work, &old_main, tools);
-    let _ = std::fs::remove_dir_all(root.join(&work).join("old"));
+    for side in ["old", "new"] {
+        let _ = std::fs::remove_dir_all(root.join(&work).join(side));
+    }
     result
+}
+
+/// Name of the main file's copy at the top of a staged folder.
+const STAGED_MAIN: &str = "lemmata-main.tex";
+
+/// latexdiff looks for `\input` files next to the main file, TeX next to the project folder (where
+/// latexmk runs). With the main file in a subfolder the two differ, so each side's .tex files get a
+/// folder of their own with the main file at its top. Returns the staged old and new main files.
+fn stage(root: &Path, main: &Path, work: &Path) -> Result<(PathBuf, PathBuf)> {
+    let (old, new) = (work.join("old"), work.join("new"));
+    copy_tex_files(root, &root.join(&new))?;
+    for side in [&old, &new] {
+        std::fs::copy(
+            root.join(side).join(main),
+            root.join(side).join(STAGED_MAIN),
+        )?;
+    }
+    Ok((old.join(STAGED_MAIN), new.join(STAGED_MAIN)))
+}
+
+/// Copies the .tex files below `from` to `to`, keeping the folder structure. Folders starting
+/// with a dot (.git, Lemmata's own) are skipped.
+fn copy_tex_files(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let path = entry?.path();
+        let file = path.file_name().unwrap_or_default().to_owned();
+        if file.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            copy_tex_files(&path, &to.join(&file))?;
+        } else if path.extension().is_some_and(|e| e == "tex") {
+            std::fs::copy(&path, to.join(&file))?;
+        }
+    }
+    Ok(())
 }
 
 fn diff_and_compile(
@@ -151,15 +246,21 @@ fn diff_and_compile(
 
     // Relative to the project folder: it is also where latexmk runs, so the
     // figures and bibliographies the document names are found as in a normal build.
+    let in_subfolder = main.parent().is_some_and(|p| !p.as_os_str().is_empty());
+    let (old_main, new_main) = if in_subfolder {
+        stage(root, main, work)?
+    } else {
+        (old_main.to_path_buf(), main.to_path_buf())
+    };
     let mut diff = Command::new(tools.latexdiff);
     diff.current_dir(root)
         .args(["--flatten", "--encoding=utf8"])
         .arg(old_main)
-        .arg(main);
+        .arg(new_main);
     path_env(&mut diff);
     let log = abs.join("latexdiff.log");
     if !run(diff, &tex, &log, tools.timeout)? {
-        return Err(Error::Tool(format!("latexdiff failed: {}", tail(&log))));
+        return Err(Error::Tool(explain_latexdiff_failure(&read(&log))));
     }
 
     let mut mk = Command::new(tools.latexmk);
@@ -180,17 +281,10 @@ fn diff_and_compile(
     // -f keeps going past errors, so a failing run can still leave a PDF.
     run(mk, &out, &abs.join("latexmk.err"), left)?;
     if !pdf.is_file() {
-        let errors = tex_errors(&abs.join("diff.log"));
-        let mut why = if errors.is_empty() {
-            tail(&out)
-        } else {
-            errors
-        };
-        if why.contains("ulem.sty") {
-            why.push_str("\nlatexdiff's markup needs the LaTeX package ulem (TeX Live: texlive-latexextra, or `tlmgr install ulem`).");
-        }
-        return Err(Error::Tool(format!(
-            "The PDF of the changes couldn't be made. {why}"
+        return Err(Error::Tool(explain_tex_failure(
+            &read(&abs.join("diff.log")),
+            &read(&out),
+            tools.installer,
         )));
     }
     Ok(pdf)
@@ -241,47 +335,90 @@ mod tests {
         assert!(!dest.join(".lemmata").exists());
     }
 
+    const MISSING_ULEM_LOG: &str = "(/usr/share/texmf-dist/tex/latex/base/article.cls)\n! LaTeX Error: File `ulem.sty' not found.\n\nType X to quit or <RETURN> to proceed,\nor enter new name. (Default extension: sty)\n\nEnter file name: \n./.lemmata/build/latexdiff/diff.tex:8: Emergency stop.\n<read *> \n";
+
     #[test]
-    fn makes_a_pdf_of_the_changes() {
-        // The markup latexdiff adds needs ulem, which is not part of every TeX install.
-        let has_ulem = Command::new("kpsewhich")
-            .arg("ulem.sty")
-            .output()
-            .is_ok_and(|o| !o.stdout.is_empty());
-        let (Some(latexdiff), Ok(latexmk), Ok(_), true) = (
-            find_latexdiff(None),
-            which::which("latexmk"),
-            which::which("pdflatex"),
-            has_ulem,
-        ) else {
-            return;
-        };
-        let (d, h) = project();
+    fn a_missing_ulem_says_how_to_install_it() {
+        use lemmata_pkgmap::Installer;
+        let m = explain_tex_failure(MISSING_ULEM_LOG, "", Some(Installer::Tlmgr { sudo: true }));
+        assert!(
+            m.contains("needs ulem.sty") && m.contains("`sudo tlmgr install ulem`"),
+            "{m}"
+        );
+        let m = explain_tex_failure(MISSING_ULEM_LOG, "", Some(Installer::Distro("arch")));
+        assert!(m.contains("pacman"), "{m}");
+        let m = explain_tex_failure(MISSING_ULEM_LOG, "", None);
+        assert!(m.contains("TeX Live package \"ulem\""), "{m}");
+    }
+
+    #[test]
+    fn other_tex_failures_are_in_plain_words() {
+        let log =
+            "./.lemmata/build/latexdiff/diff.tex:30: Undefined control sequence.\nl.30 \\foo\n";
+        let m = explain_tex_failure(log, "", None);
+        assert!(
+            m.contains("TeX says: LaTeX doesn't know the command \\foo"),
+            "{m}"
+        );
+        // No error in the log: what latexmk said is all there is.
+        let m = explain_tex_failure("", "one\n\ntwo\n", None);
+        assert!(m.ends_with("one\ntwo"), "{m}");
+    }
+
+    #[test]
+    fn latexdiff_failures_are_explained() {
+        let m =
+            explain_latexdiff_failure("Can't locate Text/Foo.pm in @INC (you may need to install)");
+        assert!(m.contains("Perl module Text/Foo.pm is missing"), "{m}");
+        assert_eq!(
+            explain_latexdiff_failure("boom\n"),
+            "latexdiff failed. boom"
+        );
+    }
+
+    #[test]
+    fn staging_puts_each_sides_tex_files_under_the_main_file() {
+        let d = tempfile::tempdir().unwrap();
         let root = d.path();
-        let first = h.snapshot("v1").unwrap().unwrap();
-        fs::write(
-            root.join("chapters/one.tex"),
-            "The first chapter says goodbye.\n",
-        )
-        .unwrap();
-        h.extract_tree(&first, &root.join(LATEXDIFF_DIR).join("old"))
-            .unwrap();
+        for (path, text) in [
+            ("paper/main.tex", "new main"),
+            ("paper/sec.tex", "new sec"),
+            ("paper/fig.png", "x"),
+            (".git/hidden.tex", "x"),
+            (".lemmata/build/latexdiff/old/paper/main.tex", "old main"),
+        ] {
+            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            fs::write(root.join(path), text).unwrap();
+        }
+        let work = Path::new(LATEXDIFF_DIR);
+        let (old, new) = stage(root, Path::new("paper/main.tex"), work).unwrap();
+        assert_eq!(fs::read_to_string(root.join(old)).unwrap(), "old main");
+        assert_eq!(fs::read_to_string(root.join(&new)).unwrap(), "new main");
+        let tree = root.join(LATEXDIFF_DIR).join("new");
+        assert_eq!(
+            fs::read_to_string(tree.join("paper/sec.tex")).unwrap(),
+            "new sec"
+        );
+        assert!(!tree.join("paper/fig.png").exists() && !tree.join(".git").exists());
+    }
+
+    #[test]
+    fn a_main_file_deleted_since_is_explained() {
+        let d = tempfile::tempdir().unwrap();
+        let old = d.path().join(LATEXDIFF_DIR).join("old");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("main.tex"), "x").unwrap();
         let tools = Tools {
-            latexdiff: &latexdiff,
-            latexmk: &latexmk,
+            latexdiff: Path::new("latexdiff"),
+            latexmk: Path::new("latexmk"),
             engine_flag: "-pdf",
+            installer: None,
             extra_args: Vec::new(),
             path_dirs: Vec::new(),
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_secs(1),
         };
-        let pdf = latexdiff_pdf(root, Path::new("main.tex"), &tools).unwrap();
-        assert!(fs::metadata(&pdf).unwrap().len() > 1000);
-        let tex = fs::read_to_string(root.join(LATEXDIFF_DIR).join("diff.tex")).unwrap();
-        assert!(
-            tex.contains("\\DIFdel{hello}") && tex.contains("\\DIFadd{goodbye}"),
-            "{tex}"
-        );
-        assert!(!root.join(LATEXDIFF_DIR).join("old").exists());
+        let e = latexdiff_pdf(d.path(), Path::new("main.tex"), &tools).unwrap_err();
+        assert!(e.to_string().contains("doesn't exist any more"));
     }
 
     #[test]
@@ -291,6 +428,7 @@ mod tests {
             latexdiff: Path::new("latexdiff"),
             latexmk: Path::new("latexmk"),
             engine_flag: "-pdf",
+            installer: None,
             extra_args: Vec::new(),
             path_dirs: Vec::new(),
             timeout: Duration::from_secs(1),

@@ -2341,6 +2341,8 @@ dependencies = [
 name = "lemmata-history"
 version = "1.5.2"
 dependencies = [
+ "lemmata-log",
+ "lemmata-pkgmap",
  "serde",
  "tempfile",
  "thiserror 2.0.21",

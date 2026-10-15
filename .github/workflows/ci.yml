@@ -118,6 +118,10 @@ jobs:
             beamer
             beamertheme-metropolis
             collection-fontsrecommended
+            latexdiff
+            ulem
+            listings
+            graphics
       - name: Build the CLI
         run: cargo build -p lemmata-cli
       - name: lemmata doctor
@@ -126,6 +130,11 @@ jobs:
         run: scripts/check-fixtures.sh target/debug/lemmata
       - name: Build every template
         run: scripts/check-templates.sh target/debug/lemmata
+      # latexdiff's markup needs ulem, color and listings; the test fails instead of skipping when any is missing.
+      - name: PDF of the changes (latexdiff)
+        run: cargo test -p lemmata-history --test latexdiff
+        env:
+          LEMMATA_REQUIRE_TEX: "1"
 
   e2e:
     runs-on: ubuntu-22.04

@@ -401,7 +401,7 @@
   .close { margin-left: auto; }
   .intro { padding: 12px 14px; color: var(--muted); margin: 0; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; max-width: 60ch; }
   .intro p { margin: 0; }
-  .error { color: var(--error); padding: 8px 14px; margin: 0; }
+  .error { color: var(--error); padding: 8px 14px; margin: 0; white-space: pre-line; }
   ul { list-style: none; margin: 0; padding: 0; overflow: auto; }
   .snap { width: 100%; text-align: left; border: none; border-bottom: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; gap: 2px; padding: 10px 14px; }
   .snap:hover { background: var(--surface-3); }
