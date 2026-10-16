@@ -676,7 +676,8 @@
   .pdf { display: flex; flex-direction: column; height: 100%; background: var(--pdf-ground); min-width: 0; }
   .scroller { flex: 1; overflow: auto; position: relative; }
   .scroller:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .pages { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 18px 24px 40px; }
+  /* As wide as the widest page: centring inside a narrower box pushed the left edge out of scroll reach. */
+  .pages { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 18px 24px 40px; box-sizing: border-box; width: max-content; min-width: 100%; }
   .pages.two { display: grid; grid-template-columns: repeat(2, max-content); justify-content: center; align-items: start; }
   .pages.two :global(.page) { justify-self: start; }
   /* Left column: even pages after a lone cover, odd pages when pairing from 1. */
