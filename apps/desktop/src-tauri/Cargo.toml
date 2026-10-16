@@ -56,3 +56,4 @@ tokio = { workspace = true, features = ["rt"] }
 # drop this pin once a newer deep-link plugin builds without it.
 [target.'cfg(target_os = "linux")'.dependencies]
 rust-ini = "=0.21.1"
+gtk = "0.18"

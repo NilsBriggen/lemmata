@@ -2280,6 +2280,7 @@ dependencies = [
 name = "lemmata-desktop"
 version = "2.0.2"
 dependencies = [
+ "gtk",
  "lemmata-bib",
  "lemmata-env",
  "lemmata-git",

@@ -13,6 +13,8 @@ mod history;
 mod lsp;
 mod online_templates;
 mod open_with;
+#[cfg(target_os = "linux")]
+mod pinch;
 mod projects;
 mod spell;
 mod tectonic;
@@ -969,11 +971,15 @@ pub fn run() {
             tectonic::init(app.handle());
             start_detection(app.handle());
             open_with::init(app.handle());
+            #[cfg(target_os = "linux")]
+            pinch::forward(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             #[cfg(debug_assertions)]
             automation::automation_reply,
+            #[cfg(all(debug_assertions, target_os = "linux"))]
+            pinch::automation_pinch,
             tex_status,
             pdf_is_current,
             open_project,

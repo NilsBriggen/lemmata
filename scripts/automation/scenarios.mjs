@@ -476,6 +476,34 @@ export const scenarios = {
     await lem("idle", { timeout: 120_000 });
   },
 
+  async "zooms the PDF, not the whole window, on a touchpad pinch"(lem, dir) {
+    // Linux only: WebKitGTK magnified the whole window. Other systems have no made-up pinch to send.
+    const pinch = async ([x, y, w, h], scale) => {
+      for (const [phase, s] of [[0, 1], [1, scale], [2, scale]])
+        await lem("invoke", { cmd: "automation_pinch", args: { phase, scale: s, x: x + w / 2, y: y + h / 2 } });
+    };
+    const rect = async (selector) => (await lem("query", { selector }))[0].rect;
+    const zoom = async () => parseInt((await lem("query", { selector: ".zoom" }))[0].text);
+    await lem("openProject", { path: copyFixture(dir, "article") }); // no side panel over the PDF
+    await lem("idle", { timeout: 120_000 });
+    if ((await lem("state")).logsOpen) await lem("click", { selector: ".bar .logs" });
+    await until(lem, "the PDF", () => lem("exists", { selector: ".pages .page canvas" }), 120_000);
+    const body = JSON.stringify(await rect("body"));
+    const before = await zoom();
+    try {
+      await pinch(await rect(".cm-content"), 2);
+    } catch {
+      return lem("openProject", { path: dir }); // not Linux
+    }
+    await sleep(lem, 500);
+    if (JSON.stringify(await rect("body")) !== body) throw new Error("a pinch on the editor magnified the window");
+    if ((await zoom()) !== before) throw new Error("a pinch on the editor zoomed the PDF");
+    await pinch(await rect(".scroller"), 1.5);
+    await until(lem, "the PDF zoomed in", async () => Math.abs((await zoom()) - before * 1.5) <= 2);
+    if (JSON.stringify(await rect("body")) !== body) throw new Error("a pinch on the PDF magnified the window");
+    await lem("openProject", { path: dir });
+  },
+
   async "draws a very large image after another large one"(lem, dir) {
     // The WebKitGTK of Ubuntu 22.04 (and so the AppImage) drew the second one blank:
     // 6 then 25 megapixels, like a circuit diagram after a wide one.

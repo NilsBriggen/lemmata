@@ -80,6 +80,7 @@ If a save fails, the tab stays open with your text, the status bar says **Not sa
 - Links in the PDF work: `\ref`, the table of contents and URLs.
 - The **outline** button lists the PDF's bookmarks (load `hyperref` to get them).
 - The **page thumbnails** button shows a strip of every page beside the document; click one to go to it.
+- Zoom the PDF with Ctrl and the mouse wheel, or by pinching on a touchpad over it; the rest of the window stays as it is.
 - The zoom menu (the percentage button) has **Two pages**, which lays pages out side by side with page 1 on its own, like a book, and **Start with two pages**, which pairs pages 1 and 2, 3 and 4, and so on.
 - **Open in external viewer** (in the PDF toolbar) opens the PDF in your system's PDF viewer.
 - *Dark PDF pages* in Preferences → Appearance shows the pages (and thumbnails) dark. It applies only while the app has a dark theme, so it is greyed out in a light one.

@@ -1544,6 +1544,14 @@
     window.addEventListener("focus", () => {
       if (tex && !tex.detection.ready && !checking) recheck(settings.texDir ?? undefined).catch(() => {});
     });
+    // Touchpad pinches on Linux come from the native window (src-tauri/src/pinch.rs), not as browser
+    // zoom; each gesture goes to what's under the point it started at, which may zoom (the PDF does).
+    // Looked up for every event: zooming replaces the PDF's page elements.
+    let pinchAt = { x: 0, y: 0 };
+    listen<{ phase: string; scale: number; x: number; y: number }>("pinch", ({ payload: p }) => {
+      if (p.phase === "begin") pinchAt = p;
+      document.elementFromPoint(pinchAt.x, pinchAt.y)?.dispatchEvent(new CustomEvent("pinch", { bubbles: true, detail: p }));
+    }).catch(() => {});
     // Closing the window saves first. With autosave on that is silent; otherwise, or when saving fails, it asks.
     getCurrentWindow()
       .onCloseRequested(async (e) => {

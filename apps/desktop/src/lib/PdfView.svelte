@@ -587,9 +587,30 @@
     zoomBy(e.deltaY < 0 ? 1.1 : 1 / 1.1);
   }
 
+  /** A touchpad pinch (see App.svelte): zooms from where it started, skipping steps while a layout is running. */
+  let pinchFrom = 0;
+  let pinchTo = 0;
+  let pinching = false;
+  async function onPinch(e: Event) {
+    const { phase, scale } = (e as CustomEvent<{ phase: string; scale: number }>).detail;
+    if (!doc) return;
+    if (phase === "begin") pinchFrom = percent / 100;
+    else if (phase !== "update") pinchFrom = 0; // the zoom stays where the last update put it
+    if (phase !== "update" || !pinchFrom) return;
+    pinchTo = Math.round(pinchFrom * scale * 100) / 100;
+    if (pinching) return;
+    pinching = true;
+    try {
+      for (let applied = NaN; pinchTo !== applied; ) await setFit((applied = pinchTo));
+    } finally {
+      pinching = false;
+    }
+  }
+
   // Fitted layouts follow the pane's size (window resize, splitter drag).
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   onMount(() => {
+    scroller.addEventListener("pinch", onPinch);
     let lastWidth = scroller.clientWidth;
     const ro = new ResizeObserver(() => {
       if (typeof fit === "number" || !doc || Math.abs(scroller.clientWidth - lastWidth) < 4) return;
@@ -600,6 +621,7 @@
     ro.observe(scroller);
     return () => {
       ro.disconnect();
+      scroller?.removeEventListener("pinch", onPinch);
       clearTimeout(resizeTimer);
     };
   });
