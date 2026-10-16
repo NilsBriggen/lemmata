@@ -2,16 +2,13 @@
 
 All notable changes to Lemmata.
 
-## 2.1.0-rc.2 (2026-10-16)
-
-### Fixed
-- The ⋯ buttons on the start screen sit in their row and open their menu again
-
-## 2.1.0-rc.1 (2026-10-16)
+## 2.1.0 (2026-10-16)
 
 ### Added
-- Wrapped lines keep their indentation, indent guides, and indentation that follows environments as you type
-- The start screen shows folders first; drag projects into them, or use Move to folder…
+- Long lines wrap under their own indentation, and faint guides show how environments nest
+- Indentation follows environments as you type: Enter inside one indents a level, and a typed `\end{…}` lines up with its `\begin`
+- Reindent lines (main menu, command palette or Ctrl+Alt+\) cleans up the indentation of the selection, or of the whole file
+- The start screen shows your folders first, then the projects in none: drag a project onto a folder, or use Move to folder… in its menu
 
 ## 2.0.3 (2026-10-16)
 
