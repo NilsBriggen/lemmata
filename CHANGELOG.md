@@ -2,6 +2,11 @@
 
 All notable changes to Lemmata.
 
+## 2.1.0-rc.2 (2026-10-16)
+
+### Fixed
+- The ⋯ buttons on the start screen sit in their row and open their menu again
+
 ## 2.1.0-rc.1 (2026-10-16)
 
 ### Added
