@@ -10,7 +10,7 @@
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { StreamLanguage, HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput, indentUnit } from "@codemirror/language";
   import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-  import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap, snippet } from "@codemirror/autocomplete";
+  import { closeBrackets, closeBracketsKeymap, autocompletion, closeCompletion, completionKeymap, snippet } from "@codemirror/autocomplete";
   import { setDiagnostics, lintGutter, lintKeymap, nextDiagnostic, previousDiagnostic, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
   import { serverCompletionSource } from "@codemirror/lsp-client";
   import { environmentSync, closeEnvironment, unmatchedEnvironments } from "./editor/environments";
@@ -200,6 +200,17 @@
     return [];
   }
 
+  // Autocomplete with nothing to offer. Every state has autocomplete's state field: its timers outlive a
+  // file switch and throw ("Field is not present") on a state without it.
+  const noCompletion = autocompletion({ override: [] });
+
+  /** Shows another state, dropping completion requests still running for the old one. */
+  function show(state: EditorState) {
+    if (!view) return;
+    closeCompletion(view);
+    view.setState(state);
+  }
+
   function extensions(path: string): Extension[] {
     const tex = isTex(path);
     return [
@@ -258,7 +269,7 @@
               snippetCompletions(() => settings.snippets),
             ],
           })
-        : [],
+        : noCompletion,
       tex && settings.envSync ? [environmentSync, unmatchedEnvironments] : [],
       tex && settings.folding ? folding : [],
       path.endsWith(".tex") ? [spellcheck((w) => onAddWord?.(w)), grammarcheck(), mathPreview, pasteHandler, referenceHovers(() => providers)] : [],
@@ -415,7 +426,7 @@
       lspGenerationOf.set(path, lspGeneration);
     }
     currentPath = path;
-    view.setState(state);
+    show(state);
     if (lspGenerationOf.get(path) !== lspGeneration) {
       lspGenerationOf.set(path, lspGeneration);
       view.dispatch({ effects: lspSlot.reconfigure(lspExtension(path)) });
@@ -433,7 +444,7 @@
     if (!view) return;
     if (currentPath) states.set(currentPath, view.state);
     currentPath = null;
-    view.setState(EditorState.create({ doc: "", extensions: [EditorState.readOnly.of(true), EditorView.editable.of(false)] }));
+    show(EditorState.create({ doc: "", extensions: [noCompletion, EditorState.readOnly.of(true), EditorView.editable.of(false)] }));
   }
 
   /** Marks commented text in the open file; `active` is the thread being looked at. */
@@ -505,7 +516,7 @@
       lspGenerationOf.set(currentPath, lspGeneration);
       const doc = view.state.doc.toString();
       const sel = view.state.selection;
-      view.setState(EditorState.create({ doc, selection: sel, extensions: extensions(currentPath) }));
+      show(EditorState.create({ doc, selection: sel, extensions: extensions(currentPath) }));
     }
   }
 

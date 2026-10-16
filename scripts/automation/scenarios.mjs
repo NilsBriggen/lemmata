@@ -150,6 +150,23 @@ export const scenarios = {
     await lem("key", { combo: "Control+s" });
   },
 
+  async "switches to a file without completion while one is coming"(lem) {
+    // Autocomplete's timers outlived the switch and threw "Field is not present in this state".
+    for (let i = 0; i < 10; i++) {
+      await lem("openFile", { path: "main.tex" });
+      await lem("cursor", { line: 11 });
+      const before = await lem("editorText");
+      await lem("type", { text: "\\a" });
+      await lem("openFile", { path: "refs.bib" });
+      await sleep(lem, 300);
+      const errors = await lem("errors");
+      if (errors.length) throw new Error(errors[0]);
+      await lem("openFile", { path: "main.tex" });
+      for (let j = 0; j < 4 && (await lem("editorText")) !== before; j++) await lem("key", { combo: "Control+z" });
+    }
+    await lem("key", { combo: "Control+s" });
+  },
+
   async "\\begin opens the environment list, and the chosen one is typed once"(lem) {
     // 1.5.2 inserted \\begin{name}…\\end{name} with a cursor in each, showed no names, and kept both
     // cursors after leaving the braces, so typing went to two places.
