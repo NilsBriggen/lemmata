@@ -6,16 +6,15 @@
 use std::ffi::{OsStr, OsString};
 use std::process::Command;
 
-/// Gives `cmd` the user's environment: without the AppImage's paths and settings.
-/// Does nothing outside an AppImage.
+/// Gives `cmd` the user's environment: without any AppImage's paths and settings.
+/// Changes nothing when no AppImage is involved.
 pub fn host(cmd: &mut Command) -> &mut Command {
-    if let Some(dir) = std::env::var_os("APPDIR") {
-        for (key, value) in changes(&dir, std::env::vars_os()) {
-            match value {
-                Some(v) => cmd.env(key, v),
-                None => cmd.env_remove(key),
-            };
-        }
+    let appdir = std::env::var_os("APPDIR");
+    for (key, value) in changes(appdir.as_deref(), std::env::vars_os()) {
+        match value {
+            Some(v) => cmd.env(key, v),
+            None => cmd.env_remove(key),
+        };
     }
     cmd
 }
@@ -23,29 +22,34 @@ pub fn host(cmd: &mut Command) -> &mut Command {
 /// The AppImage's own variables, and settings its start script forces on every program.
 const APPIMAGE_ONLY: &[&str] = &["APPDIR", "APPIMAGE", "ARGV0", "OWD", "GTK_THEME"];
 
-/// What to change in `vars` so nothing points into `appdir`: lists (`a:b:c`) lose the
-/// entries inside it, and a variable left empty, or that is the AppImage's alone, goes.
+/// Where AppImages are mounted while they run (`/tmp/.mount_lemmatXXXXXX`). Not only the
+/// running one: after an update, the new version is started by the old one and inherits
+/// its paths, which still point into the old version's mount.
+const MOUNT: &str = "/.mount_";
+
+/// What to change in `vars` so nothing points into an AppImage: lists (`a:b:c`) lose those
+/// entries, and a variable left empty, or that is the AppImage's alone, goes.
 pub fn changes(
-    appdir: &OsStr,
+    appdir: Option<&OsStr>,
     vars: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Vec<(OsString, Option<OsString>)> {
-    let dir = appdir.to_string_lossy().trim_end_matches('/').to_string();
-    if dir.is_empty() {
-        return Vec::new();
-    }
+    let dir = appdir
+        .map(|d| d.to_string_lossy().trim_end_matches('/').to_string())
+        .filter(|d| !d.is_empty());
+    let inside = |p: &str| p.contains(MOUNT) || dir.as_deref().is_some_and(|d| p.starts_with(d));
     let mut out = Vec::new();
     for (key, value) in vars {
-        if APPIMAGE_ONLY.iter().any(|k| OsStr::new(k) == key) {
+        if dir.is_some() && APPIMAGE_ONLY.iter().any(|k| OsStr::new(k) == key) {
             out.push((key, None));
             continue;
         }
         let text = value.to_string_lossy();
-        if !text.contains(&dir) {
+        if !text.split(':').any(inside) {
             continue;
         }
         let kept: Vec<&str> = text
             .split(':')
-            .filter(|p| !p.is_empty() && !p.starts_with(&dir))
+            .filter(|p| !p.is_empty() && !inside(p))
             .collect();
         out.push((key, (!kept.is_empty()).then(|| kept.join(":").into())));
     }
@@ -63,7 +67,7 @@ mod tests {
     #[test]
     fn strips_the_appimage_and_keeps_the_rest() {
         let got = changes(
-            OsStr::new("/tmp/.mount_lemm/"),
+            Some(OsStr::new("/tmp/.mount_lemm/")),
             vars(&[
                 (
                     "LD_LIBRARY_PATH",
@@ -90,6 +94,24 @@ mod tests {
 
     #[test]
     fn outside_an_appimage_nothing_changes() {
-        assert!(changes(OsStr::new(""), vars(&[("LD_LIBRARY_PATH", "/x")])).is_empty());
+        let user = vars(&[("LD_LIBRARY_PATH", "/x"), ("GTK_THEME", "Adwaita:dark")]);
+        assert!(changes(None, user.clone()).is_empty());
+        assert!(changes(Some(OsStr::new("")), user).is_empty());
+    }
+
+    #[test]
+    fn drops_the_old_version_s_mount_after_an_update() {
+        // The updated app was started by the old one: its paths are still in the list.
+        let got = changes(
+            Some(OsStr::new("/tmp/.mount_lemmatNEW")),
+            vars(&[(
+                "LD_LIBRARY_PATH",
+                "/tmp/.mount_lemmatNEW/usr/lib/:/tmp/.mount_lemmatOLD/usr/lib/:/opt/mine/lib",
+            )]),
+        );
+        assert_eq!(
+            got,
+            vec![("LD_LIBRARY_PATH".into(), Some("/opt/mine/lib".into()))]
+        );
     }
 }
