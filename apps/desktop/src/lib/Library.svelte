@@ -537,7 +537,7 @@
 {/if}
 
 {#if dragState.active}
-  <div class="ghost" style:left="{dragState.x + 12}px" style:top="{dragState.y + 8}px">{dragState.name}</div>
+  <div class="drag-ghost" style:left="{dragState.x + 12}px" style:top="{dragState.y + 8}px">{dragState.name}</div>
 {/if}
 
 {#if deleting}
@@ -655,5 +655,5 @@
   .moves button:hover { background: var(--surface-2); }
   .moves button.on { background: var(--accent-soft); }
   .moves :global(svg) { color: var(--muted); }
-  .ghost { position: fixed; z-index: 60; pointer-events: none; padding: 3px 9px; border-radius: var(--r-sm); background: var(--surface); color: var(--ink); border: 1px solid var(--border-strong); font: 12.5px var(--f-body); box-shadow: var(--shadow); }
+  .drag-ghost { position: fixed; z-index: 60; pointer-events: none; padding: 3px 9px; border-radius: var(--r-sm); background: var(--surface); color: var(--ink); border: 1px solid var(--border-strong); font: 12.5px var(--f-body); box-shadow: var(--shadow); }
 </style>

@@ -678,6 +678,10 @@ export const scenarios = {
     await lem("fill", { selector: "[aria-label='Folder name']", value: "Course" });
     await lem("clickText", { text: "Create", within: "[role=dialog]" });
     await until(lem, "the folder", async () => (await folderRow()).includes("0 projects"));
+    // The ⋯ button sits centred in its row (a stray .ghost style once pinned it lower, unclickable).
+    const [rowRect] = (await lem("query", { selector: ".library .tr.folder" })).map((r) => r.rect);
+    const [moreRect] = (await lem("query", { selector: ".library .tr.folder .more" })).map((r) => r.rect);
+    if (Math.abs(moreRect[1] + moreRect[3] / 2 - (rowRect[1] + rowRect[3] / 2)) > 4) throw new Error(`the folder's ⋯ button isn't centred in its row: ${moreRect} vs ${rowRect}`);
 
     await lem("drag", { from: ".library .tr:not(.th):not(.folder)", fromText: name, to: ".library .tr.folder", toText: "Course" });
     await until(lem, "the dragged project in the folder", async () => (await folderRow()).includes("1 project"));
