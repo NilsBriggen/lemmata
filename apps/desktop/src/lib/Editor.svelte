@@ -5,7 +5,7 @@
   import { Compartment, EditorState, EditorSelection, Prec, type Extension } from "@codemirror/state";
   import {
     EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter,
-    drawSelection, highlightSpecialChars, rectangularSelection, crosshairCursor,
+    drawSelection, highlightSpecialChars, rectangularSelection, crosshairCursor, tooltips,
   } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { StreamLanguage, HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput, indentUnit } from "@codemirror/language";
@@ -209,6 +209,8 @@
       vimKeys(),
       lineNumbers(),
       highlightActiveLineGutter(),
+      // In the body, not the editor: WebKitGTK clips fixed tooltips at the editor's edge, under the PDF.
+      tooltips({ parent: document.body }),
       highlightSpecialChars(),
       history(),
       drawSelection(),
