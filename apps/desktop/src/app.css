@@ -44,6 +44,8 @@
 
   /* Editor and PDF */
   --code-bg: #ffffff;
+  /* Editor indent guides (src/lib/editor/indentGuides.ts); follows --border-strong in every theme. */
+  --indent-guide: var(--border-strong);
   --gutter: #f6f7f8;
   --pdf-ground: #c8cdd2;
   --atom: #9a5b14;

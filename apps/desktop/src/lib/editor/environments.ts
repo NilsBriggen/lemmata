@@ -3,7 +3,7 @@
 import { EditorState, type TransactionSpec, type Transaction } from "@codemirror/state";
 import { EditorView, Decoration, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import type { Text } from "@codemirror/state";
-import { indentUnit } from "@codemirror/language";
+import { indentService, indentUnit } from "@codemirror/language";
 
 export interface Token {
   kind: "begin" | "end";
@@ -90,6 +90,39 @@ export function pairedEdit(tr: Transaction): TransactionSpec | null {
 export const environmentSync = EditorState.transactionFilter.of((tr) => {
   const extra = pairedEdit(tr);
   return extra ? [tr, extra] : tr;
+});
+
+/** One scan per document: indenting a whole file asks for every line of the same text. */
+const tokenCache = new WeakMap<Text, Token[]>();
+function cachedTokens(doc: Text): Token[] {
+  let t = tokenCache.get(doc);
+  if (!t) tokenCache.set(doc, (t = tokens(doc)));
+  return t;
+}
+
+/** Their lines are content, not code: indenting them would change it. */
+const VERBATIM = new Set(["verbatim", "verbatim*", "Verbatim", "lstlisting", "minted", "comment"]);
+
+/**
+ * Indentation from environments, like Overleaf: one level inside each, and \end lined up with its \begin.
+ * No opinion (the line keeps its own) at the top level, directly in `document` (some indent its body,
+ * many don't) and inside verbatim-like environments.
+ */
+export const environmentIndent = indentService.of((ctx, pos) => {
+  const doc = ctx.state.doc;
+  const open: Token[] = [];
+  // Everything before `pos`: on Enter that's the cursor, so a \begin earlier on the same line counts.
+  for (const t of cachedTokens(doc)) {
+    if (t.from >= pos) break;
+    if (t.kind === "begin") open.push(t);
+    else open.pop();
+  }
+  const env = open.at(-1);
+  if (!env || VERBATIM.has(env.name)) return null;
+  const closing = /^\s*\\end\b/.test(ctx.textAfterPos(pos));
+  if (env.name === "document" && !closing) return null;
+  const base = ctx.lineIndent(doc.lineAt(env.from).from);
+  return closing ? base : base + ctx.unit;
 });
 
 /** Enter right after an unclosed \begin{X}: add the \end{X} below. */

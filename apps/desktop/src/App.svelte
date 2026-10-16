@@ -1208,6 +1208,7 @@
       { id: "git", label: "Git", run: openGit },
       { id: "todos", label: "TODOs", run: () => openPanel("todos") },
       { id: "format", label: "Format document", run: formatDocument },
+      { id: "reindent", label: "Reindent lines", detail: "the selection, or the whole file", run: () => editor?.reindentLines() },
       { id: "sync", label: "Show this line in the PDF", detail: hint("sync"), run: () => active && syncForward(active, editor?.currentLine() ?? 1, 0) },
       { id: "focus", label: focusMode ? "Leave focus mode" : "Focus mode", detail: hint("focus"), run: () => (focusMode = !focusMode) },
       { id: "new-file", label: "New file…", run: () => fileActions?.openMenu(null, 240, 120) },
@@ -1671,7 +1672,7 @@
   // The main menu shows palette commands, so a command has one name wherever it appears.
   const MENU: [string, string[]][] = [
     ["Project", ["close", "project-settings", "save-template", "words"]],
-    ["Tools", ["git", "history", "snapshot", "comments", "todos", "bib-manager", "format", "focus"]],
+    ["Tools", ["git", "history", "snapshot", "comments", "todos", "bib-manager", "format", "reindent", "focus"]],
     ["Export", ["export-pdf", "export-zip", "export-arxiv", "export-arxiv-flat"]],
     ["Help", ["preferences", "shortcuts", "guide", "report"]],
   ];

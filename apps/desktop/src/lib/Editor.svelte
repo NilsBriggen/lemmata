@@ -8,12 +8,13 @@
     drawSelection, highlightSpecialChars, rectangularSelection, crosshairCursor, tooltips,
   } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-  import { StreamLanguage, HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput, indentUnit } from "@codemirror/language";
+  import { StreamLanguage, HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput, indentRange, indentUnit } from "@codemirror/language";
   import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
   import { closeBrackets, closeBracketsKeymap, autocompletion, closeCompletion, completionKeymap, snippet } from "@codemirror/autocomplete";
   import { setDiagnostics, lintGutter, lintKeymap, nextDiagnostic, previousDiagnostic, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
   import { serverCompletionSource } from "@codemirror/lsp-client";
-  import { environmentSync, closeEnvironment, unmatchedEnvironments } from "./editor/environments";
+  import { environmentSync, environmentIndent, closeEnvironment, unmatchedEnvironments } from "./editor/environments";
+  import { indentGuides } from "./editor/indentGuides";
   import { endSnippetCursors } from "./editor/snippetCursors";
   import { latexCompletions, lspCommandCompletions, type Providers } from "./editor/completions";
   import { previews } from "./editor/mathCommands";
@@ -236,9 +237,17 @@
       highlightSelectionMatches(),
       lintGutter(),
       settings.wordWrap ? EditorView.lineWrapping : [],
-      tex ? stexLanguage : [],
+      indentGuides,
+      tex ? [stexLanguage, environmentIndent] : [],
       tex
-        ? EditorState.languageData.of(() => [{ commentTokens: { line: "%" }, closeBrackets: { brackets: ["(", "[", "{", "$"] } }])
+        ? EditorState.languageData.of(() => [
+            {
+              commentTokens: { line: "%" },
+              closeBrackets: { brackets: ["(", "[", "{", "$"] },
+              // Typing \end{…} at the start of a line lines it up with its \begin.
+              indentOnInput: /^\s*\\end\{?[^}]*\}?$/,
+            },
+          ])
         : [],
       syntaxHighlighting(texHighlight),
       lspSlot.of(lspExtension(path)),
@@ -549,6 +558,16 @@
     const head = view.state.selection.main.head;
     const line = view.state.doc.lineAt(head);
     return symbolAt(line.text, head - line.from, currentPath?.endsWith(".bib") ?? false);
+  }
+
+  /** Reindents the selected lines, or the whole file when nothing is selected. */
+  export function reindentLines() {
+    if (!view) return;
+    const { state } = view;
+    const sel = state.selection.main;
+    const changes = sel.empty ? indentRange(state, 0, state.doc.length) : indentRange(state, sel.from, sel.to);
+    if (!changes.empty) view.dispatch({ changes, userEvent: "input.indent" });
+    view.focus();
   }
 
   export function currentLine(): number {
