@@ -130,6 +130,21 @@ export const scenarios = {
     await lem("idle", { timeout: 120_000 });
   },
 
+  async "offers commands that only the loaded packages define"(lem) {
+    // Up to 2.0.1 none of texlab's commands showed: its labels have no backslash, and \\autoc never matched them.
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { line: 11 }); // inside the document: texlab offers nothing after \\end{document}
+    const before = await lem("editorText");
+    await lem("type", { text: "\\autoc" });
+    await until(lem, "\\autocite from biblatex in the list", async () =>
+      (await lem("query", { selector: ".cm-tooltip-autocomplete li" })).some((o) => (o.text ?? "").startsWith("\\autocite")));
+    await sleep(lem, 400); // CodeMirror ignores Enter for a moment after the list opens
+    await lem("key", { combo: "Enter" });
+    if (!/\n\\auto[a-z]+\\input/i.test(await lem("editorText"))) throw new Error("the command was not inserted with one backslash");
+    for (let i = 0; i < 6 && (await lem("editorText")) !== before; i++) await lem("key", { combo: "Control+z" });
+    await lem("key", { combo: "Control+s" });
+  },
+
   async "\\begin opens the environment list, and the chosen one is typed once"(lem) {
     // 1.5.2 inserted \\begin{name}…\\end{name} with a cursor in each, showed no names, and kept both
     // cursors after leaving the braces, so typing went to two places.

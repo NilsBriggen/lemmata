@@ -110,13 +110,16 @@ describe("latex completions", () => {
 
   it("offers commands locally and the language server's extras from a separate source", async () => {
     const state = EditorState.create({ doc: "\\sec" });
-    const fallback = async () => ({ from: 0, options: [{ label: "\\section" }, { label: "\\sectionmark" }] });
+    // As texlab sends them: no backslash, the range starting after it, and more to come.
+    const fallback = async () => ({ from: 1, options: [{ label: "section" }, { label: "sectionmark" }] });
     const ctx = new CompletionContext(state, 4, false);
     const local = (await latexCompletions(() => providers, fallback)(ctx)) as CompletionResult;
     expect(local.options.map((o) => o.label)).toContain("\\section");
     const lsp = (await lspCommandCompletions(fallback)(ctx)) as CompletionResult;
-    expect(lsp.options.map((o) => o.label)).toEqual(["\\sectionmark"]); // ours wins, no duplicate
-    expect(lsp.from).toBe(0);
+    expect(lsp.options.map((o) => o.label)).toEqual(["sectionmark"]); // ours wins, no duplicate
+    expect(lsp.options[0].displayLabel).toBe("\\sectionmark");
+    expect(lsp.from).toBe(1); // matched against "sec", which it contains
+    expect(lsp.validFor).toBeUndefined(); // asked again as more is typed
   });
 
   it("does not wait for the language server", async () => {

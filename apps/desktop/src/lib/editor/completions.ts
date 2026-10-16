@@ -218,8 +218,13 @@ export function lspCommandCompletions(fallback: (ctx: CompletionContext) => Prom
     if ([ENV, REF, CITE, FILE, PKG].some((r) => r.test(before))) return null;
     try {
       const theirs = await fallback(ctx);
-      const options = theirs?.options.filter((o) => !LOCAL_LABELS.has(o.label));
-      return options?.length ? { from: ctx.pos - cmd[0].length, options, validFor: /^\\[A-Za-z]*$/ } : null;
+      if (!theirs) return null;
+      // texlab's labels and range leave out the backslash ("Needspace", starting after the backslash).
+      const options = theirs.options
+        .filter((o) => !LOCAL_LABELS.has(`\\${o.label}`))
+        .map((o) => ({ ...o, displayLabel: `\\${o.displayLabel ?? o.label}` }));
+      // Its range and validFor as given: texlab sends 50 at most and asks to be asked again as more is typed.
+      return options.length ? { ...theirs, options } : null;
     } catch {
       return null; // texlab not running; the local items are enough
     }
