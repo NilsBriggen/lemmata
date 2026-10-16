@@ -2,6 +2,11 @@
 
 All notable changes to Lemmata.
 
+## 2.0.3 (2026-10-16)
+
+### Fixed
+- On Linux, a touchpad pinch zooms the PDF instead of magnifying the whole window
+
 ## 2.0.2 (2026-10-16)
 
 ### Fixed

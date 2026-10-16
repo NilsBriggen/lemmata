@@ -17,7 +17,7 @@ cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace >
 
 # Only the new version's section is added on top, so sections edited by hand stay as they are.
 section=$(git cliff --unreleased --tag "v$version" --strip header)
-{ head -n 3 CHANGELOG.md; echo; echo "$section"; echo; tail -n +4 CHANGELOG.md; } > CHANGELOG.md.new && mv CHANGELOG.md.new CHANGELOG.md
+{ head -n 3 CHANGELOG.md; echo; echo "$section"; tail -n +4 CHANGELOG.md; } > CHANGELOG.md.new && mv CHANGELOG.md.new CHANGELOG.md
 git add Cargo.toml Cargo.lock apps/desktop/package.json CHANGELOG.md
 git commit -m "chore(release): v$version"
 git tag -a "v$version" -m "Lemmata $version"
