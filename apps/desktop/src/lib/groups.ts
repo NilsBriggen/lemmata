@@ -93,12 +93,10 @@ export function forgetPath(state: Groups, path: string): Groups {
 
 export const countIn = (state: Groups, id: string) => Object.values(state.members).filter((g) => g === id).length;
 
-/** Which projects a folder view shows: everything, one folder, or only projects in none. */
-export type View = "all" | "none" | string;
+/** What the start screen shows: the top level (folders and the projects in none), or one folder. */
+export type View = "root" | string;
 export function inView(state: Groups, path: string, view: View): boolean {
-  if (view === "all") return true;
-  if (view === "none") return !(path in state.members);
-  return state.members[path] === view;
+  return view === "root" ? !(path in state.members) : state.members[path] === view;
 }
 
 function newId() {

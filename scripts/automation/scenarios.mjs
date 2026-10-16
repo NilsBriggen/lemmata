@@ -167,6 +167,23 @@ export const scenarios = {
     await lem("key", { combo: "Control+s" });
   },
 
+  async "indents inside environments as you type, and lines \\end up with its \\begin"(lem) {
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { line: 11 });
+    const before = await lem("editorText");
+    await lem("type", { text: "\\begin{itemize}\n\\end{itemize}\n" });
+    await lem("cursor", { line: 11 });
+    await lem("key", { combo: "End" });
+    await lem("key", { combo: "Enter" });
+    const line = async (n) => (await lem("editorText")).split("\n")[n - 1];
+    if ((await line(12)) !== "    ") throw new Error(`Enter inside itemize gave ${JSON.stringify(await line(12))}`);
+    await lem("type", { text: "\\end{itemize}" });
+    if ((await line(12)) !== "\\end{itemize}") throw new Error(`a typed \\end stayed at ${JSON.stringify(await line(12))}`);
+    for (let i = 0; i < 8 && (await lem("editorText")) !== before; i++) await lem("key", { combo: "Control+z" });
+    if ((await lem("editorText")) !== before) throw new Error("undo did not restore the file");
+    await lem("key", { combo: "Control+s" });
+  },
+
   async "\\begin opens the environment list, and the chosen one is typed once"(lem) {
     // 1.5.2 inserted \\begin{name}…\\end{name} with a cursor in each, showed no names, and kept both
     // cursors after leaving the braces, so typing went to two places.
@@ -645,6 +662,47 @@ export const scenarios = {
     await lem("clickText", { text: "Search the project", within: ".cm-hover-card" });
     await until(lem, "the search for it", async () => (await lem("query", { selector: ".search-wrap input" })).some((i) => i.value === "sec:missing"));
     await lem("openFile", { path: "main.tex" });
+  },
+
+  async "puts projects into folders by dragging them, or from their menu"(lem, dir) {
+    const copy = copyFixture(dir, "article");
+    const name = path.basename(copy);
+    await lem("openProject", { path: copy });
+    await lem("idle", { timeout: 120_000 });
+    await lem("command", { id: "close" });
+    await until(lem, "the library", () => lem("exists", { selector: ".library" }));
+    await lem("setting", { key: "libraryView", value: "list" });
+    const rows = async () => (await lem("query", { selector: ".library .tr:not(.th)" })).map((r) => r.text ?? "");
+    const folderRow = async () => (await rows()).find((t) => t.includes("Course")) ?? "";
+    await lem("clickText", { text: "New folder" });
+    await lem("fill", { selector: "[aria-label='Folder name']", value: "Course" });
+    await lem("clickText", { text: "Create", within: "[role=dialog]" });
+    await until(lem, "the folder", async () => (await folderRow()).includes("0 projects"));
+
+    await lem("drag", { from: ".library .tr:not(.th):not(.folder)", fromText: name, to: ".library .tr.folder", toText: "Course" });
+    await until(lem, "the dragged project in the folder", async () => (await folderRow()).includes("1 project"));
+    if ((await rows()).some((t) => t.includes(name))) throw new Error("the project is still listed outside its folder");
+    await lem("clickText", { text: "Course", within: ".library .table" });
+    await until(lem, "the folder's projects", async () => (await rows()).some((t) => t.includes(name)));
+    await lem("drag", { from: ".library .tr:not(.th)", fromText: name, to: ".crumb" });
+    await until(lem, "an empty folder", async () => (await rows()).length === 0);
+    await lem("click", { selector: ".crumb" });
+    await until(lem, "the project back at the top", async () => (await rows()).some((t) => t.includes(name)));
+
+    // The same without dragging: the project's menu.
+    const row = `.library .tr:not(.th):not(.folder)`;
+    await lem("fill", { selector: "#library-search", value: name });
+    await until(lem, "only that project listed", async () => (await rows()).length === 1);
+    await lem("contextmenu", { selector: row });
+    await lem("clickText", { text: "Move to folder" });
+    await lem("clickText", { text: "Course", within: "[role=dialog]" });
+    await lem("fill", { selector: "#library-search", value: "" });
+    await until(lem, "the moved project in the folder", async () => (await folderRow()).includes("1 project"));
+    await lem("contextmenu", { selector: ".library .tr.folder" });
+    await lem("clickText", { text: "Delete folder" });
+    await until(lem, "the folder gone, its project back", async () => !(await folderRow()) && (await rows()).some((t) => t.includes(name)));
+    await lem("openProject", { path: dir });
+    await lem("idle", { timeout: 120_000 });
   },
 
   async "deletes a project from the start screen"(lem, dir) {

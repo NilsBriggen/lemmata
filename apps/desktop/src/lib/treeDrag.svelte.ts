@@ -1,5 +1,5 @@
-// Drag state shared by the nested Tree components: which entries are being
-// dragged and which folder they're over. Pointer events are used instead of
+// Drag state shared by the nested Tree components (and the start screen's projects):
+// which entries are being dragged and which folder they're over. Pointer events are used instead of
 // HTML5 drag and drop, which Tauri turns off on Windows.
 import { canMove, parentOf as parent } from "./treeModel";
 
@@ -30,6 +30,8 @@ export function startDrag(
   /** The paths that travel with this row: the selection when it is part of it. */
   paths: () => string[],
   onDrop: (paths: string[], folder: string) => void,
+  /** Whether `paths` may be dropped on the `[data-drop]` target named `folder`; the file tree's rule by default. */
+  allowed: (paths: string[], folder: string) => boolean = canMove,
 ) {
   if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
   const [sx, sy] = [e.clientX, e.clientY];
@@ -47,7 +49,7 @@ export function startDrag(
       name: dragged.length > 1 ? `${dragged.length} items` : entry.name,
       x: ev.clientX,
       y: ev.clientY,
-      target: folder !== null && canMove(dragged, folder) ? folder : null,
+      target: folder !== null && allowed(dragged, folder) ? folder : null,
     });
   };
   const up = () => {

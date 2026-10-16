@@ -1,6 +1,7 @@
 <script lang="ts">
-  // The start screen, after Overleaf's project dashboard: actions on the
-  // left, the projects as a list (or grid with thumbnails) on the right.
+  // The start screen, after Overleaf's project dashboard: actions on the left; on the right the
+  // folders and the projects in none, as a list (or grid with thumbnails). Projects are dragged into
+  // a folder, or moved with "Move to folder…" in their menu.
   import { onMount, untrack } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -21,11 +22,12 @@
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import SquarePen from "@lucide/svelte/icons/square-pen";
   import Trash2 from "@lucide/svelte/icons/trash";
-  import Check from "@lucide/svelte/icons/check";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import LayoutTemplate from "@lucide/svelte/icons/layout-template";
   import DropMenu from "./ui/DropMenu.svelte";
   import Modal from "./ui/Modal.svelte";
-  import { countIn, createGroup, deleteGroup, forgetPath, inView, moveProject, nameProblem, readGroups, renameGroup, restoreGroup, writeGroups, type Groups, type View } from "./groups";
+  import { dragState, startDrag, wasDrag } from "./treeDrag.svelte";
+  import { createGroup, deleteGroup, forgetPath, inView, moveProject, nameProblem, readGroups, renameGroup, restoreGroup, writeGroups, type Groups, type View } from "./groups";
   import NewProjectDialog from "./NewProjectDialog.svelte";
   import SaveTemplateDialog from "./SaveTemplateDialog.svelte";
   import ImportDialog from "./ImportDialog.svelte";
@@ -68,11 +70,15 @@
 
   // Folders: named groups of projects. They only organise this list.
   let groups = $state<Groups>(readGroups());
-  let view = $state<View>("all");
-  /** The folder being created ("") or renamed (its id), with the text typed so far. */
+  let view = $state<View>("root");
+  /** The folder being created (id null) or renamed, with the text typed so far. */
   let editing = $state<{ id: string | null; name: string; error: string | null; project?: string } | null>(null);
-  /** The menu of one project: open, show, folder, remove, delete. */
+  /** The menu of one project: open, show, move, remove, delete. */
   let projectMenu = $state<{ path: string; anchor: HTMLElement } | null>(null);
+  /** The menu of one folder: open, rename, delete. */
+  let folderMenu = $state<{ id: string; anchor: HTMLElement } | null>(null);
+  /** The project whose "Move to folder…" dialog is open. */
+  let moving = $state<string | null>(null);
   let deleting = $state<{ path: string; busy: boolean; error: string | null } | null>(null);
   /** The project being saved as a template, and the note once it is. */
   let templating = $state<string | null>(null);
@@ -95,7 +101,6 @@
   /** The folder just deleted, and the folders as they were before, so Undo can put it back. */
   let undoable = $state.raw<{ id: string; name: string; before: Groups } | null>(null);
   const activeGroup = $derived(groups.groups.find((g) => g.id === view));
-  const unfiled = $derived(p.recent.filter((r) => !(r.path in groups.members)).length);
 
   // Any other change to the folders ends the Undo notice.
   function commit(next: Groups) {
@@ -128,7 +133,6 @@
     else {
       const made = createGroup(groups, editing.name)!;
       commit(editing.project ? moveProject(made.state, editing.project, made.id) : made.state);
-      view = made.id;
     }
     editing = null;
   }
@@ -137,7 +141,7 @@
     const before = groups;
     const name = before.groups.find((g) => g.id === id)?.name ?? "";
     commit(deleteGroup(groups, id));
-    if (view === id) view = "all";
+    if (view === id) view = "root";
     undoable = { id, name, before };
   }
 
@@ -180,14 +184,46 @@
   }
 
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  /** A search looks through every folder; otherwise the view's projects. */
   const shown = $derived.by(() => {
     const term = query.trim().toLowerCase();
-    const list = p.recent.filter((r) => inView(groups, r.path, view) && (!term || r.path.toLowerCase().includes(term)));
+    const list = p.recent.filter((r) => (term ? r.path.toLowerCase().includes(term) : inView(groups, r.path, view)));
     if (sort === "name") list.sort((a, b) => collator.compare(nameOf(a.path), nameOf(b.path)));
     // Name matches come before matches that are only in the folder path. The sort is stable, so each part keeps its order.
     if (term) list.sort((a, b) => Number(!nameOf(a.path).toLowerCase().includes(term)) - Number(!nameOf(b.path).toLowerCase().includes(term)));
     return list;
   });
+
+  /** The folders, shown at the top level (not during a search), by name, with what's in them. */
+  const folders = $derived.by(() => {
+    if (view !== "root" || query.trim()) return [];
+    return [...groups.groups]
+      .sort((a, b) => collator.compare(a.name, b.name))
+      .map((g) => {
+        const inside = p.recent.filter((r) => groups.members[r.path] === g.id);
+        return { ...g, count: inside.length, last: Math.max(0, ...inside.map((r) => r.lastOpened)) };
+      });
+  });
+
+  /** Dragging a project onto a folder (`data-drop` = its id) or onto "Your projects" (`""`, no folder). */
+  function press(e: PointerEvent, path: string) {
+    startDrag(
+      e,
+      { path, name: nameOf(path) },
+      () => [path],
+      ([dragged], target) => commit(moveProject(groups, dragged, target || null)),
+      ([dragged], target) => (groups.members[dragged] ?? "") !== target,
+    );
+  }
+  const dropping = (target: string) => dragState.active && dragState.target === target;
+
+  /** Right-clicking a folder opens the same menu as its ⋯ button. */
+  function folderContext(e: MouseEvent, id: string) {
+    const more = (e.currentTarget as HTMLElement).querySelector<HTMLElement>(".more");
+    if (!more) return;
+    e.preventDefault();
+    folderMenu = { id, anchor: more };
+  }
 
   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
   function ago(t: number) {
@@ -315,27 +351,6 @@
       <button class="nav" onclick={importZip}><FileArchive size={16} /> Import from Overleaf…</button>
       <button class="nav" onclick={p.onExample}><Sparkles size={16} /> Example document</button>
     </nav>
-    <div class="folders" role="group" aria-label="Folders">
-      <div class="fhead"><span>Folders</span><button class="btn ghost icon sm" aria-label="New folder" title="New folder" onclick={() => startEdit(null)}><FolderPlus size={14} /></button></div>
-      <button class="nav" class:on={view === "all"} aria-pressed={view === "all"} onclick={() => (view = "all")}><FileText size={16} /> All projects <i>{p.recent.length}</i></button>
-      {#each groups.groups as g (g.id)}
-        {#if editing?.id === g.id}
-          {@render editor()}
-        {:else}
-          <div class="frow" class:on={view === g.id}>
-            <button class="nav" aria-pressed={view === g.id} onclick={() => (view = g.id)}><Folder size={16} /> <span class="fname">{g.name}</span> <i>{countIn(groups, g.id)}</i></button>
-            <span class="facts">
-              <button class="btn ghost icon sm" aria-label="Rename {g.name}" title="Rename" onclick={() => startEdit(g.id)}><SquarePen size={13} /></button>
-              <button class="btn ghost icon sm" aria-label="Delete {g.name}" title="Delete the folder (its projects stay in All projects)" onclick={() => removeGroup(g.id)}><Trash2 size={13} /></button>
-            </span>
-          </div>
-        {/if}
-      {/each}
-      {#if groups.groups.length && unfiled !== p.recent.length}
-        <button class="nav" class:on={view === "none"} aria-pressed={view === "none"} onclick={() => (view = "none")}><FolderOpen size={16} /> No folder <i>{unfiled}</i></button>
-      {/if}
-      {#if editing && editing.id === null}{@render editor()}{/if}
-    </div>
     {#if templateNote}
       <p class="undo" role="status">{templateNote}</p>
     {/if}
@@ -350,8 +365,23 @@
 
   <main>
     <header>
-      <h1>{activeGroup ? activeGroup.name : view === "none" ? "No folder" : "Your projects"}</h1>
+      <h1 class="crumbs">
+        {#if activeGroup && !query.trim()}
+          <!-- Also a drop target: dropping a project here takes it out of its folder. -->
+          <button class="crumb" data-drop="" class:drop={dropping("")} onclick={() => (view = "root")}>Your projects</button>
+          <ChevronRight size={20} />
+          <span class="here">{activeGroup.name}</span>
+        {:else}
+          Your projects
+        {/if}
+      </h1>
       <div class="tools">
+        {#if activeGroup && !query.trim()}
+          <button class="btn sm" onclick={() => startEdit(activeGroup.id)}><SquarePen size={14} /> Rename</button>
+          <button class="btn sm" onclick={() => removeGroup(activeGroup.id)}><Trash2 size={14} /> Delete folder</button>
+        {:else if !query.trim()}
+          <button class="btn sm" onclick={() => startEdit(null)}><FolderPlus size={14} /> New folder</button>
+        {/if}
         <div class="search">
           <Search size={15} />
           <input id="library-search" type="search" placeholder="Search projects" bind:value={query} aria-label="Search projects" />
@@ -384,13 +414,11 @@
           <button class="btn" onclick={importZip}><FileArchive size={15} /> Import from Overleaf</button>
         </div>
       </div>
-    {:else if shown.length === 0}
+    {:else if folders.length + shown.length === 0}
       {#if query.trim()}
         <p class="none">No project matches “{query}”.</p>
       {:else if activeGroup}
-        <p class="none">No projects in this folder yet. Right-click a project (or use its ⋯ button) to put it here, or create a new project here.</p>
-      {:else}
-        <p class="none">Every project is in a folder.</p>
+        <p class="none">No projects in this folder yet. Drag one onto the folder in <i>Your projects</i>, use <i>Move to folder…</i> in its menu, or create a new project here.</p>
       {/if}
     {:else if settings.libraryView === "list"}
       <div class="table" role="table" aria-label="Projects">
@@ -400,13 +428,27 @@
           <span role="columnheader">Last opened</span>
           <span></span>
         </div>
+        {#each folders as f (f.id)}
+          <!-- svelte-ignore a11y_interactive_supports_focus (right-click is a shortcut; the ⋯ button is the keyboard way) -->
+          <div class="tr folder" role="row" data-drop={f.id} class:drop={dropping(f.id)} oncontextmenu={(e) => folderContext(e, f.id)}>
+            <button class="name" role="cell" onclick={() => (view = f.id)}>
+              <span class="mini fold"><Folder size={18} /></span>
+              <span class="n">{f.name}</span>
+            </button>
+            <span class="loc count" role="cell">{f.count === 1 ? "1 project" : `${f.count} projects`}</span>
+            <span class="when" role="cell">{f.count ? ago(f.last) : "—"}</span>
+            <span class="acts" role="cell">
+              <button class="btn ghost icon sm more" title="More actions" aria-label="Actions for folder {f.name}" aria-haspopup="menu" onclick={(e) => (folderMenu = { id: f.id, anchor: e.currentTarget })}><Ellipsis size={16} /></button>
+            </span>
+          </div>
+        {/each}
         {#each shown as r (r.path)}
           <!-- svelte-ignore a11y_interactive_supports_focus (right-click is a shortcut; the ⋯ button is the keyboard way) -->
-          <div class="tr" role="row" use:thumbWhenVisible={r.path} oncontextmenu={(e) => contextMenu(e, r.path)}>
-            <button class="name" role="cell" onclick={() => p.onOpen(r.path)}>
+          <div class="tr" role="row" class:dragging={dragState.active && dragState.paths.includes(r.path)} use:thumbWhenVisible={r.path} oncontextmenu={(e) => contextMenu(e, r.path)} onpointerdown={(e) => press(e, r.path)}>
+            <button class="name" role="cell" onclick={() => !wasDrag() && p.onOpen(r.path)}>
               <span class="mini">{#if thumbs[r.path]}<img src={thumbs[r.path]} alt="" />{:else}<FileText size={16} />{/if}</span>
               <span class="n">{nameOf(r.path)}</span>
-              {#if view === "all" && folderName(r.path)}<span class="chip">{folderName(r.path)}</span>{/if}
+              {#if query.trim() && folderName(r.path)}<span class="chip">{folderName(r.path)}</span>{/if}
             </button>
             <span class="loc" role="cell" title={r.path}>{home(folderOf(r.path))}</span>
             <span class="when" role="cell">{ago(r.lastOpened)}</span>
@@ -418,13 +460,22 @@
       </div>
     {:else}
       <div class="grid">
+        {#each folders as f (f.id)}
+          <div class="card folder" role="presentation" data-drop={f.id} class:drop={dropping(f.id)} oncontextmenu={(e) => folderContext(e, f.id)}>
+            <button class="open" onclick={() => (view = f.id)}>
+              <div class="thumb fold"><Folder size={56} strokeWidth={1.25} /></div>
+              <div class="info"><b>{f.name}</b><span>{f.count === 1 ? "1 project" : `${f.count} projects`}</span></div>
+            </button>
+            <button class="btn icon sm more" title="More actions" aria-label="Actions for folder {f.name}" aria-haspopup="menu" onclick={(e) => (folderMenu = { id: f.id, anchor: e.currentTarget })}><Ellipsis size={15} /></button>
+          </div>
+        {/each}
         {#each shown as r (r.path)}
-          <div class="card" role="presentation" use:thumbWhenVisible={r.path} oncontextmenu={(e) => contextMenu(e, r.path)}>
-            <button class="open" onclick={() => p.onOpen(r.path)}>
+          <div class="card" role="presentation" class:dragging={dragState.active && dragState.paths.includes(r.path)} use:thumbWhenVisible={r.path} oncontextmenu={(e) => contextMenu(e, r.path)} onpointerdown={(e) => press(e, r.path)}>
+            <button class="open" onclick={() => !wasDrag() && p.onOpen(r.path)}>
               <div class="thumb">
                 {#if thumbs[r.path]}<img src={thumbs[r.path]} alt="" />{:else}<div class="blank"><i></i><i></i><i></i><i></i><i></i></div>{/if}
               </div>
-              <div class="info"><b>{nameOf(r.path)}</b><span>{ago(r.lastOpened)}</span></div>
+              <div class="info"><b>{nameOf(r.path)}</b><span>{query.trim() && folderName(r.path) ? `${folderName(r.path)} · ` : ""}{ago(r.lastOpened)}</span></div>
             </button>
             <button class="btn icon sm more" title="More actions" aria-label="Actions for {nameOf(r.path)}" aria-haspopup="menu" onclick={(e) => (projectMenu = { path: r.path, anchor: e.currentTarget })}><Ellipsis size={15} /></button>
           </div>
@@ -434,13 +485,19 @@
   </main>
 </div>
 
-{#snippet editor()}
-  <form class="fedit" onsubmit={finishEdit}>
-    <!-- svelte-ignore a11y_autofocus -->
-    <input class="input" bind:value={editing!.name} placeholder="Folder name" aria-label="Folder name" autofocus onkeydown={(e) => e.key === "Escape" && (editing = null)} onblur={() => editing && !editing.name.trim() && (editing = null)} />
-    {#if editing?.error}<span class="ferr">{editing.error}</span>{/if}
-  </form>
-{/snippet}
+{#if editing}
+  <Modal title={editing.id ? "Rename folder" : "New folder"} width={380} onClose={() => (editing = null)}>
+    <form id="folder-name" class="fedit" onsubmit={finishEdit}>
+      <!-- svelte-ignore a11y_autofocus -->
+      <input class="input" bind:value={editing.name} placeholder="Folder name" aria-label="Folder name" autofocus />
+      {#if editing.error}<span class="ferr">{editing.error}</span>{/if}
+    </form>
+    {#snippet footer()}
+      <button class="btn" onclick={() => (editing = null)}>Cancel</button>
+      <button class="btn primary" type="submit" form="folder-name" disabled={!editing?.name.trim()}>{editing?.id ? "Rename" : "Create"}</button>
+    {/snippet}
+  </Modal>
+{/if}
 
 {#if projectMenu}
   {@const path = projectMenu.path}
@@ -448,21 +505,39 @@
     <button role="menuitem" onclick={() => p.onOpen(path)}><ExternalLink size={15} /> Open</button>
     <button role="menuitem" onclick={() => revealItemInDir(path).catch(() => {})}><FolderSearch size={15} /> Show in file manager</button>
     <button role="menuitem" onclick={() => (templating = path)}><LayoutTemplate size={15} /> Save as template…</button>
-    <hr />
-    <div class="heading">Put in folder</div>
-    {#each groups.groups as g (g.id)}
-      <button role="menuitemradio" aria-checked={groups.members[path] === g.id} onclick={() => commit(moveProject(groups, path, g.id))}>
-        <span class="tick">{#if groups.members[path] === g.id}<Check size={14} />{:else}<Folder size={14} />{/if}</span> {g.name}
-      </button>
-    {/each}
-    {#if groups.members[path]}
-      <button role="menuitem" onclick={() => commit(moveProject(groups, path, null))}><span class="tick"></span> Take out of its folder</button>
-    {/if}
-    <button role="menuitem" onclick={() => startEdit(null, path)}><span class="tick"><FolderPlus size={14} /></span> New folder…</button>
+    <button role="menuitem" onclick={() => (moving = path)}><Folder size={15} /> Move to folder…</button>
     <hr />
     <button role="menuitem" onclick={() => forget(path)}><X size={15} /> Remove from list <span class="hint">keeps files</span></button>
     <button role="menuitem" class="danger" onclick={() => (deleting = { path, busy: false, error: null })}><Trash2 size={15} /> Delete project…</button>
   </DropMenu>
+{/if}
+
+{#if folderMenu}
+  {@const id = folderMenu.id}
+  <DropMenu anchor={folderMenu.anchor} align="end" onClose={() => (folderMenu = null)}>
+    <button role="menuitem" onclick={() => (view = id)}><FolderOpen size={15} /> Open</button>
+    <button role="menuitem" onclick={() => startEdit(id)}><SquarePen size={15} /> Rename…</button>
+    <button role="menuitem" class="danger" onclick={() => removeGroup(id)}><Trash2 size={15} /> Delete folder <span class="hint">keeps projects</span></button>
+  </DropMenu>
+{/if}
+
+{#if moving}
+  {@const path = moving}
+  <Modal title="Move {nameOf(path)}" width={380} onClose={() => (moving = null)}>
+    <div class="moves" role="radiogroup" aria-label="Folder">
+      {#each [{ id: null, name: "No folder" }, ...[...groups.groups].sort((a, b) => collator.compare(a.name, b.name))] as g (g.id ?? "")}
+        {@const here = (groups.members[path] ?? null) === g.id}
+        <button role="radio" aria-checked={here} class:on={here} onclick={() => (commit(moveProject(groups, path, g.id)), (moving = null))}>
+          {#if g.id}<Folder size={15} />{:else}<FileText size={15} />{/if} {g.name}
+        </button>
+      {/each}
+      <button onclick={() => (startEdit(null, path), (moving = null))}><FolderPlus size={15} /> New folder…</button>
+    </div>
+  </Modal>
+{/if}
+
+{#if dragState.active}
+  <div class="ghost" style:left="{dragState.x + 12}px" style:top="{dragState.y + 8}px">{dragState.name}</div>
 {/if}
 
 {#if deleting}
@@ -550,23 +625,10 @@
   .empty p { color: var(--muted); margin: 0 0 10px; line-height: 1.6; }
   .row { display: flex; gap: 8px; }
 
-  .folders { display: flex; flex-direction: column; gap: 2px; margin-top: 14px; min-height: 0; overflow: auto; }
-  .fhead { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 0 10px; font: 600 11px var(--f-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--chrome-muted); }
-  .fhead .btn { color: var(--chrome-muted); }
-  .nav i { margin-left: auto; font-style: normal; font-size: 11.5px; color: var(--chrome-muted); }
-  .nav.on, .frow.on > .nav { background: var(--chrome-active); }
-  .frow { display: flex; align-items: center; }
-  .frow.on { background: var(--chrome-active); border-radius: var(--r); }
-  .frow > .nav { flex: 1; min-width: 0; }
-  .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* Visible but faint, so they can be found; full strength on hover or keyboard focus. */
-  .facts { display: flex; flex: none; opacity: 0.45; }
-  .frow:hover .facts, .frow:focus-within .facts { opacity: 1; }
   .undo { margin: 8px 6px 0; font-size: 12.5px; color: var(--chrome-muted); overflow-wrap: anywhere; }
   .undo button { border: none; background: none; padding: 0; font: inherit; color: var(--chrome-ink); text-decoration: underline; cursor: pointer; }
   .tools select.sort { width: auto; }
-  .fedit { display: flex; flex-direction: column; gap: 3px; padding: 2px 4px; }
-  .fedit .input { height: 30px; }
+  .fedit { display: flex; flex-direction: column; gap: 4px; }
   .ferr { color: var(--error); font-size: 11.5px; padding-left: 4px; }
   .chip { margin-left: 8px; padding: 0 7px; border-radius: 9px; background: var(--surface-3); color: var(--muted); font-size: 11px; line-height: 18px; flex: none; }
   :global(.menu) .danger, :global(.menu) .danger :global(svg) { color: var(--error); }
@@ -574,5 +636,24 @@
   .dpath { display: block; padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r); font: 12px var(--f-mono); overflow-wrap: anywhere; }
   .derr { color: var(--error); margin: 10px 0 0; }
   .danger-btn { background: var(--error) !important; border-color: var(--error) !important; }
-  .tick { display: inline-flex; width: 16px; justify-content: center; }
+
+  .crumbs { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .crumbs :global(svg) { color: var(--faint); flex: none; }
+  .crumb { border: none; background: none; padding: 2px 6px; margin-left: -6px; border-radius: var(--r); font: inherit; color: var(--muted); cursor: pointer; }
+  .crumb:hover { color: var(--accent); }
+  .here { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Projects drag (see press()); the text under the pointer shouldn't get selected. */
+  .tr, .card { user-select: none; }
+  .dragging { opacity: 0.5; }
+  .drop, .crumb.drop { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-soft) !important; }
+  .card.drop .open { border-color: var(--accent); }
+  .mini.fold { background: none; border: none; color: var(--accent); }
+  .thumb.fold { align-items: center; padding: 0; color: var(--accent); background: var(--surface-2); }
+  .loc.count { font-family: var(--f-body); }
+  .moves { display: flex; flex-direction: column; gap: 2px; }
+  .moves button { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border: none; border-radius: var(--r); background: none; color: var(--ink); text-align: left; font: 13px var(--f-body); }
+  .moves button:hover { background: var(--surface-2); }
+  .moves button.on { background: var(--accent-soft); }
+  .moves :global(svg) { color: var(--muted); }
+  .ghost { position: fixed; z-index: 60; pointer-events: none; padding: 3px 9px; border-radius: var(--r-sm); background: var(--surface); color: var(--ink); border: 1px solid var(--border-strong); font: 12.5px var(--f-body); box-shadow: var(--shadow); }
 </style>

@@ -56,9 +56,9 @@ describe("project folders", () => {
   it("filters by view", () => {
     let s = createGroup(emptyGroups(), "A", "a")!.state;
     s = moveProject(s, "/p/one", "a");
-    expect(["/p/one", "/p/two"].filter((p) => inView(s, p, "all"))).toHaveLength(2);
     expect(["/p/one", "/p/two"].filter((p) => inView(s, p, "a"))).toEqual(["/p/one"]);
-    expect(["/p/one", "/p/two"].filter((p) => inView(s, p, "none"))).toEqual(["/p/two"]);
+    // The top level holds only the projects in no folder; the folder itself is shown there instead.
+    expect(["/p/one", "/p/two"].filter((p) => inView(s, p, "root"))).toEqual(["/p/two"]);
   });
 
   it("survives a round trip and ignores damaged storage", () => {

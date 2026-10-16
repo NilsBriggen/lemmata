@@ -126,6 +126,28 @@ export function install(host: Host) {
       const r = element(selector).getBoundingClientRect();
       element(selector).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
     },
+    /** Drags the first `from` element (containing `fromText`) onto the first `to` (containing `toText`) with pointer events. */
+    drag: async ({ from, to, fromText, toText }: { from: string; to: string; fromText?: string; toText?: string }) => {
+      const pick = (selector: string, text?: string) => {
+        const el = [...document.querySelectorAll<HTMLElement>(selector)].find((e) => !text || e.textContent?.includes(text));
+        if (!el) throw new Error(`No element matches ${selector}${text ? ` with "${text}"` : ""}`);
+        return el;
+      };
+      const centre = (el: HTMLElement) => {
+        const r = el.getBoundingClientRect();
+        return { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+      };
+      const send = (type: string, at: { clientX: number; clientY: number }, target: EventTarget) =>
+        target.dispatchEvent(new PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, isPrimary: true, ...at }));
+      const source = pick(from, fromText);
+      const start = centre(source);
+      const end = centre(pick(to, toText));
+      send("pointerdown", start, source);
+      send("pointermove", { clientX: start.clientX + 10, clientY: start.clientY + 10 }, window);
+      send("pointermove", end, window);
+      await new Promise((r) => setTimeout(r, 50));
+      send("pointerup", end, window);
+    },
     /** Clicks the first button (or menu item) whose text contains `text`, optionally inside `within`. */
     clickText: ({ text, within }: { text: string; within?: string }) => {
       const root = within ? element(within) : document;
