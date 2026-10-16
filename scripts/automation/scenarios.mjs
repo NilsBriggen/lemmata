@@ -136,8 +136,13 @@ export const scenarios = {
     await lem("cursor", { line: 11 }); // inside the document: texlab offers nothing after \\end{document}
     const before = await lem("editorText");
     await lem("type", { text: "\\autoc" });
-    await until(lem, "\\autocite from biblatex in the list", async () =>
-      (await lem("query", { selector: ".cm-tooltip-autocomplete li" })).some((o) => (o.text ?? "").startsWith("\\autocite")));
+    // texlab may still be starting: ask again (Ctrl+Space) every few seconds, which cancels a pending answer.
+    let polls = 0;
+    await until(lem, "\\autocite from biblatex in the list", async () => {
+      if ((await lem("query", { selector: ".cm-tooltip-autocomplete li" })).some((o) => (o.text ?? "").startsWith("\\autocite"))) return true;
+      if (++polls % 15 === 0) await lem("key", { combo: "Control+Space" });
+      return false;
+    }, 60_000);
     await sleep(lem, 400); // CodeMirror ignores Enter for a moment after the list opens
     await lem("key", { combo: "Enter" });
     if (!/\n\\auto[a-z]+\\input/i.test(await lem("editorText"))) throw new Error("the command was not inserted with one backslash");

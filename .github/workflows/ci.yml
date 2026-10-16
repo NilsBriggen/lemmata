@@ -212,6 +212,11 @@ jobs:
         run: pnpm --filter lemmata-desktop tauri build --debug --no-bundle
         env:
           VITE_LEMMATA_TEST: "1"
+      # Releases bundle texlab; the completion scenarios need it here too.
+      - name: Install texlab
+        run: |
+          scripts/fetch-texlab.sh x86_64-unknown-linux-gnu
+          sudo install apps/desktop/src-tauri/binaries/texlab-x86_64-unknown-linux-gnu /usr/local/bin/texlab
       # The Git panel scenario commits; runners have no git identity.
       - name: Set a git identity
         run: |

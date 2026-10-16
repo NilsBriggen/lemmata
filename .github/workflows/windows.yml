@@ -82,6 +82,12 @@ jobs:
         run: pnpm --filter lemmata-desktop tauri build --debug --no-bundle
         env:
           VITE_LEMMATA_TEST: "1"
+      # Releases bundle texlab next to the app; the completion scenarios need it here too.
+      - name: Install texlab
+        shell: bash
+        run: |
+          scripts/fetch-texlab.sh x86_64-pc-windows-msvc
+          cp apps/desktop/src-tauri/binaries/texlab-x86_64-pc-windows-msvc.exe target/debug/texlab.exe
       # The Git panel scenario commits; runners have no git identity.
       - name: Set a git identity
         run: |
