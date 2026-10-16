@@ -2,6 +2,12 @@
 
 All notable changes to Lemmata.
 
+## 2.1.0-rc.1 (2026-10-16)
+
+### Added
+- Wrapped lines keep their indentation, indent guides, and indentation that follows environments as you type
+- The start screen shows folders first; drag projects into them, or use Move to folder…
+
 ## 2.0.3 (2026-10-16)
 
 ### Fixed
