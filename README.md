@@ -1,65 +1,152 @@
 # Lemmata
 
-A local-first LaTeX editor: write on the left, see the PDF update on the right, double-click the PDF to jump to the source. Projects are plain folders on your disk, and documents build with the TeX Live (or MiKTeX) already on your computer.
+**A LaTeX editor for your own computer.** Write on the left, and the PDF updates on the right as you type. Double-click the PDF to jump to the source. When a build fails, the error is explained in plain words, often with a one-click fix.
 
-Status: 1.1. See the [user guide](docs/guide.md) for what it does, and [docs/PLAN.md](docs/PLAN.md) for how it's built.
+Your projects are ordinary folders on your disk, and they build with the TeX you already have. If you have none, Lemmata can download Tectonic, a 10–22 MB engine, so you don't need to install TeX at all.
 
-## Features
+[**Download**](https://github.com/NilsBriggen/lemmata/releases/latest) · [Website](https://lemmata.briggen.dev) · [User guide](docs/guide.md) · [Changelog](CHANGELOG.md)
 
-- A real file manager: multi-select, drag and drop, cut/copy/paste, keyboard control, sorting, and Undo for deletes and moves.
-- Overleaf-style layout: file tree, outline, editor and PDF side by side, with a formatting toolbar and an insert menu for figures, tables and symbols.
-- Environment pairing (`\begin{x}` and `\end{x}` stay in step), completion for commands, labels, citations, files and packages, folding, formatting shortcuts.
-- A PDF viewer with text selection, search, working links, outline and a presentation mode.
-- Plain-language errors with source excerpts and one-click fixes (add a missing `\usepackage`, install command for a missing package), including bibliography problems.
-- Fast (draft) mode, stop-at-first-error, auto-compile on or off (builds start 1.5 s after you stop typing), clear cache.
-- Several build targets in one project (a paper and its slides), your own templates, a whole-project zip export, git status markers in the file tree, snippets, a choice of indentation, pinned tabs, and renaming a label or citation key everywhere.
-- Snapshots of your project with compare and whole-project restore, spell checking, Zotero and DOI/arXiv references, Overleaf zip import, arXiv export.
+## What it does
 
-## Requirements
+**Writing**
+- An Overleaf-style layout: file tree and outline, the editor, and the PDF side by side.
+- A formatting toolbar, and dialogs for figures, tables, citations and symbols.
+- Completion for commands, environments, labels, citations, files and packages, including the commands of the packages your document loads.
+- `\begin` and `\end` stay in step when you rename one.
+- Indentation follows your environments as you type. Long lines wrap under their own indentation, and faint guides show how environments nest.
+- Folding, snippets, a maths preview as you type, and hover cards for `\ref` and `\cite`.
+- Renaming a label or citation key renames it everywhere.
 
-- A TeX distribution with `latexmk` and `pdflatex` (plus `synctex` for jumping between PDF and source). The app explains how to install one on first launch, or run `lemmata doctor`.
-- Optional: `git` for history, and Zotero with Better BibTeX for Zotero citations.
+**Building**
+- Builds start as you stop typing, with latexmk and pdfLaTeX, XeLaTeX, LuaLaTeX or Tectonic.
+- Errors and warnings are explained in plain words and point at the line.
+- One-click fixes, such as adding a missing `\usepackage`, or the exact command to install a missing package.
+- A fast draft mode, and several build targets per project (a paper and its slides).
 
-## Developing
+**PDF**
+- Text selection, search, working links, the outline and page thumbnails.
+- A full-screen presentation mode for Beamer slides.
+- Zoom with Ctrl and the mouse wheel, or by pinching on a touchpad on Linux.
 
-You need Rust (stable), Node 24+ and pnpm, plus the [Tauri system libraries](https://v2.tauri.app/start/prerequisites/) for your OS. For completion and hover, have `texlab` on your PATH, or fetch the pinned build with `scripts/fetch-texlab.sh <target-triple>`; release builds bundle it.
+**References and language**
+- Add references by DOI, arXiv ID or an online search, or from Zotero.
+- A bibliography manager that finds duplicates and unused entries.
+- Spell checking:
+  - English, German, Swiss German and French come with Lemmata.
+  - 14 more languages download when you need them.
+- Optional grammar checking with a LanguageTool server you run or trust.
+
+**History, Git and review**
+- Snapshots of the whole project. Review the changes since one and undo them one at a time, or restore everything.
+- A PDF with the changes marked, made with latexdiff.
+- Git built in: commit, pull, push and switch branches, or clone a project from GitHub, GitLab or Overleaf.
+- Review comments on any part of the text.
+
+**Projects**
+- Start from templates: six built in, and about thirty in the [template collection](https://github.com/NilsBriggen/lemmata-templates). Save any project as a template of your own.
+- A start screen with folders: drag projects into them.
+- Import a project from Overleaf (its zip download), or export a zip or a ready-to-upload arXiv bundle.
+
+**Private by default.** Lemmata goes online only when you ask it to. That covers:
+- looking up references;
+- the template collection;
+- dictionaries and Tectonic, when you download them;
+- a grammar server you choose;
+- your Git remotes;
+- the update check.
+
+## Install
+
+Get the file for your system from the [latest release](https://github.com/NilsBriggen/lemmata/releases/latest):
+
+| System | File |
+|---|---|
+| Linux (x86_64 and ARM64) | `.AppImage`, `.deb` or `.rpm` |
+| macOS (Apple silicon and Intel) | `.dmg` |
+| Windows | `-setup.exe` or `.msi` |
+
+Lemmata checks for updates and installs them when you agree. Release candidates (`-rc`) are on the releases page only.
+
+**TeX.**
+- **Linux and macOS:** Lemmata uses TeX Live or MacTeX if you have one. If you don't, it shows the install command for your system, or offers Tectonic instead.
+- **Windows:** use MiKTeX. It needs Perl for latexmk; the [user guide](docs/guide.md#first-launch) explains this.
+
+**Optional:**
+- `git`, for Git and History.
+- Zotero with Better BibTeX, for citations from Zotero.
+- A LanguageTool server, for grammar checking.
+
+## What it doesn't do
+
+Lemmata is a local editor. There's no real-time collaboration and no visual (rich-text) editor. To work with others, use review comments and Git.
+
+## Command line
+
+The release also has `lemmata`, a command-line tool for scripts and CI:
+
+| Command | What it does |
+|---|---|
+| `lemmata build`, `watch` | Compiles a project once, or on every change, and reports its problems. |
+| `lemmata lint` | Reports errors, missing citations and undefined labels. |
+| `lemmata doctor` | Checks your TeX installation. |
+| `lemmata wordcount`, `bib`, `outline` | Word counts, bibliography checks and the section tree. |
+| `lemmata export` | Writes a zip or an arXiv bundle. |
+
+Each command can print JSON. See [the guide](docs/guide.md#the-command-line).
+
+## Building from source
+
+You need:
+- Rust (stable), Node 24+ and pnpm;
+- the [Tauri system libraries](https://v2.tauri.app/start/prerequisites/) for your system;
+- `texlab` on your `PATH`, for completion and hover. `scripts/fetch-texlab.sh <target-triple>` fetches the pinned build; release builds bundle it.
 
 ```bash
 pnpm install
-pnpm dev                 # run the app with hot reload
-cargo test --workspace   # Rust tests (build the frontend first: pnpm --filter lemmata-desktop build)
-pnpm test                # frontend tests
-pnpm check               # Svelte and TypeScript checks
-cargo run -p lemmata-cli -- doctor              # check the TeX installation
-cargo run -p lemmata-cli -- build tests/fixtures/article
+pnpm dev
 ```
 
-## Layout
+`pnpm dev` runs the app with hot reload. The other commands:
+
+| Command | What it does |
+|---|---|
+| `pnpm --filter lemmata-desktop dev:mock` | The interface in a browser, with sample data and no Rust |
+| `pnpm test` | Frontend tests |
+| `pnpm check` | Svelte and TypeScript checks |
+| `cargo test --workspace` | Rust tests. Run `pnpm --filter lemmata-desktop build` first |
+| `cargo run -p lemmata-cli -- build tests/fixtures/article` | Builds a sample project from the command line |
+
+**End-to-end tests:** debug builds can be driven by scripts. See [scripts/automation/README.md](scripts/automation/README.md).
+
+### Repository layout
 
 | Path | What |
 |---|---|
-| `apps/desktop` | Svelte 5 frontend; `src-tauri/` is the Tauri shell and its commands |
-| `crates/lemmata-tex` | Finds TeX, picks install instructions, runs latexmk |
-| `crates/lemmata-log` | Turns TeX logs into diagnostics with plain-language hints |
-| `crates/lemmata-synctex` | PDF ↔ source jumps through the `synctex` CLI |
-| `crates/lemmata-project` | `lemmata.toml`, main-file detection, file tree, outline, labels, word counts |
-| `crates/lemmata-history` | Snapshots on a private git reference, compare and restore, git status for the tree |
+| `apps/desktop` | The Svelte 5 interface. `src-tauri/` is the Tauri shell and its commands |
+| `crates/lemmata-tex` | Finds TeX and runs builds (latexmk, Tectonic) |
+| `crates/lemmata-log` | Turns TeX logs into plain-language diagnostics |
+| `crates/lemmata-synctex` | Jumps between the PDF and the source |
+| `crates/lemmata-project` | `lemmata.toml`, main-file detection, the outline, labels and word counts |
+| `crates/lemmata-history` | Snapshots on a private Git reference, compare and restore |
+| `crates/lemmata-git` | Git: status, commit, pull, push, branches and clone |
 | `crates/lemmata-spell` | Hunspell spell checking |
-| `crates/lemmata-bib` | `.bib` parsing, DOI/arXiv lookup, Zotero |
-| `crates/lemmata-pkgmap` | Which TeX package provides a missing file, and the install command |
-| `crates/lemmata-cli` | `lemmata build`, `lemmata watch` and `lemmata doctor` |
-| `data/install.toml` | TeX install commands per OS and distro |
-| `packaging/` | AUR and Homebrew templates rendered on release |
+| `crates/lemmata-grammar` | The LanguageTool client |
+| `crates/lemmata-bib` | `.bib` parsing, DOI and arXiv lookup, Zotero |
+| `crates/lemmata-pkgmap` | Which TeX package provides a missing file, and how to install it |
+| `crates/lemmata-env` | Gives programs started from the AppImage the system's libraries |
+| `crates/lemmata-cli` | The `lemmata` command-line tool |
+| `data/install.toml` | TeX install commands per system |
+| `packaging/` | AUR and Homebrew templates |
 | `tests/fixtures` | Sample projects and real TeX logs |
 
-## Releasing
+### Releasing
 
 ```bash
-scripts/release.sh 0.1.0
+scripts/release.sh 2.1.0
 git push --follow-tags
 ```
 
-The tag starts `.github/workflows/release.yml`, which builds every platform, publishes the GitHub release and updates the AUR, Homebrew and winget. The secrets it needs are listed in [docs/PLAN.md §6](docs/PLAN.md#6-automatic-release-builds).
+The script adds the new version to the changelog and tags it. The tag starts `.github/workflows/release.yml`, which builds every system and publishes the release. Plain versions also go to the update feed. Version numbers with `-rc` become pre-releases. The checklist is in [docs/release-checklist.md](docs/release-checklist.md).
 
 ## Licence
 
