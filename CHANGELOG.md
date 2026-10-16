@@ -10,6 +10,7 @@ All notable changes to Lemmata.
 - A zoomed-in PDF scrolls to its left edge too
 - Autocomplete offers the commands of loaded packages, like \Needspace (none of the language server's commands were shown before)
 - Completion and go-to-definition work when texlab takes more than 5 seconds to start (they were off for the session, with errors)
+- Windows: a closed project can be deleted or saved as a template right away; texlab kept running in its folder until the next project opened
 
 ## 2.0.1 (2026-10-15)
 

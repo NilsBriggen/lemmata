@@ -198,6 +198,7 @@ const handlers: Record<string, (a: Args) => unknown> = {
     throw "texlab isn't available in the preview.";
   },
   lsp_send: () => {},
+  lsp_stop: () => {},
   list_templates: () => [
     { id: "article", name: "Article", description: "A paper with sections, maths, figures and a biblatex bibliography.", category: "Papers" },
     { id: "thesis", name: "Thesis", description: "A report with a title page, chapters in separate files and a bibliography.", category: "Theses & reports" },

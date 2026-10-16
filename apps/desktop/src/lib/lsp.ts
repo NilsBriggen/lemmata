@@ -91,7 +91,8 @@ export interface LanguageServer {
   client: LSPClient;
   /** Editor extensions for one file. */
   extensions(rel: string): Extension;
-  stop(): void;
+  /** Ends texlab; resolves once it has exited. */
+  stop(): Promise<void>;
 }
 
 /** Starts texlab for the open project, or returns null if it isn't available. */
@@ -165,9 +166,10 @@ export async function startLanguageServer(
   return {
     client,
     extensions: (rel) => [client.plugin(toUri(root, rel), "latex"), shared],
-    stop() {
+    async stop() {
       client.disconnect();
       unlisten();
+      await invoke("lsp_stop", { generation }).catch(() => {});
     },
   };
 }

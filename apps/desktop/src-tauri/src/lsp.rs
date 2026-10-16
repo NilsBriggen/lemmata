@@ -104,8 +104,9 @@ impl Server {
             .map_err(|e| format!("texlab stopped: {e}"))
     }
 
-    pub fn stop(mut self) {
-        let _ = self.child.start_kill();
+    /// Ends texlab and waits for it: on Windows its folder can't be moved while it runs there.
+    pub async fn stop(mut self) {
+        let _ = self.child.kill().await;
     }
 }
 

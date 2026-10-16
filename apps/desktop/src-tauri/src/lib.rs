@@ -871,10 +871,22 @@ async fn lsp_start(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResu
         + 1;
     let mut slot = state.lsp.lock().await;
     if let Some(old) = slot.take() {
-        old.stop();
+        old.stop().await;
     }
     *slot = Some(lsp::start(app, &root, bin.as_deref(), generation).await?);
     Ok(generation)
+}
+
+/// Stops texlab when its project closes, unless a newer one has started since.
+#[tauri::command]
+async fn lsp_stop(state: State<'_, AppState>, generation: u64) -> CmdResult<()> {
+    let mut slot = state.lsp.lock().await;
+    if slot.as_ref().is_some_and(|s| s.generation == generation)
+        && let Some(server) = slot.take()
+    {
+        server.stop().await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -997,6 +1009,7 @@ pub fn run() {
             synctex_backward,
             open_install_terminal,
             lsp_start,
+            lsp_stop,
             lsp_send,
             outline,
             clean_build,

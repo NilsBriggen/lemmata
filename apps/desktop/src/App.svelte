@@ -432,7 +432,7 @@
   }));
 
   async function startLsp(root: string) {
-    lsp?.stop();
+    void lsp?.stop();
     lspStarting = true;
     // A language server that fails to start leaves the editor working without it.
     lsp = await startLanguageServer(root, async (rel) => {
@@ -1129,7 +1129,7 @@
       return;
     }
     writeSession();
-    lsp?.stop();
+    await lsp?.stop(); // texlab works in the project folder, which Windows can't move while it runs
     lsp = null;
     editor?.setLanguageServer(null);
     project = null;
