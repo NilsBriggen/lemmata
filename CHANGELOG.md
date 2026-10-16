@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to Lemmata.
+
+## 2.0.2 (2026-10-16)
+
+### Fixed
+- Linux AppImage: git push and pull also work after updating from inside the app (2.0.1 only fixed a fresh start)
+- The maths preview is no longer cut off by the PDF next to the editor
+- A zoomed-in PDF scrolls to its left edge too
+- Autocomplete offers the commands of loaded packages, like \Needspace (none of the language server's commands were shown before)
+
 ## 2.0.1 (2026-10-15)
 
 ### Fixed

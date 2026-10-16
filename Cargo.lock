@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-bib"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "biblatex",
  "lemmata-project",
@@ -2261,7 +2261,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-cli"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2278,7 +2278,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-desktop"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "lemmata-bib",
  "lemmata-env",
@@ -2319,11 +2319,11 @@ dependencies = [
 
 [[package]]
 name = "lemmata-env"
-version = "2.0.1"
+version = "2.0.2"
 
 [[package]]
 name = "lemmata-git"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "lemmata-env",
  "serde",
@@ -2334,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-grammar"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "reqwest",
  "rustls",
@@ -2345,7 +2345,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-history"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "lemmata-env",
  "lemmata-log",
@@ -2358,7 +2358,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-log"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "regex",
  "serde",
@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-pkgmap"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "flate2",
  "serde",
@@ -2375,7 +2375,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-project"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "regex",
  "serde",
@@ -2390,7 +2390,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-spell"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "encoding_rs",
  "reqwest",
@@ -2404,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-synctex"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "flate2",
  "lemmata-env",
@@ -2415,7 +2415,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-tex"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "lemmata-env",
  "lemmata-log",
