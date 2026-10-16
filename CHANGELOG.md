@@ -9,6 +9,7 @@ All notable changes to Lemmata.
 - The maths preview is no longer cut off by the PDF next to the editor
 - A zoomed-in PDF scrolls to its left edge too
 - Autocomplete offers the commands of loaded packages, like \Needspace (none of the language server's commands were shown before)
+- Completion and go-to-definition work when texlab takes more than 5 seconds to start (they were off for the session, with errors)
 
 ## 2.0.1 (2026-10-15)
 

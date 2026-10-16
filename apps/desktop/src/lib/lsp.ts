@@ -140,13 +140,22 @@ export async function startLanguageServer(
 
   const client = new LSPClient({
     rootUri: toUri(root, ""),
-    timeout: 5000,
+    // Long enough for texlab's first start on a cold Windows machine, which can take over 5 s.
+    timeout: 15000,
     workspace: (c) =>
       new ProjectWorkspace(c, async (uri) => {
         const rel = fromUri(root, uri);
         return rel ? display(rel) : null;
       }),
   }).connect(transport);
+  // Editors get the server only once it's up: messages sent to one that never started fail uncaught.
+  try {
+    await client.initializing;
+  } catch (e) {
+    client.disconnect();
+    unlisten();
+    throw new Error(`texlab didn't start (${e instanceof Error ? e.message : String(e)})`);
+  }
 
   const shared: Extension = [
     hoverTooltips(),
