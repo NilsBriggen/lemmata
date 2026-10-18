@@ -382,6 +382,24 @@ export const scenarios = {
     await check(lem, "after downloading a dictionary");
   },
 
+  async "saves project settings when the build timeout is the default"(lem, dir) {
+    // The backend leaves a default timeout out of the config it sends, which once left the box empty and Save disabled.
+    const save = 'button[form="project-settings"]';
+    const choose = async (value) => {
+      await lem("command", { id: "project-settings" });
+      await until(lem, "the project settings", () => lem("exists", { selector: save }));
+      const [timeout] = await lem("query", { selector: "#ps-timeout" });
+      if (timeout?.value !== "300") throw new Error(`the build timeout shows "${timeout?.value}", not 300`);
+      await lem("fill", { selector: "#ps-spell", value });
+      await lem("click", { selector: save });
+      await until(lem, "the dialog to close", async () => !(await lem("exists", { selector: save })));
+    };
+    await choose("de");
+    const toml = fs.readFileSync(path.join(dir, "lemmata.toml"), "utf8");
+    if (!toml.includes('spellcheck = "de"')) throw new Error(`the language wasn't saved:\n${toml}`);
+    await choose(""); // back to "Use my default"
+  },
+
   async "renames and deletes the open file from the file menu"(lem, dir) {
     fs.writeFileSync(path.join(dir, "notes.tex"), "Notes.\n");
     await until(lem, "notes.tex in the tree", () => lem("exists", { selector: '.tree-scroll [data-path="notes.tex"]' }));

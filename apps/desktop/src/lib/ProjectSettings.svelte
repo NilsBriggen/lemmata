@@ -18,8 +18,11 @@
   }
   let { project, trusted, onSave, onClose }: Props = $props();
 
-  // A working copy; nothing changes until Save.
-  let config = $state<Config>(untrack(() => ({ ...project.config, main: project.config.main ?? project.main })));
+  // A working copy; nothing changes until Save. The backend leaves out a default timeout
+  // (DEFAULT_TIMEOUT_SECS in crates/lemmata-project), which would leave the box empty and Save disabled.
+  let config = $state<Config>(
+    untrack(() => ({ ...project.config, main: project.config.main ?? project.main, timeout_secs: project.config.timeout_secs ?? 300 })),
+  );
   const candidates = $derived(Array.from(new Set([project.main, ...project.main_candidates])));
 
   // Mirrors valid_outdir in crates/lemmata-project: the build folder must stay inside the project.
