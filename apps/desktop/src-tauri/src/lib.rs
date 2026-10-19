@@ -334,10 +334,7 @@ fn write_text(
         let _ = std::fs::create_dir_all(dir);
     }
     std::fs::write(&tmp, &content).map_err(|e| format!("Could not save {path}: {e}"))?;
-    std::fs::rename(&tmp, &abs).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("Could not save {path}: {e}")
-    })?;
+    files::put_in_place(&tmp, &abs, &content).map_err(|e| format!("Could not save {path}: {e}"))?;
     // From here on, an event for this exact content is our own doing.
     state
         .written
