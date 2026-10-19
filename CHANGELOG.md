@@ -2,6 +2,15 @@
 
 All notable changes to Lemmata.
 
+## 2.1.1 (2026-10-19)
+
+### Fixed
+- Project settings save again when the build timeout is the default
+- Spelling, error and grammar underlines show again in the Linux AppImage
+
+### Documentation
+- A README that describes Lemmata 2.1
+
 ## 2.1.0 (2026-10-16)
 
 ### Added
