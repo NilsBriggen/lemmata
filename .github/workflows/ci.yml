@@ -30,8 +30,10 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# A release commit is tested by release.yml on its tag (same commit), so its push to main skips every job here.
 jobs:
   lint:
+    if: ${{ !(github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release):')) }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
@@ -56,6 +58,7 @@ jobs:
       - run: python3 -I scripts/test_finalize_release.py
 
   test:
+    if: ${{ !(github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release):')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -100,6 +103,7 @@ jobs:
 
   # The macOS test job runs on Apple silicon; the Intel download needs an Intel runner.
   tectonic-macos-intel:
+    if: ${{ !(github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release):')) }}
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v7
@@ -111,6 +115,7 @@ jobs:
 
   # One TeX Live install and one CLI build serve both the fixture and the template checks.
   tex-integration:
+    if: ${{ !(github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release):')) }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
@@ -163,6 +168,7 @@ jobs:
           LEMMATA_REQUIRE_TEX: "1"
 
   e2e:
+    if: ${{ !(github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release):')) }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
