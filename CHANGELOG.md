@@ -2,6 +2,11 @@
 
 All notable changes to Lemmata.
 
+## 2.1.2 (2026-10-19)
+
+### Fixed
+- The window no longer slides up out of view; the editor's tooltip layer made the page twice as tall
+
 ## 2.1.1 (2026-10-19)
 
 ### Fixed
