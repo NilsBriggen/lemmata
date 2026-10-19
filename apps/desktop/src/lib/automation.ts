@@ -231,7 +231,7 @@ export function install(host: Host) {
         if (!s.building && !s.buildQueued && s.dirty.filter((d) => !s.conflicts.includes(d)).length === 0) return s;
         await settle(100);
       }
-      throw new Error(`The app did not become idle: ${JSON.stringify({ building: s.building, buildQueued: s.buildQueued, dirty: s.dirty })}`);
+      throw new Error(`The app did not become idle: ${JSON.stringify({ building: s.building, buildQueued: s.buildQueued, dirty: s.dirty, openError: s.openError, notices: s.notices })}`);
     },
     sleep: ({ ms }: { ms: number }) => settle(ms),
     /** Double-clicks inside an element at a point given as fractions of its size (0..1). */
