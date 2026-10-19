@@ -22,6 +22,8 @@ export const config: WebdriverIO.Config = {
   // Windows can take longer than 2 minutes.
   mochaOpts: { ui: "bdd", timeout: 300_000 },
   waitforTimeout: 60_000,
+  // Longer than any wait inside a call (idle takes up to 2 minutes), so a stuck call reports the app's own error.
+  connectionRetryTimeout: 360_000,
   beforeSession() {
     const bin = path.join(os.homedir(), ".cargo", "bin", process.platform === "win32" ? "tauri-driver.exe" : "tauri-driver");
     // On Windows, tauri-driver needs an Edge WebDriver matching WebView2 (CI downloads one into MSEDGEDRIVER).
