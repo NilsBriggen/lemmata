@@ -221,8 +221,8 @@
       vimKeys(),
       lineNumbers(),
       highlightActiveLineGutter(),
-      // In the body, not the editor: WebKitGTK clips fixed tooltips at the editor's edge, under the PDF.
-      tooltips({ parent: document.body }),
+      // Outside the editor: WebKitGTK clips fixed tooltips at the editor's edge, under the PDF.
+      tooltips({ parent: document.getElementById("tooltips") ?? document.body }),
       highlightSpecialChars(),
       history(),
       drawSelection(),

@@ -142,6 +142,9 @@
 
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; }
+/* Editor tooltips live here (Editor.svelte). CodeMirror's container in it takes the editor's height: 100%: in a box of
+   no size it neither covers the app nor makes the page taller, which let the browser scroll the whole app up. */
+#tooltips { position: fixed; top: 0; left: 0; width: 0; height: 0; }
 body {
   background: var(--app);
   color: var(--ink);

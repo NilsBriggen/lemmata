@@ -266,6 +266,10 @@ export const scenarios = {
 
   async "shows hover cards for citations and equations"(lem) {
     await lem("openFile", { path: "chapters/method.tex" });
+    // The tooltips' container takes the editor's height: 100%. Outside its zero-size home it made the page twice as
+    // tall, and the browser could scroll the whole app up out of the window.
+    const [layer] = await lem("query", { selector: "#tooltips > div" });
+    if (!layer || layer.rect[3] !== 0) throw new Error(`the tooltip layer takes up room: ${JSON.stringify(layer?.rect)}`);
     // Hover again on each try: a tooltip that was dismissed (or a panel still closing) needs a new mouse move.
     await until(lem, "the citation card", async () => {
       await lem("hoverText", { text: "schulman2017ppo" });
