@@ -362,6 +362,19 @@ export const scenarios = {
     await lem("openFile", { path: "main.tex" });
   },
 
+  async "underlines misspelled words"(lem) {
+    // The AppImage's WebKitGTK (CI's too) dropped `text-decoration: underline wavy <colour>`: no underline at all.
+    await lem("openFile", { path: "main.tex" });
+    await lem("cursor", { line: 11 });
+    const before = await lem("editorText");
+    await lem("type", { text: "This sentnce has a mistaek.\n" });
+    await until(lem, "a misspelled word", () => lem("exists", { selector: ".cm-misspelled" }));
+    const [s] = await lem("style", { selector: ".cm-misspelled", props: ["text-decoration-line", "text-decoration-style"] });
+    if (s["text-decoration-line"] !== "underline" || s["text-decoration-style"] !== "wavy") throw new Error(`no wavy underline: ${JSON.stringify(s)}`);
+    for (let i = 0; i < 4 && (await lem("editorText")) !== before; i++) await lem("key", { combo: "Control+z" });
+    await lem("key", { combo: "Control+s" });
+  },
+
   async "offers the dictionary a file asks for, and turns spell check on"(lem) {
     // Needs the internet: Spanish (about 1 MB) comes from the LibreOffice dictionaries.
     await lem("openFile", { path: "main.tex" });

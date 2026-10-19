@@ -152,7 +152,7 @@ export function grammarcheck() {
   });
 
   const theme = EditorView.baseTheme({
-    ".cm-grammar": { textDecoration: "underline dotted var(--accent)", textDecorationThickness: "2px", textDecorationSkipInk: "none", textUnderlineOffset: "3px" },
+    ".cm-grammar": { textDecorationLine: "underline", textDecorationStyle: "dotted", textDecorationColor: "var(--accent)", textDecorationThickness: "2px", textDecorationSkipInk: "none", textUnderlineOffset: "3px" },
     ".cm-grammar-tip": { padding: "8px 10px", maxWidth: "360px", fontSize: "13px", display: "flex", flexDirection: "column", gap: "6px" },
     ".cm-grammar-actions": { display: "flex", flexWrap: "wrap", gap: "4px" },
     ".cm-grammar-actions button": { border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--ink)", borderRadius: "var(--r-sm)", padding: "3px 8px", fontSize: "12px", cursor: "pointer" },

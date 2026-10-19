@@ -117,8 +117,8 @@
     ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "var(--accent-soft)", color: "var(--ink)" },
     ".cm-panels": { backgroundColor: "var(--surface-2)", color: "var(--ink)", borderColor: "var(--border)" },
     ".cm-panel.cm-search input, .cm-panel.cm-search button": { fontFamily: "var(--f-body)" },
-    ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy var(--error)", textUnderlineOffset: "3px" },
-    ".cm-lintRange-warning": { backgroundImage: "none", textDecoration: "underline wavy var(--warn)", textUnderlineOffset: "3px" },
+    ".cm-lintRange-error": { backgroundImage: "none", textDecorationLine: "underline", textDecorationStyle: "wavy", textDecorationColor: "var(--error)", textUnderlineOffset: "3px" },
+    ".cm-lintRange-warning": { backgroundImage: "none", textDecorationLine: "underline", textDecorationStyle: "wavy", textDecorationColor: "var(--warn)", textUnderlineOffset: "3px" },
     ".cm-lint-marker": { width: "0.8em", height: "0.8em" },
   });
 

@@ -203,6 +203,12 @@ export function install(host: Host) {
       for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] < 720) n++;
       return n / (w * h);
     },
+    /** Computed CSS properties of every element matching `selector` (what this engine made of the style sheets). */
+    style: ({ selector, props }: { selector: string; props: string[] }) =>
+      [...document.querySelectorAll(selector)].map((e) => {
+        const c = getComputedStyle(e);
+        return Object.fromEntries(props.map((p) => [p, c.getPropertyValue(p)]));
+      }),
     /** A canvas as a PNG data URL, to look at what was drawn. */
     canvasImage: ({ selector }: { selector: string }) => (element(selector) as HTMLCanvasElement).toDataURL("image/png"),
     /** The page's style sheets: where each comes from, whether it applies, and how many rules the browser kept. */

@@ -183,6 +183,6 @@ export const unmatchedEnvironments = [
     { decorations: (v) => v.decorations },
   ),
   EditorView.baseTheme({
-    ".cm-unmatched-env": { textDecoration: "underline dotted var(--warn)", textUnderlineOffset: "3px" },
+    ".cm-unmatched-env": { textDecorationLine: "underline", textDecorationStyle: "dotted", textDecorationColor: "var(--warn)", textUnderlineOffset: "3px" },
   }),
 ];

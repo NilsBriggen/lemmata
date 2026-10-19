@@ -226,7 +226,8 @@ export function spellcheck(onAddWord: (word: string) => void) {
   );
 
   const theme = EditorView.baseTheme({
-    ".cm-misspelled": { textDecoration: "underline wavy var(--error)", textDecorationSkipInk: "none", textUnderlineOffset: "3px" },
+    // Longhands: the WebKitGTK in the AppImage (Ubuntu 22.04) drops the shorthand with a style and colour.
+    ".cm-misspelled": { textDecorationLine: "underline", textDecorationStyle: "wavy", textDecorationColor: "var(--error)", textDecorationSkipInk: "none", textUnderlineOffset: "3px" },
   });
 
   return [plugin, theme];
