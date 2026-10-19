@@ -18,7 +18,9 @@ export const config: WebdriverIO.Config = {
   logLevel: "warn",
   framework: "mocha",
   reporters: ["spec"],
-  mochaOpts: { ui: "bdd", timeout: 120_000 },
+  // Each scenario bounds its own waits; this only catches a hung one. A dictionary download plus a MiKTeX rebuild on
+  // Windows can take longer than 2 minutes.
+  mochaOpts: { ui: "bdd", timeout: 300_000 },
   waitforTimeout: 60_000,
   beforeSession() {
     const bin = path.join(os.homedir(), ".cargo", "bin", process.platform === "win32" ? "tauri-driver.exe" : "tauri-driver");
