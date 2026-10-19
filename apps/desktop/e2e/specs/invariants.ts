@@ -35,6 +35,8 @@ describe("invariants", () => {
   before(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "lemmata-e2e-"));
     fs.cpSync(fixture, dir, { recursive: true });
+    // WebDriver stops a script after 30 s by default, which cut long calls like idle short; they bound their own waits.
+    await browser.setTimeout({ script: 300_000 });
     await browser.waitUntil(() => browser.execute(() => !!(window as any).__lemmata), { timeout: 30_000 });
     await lem("openProject", { path: dir });
     await lem("idle", { timeout: 90_000 });
