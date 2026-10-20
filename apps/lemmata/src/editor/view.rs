@@ -80,6 +80,8 @@ pub struct Output {
     pub wrap_environment: bool,
     /// A completion inserted something that needs this package.
     pub needs_package: Option<String>,
+    /// Files dropped from the computer, and where in the text.
+    pub dropped_files: Option<(Vec<String>, usize)>,
     /// A screenshot was pasted, to save in the project and insert as a figure.
     pub pasted_image: Option<std::sync::Arc<egui::ColorImage>>,
     /// Pasted cells became a table: where, the table, and the text as it was pasted.
@@ -1571,6 +1573,24 @@ pub fn show(
                 if out.hover_search.is_some() {
                     ed.hover = None;
                 }
+            }
+        }
+        // Files dropped from the computer onto a .tex file: figures where they were dropped.
+        if ed.tex
+            && let Some(pos) = ui
+                .input(|i| i.pointer.latest_pos())
+                .filter(|pt| visible.contains(*pt))
+        {
+            let files: Vec<String> = ui.input(|i| {
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .map(|f| f.path().to_string_lossy().into_owned())
+                    .collect()
+            });
+            if !files.is_empty() {
+                let (at, _, _) = hit(&mut geo, ui, &ed.doc, pos);
+                out.dropped_files = Some((files, at));
             }
         }
         // A click on commented text shows its thread.

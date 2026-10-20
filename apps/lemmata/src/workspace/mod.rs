@@ -9,11 +9,13 @@ mod chrome;
 pub mod files;
 mod history;
 mod insert;
+pub mod palette;
 pub mod panels;
 mod project_settings;
 mod rename;
 mod search;
 pub mod session;
+mod sheets;
 mod symbols;
 pub mod tree;
 pub mod viewer;
@@ -39,6 +41,10 @@ pub enum Action {
     /// A setting changed (layout, widths, tree sort…); save it.
     Settings,
     Preferences,
+    /// Preferences' snippet editor on its own.
+    Snippets,
+    /// "Report a problem…".
+    Report,
     /// "Save as template…" for this project's folder.
     SaveTemplate(String),
 }
@@ -143,6 +149,9 @@ pub struct Workspace {
     pub collapsed: HashSet<String>,
     pub tree_cursor: Option<String>,
     pub sel: files::TreeSel,
+    pub tree_drag: Option<files::TreeDrag>,
+    /// The tree folder files dragged in from the computer are over ("" is the root).
+    pub os_drop: Option<String>,
     pub files: files::FileActions,
     pub outline_open: bool,
     pub outline_folded: HashSet<String>,
@@ -186,6 +195,12 @@ pub struct Workspace {
     pub figure: Option<insert::FigureDialog>,
     pub rename: Option<rename::RenameSymbol>,
     pub project_settings: Option<project_settings::ProjectSettings>,
+    pub palette: Option<palette::Palette>,
+    /// Presenting the PDF full screen.
+    pub presentation: Option<crate::pdf::present::Presentation>,
+    pub words: Option<sheets::Words>,
+    /// The shortcuts sheet, with its search.
+    pub shortcut_sheet: Option<String>,
     pub table: Option<insert::TableDialog>,
     /// Run once every write in flight has finished (changes on disk that must not lose edits).
     pub after_writes: Vec<AfterWrites>,
@@ -274,6 +289,8 @@ impl Workspace {
             collapsed: HashSet::new(),
             tree_cursor: None,
             sel: Default::default(),
+            tree_drag: None,
+            os_drop: None,
             files: Default::default(),
             outline_open: true,
             outline_folded: HashSet::new(),
@@ -304,6 +321,10 @@ impl Workspace {
             figure: None,
             rename: None,
             project_settings: None,
+            palette: None,
+            presentation: None,
+            words: None,
+            shortcut_sheet: None,
             table: None,
             after_writes: Vec::new(),
             checks: crate::writing::Checks::default(),
@@ -665,6 +686,18 @@ impl Workspace {
         }
         self.active = Some(path.into());
         self.load(backend, path);
+    }
+
+    /// A file the OS asked to open with the project: it joins the session's tabs being restored
+    /// and is the one shown.
+    pub fn open_requested(&mut self, backend: &Backend, path: &str) {
+        if let Some((tabs, active)) = &mut self.restoring {
+            if !tabs.iter().any(|t| t == path) {
+                tabs.push(path.into());
+            }
+            *active = Some(path.into());
+        }
+        self.open_file(backend, path);
     }
 
     /// Goes to a line of a file, opening it first when needed.
@@ -1181,6 +1214,10 @@ impl Workspace {
             || self.rename.is_some()
             || self.files.dialog.is_some()
             || self.project_settings.is_some()
+            || self.palette.is_some()
+            || self.presentation.is_some()
+            || self.words.is_some()
+            || self.shortcut_sheet.is_some()
             || self.history.label.is_some()
     }
 
@@ -1220,6 +1257,18 @@ impl Workspace {
         }
         if self.active.is_some() && crate::shortcuts::consume(&ctx, "rename") {
             self.open_rename(backend);
+        }
+        for (id, kind) in [
+            ("palette", palette::Kind::Commands),
+            ("quick-open", palette::Kind::Files),
+            ("goto-heading", palette::Kind::Headings),
+        ] {
+            if crate::shortcuts::consume(&ctx, id) {
+                self.open_palette(kind, settings);
+            }
+        }
+        if crate::shortcuts::consume(&ctx, "shortcuts") {
+            self.shortcut_sheet = Some(String::new());
         }
         if crate::shortcuts::consume(&ctx, "search") {
             self.open_search(None);
@@ -1430,6 +1479,15 @@ impl Workspace {
         self.rename_dialog(&ctx, p, backend, settings);
         self.file_dialogs(&ctx, p, backend, settings);
         self.project_settings_dialog(&ctx, p, backend, settings, &mut action);
+        self.sheets(&ctx, p);
+        if let Some(show) = &mut self.presentation
+            && !show.show(&ctx)
+        {
+            self.presentation = None;
+        }
+        if let Some(a) = self.palette_ui(&ctx, p, backend, settings) {
+            action = Some(a);
+        }
         self.snapshot_dialog(&ctx, p, backend);
         if let Some(pal) = &mut self.symbols {
             match pal.show(&ctx, p) {
@@ -1632,8 +1690,10 @@ impl Workspace {
                 let needs = out.needs_package.clone();
                 let comment_click = out.comment_click.clone();
                 let hover_search = out.hover_search.clone();
+                let wrap_environment = out.wrap_environment;
                 let pasted_table = out.pasted_table.clone();
                 let pasted_image = out.pasted_image.clone();
+                let dropped_files = out.dropped_files.clone();
                 let (add_word, ignore_rule, grammar_check) = (
                     out.add_word.clone(),
                     out.ignore_rule.clone(),
@@ -1655,6 +1715,9 @@ impl Workspace {
                 if let Some(pkg) = needs {
                     self.needs_package(backend, pkg);
                 }
+                if let Some((files, at)) = dropped_files {
+                    self.drop_figures(backend, &path, files, at);
+                }
                 if let Some(img) = pasted_image {
                     self.paste_image(backend, &path, &img);
                 }
@@ -1663,6 +1726,9 @@ impl Workspace {
                         Notice::new("Pasted as a table.", Tone::Info)
                             .action(NoticeAction::PasteAsText(path.clone(), from, table, text)),
                     );
+                }
+                if wrap_environment {
+                    self.open_palette(palette::Kind::Environments, settings);
                 }
                 match hover_search {
                     Some(crate::editor::hover::Search::Online(key)) => {
@@ -1931,6 +1997,20 @@ pub fn editor_style(ctx: &egui::Context, s: &Settings, focus: bool) -> view::Sty
 }
 
 impl Workspace {
+    /// "Present full screen": the built PDF, from the page on show.
+    pub fn present(&mut self, ctx: &egui::Context) {
+        match self.pane.view.shown_bytes() {
+            Some(bytes) => {
+                let page = self.pane.view.current_page.max(1);
+                self.presentation = Some(crate::pdf::present::Presentation::new(ctx, bytes, page));
+            }
+            None => self.notice(
+                "There is no PDF to present yet. Build the project first.",
+                Tone::Info,
+            ),
+        }
+    }
+
     /// The editor of the open file.
     pub fn active_editor(&mut self) -> Option<&mut Editor> {
         let a = self.active.clone()?;

@@ -2,7 +2,7 @@
 //! TabStrip.svelte, EditorToolbar.svelte, the status bar of App.svelte, and their menus.
 
 use super::{Action, Menu, Tone, Workspace, tree};
-use crate::backend::{Backend, Msg, Save};
+use crate::backend::Backend;
 use crate::editor::commands::{self as cmd, Indent};
 use crate::editor::view;
 use crate::icons::{self, Icon};
@@ -433,8 +433,61 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
     let mut open = None;
     let mut toggle = None;
     let mut click = None;
+    let pointer = ui.input(|i| i.pointer.latest_pos());
+    let os_hover = ui.input(|i| !i.raw.hovered_files.is_empty());
+    let dropped: Vec<String> = ui.input(|i| {
+        i.raw
+            .dropped_files
+            .iter()
+            .map(|f| f.path().to_string_lossy().into_owned())
+            .collect()
+    });
+    // What the pointer is over this frame, for the next one's highlight.
+    let mut over_folder: Option<String> = None;
     for (e, depth) in &rows {
-        let (rect, r) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
+        let (rect, r) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click_and_drag());
+        // A folder takes what is dropped on it; a file's row stands for its folder.
+        let folder = if e.is_dir {
+            e.path.clone()
+        } else {
+            super::files::parent_of(&e.path).to_owned()
+        };
+        if pointer.is_some_and(|pt| rect.contains(pt) && ui.clip_rect().contains(pt)) {
+            over_folder = Some(folder.clone());
+        }
+        if r.drag_started() && !ui.input(|i| i.modifiers.command || i.modifiers.shift) {
+            let paths = ws.targets(Some(&e.path));
+            let name = if paths.len() > 1 {
+                format!("{} items", paths.len())
+            } else {
+                e.name.clone()
+            };
+            ws.tree_drag = Some(super::files::TreeDrag {
+                paths,
+                name,
+                target: None,
+            });
+        }
+        let dragging = ws
+            .tree_drag
+            .as_ref()
+            .is_some_and(|d| d.paths.contains(&e.path));
+        let drop_here = e.is_dir
+            && (ws
+                .tree_drag
+                .as_ref()
+                .is_some_and(|d| d.target.as_deref() == Some(e.path.as_str()))
+                || ws.os_drop.as_deref() == Some(e.path.as_str()));
+        if drop_here {
+            // .row.drop: --accent-on-dark at 28 % with a 1 px ring.
+            ui.painter().rect(
+                rect,
+                0,
+                p.accent_on_dark.gamma_multiply(0.28),
+                Stroke::new(1.0, p.accent_on_dark),
+                StrokeKind::Inside,
+            );
+        }
         let active = ws.active.as_deref() == Some(e.path.as_str());
         let cursor = ws.tree_cursor.as_deref() == Some(e.path.as_str());
         let selected = ws.sel.is_selected(&e.path);
@@ -628,6 +681,11 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
                 open = Some(e.path.clone());
             }
         }
+        if dragging {
+            // .row.dragging: half opacity.
+            ui.painter()
+                .rect_filled(rect, 0, p.chrome_2.gamma_multiply(0.5));
+        }
         if r.clicked() {
             click = Some((e.path.clone(), ui.input(|i| i.modifiers)));
         }
@@ -640,6 +698,7 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
             ));
         }
     }
+    tree_drops(ui, p, ws, backend, settings, over_folder, os_hover, dropped);
     if let Some((path, mods)) = click {
         let paths: Vec<String> = rows.iter().map(|(e, _)| e.path.clone()).collect();
         ws.tree_click(&path, &paths, mods);
@@ -656,6 +715,75 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
     }
     if let Some(path) = open {
         ws.open_file(backend, &path);
+    }
+}
+
+/// The pointer's part of dragging: where files dragged in the tree or from the computer would go,
+/// and what happens when they are let go. `over` is the folder of the row under the pointer;
+/// below the rows is the project root.
+#[allow(clippy::too_many_arguments)]
+fn tree_drops(
+    ui: &mut Ui,
+    p: &Palette,
+    ws: &mut Workspace,
+    backend: &Backend,
+    settings: &Settings,
+    over: Option<String>,
+    os_hover: bool,
+    dropped: Vec<String>,
+) {
+    let pointer = ui.input(|i| i.pointer.latest_pos());
+    let rest = ui.available_rect_before_wrap();
+    let in_tree = pointer.is_some_and(|pt| ui.clip_rect().contains(pt));
+    let folder = over
+        .or_else(|| (in_tree && pointer.is_some_and(|pt| pt.y >= rest.top())).then(String::new));
+    if let Some(d) = &mut ws.tree_drag {
+        d.target = folder
+            .clone()
+            .filter(|f| super::files::can_move(&d.paths, f));
+        if ui.input(|i| !i.pointer.any_down()) {
+            let d = ws.tree_drag.take().expect("dragging");
+            if let Some(f) = d.target {
+                ws.move_paths(backend, settings, d.paths, f);
+            }
+        } else if let Some(pt) = pointer {
+            // The ghost: the name next to the pointer.
+            egui::Area::new(egui::Id::unique("tree-ghost"))
+                .order(egui::Order::Tooltip)
+                .fixed_pos(pt + vec2(12.0, 8.0))
+                .interactable(false)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::new()
+                        .fill(p.chrome_3)
+                        .stroke(Stroke::new(1.0, p.chrome_border))
+                        .corner_radius(crate::theme::R_SM)
+                        .shadow(p.shadow)
+                        .inner_margin(egui::Margin::symmetric(9, 3))
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(&d.name).size(12.5).color(p.chrome_ink))
+                        });
+                });
+        }
+    }
+    ws.os_drop = if os_hover { folder.clone() } else { None };
+    // .tree-scroll.drop: the project root takes them.
+    if ws
+        .tree_drag
+        .as_ref()
+        .is_some_and(|d| d.target.as_deref() == Some(""))
+        || ws.os_drop.as_deref() == Some("")
+    {
+        ui.painter().rect_stroke(
+            ui.clip_rect(),
+            0,
+            Stroke::new(2.0, p.accent_on_dark),
+            StrokeKind::Inside,
+        );
+    }
+    if !dropped.is_empty()
+        && let Some(f) = folder
+    {
+        ws.add_dropped(backend, dropped, f);
     }
 }
 
@@ -1259,8 +1387,10 @@ pub fn status_bar(
         if status_link(c, engine_name(ws.info.config.engine).into(), p.muted, "Compiler: change it in Project settings", false).clicked() {
             ws.open_project_settings();
         }
-        if ws.total_words > 0 {
-            status_link(c, format!("{} words", group_digits(ws.total_words)), p.muted, "Words in the document body, without commands, maths or comments. Click for the count per file.", false);
+        if ws.total_words > 0
+            && status_link(c, format!("{} words", super::sheets::group_digits(ws.total_words)), p.muted, "Words in the document body, without commands, maths or comments. Click for the count per file.", false).clicked()
+        {
+            ws.open_word_count(backend);
         }
         let lang = ws.spell_language(settings);
         if lang != "off"
@@ -1321,19 +1451,6 @@ fn status_link(ui: &mut Ui, text: String, color: Color32, tip: &str, bad: bool) 
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// 1,177 with the separator for thousands, as Intl.NumberFormat() in English.
-fn group_digits(n: u32) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
-
 // ── Menus ──────────────────────────────────────────────────────────────────
 
 pub fn menus(
@@ -1348,85 +1465,70 @@ pub fn menus(
     let id = egui::Id::unique("workspace-menu");
     match menu {
         Menu::Main(anchor) => {
-            let focus = if ws.focus_mode {
-                "Leave focus mode"
-            } else {
-                "Focus mode"
-            };
-            let snapshot = display(keys_of("snapshot"));
-            let focus_key = display(keys_of("focus"));
-            let shortcuts_key = display(keys_of("shortcuts"));
-            let palette_key = display(keys_of("palette"));
-            let items = [
-                MenuItem::Heading("Project"),
-                MenuItem::plain("All projects"),
-                MenuItem::plain("Project settings"),
-                MenuItem::plain("Save as template…"),
-                MenuItem::plain("Word count"),
-                MenuItem::Separator,
-                MenuItem::Heading("Tools"),
-                MenuItem::plain("Git"),
-                MenuItem::plain("History"),
-                MenuItem::plain("Save a snapshot").hint(&snapshot),
-                MenuItem::plain("Comments"),
-                MenuItem::plain("TODOs"),
-                MenuItem::plain("Bibliography manager…"),
-                MenuItem::plain("Format document"),
-                MenuItem::plain("Reindent lines").hint("the selection, or the whole file"),
-                MenuItem::plain(focus).hint(&focus_key),
-                MenuItem::Separator,
-                MenuItem::Heading("Export"),
-                MenuItem::plain("Export PDF…"),
-                MenuItem::plain("Export project (.zip)…"),
-                MenuItem::plain("Export for arXiv (.zip)…"),
-                MenuItem::plain("Export for arXiv as one .tex file (.zip)…"),
-                MenuItem::Separator,
-                MenuItem::Heading("Help"),
-                MenuItem::plain("Preferences"),
-                MenuItem::plain("Keyboard shortcuts").hint(&shortcuts_key),
-                MenuItem::plain("User guide"),
-                MenuItem::plain("Report a problem…"),
-                MenuItem::plain("Command palette").hint(&palette_key),
+            use super::palette::label;
+            // The palette's commands, by id; "" is a separator, "#…" a heading.
+            const MENU: [&str; 29] = [
+                "#Project",
+                "close",
+                "project-settings",
+                "save-template",
+                "words",
+                "",
+                "#Tools",
+                "git",
+                "history",
+                "snapshot",
+                "comments",
+                "todos",
+                "bib-manager",
+                "format",
+                "reindent",
+                "focus",
+                "",
+                "#Export",
+                "export-pdf",
+                "export-zip",
+                "export-arxiv",
+                "export-arxiv-flat",
+                "",
+                "#Help",
+                "preferences",
+                "shortcuts",
+                "guide",
+                "report",
+                "palette",
             ];
+            let hints: Vec<String> = MENU
+                .iter()
+                .map(|id| match *id {
+                    "snapshot" | "focus" | "shortcuts" | "palette" => display(keys_of(id)),
+                    "reindent" => "the selection, or the whole file".into(),
+                    _ => String::new(),
+                })
+                .collect();
+            let items: Vec<MenuItem> = MENU
+                .iter()
+                .zip(&hints)
+                .map(|(id, hint)| match *id {
+                    "" => MenuItem::Separator,
+                    h if h.starts_with('#') => MenuItem::Heading(&h[1..]),
+                    "palette" => MenuItem::plain("Command palette").hint(hint),
+                    id if hint.is_empty() => MenuItem::plain(label(id, ws.focus_mode)),
+                    id => MenuItem::plain(label(id, ws.focus_mode)).hint(hint),
+                })
+                .collect();
             match widgets::drop_menu(ctx, p, id, anchor, false, &items) {
                 MenuResult::Open => {}
                 MenuResult::Closed => ws.menu = None,
                 MenuResult::Clicked(i) => {
                     ws.menu = None;
-                    match i {
-                        1 => *action = Some(Action::Library),
-                        7 | 8 | 10 | 11 => {
-                            use super::panels::Panel;
-                            let panel = [
-                                Panel::Git,
-                                Panel::History,
-                                Panel::Review,
-                                Panel::Review,
-                                Panel::Todos,
-                            ][i - 7];
-                            if ws.open_panel(panel, backend, settings) {
-                                *action = Some(Action::Settings);
+                    match MENU[i] {
+                        "palette" => ws.open_palette(super::palette::Kind::Commands, settings),
+                        id => {
+                            if let Some(a) = ws.run_command(ctx, id, backend, settings) {
+                                *action = Some(a);
                             }
                         }
-                        9 => ws.history.label = Some(String::new()),
-                        12 => ws.open_bib_manager(backend, settings),
-                        13 => ws.format_document(backend),
-                        14 => with_editor(ws, |e, i| e.reindent_lines(i)),
-                        15 => ws.focus_mode = !ws.focus_mode,
-                        18 => ws.export(backend, settings, Save::Pdf),
-                        19 => ws.export(backend, settings, Save::Zip),
-                        20 => ws.export(backend, settings, Save::Arxiv { flatten: false }),
-                        21 => ws.export(backend, settings, Save::Arxiv { flatten: true }),
-                        2 => ws.open_project_settings(),
-                        3 => *action = Some(Action::SaveTemplate(ws.root.clone())),
-                        24 => *action = Some(Action::Preferences),
-                        26 => {
-                            const GUIDE: &str =
-                                "https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md";
-                            backend.spawn(|shell| Msg::Done(shell.open_url(GUIDE.into())));
-                        }
-                        // shortcut: word count, the shortcuts sheet, reports and the palette land in M7.
-                        _ => ws.notice("Not in the native app yet.", Tone::Info),
                     }
                 }
             }

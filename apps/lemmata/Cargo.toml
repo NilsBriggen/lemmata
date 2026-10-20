@@ -25,6 +25,7 @@ eframe = { version = "0.37", default-features = false, features = [
 lemmata-project.workspace = true
 lemmata-shell = { path = "../../crates/lemmata-shell" }
 lemmata-tex.workspace = true
+lemmata-env.workspace = true
 lemmata-log.workspace = true
 lemmata-bib.workspace = true
 lemmata-grammar.workspace = true
@@ -38,6 +39,7 @@ base64 = "0.22"
 dirs = "7"
 open = "5"
 regex.workspace = true
+url = "2"
 ropey = "1.6"
 unicode-segmentation = "1"
 rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "wayland", "tokio"] }

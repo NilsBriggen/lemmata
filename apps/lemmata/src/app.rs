@@ -1,7 +1,7 @@
 //! The app: which screen shows, and what the screens' actions do. This is what App.svelte did.
 
 use crate::backend::{Backend, Msg, Pick, PrefsMsg};
-use crate::screens::{dialogs, library, onboarding, prefs, welcome};
+use crate::screens::{dialogs, library, onboarding, prefs, report, welcome, whats_new};
 use crate::store::{Dirs, Groups, Recents, Settings};
 use crate::theme::{self, Palette};
 use crate::widgets;
@@ -32,6 +32,12 @@ pub struct App {
     started: bool,
     dialog: Option<Dialog>,
     prefs: Option<prefs::Prefs>,
+    /// "Report a problem": the system summary and the errors.
+    report: Option<(String, String)>,
+    /// A file the OS asked to open, once its project has opened.
+    open_file_after: Option<String>,
+    /// What's new since the version used last, once after an update.
+    whats_new: Vec<&'static whats_new::Release>,
     quit: Quit,
 }
 
@@ -73,6 +79,17 @@ impl App {
         let palette = palette_for(&cc.egui_ctx, &settings);
         theme::apply(&cc.egui_ctx, &palette);
         let backend = Backend::new(cc.egui_ctx.clone(), &dirs);
+        #[cfg(not(debug_assertions))]
+        {
+            // Later launches hand their files and links to this one, which comes to the front.
+            let (shell, ctx) = (backend.shell.clone(), cc.egui_ctx.clone());
+            let _ = crate::instance::listen(&dirs.cache, move |args, cwd| {
+                shell.on_second_launch(&args, &cwd);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                ctx.request_repaint();
+            });
+            std::thread::spawn(crate::instance::register_scheme);
+        }
         let tex_dir = settings.tex_dir.clone();
         backend.spawn(move |shell| Msg::Tex(shell.tex_status(tex_dir)));
         Self {
@@ -94,6 +111,9 @@ impl App {
             started: false,
             dialog: None,
             prefs: None,
+            report: None,
+            open_file_after: None,
+            whats_new: Vec::new(),
             quit: Quit::No,
         }
     }
@@ -124,15 +144,21 @@ impl App {
     fn handle_request(&mut self, request: Request) {
         match request {
             Request::Open(target) => {
+                self.open_file_after = target.file;
                 self.open_project(target.project_root.to_string_lossy().into_owned())
             }
+            // The dialogs live on the start screen: the project closes (saving) first.
             Request::Clone { url } => {
+                self.close_project();
                 self.dialog = Some(Dialog::Clone(dialogs::Clone::new(
                     self.default_parent(),
                     url,
                 )))
             }
-            Request::NewProject { template } => self.open_new_project(template),
+            Request::NewProject { template } => {
+                self.close_project();
+                self.open_new_project(template)
+            }
         }
     }
 
@@ -385,9 +411,14 @@ impl App {
                 self.recents.save(&self.dirs);
                 self.close_project();
                 let ready = self.tex.as_ref().is_some_and(|t| t.detection.ready);
-                self.project = Some(Workspace::open(info, &self.dirs, &self.backend, ready));
+                let mut ws = Workspace::open(info, &self.dirs, &self.backend, ready);
+                if let Some(file) = self.open_file_after.take() {
+                    ws.open_requested(&self.backend, &file);
+                }
+                self.project = Some(ws);
             }
             Msg::Opened(path, Err(e)) => {
+                self.open_file_after = None;
                 // A folder without a main document can get one.
                 if e.contains("main")
                     && std::path::Path::new(&path).is_dir()
@@ -582,6 +613,15 @@ impl App {
     /// Existing users (with projects) never see the welcome. A file or folder opened from the OS
     /// wins over the last project.
     fn start(&mut self) {
+        // Once after an update, what the new version can do. A fresh install gets the welcome instead.
+        let used_before = self.settings.first_run_done || !self.recents.0.is_empty();
+        let version = env!("CARGO_PKG_VERSION");
+        if self.settings.last_seen_version != version {
+            self.whats_new =
+                whats_new::to_show(&self.settings.last_seen_version, version, used_before);
+            self.settings.last_seen_version = version.into();
+            self.settings.save(&self.dirs);
+        }
         let request = self.backend.shell.take_open_request();
         if let Some(r) = request {
             self.settings.first_run_done = true;
@@ -802,6 +842,23 @@ impl eframe::App for App {
         self.screen(ui);
         self.show_dialog(&ctx);
         self.show_prefs(&ctx);
+        if !self.whats_new.is_empty()
+            && self.welcome.is_none()
+            && whats_new::show(&ctx, &self.palette, &self.whats_new)
+        {
+            self.whats_new.clear();
+        }
+        if let Some((system, log)) = &self.report {
+            match report::show(&ctx, &self.palette, system, log) {
+                None => {}
+                Some(report::Out::Close) => self.report = None,
+                Some(report::Out::Open(url)) => {
+                    self.report = None;
+                    self.backend
+                        .spawn(move |shell| Msg::Done(shell.open_url(url)));
+                }
+            }
+        }
         self.closing(&ctx);
     }
 
@@ -886,6 +943,24 @@ impl App {
                 Some(workspace::Action::Library) => self.close_project(),
                 Some(workspace::Action::Settings) => self.save_settings(&ctx),
                 Some(workspace::Action::Preferences) => self.open_prefs(),
+                Some(workspace::Action::Snippets) => {
+                    self.open_prefs();
+                    if let Some(st) = &mut self.prefs {
+                        st.snippets = Some(self.settings.snippets.clone());
+                        st.only_snippets = true;
+                    }
+                }
+                Some(workspace::Action::Report) => {
+                    let log = self
+                        .project
+                        .as_ref()
+                        .map(|w| report::error_summary(&w.build.diagnostics))
+                        .unwrap_or_default();
+                    self.report = Some((
+                        report::system_summary(env!("CARGO_PKG_VERSION"), self.tex.as_ref()),
+                        log,
+                    ));
+                }
                 Some(workspace::Action::SaveTemplate(path)) => {
                     let name = library::name_of(&path).to_owned();
                     self.dialog =
@@ -989,6 +1064,7 @@ mod tests {
         recents.save(&d);
         Settings {
             first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
             ..Settings::default()
         }
         .save(&d);
@@ -1196,6 +1272,7 @@ mod tests {
         recents.save(&d);
         Settings {
             first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
             ..settings
         }
         .save(&d);
@@ -2120,6 +2197,329 @@ mod tests {
     }
 
     #[test]
+    fn the_palette_quick_open_sheets_and_presenting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let palette_kind = |h: &Harness<App>| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .palette
+                .as_ref()
+                .map(|p| p.kind)
+        };
+        // Quick open: type, Enter opens the file.
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+        h.run_steps(3);
+        assert_eq!(
+            palette_kind(&h),
+            Some(crate::workspace::palette::Kind::Files)
+        );
+        h.get_by_label("Open a file by name").type_text("meth");
+        h.run_steps(2);
+        let _ = h.try_snapshot("quick-open-light");
+        h.key_press(egui::Key::Enter);
+        wait_for(&mut h, "method.tex", |h| {
+            h.query_by_label("Text of method.tex").is_some()
+        });
+
+        // The command palette runs a command by name: the shortcuts sheet.
+        h.key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::P,
+        );
+        h.run_steps(3);
+        h.get_by_label("Type a command").type_text("keyboard");
+        h.run_steps(2);
+        let _ = h.try_snapshot("palette-light");
+        h.key_press(egui::Key::Enter);
+        wait_for(&mut h, "the sheet", |h| {
+            h.query_by_label("Search shortcuts").is_some()
+        });
+        h.run_steps(3);
+        h.get_by_label("Search shortcuts").type_text("presenter");
+        h.run_steps(2);
+        assert!(
+            h.query_by_label("Go to a section").is_none(),
+            "the search filters"
+        );
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+
+        // Word count from the menu.
+        h.get_by_label("Menu").click();
+        h.run_steps(2);
+        h.get_by_role_and_label(egui::accesskit::Role::MenuItem, "Word count")
+            .click();
+        wait_for(&mut h, "the counts", |h| {
+            h.query_by_label("Display maths").is_some()
+        });
+        h.run_steps(3);
+        let _ = h.try_snapshot("word-count-light");
+        h.get_by_label("Done").click();
+        h.run_steps(2);
+
+        // Wrap the first line in an environment from the editor's key.
+        h.get_by_label("Text of method.tex").click();
+        h.run_steps(1);
+        {
+            let app = h.state_mut();
+            let ed = app
+                .project
+                .as_mut()
+                .unwrap()
+                .editors
+                .get_mut("chapters/method.tex")
+                .unwrap();
+            ed.doc.selection = crate::editor::buffer::Selection::cursor(ed.doc.line_start(1));
+        }
+        h.key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::E,
+        );
+        h.run_steps(3);
+        assert_eq!(
+            palette_kind(&h),
+            Some(crate::workspace::palette::Kind::Environments)
+        );
+        h.get_by_label("Wrap the selection in…").type_text("center");
+        h.run_steps(2);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        let line = h.state().project.as_ref().unwrap().editors["chapters/method.tex"]
+            .doc
+            .line(1);
+        assert_eq!(line, "\\begin{center}");
+
+        // Present the built PDF; Esc ends it.
+        wait_for(&mut h, "the PDF", |h| h.query_by_label("Page").is_some());
+        let ctx = h.ctx.clone();
+        h.state_mut().project.as_mut().unwrap().present(&ctx);
+        wait_for(&mut h, "the slide", |h| {
+            h.query_by_label("Slide 1 of 1").is_some()
+        });
+        wait_for(&mut h, "the slide's image", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .presentation
+                .as_ref()
+                .is_some_and(|p| p.rendered())
+        });
+        h.run_steps(2);
+        let _ = h.try_snapshot("present-light");
+        // P: the presenter view, with the timer and the notes hint.
+        h.key_press(egui::Key::P);
+        wait_for(&mut h, "the presenter view", |h| {
+            h.query_by_label("End presentation").is_some()
+        });
+        h.run_steps(3);
+        // The presenter view as its own window shows it.
+        let bytes = h
+            .state()
+            .project
+            .as_ref()
+            .unwrap()
+            .pane
+            .view
+            .shown_bytes()
+            .unwrap();
+        let mut show: Option<crate::pdf::present::Presentation> = None;
+        let mut ph = egui_kittest::Harness::builder()
+            .with_size([1180.0, 740.0])
+            .with_context_setup(|ctx| {
+                ctx.add_font_provider(std::sync::Arc::new(
+                    egui_system_font_provider::SystemFontProvider::new(),
+                ));
+                crate::theme::install_fonts(ctx);
+                crate::theme::apply(ctx, &crate::theme::LIGHT);
+            })
+            .wgpu()
+            .build_ui(move |ui| {
+                let s = show.get_or_insert_with(|| {
+                    crate::pdf::present::Presentation::new(ui.ctx(), bytes.clone(), 1)
+                });
+                s.receive(ui.ctx());
+                s.presenter_ui(ui);
+            });
+        for _ in 0..40 {
+            ph.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let _ = ph.try_snapshot("presenter-light");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        assert!(h.state().project.as_ref().unwrap().presentation.is_none());
+    }
+
+    #[test]
+    fn whats_new_shows_once_after_an_update() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(tmp.path());
+        Settings {
+            first_run_done: true,
+            last_seen_version: "1.4.0".into(),
+            ..Settings::default()
+        }
+        .save(&d);
+        let mut h = app(tmp.path());
+        wait_for(&mut h, "the news", |h| h.query_by_label("Got it").is_some());
+        h.run_steps(3);
+        assert!(
+            h.query_by_label("LEMMATA 1.5").is_some(),
+            "both releases, labelled"
+        );
+        let _ = h.try_snapshot("whats-new-light");
+        h.get_by_label("Got it").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Got it").is_none());
+        assert_eq!(
+            Settings::load(&d).last_seen_version,
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    /// A file dropped from the computer, as egui-winit hands it over.
+    #[derive(Debug)]
+    struct Dropped(std::path::PathBuf);
+    impl egui::DroppedFile for Dropped {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            std::fs::read(&self.0).map_err(|e| e.to_string())
+        }
+    }
+
+    #[test]
+    fn files_drag_in_the_tree_and_drop_from_the_computer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let press = |h: &mut Harness<App>, pos: egui::Pos2, pressed: bool| {
+            h.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        };
+        // Drag refs.bib onto the chapters folder.
+        let from = h
+            .get_by_role_and_label(egui::accesskit::Role::TreeItem, "refs.bib")
+            .rect()
+            .center();
+        let to = h
+            .get_by_role_and_label(egui::accesskit::Role::TreeItem, "chapters")
+            .rect()
+            .center();
+        h.event(egui::Event::PointerMoved(from));
+        press(&mut h, from, true);
+        h.run_steps(1);
+        for k in 1..=8 {
+            h.event(egui::Event::PointerMoved(
+                from + (to - from) * (k as f32 / 8.0),
+            ));
+            h.run_steps(1);
+        }
+        let _ = h.try_snapshot("tree-drag-light");
+        assert_eq!(
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .tree_drag
+                .as_ref()
+                .and_then(|d| d.target.clone())
+                .as_deref(),
+            Some("chapters")
+        );
+        press(&mut h, to, false);
+        h.run_steps(2);
+        // main.tex loads refs.bib, so the move asks whether to update that line.
+        wait_for(&mut h, "the move dialog", |h| {
+            h.query_by_label("Move").is_some()
+        });
+        h.run_steps(3);
+        h.get_by_label("Move").click();
+        wait_for(&mut h, "the moved file", |_| {
+            project.join("chapters/refs.bib").exists()
+        });
+        wait_for(&mut h, "the updated reference", |_| {
+            std::fs::read_to_string(project.join("main.tex"))
+                .unwrap()
+                .contains("chapters/refs.bib")
+        });
+
+        // An image dropped below the rows goes into the project folder.
+        let img = tmp.path().join("photo.png");
+        image::RgbaImage::new(2, 2).save(&img).unwrap();
+        let below = h
+            .get_by_role_and_label(egui::accesskit::Role::TreeItem, "main.tex")
+            .rect()
+            .center()
+            + egui::vec2(0.0, 120.0);
+        h.event(egui::Event::PointerMoved(below));
+        h.input_mut()
+            .dropped_files
+            .push(std::sync::Arc::new(Dropped(img.clone())));
+        h.run_steps(2);
+        wait_for(&mut h, "the added file", |_| {
+            project.join("photo.png").exists()
+        });
+
+        // Dropped on the text of main.tex: a figure there.
+        h.get_by_role_and_label(egui::accesskit::Role::TreeItem, "main.tex")
+            .click();
+        wait_for(&mut h, "main.tex", |h| {
+            h.query_by_label("Text of main.tex").is_some()
+        });
+        h.run_steps(2);
+        let text = h.get_by_label("Text of main.tex").rect();
+        h.event(egui::Event::PointerMoved(
+            text.left_top() + egui::vec2(120.0, 20.0),
+        ));
+        h.input_mut()
+            .dropped_files
+            .push(std::sync::Arc::new(Dropped(img)));
+        h.run_steps(2);
+        wait_for(&mut h, "the figure", |h| {
+            h.state().project.as_ref().unwrap().editors["main.tex"]
+                .doc
+                .text()
+                .contains("\\includegraphics[width=0.8\\linewidth]{")
+        });
+    }
+
+    #[test]
+    fn a_second_launch_opens_its_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        // The magic comment names the project's main file.
+        let path = project.join("chapters/method.tex");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("% !TEX root = ../main.tex\n{text}")).unwrap();
+        let file = path.to_string_lossy().into_owned();
+        h.state()
+            .backend
+            .shell
+            .on_second_launch(&["lemmata".into(), file], "/");
+        wait_for(&mut h, "method.tex", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .is_some_and(|w| w.active.as_deref() == Some("chapters/method.tex"))
+        });
+    }
+
+    #[test]
     fn typing_saves_after_the_delay_and_the_file_changes_on_disk() {
         let tmp = tempfile::tempdir().unwrap();
         let Some((mut h, project)) = in_article(tmp.path()) else {
@@ -2180,6 +2580,8 @@ mod tests {
         let mut recents = Recents::default();
         recents.remember(&project.to_string_lossy(), 1.0);
         recents.save(&d);
+        // This version was used before: no "What's new" in front of the project.
+        Settings { last_seen_version: env!("CARGO_PKG_VERSION").into(), ..Settings::default() }.save(&d);
         let mut h = app(tmp.path());
         wait_for(&mut h, "the project or onboarding", |h| {
             h.query_by_label("Back to all projects").is_some()

@@ -897,6 +897,38 @@ pub fn reindent_lines(d: &mut Doc, indent: Indent) -> bool {
     true
 }
 
+/// Wraps the selected lines in `\\begin{name}` … `\\end{name}` (Editor.svelte wrapInEnvironment):
+/// the lines move in one level, and the cursor lands after `\\begin{name}`.
+pub fn wrap_in_environment(d: &mut Doc, name: &str, indent: Indent) {
+    let r = d.selection.main();
+    let (first, last) = (d.line_of(r.from()), d.line_of(r.to()));
+    let from = d.line_start(first);
+    let to = d.line_end(last);
+    let lead = leading_ws(&d.line(first)).to_owned();
+    let unit = indent.unit();
+    let body: Vec<String> = d
+        .slice(from, to)
+        .split('\n')
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{unit}{l}")
+            }
+        })
+        .collect();
+    let insert = format!(
+        "{lead}\\begin{{{name}}}\n{}\n{lead}\\end{{{name}}}",
+        body.join("\n")
+    );
+    let at = from + lead.chars().count() + format!("\\begin{{{name}}}").chars().count();
+    d.apply(
+        ChangeSet::new(vec![Change { from, to, insert }]),
+        Selection::cursor(at),
+        EditKind::Input,
+    );
+}
+
 /// indentOnInput: once what's typed at the start of a line reads `\end{…}`, the line lines up
 /// with its `\begin` (part of the same undo step as the typing).
 pub fn indent_on_input(d: &mut Doc, indent: Indent) -> bool {
@@ -1283,6 +1315,18 @@ mod tests {
             assert_eq!(d.text(), want);
             assert_eq!(d.selection.main().head, d.len());
         }
+    }
+
+    #[test]
+    fn wraps_lines_in_an_environment() {
+        let mut d = doc("  a\n  b\n\nc", 3);
+        d.selection = Selection::single(Range::new(3, 6));
+        wrap_in_environment(&mut d, "center", Indent::Spaces(2));
+        assert_eq!(
+            d.text(),
+            "  \\begin{center}\n    a\n    b\n  \\end{center}\n\nc"
+        );
+        assert_eq!(d.selection.main().head, 2 + "\\begin{center}".len());
     }
 
     #[test]

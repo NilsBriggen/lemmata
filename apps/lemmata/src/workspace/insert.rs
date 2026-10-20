@@ -143,6 +143,45 @@ impl Workspace {
         );
     }
 
+    /// Images dropped onto a .tex file: each copied into the project and inserted as a figure
+    /// where it was dropped.
+    pub(super) fn drop_figures(
+        &mut self,
+        backend: &Backend,
+        path: &str,
+        files: Vec<String>,
+        at: usize,
+    ) {
+        let file = path.to_owned();
+        Workspace::job(
+            backend,
+            move |s| {
+                files
+                    .into_iter()
+                    .map(|f| s.import_figure(f))
+                    .collect::<Vec<_>>()
+            },
+            move |ws, b, results| {
+                let indent = ws.indent;
+                for r in results {
+                    match r {
+                        Ok(rel) => {
+                            if let Some(ed) = ws.editors.get_mut(&file) {
+                                let at = at.min(ed.doc.len());
+                                ed.doc.selection = crate::editor::buffer::Selection::cursor(at);
+                                ed.insert_template(&table::figure_snippet(&rel), indent);
+                                ed.refocus = true;
+                            }
+                            ws.needs_package(b, "graphicx".into());
+                        }
+                        Err(e) => ws.notice(e, Tone::Error),
+                    }
+                }
+                b.spawn(|shell| Msg::Info(shell.project_info_cmd()));
+            },
+        );
+    }
+
     /// "Browse…": an image from the computer, copied into the project.
     fn browse_figure(&mut self, backend: &Backend) {
         if let Some(f) = &mut self.figure {

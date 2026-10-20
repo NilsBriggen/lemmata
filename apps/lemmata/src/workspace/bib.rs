@@ -1226,7 +1226,7 @@ impl Workspace {
         });
     }
 
-    fn cite_from_zotero(&mut self, backend: &Backend) {
+    pub(super) fn cite_from_zotero(&mut self, backend: &Backend) {
         self.notice("Choose references in Zotero's picker…", Tone::Info);
         Workspace::job_async(
             backend,

@@ -16,6 +16,8 @@ pub struct Prefs {
     pub spell_error: Option<String>,
     pub grammar_status: Option<String>,
     pub snippets: Option<Vec<Snippet>>,
+    /// Opened for the snippets alone (the palette's "Edit snippets…"): closing them closes all.
+    pub only_snippets: bool,
 }
 
 pub enum Out {
@@ -95,6 +97,9 @@ pub fn show(
 ) -> Option<Out> {
     if st.snippets.is_some() {
         return snippets(ctx, p, st, s);
+    }
+    if st.only_snippets {
+        return Some(Out::Close);
     }
     let mut out = None;
     let mut done = false;

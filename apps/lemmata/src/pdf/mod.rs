@@ -3,5 +3,6 @@
 
 pub mod engine;
 pub mod pane;
+pub mod present;
 pub mod problems;
 pub mod view;

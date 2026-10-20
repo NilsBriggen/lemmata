@@ -199,6 +199,27 @@ pub fn display(keys: &str) -> String {
     all.join(if MAC { "" } else { "+" })
 }
 
+/// "Ctrl+Shift+/ / F1": both keys of an entry, as the sheet shows them.
+pub fn key_label(s: &Shortcut) -> String {
+    [Some(s.keys), s.alt]
+        .into_iter()
+        .flatten()
+        .filter(|k| !k.is_empty())
+        .map(display)
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// Does a search-box query match a shortcut's label or its key text?
+pub fn matches_query(s: &Shortcut, query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    let keys = format!("{} {} {}", s.keys, s.alt.unwrap_or(""), key_label(s)).to_lowercase();
+    s.label.to_lowercase().contains(&q) || keys.contains(&q)
+}
+
 /// Splits on `-` that separate parts, so "Mod--" (the minus key) still works.
 fn split(spec: &str) -> Vec<&str> {
     let mut out = Vec::new();
@@ -303,6 +324,25 @@ pub fn consume(ctx: &egui::Context, id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // shortcuts.test.ts: shortcut search
+    #[test]
+    fn the_sheet_searches_labels_and_keys() {
+        let find = |q: &str| {
+            SHORTCUTS
+                .iter()
+                .filter(|s| matches_query(s, q))
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(find("").len(), SHORTCUTS.len());
+        assert!(find("KEYBOARD").contains(&"shortcuts"));
+        assert!(find("f1").contains(&"shortcuts"));
+        assert!(find("shift-f8").contains(&"prev-problem"));
+        assert!(find("no such thing at all").is_empty());
+        let s = SHORTCUTS.iter().find(|x| x.id == "shortcuts").unwrap();
+        assert!(key_label(s).ends_with(" / F1"));
+    }
 
     #[test]
     fn specs_parse_and_match() {

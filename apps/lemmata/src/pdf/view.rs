@@ -90,6 +90,8 @@ pub struct PdfView {
     /// The newest document sent to the engine, and the one whose pages are laid out.
     sent: u64,
     shown: u64,
+    /// The newest document's bytes.
+    bytes: Option<Arc<Vec<u8>>>,
     pub pages: Vec<Vec2>,
     pub outline: Vec<OutlineNode>,
     pub error: Option<String>,
@@ -144,6 +146,7 @@ impl PdfView {
         Self {
             engine: Engine::new(ctx.clone()),
             sent: 0,
+            bytes: None,
             shown: 0,
             pages: Vec::new(),
             outline: Vec::new(),
@@ -188,10 +191,19 @@ impl PdfView {
     /// Shows a new PDF; the old one stays up until the new pages are drawn.
     pub fn load(&mut self, bytes: Vec<u8>) {
         self.sent += 1;
+        let bytes = Arc::new(bytes);
+        self.bytes = Some(bytes.clone());
         self.engine.send(Job::Load {
             doc: self.sent,
-            bytes: Arc::new(bytes),
+            bytes,
         });
+    }
+
+    /// The PDF on show, for presenting: None until it has loaded.
+    pub fn shown_bytes(&self) -> Option<Arc<Vec<u8>>> {
+        (self.shown == self.sent && !self.pages.is_empty())
+            .then(|| self.bytes.clone())
+            .flatten()
     }
 
     /// Takes what the engine finished.

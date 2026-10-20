@@ -236,10 +236,7 @@ impl Workspace {
                 PaneAction::OpenExternally => {
                     backend.spawn(|shell| Msg::Done(shell.open_pdf_externally()));
                 }
-                // shortcut: presenting full screen lands with the presenter (M7).
-                PaneAction::Present => {
-                    self.notice("Presenting isn't in the native app yet.", Tone::Info)
-                }
+                PaneAction::Present => self.present(ui.ctx()),
                 PaneAction::Layout(l) => {
                     settings.pdf_layout = l.into();
                     settings_changed = true;

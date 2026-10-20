@@ -3542,6 +3542,7 @@ dependencies = [
  "hayro",
  "image",
  "lemmata-bib",
+ "lemmata-env",
  "lemmata-git",
  "lemmata-grammar",
  "lemmata-history",
@@ -3565,6 +3566,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-segmentation",
+ "url",
  "wgpu",
  "zip 9.0.2",
 ]

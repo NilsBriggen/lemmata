@@ -44,6 +44,27 @@ pub fn top_level(paths: &[String]) -> Vec<String> {
     out
 }
 
+/// Can all of `paths` move into `folder`? Not into themselves, their own children, or where they
+/// already are.
+pub fn can_move(paths: &[String], folder: &str) -> bool {
+    let movable: Vec<String> = top_level(paths)
+        .into_iter()
+        .filter(|p| parent_of(p) != folder)
+        .collect();
+    !movable.is_empty()
+        && movable
+            .iter()
+            .all(|p| folder != p && !folder.starts_with(&format!("{p}/")))
+}
+
+/// Files being dragged in the tree: their paths, what the ghost says, and the folder under the
+/// pointer that would take them ("" is the project root).
+pub struct TreeDrag {
+    pub paths: Vec<String>,
+    pub name: String,
+    pub target: Option<String>,
+}
+
 /// "main copy.tex", "main copy 2.tex", … the first name not taken.
 pub fn copy_name(name: &str, is_dir: bool, taken: &[String]) -> String {
     let (stem, tail) = match name.rfind('.') {
@@ -219,7 +240,7 @@ impl Workspace {
     }
 
     /// What an action applies to: the selection, or the cursor row, or the given row.
-    fn targets(&self, fallback: Option<&str>) -> Vec<String> {
+    pub(super) fn targets(&self, fallback: Option<&str>) -> Vec<String> {
         if let Some(f) = fallback
             && !self.sel.is_selected(f)
         {
@@ -681,6 +702,24 @@ impl Workspace {
         self.open_file(backend, &path);
     }
 
+    /// Files dropped from the computer onto the tree: copied into `folder`.
+    pub fn add_dropped(&mut self, backend: &Backend, paths: Vec<String>, folder: String) {
+        Workspace::job(
+            backend,
+            move |s| s.add_files(paths, folder),
+            |ws, b, r| match r {
+                Ok(added) => {
+                    ws.refresh_tree(b);
+                    ws.notice(
+                        format!("Added {}.", plural(added.len(), "file", "files")),
+                        Tone::Ok,
+                    );
+                }
+                Err(e) => ws.file_failure(e),
+            },
+        );
+    }
+
     /// "Add files…": files from the computer, copied into `folder`.
     pub fn upload(&mut self, backend: &Backend, folder: String) {
         backend.spawn_async(|shell| async move {
@@ -707,7 +746,7 @@ impl Workspace {
         });
     }
 
-    fn show_unused(&mut self, backend: &Backend) {
+    pub(super) fn show_unused(&mut self, backend: &Backend) {
         self.files.dialog = Some(FileDialog::Unused {
             files: None,
             picked: Vec::new(),
@@ -729,7 +768,7 @@ impl Workspace {
         );
     }
 
-    fn show_deleted(&mut self, backend: &Backend) {
+    pub(super) fn show_deleted(&mut self, backend: &Backend) {
         self.files.dialog = Some(FileDialog::Deleted(None));
         Workspace::job(
             backend,
@@ -1563,5 +1602,10 @@ mod tests {
         assert_eq!(remap("chx/a.tex", "ch", "chapters"), "chx/a.tex");
         assert_eq!(parent_of("a/b/c.tex"), "a/b");
         assert_eq!(join_path("", "x"), "x");
+        // treeModel.test.ts canMove
+        assert!(can_move(&s(&["a/x.tex"]), ""));
+        assert!(!can_move(&s(&["a/x.tex"]), "a"), "already there");
+        assert!(!can_move(&s(&["a"]), "a/b"), "into itself");
+        assert!(can_move(&s(&["a", "b/c.tex"]), "b/d"));
     }
 }
