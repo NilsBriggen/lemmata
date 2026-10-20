@@ -29,6 +29,9 @@ serde_json.workspace = true
 base64 = "0.22"
 dirs = "7"
 open = "5"
+regex.workspace = true
+ropey = "1.6"
+unicode-segmentation = "1"
 rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "wayland", "tokio"] }
 tokio.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }

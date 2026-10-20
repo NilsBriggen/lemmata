@@ -318,6 +318,9 @@ pub fn apply(ctx: &egui::Context, p: &Palette) {
         s.spacing.menu_margin = Margin::same(5);
         s.spacing.item_spacing = egui::vec2(6.0, 6.0);
         s.animation_time = EASE_SECS;
+        // `scrollbar-width: thin`, no fading of the content at the edges.
+        s.spacing.scroll = egui::style::ScrollStyle::thin();
+        s.spacing.scroll.fade.strength = 0.0;
     });
 }
 

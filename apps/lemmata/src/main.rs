@@ -4,7 +4,11 @@
 mod app;
 mod backend;
 #[allow(dead_code)]
+mod editor;
+#[allow(dead_code)]
 mod screens;
+#[allow(dead_code)]
+mod shortcuts;
 #[allow(dead_code)]
 mod spell;
 #[allow(dead_code)]
