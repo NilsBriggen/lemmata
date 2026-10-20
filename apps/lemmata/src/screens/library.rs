@@ -1402,6 +1402,8 @@ fn folder_name_dialog(
         |ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
             let input = widgets::text_input(ui, p, &mut ed.name, "Folder name", false);
+            ui.ctx()
+                .accesskit_node_builder(input.id, |n| n.set_label("Folder name"));
             if !input.has_focus() && ui.memory(|m| m.focused().is_none()) {
                 input.request_focus();
             }

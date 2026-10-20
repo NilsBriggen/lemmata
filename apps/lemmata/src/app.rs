@@ -1008,12 +1008,16 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
+#[path = "scenarios.rs"]
+mod scenarios;
+
+#[cfg(test)]
+pub(crate) mod tests {
     use super::*;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 
-    fn dirs(root: &std::path::Path) -> Dirs {
+    pub(crate) fn dirs(root: &std::path::Path) -> Dirs {
         Dirs {
             config: root.join("config"),
             data: root.join("data"),
@@ -1021,7 +1025,7 @@ mod tests {
         }
     }
 
-    fn app<'a>(root: &std::path::Path) -> Harness<'a, App> {
+    pub(crate) fn app<'a>(root: &std::path::Path) -> Harness<'a, App> {
         let d = dirs(root);
         Harness::builder()
             .with_size(crate::testing::WINDOW)
@@ -1034,7 +1038,11 @@ mod tests {
     }
 
     /// Steps until `found` holds; the backend answers from other threads.
-    fn wait_for(h: &mut Harness<App>, what: &str, found: impl Fn(&Harness<App>) -> bool) {
+    pub(crate) fn wait_for(
+        h: &mut Harness<App>,
+        what: &str,
+        found: impl Fn(&Harness<App>) -> bool,
+    ) {
         let start = std::time::Instant::now();
         while !found(h) {
             assert!(
@@ -1069,7 +1077,7 @@ mod tests {
     }
 
     /// A returning user with one project in `tmp`, back in the library; new projects default to `tmp`.
-    fn in_library(tmp: &std::path::Path) -> Option<Harness<'static, App>> {
+    pub(crate) fn in_library(tmp: &std::path::Path) -> Option<Harness<'static, App>> {
         let project = tmp.join("paper");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(
@@ -1259,7 +1267,7 @@ mod tests {
         });
     }
 
-    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    pub(crate) fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
         std::fs::create_dir_all(to).unwrap();
         for e in std::fs::read_dir(from).unwrap().flatten() {
             let t = to.join(e.file_name());
@@ -1272,11 +1280,13 @@ mod tests {
     }
 
     /// The article fixture as the last project, opened by the app; None without TeX.
-    fn in_article(tmp: &std::path::Path) -> Option<(Harness<'static, App>, std::path::PathBuf)> {
+    pub(crate) fn in_article(
+        tmp: &std::path::Path,
+    ) -> Option<(Harness<'static, App>, std::path::PathBuf)> {
         in_article_with(tmp, Settings::default())
     }
 
-    fn in_article_with(
+    pub(crate) fn in_article_with(
         tmp: &std::path::Path,
         settings: Settings,
     ) -> Option<(Harness<'static, App>, std::path::PathBuf)> {

@@ -192,7 +192,7 @@ pub struct Editor {
     /// What the comment ranges were computed for (comments generation, document version).
     pub comments_key: (u64, u64),
     /// The hover card on screen: its line, what it shows, and where the card was drawn.
-    hover: Option<(usize, super::hover::Target, Rect)>,
+    pub(crate) hover: Option<(usize, super::hover::Target, Rect)>,
 }
 
 impl Editor {

@@ -38,7 +38,7 @@ pub struct History {
     editing: Option<(String, String)>,
     confirm_all: Option<String>,
     /// "": since the last snapshot marked as reviewed.
-    since: String,
+    pub(crate) since: String,
     review: Option<(Snapshot, Vec<ReviewFile>)>,
     accepted: HashSet<String>,
     pub busy: Option<&'static str>,
