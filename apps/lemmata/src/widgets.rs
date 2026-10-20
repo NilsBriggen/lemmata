@@ -3,8 +3,8 @@
 use crate::icons::{self, Icon};
 use crate::theme::{self, Palette};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Response, Sense, Stroke, StrokeKind, Ui, Vec2,
-    WidgetInfo,
+    self, Align2, Color32, CornerRadius, FontId, Rect, Response, Sense, Stroke, StrokeKind, Ui,
+    Vec2, WidgetInfo,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -35,6 +35,8 @@ pub struct Button<'a> {
     enabled: bool,
     trailing: Option<Icon>,
     ink: Option<Color32>,
+    fill: Option<Color32>,
+    min_width: f32,
     angle: f32,
 }
 
@@ -49,6 +51,8 @@ impl<'a> Button<'a> {
             enabled: true,
             trailing: None,
             ink: None,
+            fill: None,
+            min_width: 0.0,
             angle: 0.0,
         }
     }
@@ -67,6 +71,16 @@ impl<'a> Button<'a> {
     /// An icon after the text, as "Continue →".
     pub fn trailing_icon(mut self, icon: Icon) -> Self {
         self.trailing = Some(icon);
+        self
+    }
+    /// A fill (and border) other than the kind's, as `.danger-btn`.
+    pub fn fill(mut self, color: Color32) -> Self {
+        self.fill = Some(color);
+        self
+    }
+    /// At least this wide, content centred (`width: 100%` buttons).
+    pub fn min_width(mut self, width: f32) -> Self {
+        self.min_width = width;
         self
     }
     /// Turns the leading icon, for a spinner.
@@ -124,12 +138,19 @@ impl<'a> Button<'a> {
             let text_w = galley.as_ref().map_or(0.0, |g| g.size().x);
             let icons = self.icon.iter().chain(&self.trailing).count() as f32;
             pad * 2.0 + icons * (icon_size + 6.0) + text_w
+                - if icons > 0.0 && text_w == 0.0 {
+                    6.0
+                } else {
+                    0.0
+                }
         };
         let sense = if self.enabled {
             Sense::click()
         } else {
             Sense::hover()
         };
+        let content_w = width;
+        let width = width.max(self.min_width);
         let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), sense);
         response.widget_info(|| {
             WidgetInfo::selected(egui::Role::Button, self.enabled, self.on, self.text)
@@ -172,6 +193,10 @@ impl<'a> Button<'a> {
                 ),
             };
             let ink = self.ink.unwrap_or(ink);
+            let (fill, stroke) = match self.fill {
+                Some(f) => (f, f),
+                None => (fill, stroke),
+            };
             let alpha = if self.enabled { 1.0 } else { 0.5 };
             let (fill, stroke, ink) = (
                 fill.gamma_multiply(alpha),
@@ -192,7 +217,7 @@ impl<'a> Button<'a> {
                 + if icon_only {
                     (width - icon_size) / 2.0
                 } else {
-                    pad
+                    pad + (width - content_w) / 2.0
                 };
             if let Some(icon) = self.icon {
                 let r = egui::Rect::from_min_size(
@@ -407,6 +432,53 @@ pub fn centered_text(ui: &Ui, rect: egui::Rect, text: &str, font: FontId, color:
         .text(rect.center(), Align2::CENTER_CENTER, text, font, color);
 }
 
+/// `.search`: a 32 px box with a magnifier and an input without its own frame.
+pub fn search_input(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str) -> Response {
+    let rect = ui
+        .available_rect_before_wrap()
+        .with_max_y(ui.available_rect_before_wrap().top() + 32.0);
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(Vec2::new(10.0, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child.spacing_mut().item_spacing.x = 6.0;
+    icons::show(&mut child, icons::SEARCH, 15.0, p.muted);
+    let r = child.add(
+        egui::TextEdit::singleline(text)
+            .hint_text(egui::RichText::new(hint).color(p.faint))
+            .font(FontId::proportional(13.0))
+            .text_color(p.ink)
+            .frame(egui::Frame::NONE)
+            .align(egui::Align2::LEFT_CENTER)
+            .min_size(Vec2::new(0.0, 32.0))
+            .desired_width(child.available_width()),
+    );
+    ui.ctx().accesskit_node_builder(r.id, |n| n.set_label(hint));
+    let focused = r.has_focus();
+    if focused {
+        ui.painter().rect_stroke(
+            rect.expand(1.5),
+            CornerRadius::same(theme::R + 2),
+            Stroke::new(3.0, Palette::mix(p.accent, 22.0)),
+            StrokeKind::Outside,
+        );
+    }
+    ui.painter().set(
+        slot,
+        egui::Shape::rect_filled(rect, CornerRadius::same(theme::R), p.surface),
+    );
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(theme::R),
+        Stroke::new(1.0, if focused { p.accent } else { p.border_strong }),
+        StrokeKind::Inside,
+    );
+    ui.allocate_rect(rect, Sense::hover());
+    r
+}
+
 /// `select.input`: a 32 px drop-down of `(value, label)` options, named `name` for screen readers.
 /// True when the value changed.
 pub fn select(
@@ -432,7 +504,16 @@ pub fn select(
             state.expansion = 0.0;
         }
         w.hovered.bg_stroke = Stroke::new(1.0, p.faint);
+        let ink = p.ink;
         let r = egui::ComboBox::from_id_salt(name)
+            .icon(move |ui, rect, _, _| {
+                icons::paint(
+                    ui.painter(),
+                    Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
+                    icons::CHEVRON_DOWN,
+                    ink,
+                )
+            })
             .selected_text(egui::RichText::new(current).size(13.0).color(p.ink))
             .width(ui.available_width().min(ui.max_rect().width()))
             .show_ui(ui, |ui| {
@@ -657,6 +738,341 @@ pub fn text_input(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, mono:
         egui::Shape::rect_filled(rect, CornerRadius::same(theme::R), p.surface),
     );
     response
+}
+
+/// What a modal reports back each frame.
+pub struct ModalResponse<R> {
+    pub inner: R,
+    /// Esc, the × button or a click on the backdrop.
+    pub closed: bool,
+}
+
+/// Modal.svelte: a dimmed backdrop and a panel with a title, a body and an optional footer on
+/// `--surface-2`. Esc, × and clicking the backdrop close it.
+pub fn modal<R>(
+    ctx: &egui::Context,
+    p: &Palette,
+    title: &str,
+    width: f32,
+    body: impl FnOnce(&mut Ui) -> R,
+    footer: Option<&mut dyn FnMut(&mut Ui)>,
+) -> ModalResponse<R> {
+    let screen = ctx.content_rect();
+    let mut closed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    // The backdrop: rgba(12, 17, 22, .42) over everything, swallowing clicks.
+    let backdrop = egui::Area::new(egui::Id::unique(("modal-backdrop", title)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.min)
+        .show(ctx, |ui| {
+            let (rect, r) = ui.allocate_exact_size(screen.size(), Sense::click());
+            ui.painter()
+                .rect_filled(rect, 0, Color32::from_rgba_unmultiplied(12, 17, 22, 107));
+            r
+        });
+    let width = width.min(screen.width() - 48.0);
+    let panel = egui::Area::new(egui::Id::unique(("modal", title)))
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .fixed_pos(screen.center())
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            egui::Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(12)
+                .shadow(p.shadow_lg)
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin {
+                            left: 20,
+                            right: 20,
+                            top: 18,
+                            bottom: 4,
+                        })
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(title)
+                                        .font(FontId::new(16.0, theme::font::sans_600()))
+                                        .color(p.ink),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Min),
+                                    |ui| {
+                                        if Button::icon(icons::X, "Close")
+                                            .size(Size::Sm)
+                                            .show_icon(ui, p)
+                                            .clicked()
+                                        {
+                                            closed = true;
+                                        }
+                                    },
+                                );
+                            });
+                        });
+                    let inner = egui::Frame::new()
+                        .inner_margin(egui::Margin {
+                            left: 20,
+                            right: 20,
+                            top: 12,
+                            bottom: 18,
+                        })
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 14.0;
+                            body(ui)
+                        })
+                        .inner;
+                    if let Some(footer) = footer {
+                        let r = egui::Frame::new()
+                            .fill(p.surface_2)
+                            .inner_margin(egui::Margin::symmetric(20, 12))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                        footer(ui);
+                                    },
+                                );
+                            });
+                        let top = r.response.rect.top();
+                        ui.painter().hline(
+                            r.response.rect.x_range(),
+                            top,
+                            Stroke::new(1.0, p.border),
+                        );
+                    }
+                    inner
+                })
+                .inner
+        });
+    if backdrop.inner.clicked()
+        && !panel
+            .response
+            .rect
+            .contains(backdrop.inner.interact_pointer_pos().unwrap_or_default())
+    {
+        closed = true;
+    }
+    ModalResponse {
+        inner: panel.inner,
+        closed,
+    }
+}
+
+/// A row of a drop menu.
+pub enum MenuItem<'a> {
+    Item {
+        icon: Option<Icon>,
+        label: &'a str,
+        hint: Option<&'a str>,
+        danger: bool,
+    },
+    Separator,
+}
+
+impl<'a> MenuItem<'a> {
+    pub fn new(icon: Icon, label: &'a str) -> Self {
+        Self::Item {
+            icon: Some(icon),
+            label,
+            hint: None,
+            danger: false,
+        }
+    }
+    pub fn hint(self, text: &'a str) -> Self {
+        match self {
+            Self::Item {
+                icon,
+                label,
+                danger,
+                ..
+            } => Self::Item {
+                icon,
+                label,
+                hint: Some(text),
+                danger,
+            },
+            s => s,
+        }
+    }
+    pub fn danger(self) -> Self {
+        match self {
+            Self::Item {
+                icon, label, hint, ..
+            } => Self::Item {
+                icon,
+                label,
+                hint,
+                danger: true,
+            },
+            s => s,
+        }
+    }
+}
+
+pub enum MenuResult {
+    Open,
+    /// The index of the item clicked; the menu is closed.
+    Clicked(usize),
+    /// Esc or a click elsewhere.
+    Closed,
+}
+
+/// DropMenu.svelte + `.menu`: opens below `anchor` (above when there is no room), aligned to its
+/// start or end edge.
+pub fn drop_menu(
+    ctx: &egui::Context,
+    p: &Palette,
+    id: egui::Id,
+    anchor: egui::Rect,
+    align_end: bool,
+    items: &[MenuItem],
+) -> MenuResult {
+    let screen = ctx.content_rect();
+    let size_id = id.with("size");
+    let size: Vec2 = ctx
+        .data(|d| d.get_temp(size_id))
+        .unwrap_or(Vec2::new(220.0, 200.0));
+    let left = if align_end {
+        anchor.right() - size.x
+    } else {
+        anchor.left()
+    };
+    let top = if anchor.bottom() + size.y + 6.0 > screen.bottom() {
+        anchor.top() - size.y - 6.0
+    } else {
+        anchor.bottom() + 6.0
+    };
+    let pos = egui::pos2(
+        left.clamp(8.0, (screen.right() - size.x - 8.0).max(8.0)),
+        top.max(8.0),
+    );
+    let mut result = MenuResult::Open;
+    let area = egui::Area::new(id)
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(theme::R_LG)
+                .shadow(p.shadow)
+                .inner_margin(5)
+                .show(ui, |ui| {
+                    ui.set_min_width(200.0);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let font = FontId::proportional(13.0);
+                    let row_w = items
+                        .iter()
+                        .map(|it| match it {
+                            MenuItem::Item { label, hint, .. } => {
+                                let l = ui.fonts_mut(|f| {
+                                    f.layout_no_wrap((*label).into(), font.clone(), p.ink)
+                                        .size()
+                                        .x
+                                });
+                                let h = hint.map_or(0.0, |h| {
+                                    ui.fonts_mut(|f| {
+                                        f.layout_no_wrap(h.into(), FontId::monospace(11.0), p.faint)
+                                            .size()
+                                            .x
+                                    }) + 10.0
+                                });
+                                20.0 + 15.0 + 10.0 + l + h
+                            }
+                            MenuItem::Separator => 0.0,
+                        })
+                        .fold(200.0f32 - 10.0, f32::max);
+                    for (i, it) in items.iter().enumerate() {
+                        match it {
+                            MenuItem::Separator => {
+                                ui.add_space(5.0);
+                                let y = ui.cursor().top();
+                                ui.painter().hline(
+                                    (ui.max_rect().left() + 2.0)
+                                        ..=(ui.max_rect().left() + row_w - 2.0),
+                                    y,
+                                    Stroke::new(1.0, p.border),
+                                );
+                                ui.add_space(6.0);
+                            }
+                            MenuItem::Item {
+                                icon,
+                                label,
+                                hint,
+                                danger,
+                            } => {
+                                let (rect, r) =
+                                    ui.allocate_exact_size(Vec2::new(row_w, 32.0), Sense::click());
+                                r.widget_info(|| {
+                                    egui::WidgetInfo::labeled(egui::Role::MenuItem, true, *label)
+                                });
+                                if r.hovered() || r.has_focus() {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        CornerRadius::same(theme::R_SM),
+                                        p.surface_3,
+                                    );
+                                }
+                                let (ink, icon_ink) = if *danger {
+                                    (p.error, p.error)
+                                } else {
+                                    (p.ink, p.muted)
+                                };
+                                let mut x = rect.left() + 10.0;
+                                if let Some(icon) = icon {
+                                    icons::paint(
+                                        ui.painter(),
+                                        egui::Rect::from_min_size(
+                                            egui::pos2(x, rect.center().y - 7.5),
+                                            Vec2::splat(15.0),
+                                        ),
+                                        icon,
+                                        icon_ink,
+                                    );
+                                    x += 25.0;
+                                }
+                                ui.painter().text(
+                                    egui::pos2(x, rect.center().y),
+                                    Align2::LEFT_CENTER,
+                                    *label,
+                                    font.clone(),
+                                    ink,
+                                );
+                                if let Some(h) = hint {
+                                    ui.painter().text(
+                                        egui::pos2(rect.right() - 10.0, rect.center().y),
+                                        Align2::RIGHT_CENTER,
+                                        *h,
+                                        FontId::monospace(11.0),
+                                        p.faint,
+                                    );
+                                }
+                                if r.clicked() {
+                                    result = MenuResult::Clicked(i);
+                                }
+                            }
+                        }
+                    }
+                });
+        });
+    ctx.data_mut(|d| d.insert_temp(size_id, area.response.rect.size()));
+    if matches!(result, MenuResult::Open) {
+        let away = ctx.input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|p| !area.response.rect.contains(p) && !anchor.contains(p))
+        });
+        if away || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            result = MenuResult::Closed;
+        }
+    }
+    result
 }
 
 #[cfg(test)]

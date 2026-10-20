@@ -27,10 +27,14 @@ lemmata-tex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 dirs = "7"
+open = "5"
+rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "wayland", "tokio"] }
+tokio.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl"] }
 
 [dev-dependencies]
 # What eframe's `system_fonts` feature installs in the real app, for glyphs outside the bundled fonts.
 egui_system_font_provider = "0.37"
 tempfile.workspace = true
-egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
+egui_kittest = { version = "0.37", features = ["wgpu", "snapshot", "eframe"] }

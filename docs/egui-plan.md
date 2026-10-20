@@ -123,6 +123,7 @@ Per milestone: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `
 |---|---|---|
 | v2.1.2 Tauri `lemmata-app` (stripped, no LTO) | 33.5 MB | plus the 14.6 MB texlab sidecar |
 | M0 egui app: splash only (stripped, fat LTO, `panic = "abort"`) | 13.4 MB | linux x86_64, 2026-10-20 |
+| M2 egui app: welcome, onboarding, library, all of lemmata-shell linked | 17.6 MB | linux x86_64, 2026-10-20 |
 
 M0's largest crates (`cargo bloat --crates`, unstripped `.text` 10.0 MiB): std 1.5 MiB, naga 1.1, wgpu-core 0.6, zbus 0.6 + accesskit_unix 0.5 (Linux accessibility over D-Bus), winit 0.5, skrifa + harfrust + read-fonts 1.0 (text), vello_cpu 0.3, wayland-client 0.4. The UI fonts add 404 KB.
 
