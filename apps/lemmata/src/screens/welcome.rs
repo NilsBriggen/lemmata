@@ -365,20 +365,6 @@ fn step_settings(
         });
         changed |= r.inner;
     });
-    setting_row(ui, p, false, "Keyboard", |ui| {
-        let current = if s.keymap == "vim" { 1 } else { 0 };
-        if let Some(i) = widgets::segmented(
-            ui,
-            p,
-            &[(None, "Standard"), (None, "Vim")],
-            current,
-            false,
-            false,
-        ) {
-            s.keymap = ["default", "vim"][i].into();
-            changed = true;
-        }
-    });
     if changed {
         *action = Some(Action::Settings);
     }

@@ -58,8 +58,6 @@ pub struct Settings {
     /// "plex" (bundled look), "system" or a font family name.
     pub font_family: String,
     pub line_height: f64,
-    /// "default" or "vim".
-    pub keymap: String,
     pub check_for_updates: bool,
     /// A TeX bin folder chosen during onboarding.
     pub tex_dir: Option<String>,
@@ -107,7 +105,6 @@ impl Default for Settings {
             indent: Value::from(4),
             font_family: "plex".into(),
             line_height: 1.65,
-            keymap: "default".into(),
             check_for_updates: true,
             tex_dir: None,
             pdf_dark: false,

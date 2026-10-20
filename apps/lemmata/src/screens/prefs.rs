@@ -261,20 +261,6 @@ fn body(
         }
     });
     changed |= widgets::checkbox(ui, p, &mut s.auto_compile, "Compile after every save").clicked();
-    row(ui, p, "Keyboard", |ui| {
-        let sel = usize::from(s.keymap == "vim");
-        if let Some(i) = widgets::segmented(
-            ui,
-            p,
-            &[(None, "Standard"), (None, "Vim")],
-            sel,
-            false,
-            false,
-        ) {
-            s.keymap = if i == 0 { "default" } else { "vim" }.into();
-            changed = true;
-        }
-    });
     changed |= widgets::checkbox(
         ui,
         p,

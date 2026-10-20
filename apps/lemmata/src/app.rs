@@ -2581,7 +2581,11 @@ mod tests {
         recents.remember(&project.to_string_lossy(), 1.0);
         recents.save(&d);
         // This version was used before: no "What's new" in front of the project.
-        Settings { last_seen_version: env!("CARGO_PKG_VERSION").into(), ..Settings::default() }.save(&d);
+        Settings {
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
+            ..Settings::default()
+        }
+        .save(&d);
         let mut h = app(tmp.path());
         wait_for(&mut h, "the project or onboarding", |h| {
             h.query_by_label("Back to all projects").is_some()

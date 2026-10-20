@@ -52,7 +52,7 @@ Custom widget on `ropey`, painting one `LayoutJob` per visible line.
 - Hover cards: `\ref` (label context, equation, figure), `\cite` (entry and online lookup), `\includegraphics` and `\input` (file preview).
 - Spell underlines (wavy `--error`), incremental per line over the visible range plus 50 lines, with a suggestion menu and Add to dictionary, driven by `lemmata-spell`. Grammar underlines (dotted `--accent`) with the LanguageTool tooltip and Ignore rule. Diagnostics (F8/Shift+F8), comment ranges mapped through edits.
 - Paste handlers (PNG paste becomes a figure, TSV paste becomes a tabular with an undo-to-plain notice), the formatting shortcuts (wrap, comment toggle, heading level, wrap in environment), move/duplicate/delete line, reindent, `format_tex`.
-- Vim keymap: an in-house modal state machine (normal, insert, visual, operators, motions, registers, `.`, basic ex commands) behind the `keymap: "vim"` setting. Scheduled last; it is its own mini-project and part of parity.
+- Vim keymap: dropped in M8 (see Known differences).
 - Reuse and port the logic tests: the ~30 vitest files in `src/lib` (completions, environments, folding, indent, snippets, mathContext, hover, shortcuts, spell/prose, symbols, table, session, settings, groups, recent, todos, treeModel, fuzzy, hunks) become Rust unit tests. They are the behaviour spec.
 - Move the TS mirrors `spell/prose.ts` and `grammar/text.ts` onto the Rust originals (`lemmata-project` `prose.rs`) so there is one implementation.
 - History diff/hunks: `similar` or `imara-diff` replaces the `@codemirror/merge` `Chunk.build` usage.
@@ -101,13 +101,13 @@ Used by the hover preview, the symbol palette and the completion glyphs. **RaTeX
 | M5 | Editor intelligence: completion, snippets, hover, folds, environments, diagnostics, texlab on-demand, math preview, symbol palette. |
 | M6 | Language and review: spell, grammar, comments/review, TODOs, history and hunks, latexdiff, Git, bibliography (cite picker, manager, Zotero, online), figure/table dialogs, rename symbol, project search/replace, Preferences, Project Settings. |
 | M7 | Command palette, quick open, shortcuts sheet, What's new, word count, focus mode, Presentation and presenter, drag and drop everywhere, deep links, single instance. |
-| M8 | Vim keymap. |
+| M8 | Vim keymap: dropped; the Keyboard choice is removed. |
 | M9 | Port all 40 scenarios and invariants; automation socket; visual snapshot pass in both themes; packaging, updater and release workflow changes; size and speed trim pass; delete `apps/desktop`. |
 
 Parity gate before any tag: every item in `docs/guide.md`, every command in the `lib/shortcuts.ts` table (about 60) and every scenario passes. Anything left over is listed and explicitly moved out of scope with the user first. Not `-rc`, not "beta parity".
 
 ## Risks
-- Editor and Vim are large; the hanging-indent wrap and multi-cursor must be built, not borrowed.
+- The editor is large; the hanging-indent wrap and multi-cursor must be built, not borrowed.
 - hayro is young and CPU-only; text-layer coordinates and speed on big documents are unproven (hence the spike).
 - No CSS: shadows, blurs and `color-mix` are manual, so exact pixel match is not achievable, and "match" means visually indistinguishable at normal size.
 - IME, RTL and complex scripts in a custom editor are weaker than a browser's. Check CJK input early in M3.
@@ -196,3 +196,4 @@ RaTeX's one visible flaw in the sheet: `\overbrace{a+b}^{n}\underbrace{c+d}_{m}`
 - Presenting: the slides go full screen on the window's own screen and P opens the presenter window; eframe doesn't list monitors, so the Svelte app's "slides to the projector, presenter view here" on a second screen isn't automatic. Drag the presenter window to the other screen.
 - macOS hands files and links to a running (or starting) app through Apple Events, which eframe doesn't pass on; on macOS, "Open with" and `lemmata://` links reach Lemmata only through the command line until the packaging work in M9 adds the bundle's event handler.
 - Single instance: a later launch hands its file or link over a localhost socket guarded by a token in a user-only file in the cache folder, where the Tauri plugin used D-Bus, a named pipe or a Mach port. As before, only release builds do this.
+- Vim keys are dropped (decided in M8): the Svelte app's Keyboard choice (CodeMirror's Vim emulation) is gone from Welcome and Preferences, and a saved `keymap` setting is ignored.
