@@ -513,14 +513,15 @@ fn rename_one(
     let src = p.root.join(safe_rel(from)?);
     let dst = p.root.join(safe_rel(to)?);
     rename_on_disk(&src, &dst, to)?;
-    // Keep lemmata.toml's main file and targets pointing at the right place,
-    // before anything below can fail.
+    // From here the move has happened: nothing below may report it as failed, or the app would
+    // keep editing the old path. What can't be updated is left as it was and not counted.
     {
         let mut guard = state.project.lock_safe();
         if let Some(proj) = guard.as_mut()
             && repoint_config(proj, from, to)
         {
-            proj.save_config().map_err(err)?;
+            // In memory the main file and targets follow even if lemmata.toml can't be written.
+            let _ = proj.save_config();
         }
     }
     let mut updated = 0;
@@ -531,8 +532,7 @@ fn rename_one(
                 continue;
             };
             let new = rewrite_references(&text, from, to);
-            if new != text {
-                std::fs::write(&path, new).map_err(err)?;
+            if new != text && write_all_atomic(&[(path, new)]).is_ok() {
                 updated += 1;
             }
         }
@@ -658,8 +658,8 @@ fn join_rel(folder: &str, name: &str) -> String {
 }
 
 impl Shell {
-    /// Moves files and folders into `folder` ("" is the project root), all or
-    /// nothing: every move is checked before the first one happens.
+    /// Moves files and folders into `folder` ("" is the project root). Every move is checked
+    /// before the first one happens; if one still fails on disk, the ones before it are returned.
     pub fn move_paths(
         &self,
         paths: Vec<String>,
@@ -668,10 +668,16 @@ impl Shell {
     ) -> CmdResult<Vec<Moved>> {
         let p = project(self)?;
         let plan = plan_moves(&p.root, &paths, &folder)?;
-        for m in &plan {
-            rename_one(self, &p, &m.from, &m.to, update_references)?;
+        let mut done = Vec::new();
+        for m in plan {
+            match rename_one(self, &p, &m.from, &m.to, update_references) {
+                Ok(_) => done.push(m),
+                // The moves already made stand, so the app follows them; it tells the rest.
+                Err(e) if done.is_empty() => return Err(e),
+                Err(_) => break,
+            }
         }
-        Ok(plan)
+        Ok(done)
     }
 }
 
@@ -1447,6 +1453,71 @@ mod tests {
         // Renaming the main file itself works too.
         assert!(repoint_config(&mut p, "text/main.tex", "text/paper.tex"));
         assert_eq!(p.config.main.as_deref(), Some("text/paper.tex"));
+    }
+
+    /// A save started for one project lands there even after another project opened.
+    #[test]
+    fn a_save_lands_in_its_own_project() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        touch(&a, "main.tex", "\\documentclass{article}");
+        touch(&b, "main.tex", "\\documentclass{article}");
+        let dirs = crate::Dirs {
+            resources: d.path().into(),
+            data: d.path().into(),
+            cache: d.path().into(),
+            home: None,
+        };
+        let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
+        shell
+            .open_project(b.to_string_lossy().into_owned())
+            .unwrap();
+        let a = lemmata_project::canonical(&a).unwrap();
+        shell
+            .write_text(&a, "ch/x.tex".into(), "from a".into(), None)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(a.join("ch/x.tex")).unwrap(),
+            "from a"
+        );
+        assert!(!b.join("ch").exists());
+    }
+
+    /// A move whose reference can't be rewritten still happens, and says so by its count.
+    #[cfg(unix)]
+    #[test]
+    fn a_move_stands_when_a_reference_cant_be_updated() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path().join("p");
+        touch(&r, "main.tex", "\\documentclass{article}\\input{sub/chap}");
+        touch(&r, "intro.tex", "x");
+        touch(&r, "sub/chap.tex", "\\input{intro}");
+        std::fs::create_dir(r.join("ch")).unwrap();
+        let dirs = crate::Dirs {
+            resources: d.path().into(),
+            data: d.path().into(),
+            cache: d.path().into(),
+            home: None,
+        };
+        let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
+        shell
+            .open_project(r.to_string_lossy().into_owned())
+            .unwrap();
+        // sub/ is read-only: the rewrite of sub/chap.tex can't be saved there.
+        std::fs::set_permissions(r.join("sub"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let moved = shell.move_paths(vec!["intro.tex".into()], "ch".into(), true);
+        std::fs::set_permissions(r.join("sub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            moved.unwrap().len(),
+            1,
+            "the move is reported, so the app follows it"
+        );
+        assert!(r.join("ch/intro.tex").exists() && !r.join("intro.tex").exists());
+        assert_eq!(
+            std::fs::read_to_string(r.join("sub/chap.tex")).unwrap(),
+            "\\input{intro}"
+        );
     }
 
     #[test]

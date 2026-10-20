@@ -436,6 +436,7 @@ impl Workspace {
     }
 
     fn run_move(&mut self, paths: Vec<String>, folder: String, update: bool) {
+        let asked = top_level(&paths).len();
         self.after_writes.push(Box::new(move |_, b| {
             let f = folder.clone();
             Workspace::job(
@@ -463,6 +464,12 @@ impl Workspace {
                             format!(" into {}", base_name(&folder))
                         };
                         ws.undo_notice(format!("Moved {}{to}.", describe(&from)));
+                        if moved.len() < asked {
+                            ws.file_failure(format!(
+                                "{} of {asked} could not be moved.",
+                                asked - moved.len()
+                            ));
+                        }
                         ws.refresh_tree(b);
                     }
                     Err(e) => ws.file_failure(e),
@@ -722,17 +729,20 @@ impl Workspace {
 
     /// "Add files…": files from the computer, copied into `folder`.
     pub fn upload(&mut self, backend: &Backend, folder: String) {
-        backend.spawn_async(|shell| async move {
-            let picked: Vec<String> = rfd::AsyncFileDialog::new()
-                .set_title("Add files to the project")
-                .pick_files()
-                .await
-                .unwrap_or_default()
-                .iter()
-                .map(|h| h.path().to_string_lossy().into_owned())
-                .collect();
-            let r = (!picked.is_empty()).then(|| shell.add_files(picked, folder));
-            Msg::Apply(Box::new(move |ws: &mut Workspace, b: &Backend| match r {
+        Workspace::job_async(
+            backend,
+            |shell| async move {
+                let picked: Vec<String> = rfd::AsyncFileDialog::new()
+                    .set_title("Add files to the project")
+                    .pick_files()
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|h| h.path().to_string_lossy().into_owned())
+                    .collect();
+                (!picked.is_empty()).then(|| shell.add_files(picked, folder))
+            },
+            |ws, b, r| match r {
                 Some(Ok(added)) => {
                     ws.refresh_tree(b);
                     ws.notice(
@@ -742,8 +752,8 @@ impl Workspace {
                 }
                 Some(Err(e)) => ws.file_failure(e),
                 None => {}
-            }) as crate::backend::Job)
-        });
+            },
+        );
     }
 
     pub(super) fn show_unused(&mut self, backend: &Backend) {
@@ -1508,12 +1518,17 @@ impl Workspace {
                         b,
                         move |s| {
                             s.rename_path(path.clone(), to.clone(), update)
-                                .map(|_| (path, to))
+                                .map(|n| (path, to, n))
                         },
                         move |ws, b, r| match r {
-                            Ok((from, to)) => {
+                            Ok((from, to, n)) => {
                                 ws.files.dialog = None;
                                 ws.renamed(&from, &to);
+                                let files = reload.iter().collect::<std::collections::HashSet<_>>().len();
+                                let missed = if update { files.saturating_sub(n) } else { 0 };
+                                if missed > 0 {
+                                    ws.file_failure(format!("Renamed, but {missed} file{} naming it could not be updated.", if missed == 1 { "" } else { "s" }));
+                                }
                                 if update {
                                     for f in &reload {
                                         ws.reload(b, f);

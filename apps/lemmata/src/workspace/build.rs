@@ -410,12 +410,9 @@ impl Workspace {
             },
             Msg::Exported(_, _, Err(e)) => self.notice(e, Tone::Info),
             Msg::PackageAdded(Ok(())) => {
-                // Read the main file again, with its new \usepackage.
+                // Read the main file again, with its new \usepackage; text typed meanwhile asks first.
                 let main = self.info.main.clone();
-                self.buffers.forget(&main);
-                if self.editors.remove(&main).is_some() {
-                    self.open_file(backend, &main);
-                }
+                self.reload(backend, &main);
                 self.run_build(backend, settings, false);
             }
             Msg::PackageAdded(Err(e)) => self.open_error = Some(e),

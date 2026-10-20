@@ -27,6 +27,12 @@ pub struct Comments {
     pub ui: review::Review,
     /// Bumped when threads or the active one change, so editors mark them again.
     pub generation: u64,
+    /// comments.json exists but couldn't be read: saving would replace every comment in it.
+    pub broken: Option<String>,
+    /// A save is under way; `again` asks for one more with the newest threads when it ends, so
+    /// an older save can never land last.
+    saving: bool,
+    again: bool,
 }
 
 #[derive(Default)]
@@ -111,7 +117,15 @@ impl Workspace {
             backend,
             |shell| shell.read_text(review::COMMENTS_FILE.into()),
             |ws, _, r| {
-                ws.comments.threads = r.map(|t| review::parse(&t)).unwrap_or_default();
+                let exists = ws.info.root.join(review::COMMENTS_FILE).exists();
+                let (threads, broken) = match r.map(|t| review::parse(&t)) {
+                    Ok(Some(t)) => (t, None),
+                    Ok(None) => (Vec::new(), Some("isn't valid JSON".to_owned())),
+                    Err(e) if exists => (Vec::new(), Some(e)),
+                    Err(_) => (Vec::new(), None),
+                };
+                ws.comments.threads = threads;
+                ws.comments.broken = broken;
                 ws.comments.generation += 1;
             },
         );
@@ -120,13 +134,32 @@ impl Workspace {
     fn save_comments(&mut self, backend: &Backend, threads: Vec<review::Thread>) {
         self.comments.threads = threads;
         self.comments.generation += 1;
+        // Shown, but not written over a file that couldn't be read.
+        if let Some(why) = &self.comments.broken {
+            let text = format!(
+                "{} {why}, so comments aren't saved: that would replace the ones in it. Fix or remove the file, then reopen the project.",
+                review::COMMENTS_FILE
+            );
+            self.notice(text, Tone::Error);
+            return;
+        }
+        if self.comments.saving {
+            self.comments.again = true;
+            return;
+        }
+        self.comments.saving = true;
         let text = review::serialize(&self.comments.threads);
+        let root = self.info.root.clone();
         Self::job(
             backend,
-            move |shell| shell.write_text(review::COMMENTS_FILE.into(), text, None),
-            |ws, _, r| {
+            move |shell| shell.write_text(&root, review::COMMENTS_FILE.into(), text, None),
+            |ws, b, r| {
+                ws.comments.saving = false;
                 if let Err(e) = r {
                     ws.notice(format!("Comments could not be saved: {e}"), Tone::Error);
+                }
+                if std::mem::take(&mut ws.comments.again) {
+                    ws.save_comments(b, ws.comments.threads.clone());
                 }
             },
         );

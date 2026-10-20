@@ -294,21 +294,44 @@ pub fn prepare_entry(bibtex: &str, existing: &[String]) -> Result<(String, Strin
     Ok((key, text))
 }
 
-/// Appends an entry to a .bib file, separated by a blank line.
+/// Appends an entry to a .bib file, separated by a blank line. The file's bytes are kept as they
+/// are (it may not be UTF-8), and it is replaced in one step.
 pub fn append(path: &Path, entry: &str) -> std::io::Result<()> {
-    let current = std::fs::read_to_string(path).unwrap_or_default();
-    let sep = match current.len() {
-        0 => "",
-        _ if current.ends_with("\n\n") => "",
-        _ if current.ends_with('\n') => "\n",
-        _ => "\n\n",
+    let mut bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e),
     };
-    std::fs::write(path, format!("{current}{sep}{}\n", entry.trim_end()))
+    let sep: &[u8] = match bytes.as_slice() {
+        [] => b"",
+        [.., b'\n', b'\n'] => b"",
+        [.., b'\n'] => b"\n",
+        _ => b"\n\n",
+    };
+    bytes.extend_from_slice(sep);
+    bytes.extend_from_slice(entry.trim_end().as_bytes());
+    bytes.push(b'\n');
+    manage::write_atomic(path, bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn appending_keeps_a_file_that_isnt_utf8() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("refs.bib");
+        std::fs::write(&p, b"@book{m, author={M\xfcller}}\n").unwrap();
+        append(&p, "@misc{x, title={X}}").unwrap();
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            b"@book{m, author={M\xfcller}}\n\n@misc{x, title={X}}\n"
+        );
+        let new = d.path().join("new.bib");
+        append(&new, "@misc{y}").unwrap();
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "@misc{y}\n");
+    }
 
     #[test]
     fn recognises_dois_and_arxiv_ids() {

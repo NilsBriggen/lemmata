@@ -30,11 +30,9 @@ pub struct Thread {
     pub replies: Vec<Reply>,
 }
 
-/// Threads from the file, skipping damaged entries.
-pub fn parse(json: &str) -> Vec<Thread> {
-    let Ok(data) = serde_json::from_str::<Value>(json) else {
-        return Vec::new();
-    };
+/// Threads from the file, skipping damaged entries. None when the file isn't JSON at all.
+pub fn parse(json: &str) -> Option<Vec<Thread>> {
+    let data = serde_json::from_str::<Value>(json).ok()?;
     let list = match &data {
         Value::Array(a) => a.clone(),
         v => v
@@ -43,36 +41,38 @@ pub fn parse(json: &str) -> Vec<Thread> {
             .cloned()
             .unwrap_or_default(),
     };
-    list.iter()
-        .filter_map(|t| {
-            Some(Thread {
-                id: t.get("id")?.as_str()?.to_owned(),
-                file: t.get("file")?.as_str()?.to_owned(),
-                body: t.get("body")?.as_str()?.to_owned(),
-                line: t
-                    .get("line")
-                    .and_then(Value::as_i64)
-                    .filter(|l| *l > 0)
-                    .unwrap_or(1) as usize,
-                quote: t
-                    .get("quote")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned(),
-                created: t.get("created").and_then(Value::as_f64).unwrap_or(0.0),
-                resolved: t.get("resolved").and_then(Value::as_bool) == Some(true),
-                replies: t
-                    .get("replies")
-                    .and_then(Value::as_array)
-                    .map(|r| {
-                        r.iter()
-                            .filter_map(|r| serde_json::from_value(r.clone()).ok())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+    Some(
+        list.iter()
+            .filter_map(|t| {
+                Some(Thread {
+                    id: t.get("id")?.as_str()?.to_owned(),
+                    file: t.get("file")?.as_str()?.to_owned(),
+                    body: t.get("body")?.as_str()?.to_owned(),
+                    line: t
+                        .get("line")
+                        .and_then(Value::as_i64)
+                        .filter(|l| *l > 0)
+                        .unwrap_or(1) as usize,
+                    quote: t
+                        .get("quote")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                    created: t.get("created").and_then(Value::as_f64).unwrap_or(0.0),
+                    resolved: t.get("resolved").and_then(Value::as_bool) == Some(true),
+                    replies: t
+                        .get("replies")
+                        .and_then(Value::as_array)
+                        .map(|r| {
+                            r.iter()
+                                .filter_map(|r| serde_json::from_value(r.clone()).ok())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
             })
-        })
-        .collect()
+            .collect(),
+    )
 }
 
 pub fn serialize(threads: &[Thread]) -> String {
@@ -342,12 +342,15 @@ mod tests {
             body: "ok".into(),
             created: 2.0,
         });
-        assert_eq!(parse(&serialize(std::slice::from_ref(&t))), vec![t]);
+        assert_eq!(parse(&serialize(std::slice::from_ref(&t))), Some(vec![t]));
         assert_eq!(
             parse(r#"{"threads":[{"id":1},{"id":"b","file":"x.tex","body":"b","line":-3}]}"#),
-            vec![thread("b", "x.tex", 1, "b", 0.0)]
+            Some(vec![thread("b", "x.tex", 1, "b", 0.0)])
         );
-        assert!(parse("not json").is_empty());
+        assert!(
+            parse("not json").is_none(),
+            "a broken file is told apart from an empty one"
+        );
         assert!(new_id(1.7e12).contains('-'));
     }
 

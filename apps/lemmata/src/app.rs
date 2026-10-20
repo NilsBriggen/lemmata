@@ -547,7 +547,7 @@ impl App {
             | Msg::Dictionary(_)
             | Msg::SpellDownloaded(..)
             | Msg::GrammarFound(..)
-            | Msg::Apply(_) => {}
+            | Msg::Apply(..) => {}
             Msg::Prefs(m) => self.on_prefs_msg(ctx, m),
         }
     }
@@ -2578,6 +2578,49 @@ mod tests {
         h.run_steps(3);
         let root = h.state().project.as_ref().unwrap().root.clone();
         assert_eq!(h.state().settings.shell_escape_projects, [root]);
+    }
+
+    #[test]
+    fn a_reload_keeps_unsaved_text_and_asks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            autosave_ms: 0.0,
+            ..Settings::default()
+        };
+        let Some((mut h, project)) = in_article_with(tmp.path(), settings) else {
+            return;
+        };
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex").type_text("% mine");
+        h.run_steps(2);
+        // Another job (a replace, a rename) changed the file on disk and reads it again.
+        std::fs::write(
+            project.join("main.tex"),
+            "\\documentclass{article}\n% theirs\n",
+        )
+        .unwrap();
+        {
+            let app = h.state_mut();
+            let (ws, backend) = (app.project.as_mut().unwrap(), &app.backend);
+            ws.reload(backend, "main.tex");
+        }
+        wait_for(&mut h, "the conflict", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .buffers
+                .conflicts
+                .iter()
+                .any(|c| c == "main.tex")
+        });
+        assert!(
+            h.state().project.as_ref().unwrap().editors["main.tex"]
+                .doc
+                .text()
+                .contains("% mine")
+        );
     }
 
     #[test]

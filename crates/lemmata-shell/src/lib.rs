@@ -359,13 +359,18 @@ const CONFLICT: &str = "conflict:";
 impl Shell {
     /// `expected` is the hash of the text Lemmata last read or wrote. If the file
     /// on disk is different, another program changed it, and nothing is written.
+    /// `root` is the project the text belongs to: a save that runs after another
+    /// project opened still lands in its own.
     pub fn write_text(
         &self,
+        root: &Path,
         path: String,
         content: String,
         expected: Option<u32>,
     ) -> CmdResult<()> {
-        let abs = resolve(self, &path)?;
+        let abs = root.join(files::safe_rel(&path)?);
+        // Through a symlink (a preamble shared between projects) to the file it names.
+        let abs = std::fs::canonicalize(&abs).unwrap_or(abs);
         if let (Some(expected), Ok(disk)) = (expected, std::fs::read(&abs))
             && files::content_hash(&disk) != expected
         {
@@ -378,12 +383,20 @@ impl Shell {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let tmp = abs.with_file_name(format!(".{name}.lemmata-tmp"));
+        // Unique per save, so two saves of one file in flight can't mix their temp files.
+        static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = abs.with_file_name(format!(".{name}.{n}.lemmata-tmp"));
+        let old = std::fs::metadata(&abs).ok();
         // A file in a folder that doesn't exist yet (e.g. .lemmata/comments.json before the first build).
         if let Some(dir) = abs.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
         std::fs::write(&tmp, &content).map_err(|e| format!("Could not save {path}: {e}"))?;
+        // The file keeps its permissions (an edited script stays executable).
+        if let Some(m) = old {
+            let _ = std::fs::set_permissions(&tmp, m.permissions());
+        }
         std::fs::rename(&tmp, &abs).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             format!("Could not save {path}: {e}")

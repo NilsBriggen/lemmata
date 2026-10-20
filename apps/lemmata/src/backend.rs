@@ -20,7 +20,7 @@ pub enum PrefsMsg {
 pub enum Msg {
     Event(Event),
     /// A job's result, applied to the open project on the UI thread (see `Workspace::job`).
-    Apply(Job),
+    Apply(u64, Job),
     Tex(TexStatus),
     /// Answers for the Preferences dialog.
     Prefs(PrefsMsg),
@@ -47,6 +47,8 @@ pub enum Msg {
     /// A file read again because another program changed it.
     DiskText(String, Result<String, String>),
     FileWritten {
+        /// `Backend::project` when the write started.
+        project: u64,
         path: String,
         written: String,
         result: Result<(), String>,
@@ -125,6 +127,8 @@ pub struct Backend {
     tx: Sender<Msg>,
     pub rx: Receiver<Msg>,
     ctx: egui::Context,
+    /// Counts the projects opened: a result started for one is dropped once another is open.
+    pub project: std::sync::atomic::AtomicU64,
 }
 
 /// Where the bundled templates/ and dictionaries/ are: next to the program in a package, the
@@ -172,7 +176,13 @@ impl Backend {
             tx,
             rx,
             ctx,
+            project: Default::default(),
         }
+    }
+
+    /// The project now open, to tag work started for it.
+    pub fn project(&self) -> u64 {
+        self.project.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Runs `job` on a blocking worker and sends what it returns.

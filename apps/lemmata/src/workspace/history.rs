@@ -239,10 +239,10 @@ impl Workspace {
         }
     }
 
-    /// Reads a file again from disk after a restore changed it.
-    pub(super) fn reload(&mut self, backend: &Backend, path: &str) {
+    /// Reads a file again from disk after a restore, a replace or a rename changed it. Edits made
+    /// since stay unsaved, so the disk text then asks which version to keep instead of replacing them.
+    pub(crate) fn reload(&mut self, backend: &Backend, path: &str) {
         if self.editors.contains_key(path) {
-            self.buffers.dirty.remove(path);
             let p = path.to_owned();
             backend.spawn(move |shell| Msg::DiskText(p.clone(), shell.read_text(p)));
         }
@@ -1200,8 +1200,8 @@ impl Workspace {
                 self.write(backend, path, settings);
             }
             None => {
-                let (p, t) = (path.to_owned(), text.to_owned());
-                backend.spawn(move |shell| Msg::Done(shell.write_text(p, t, None)));
+                let (p, t, root) = (path.to_owned(), text.to_owned(), self.info.root.clone());
+                backend.spawn(move |shell| Msg::Done(shell.write_text(&root, p, t, None)));
             }
         }
     }

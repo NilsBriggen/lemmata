@@ -209,6 +209,8 @@ pub struct Workspace {
     pub after_writes: Vec<AfterWrites>,
     /// "Use it" on the latexmkrc notice: the next frame puts the project on the trust list.
     pub trust_requested: bool,
+    /// `Backend::project` for this project: results tagged otherwise are dropped.
+    pub project: u64,
     /// Spelling and grammar, shared by the editors.
     pub checks: crate::writing::Checks,
     /// The spell-check language last asked for, with the project's words then.
@@ -333,6 +335,10 @@ impl Workspace {
             table: None,
             after_writes: Vec::new(),
             trust_requested: false,
+            project: backend
+                .project
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1,
             checks: crate::writing::Checks::default(),
             spell_asked: None,
             dictionaries_offered: HashSet::new(),
@@ -606,9 +612,10 @@ impl Workspace {
         work: impl FnOnce(&lemmata_shell::Shell) -> T + Send + 'static,
         then: impl FnOnce(&mut Workspace, &Backend, T) + Send + 'static,
     ) {
+        let project = backend.project();
         backend.spawn(move |shell| {
             let r = work(shell);
-            Msg::Apply(Box::new(move |ws, b| then(ws, b, r)))
+            Msg::Apply(project, Box::new(move |ws, b| then(ws, b, r)))
         });
     }
 
@@ -618,9 +625,11 @@ impl Workspace {
         work: impl FnOnce(std::sync::Arc<lemmata_shell::Shell>) -> Fut + Send + 'static,
         then: impl FnOnce(&mut Workspace, &Backend, T) + Send + 'static,
     ) {
+        let project = backend.project();
         backend.spawn_async(move |shell| async move {
             let r = work(shell).await;
             Msg::Apply(
+                project,
                 Box::new(move |ws: &mut Workspace, b: &Backend| then(ws, b, r))
                     as crate::backend::Job,
             )
@@ -815,9 +824,11 @@ impl Workspace {
         let text = ed.doc.text();
         self.in_flight.insert(path.into());
         let p = path.to_owned();
+        let (root, project) = (self.info.root.clone(), self.project);
         backend.spawn(move |shell| {
-            let result = shell.write_text(p.clone(), text.clone(), expected);
+            let result = shell.write_text(&root, p.clone(), text.clone(), expected);
             Msg::FileWritten {
+                project,
                 path: p,
                 written: text,
                 result,
@@ -926,10 +937,12 @@ impl Workspace {
                 }
                 self.open_error = Some(e);
             }
+            Msg::FileWritten { project, .. } if project != self.project => {}
             Msg::FileWritten {
                 path,
                 written,
                 result,
+                ..
             } => {
                 self.in_flight.remove(&path);
                 let current = self
@@ -1004,7 +1017,9 @@ impl Workspace {
                 self.total_words = o.total_words;
             }
             Msg::Outline(Err(_)) => {}
-            Msg::Apply(f) => f(self, backend),
+            // Started for a project that has closed since.
+            Msg::Apply(project, _) if project != self.project => {}
+            Msg::Apply(_, f) => f(self, backend),
             Msg::LspStarted(Ok(generation)) => {
                 self.lsp.generation = Some(generation);
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();

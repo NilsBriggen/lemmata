@@ -188,15 +188,18 @@ impl Workspace {
             f.busy = true;
             f.error = None;
         }
-        backend.spawn_async(|shell| async move {
-            let picked = rfd::AsyncFileDialog::new()
-                .set_title("Choose an image")
-                .add_filter("Images", &IMAGE_EXTS)
-                .pick_file()
-                .await
-                .map(|h| h.path().to_string_lossy().into_owned());
-            let r = picked.map(|p| shell.import_figure(p));
-            Msg::Apply(Box::new(move |ws: &mut Workspace, _: &Backend| {
+        Workspace::job_async(
+            backend,
+            |shell| async move {
+                let picked = rfd::AsyncFileDialog::new()
+                    .set_title("Choose an image")
+                    .add_filter("Images", &IMAGE_EXTS)
+                    .pick_file()
+                    .await
+                    .map(|h| h.path().to_string_lossy().into_owned());
+                picked.map(|p| shell.import_figure(p))
+            },
+            |ws, _, r| {
                 let Some(f) = &mut ws.figure else { return };
                 f.busy = false;
                 match r {
@@ -204,8 +207,8 @@ impl Workspace {
                     Some(Err(e)) => f.error = Some(e),
                     None => {}
                 }
-            }) as crate::backend::Job)
-        });
+            },
+        );
     }
 
     pub(super) fn insert_dialogs(&mut self, ctx: &egui::Context, p: &Palette, backend: &Backend) {
