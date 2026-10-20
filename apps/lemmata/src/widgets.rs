@@ -38,6 +38,8 @@ pub struct Button<'a> {
     fill: Option<Color32>,
     min_width: f32,
     angle: f32,
+    radius: Option<CornerRadius>,
+    icon_size: f32,
 }
 
 impl<'a> Button<'a> {
@@ -54,6 +56,8 @@ impl<'a> Button<'a> {
             fill: None,
             min_width: 0.0,
             angle: 0.0,
+            radius: None,
+            icon_size: 16.0,
         }
     }
     /// An icon-only button (`.btn.icon`, drawn with `show_icon`); `label` is its accessible name.
@@ -81,6 +85,15 @@ impl<'a> Button<'a> {
     /// At least this wide, content centred (`width: 100%` buttons).
     pub fn min_width(mut self, width: f32) -> Self {
         self.min_width = width;
+        self
+    }
+    /// Other corners than `--r` (the two halves of a split button).
+    pub fn radius(mut self, r: CornerRadius) -> Self {
+        self.radius = Some(r);
+        self
+    }
+    pub fn icon_size(mut self, size: f32) -> Self {
+        self.icon_size = size;
         self
     }
     /// Turns the leading icon, for a spinner.
@@ -126,7 +139,7 @@ impl<'a> Button<'a> {
             Size::Md => (30.0, 12.0, 13.0),
             Size::Lg => (38.0, 18.0, 14.0),
         };
-        let icon_size = 16.0;
+        let icon_size = self.icon_size;
         let font = FontId::new(font_size, theme::font::sans_500());
         let galley = (!icon_only).then(|| {
             ui.painter()
@@ -206,7 +219,7 @@ impl<'a> Button<'a> {
             let painter = ui.painter();
             painter.rect(
                 rect,
-                CornerRadius::same(theme::R),
+                self.radius.unwrap_or(CornerRadius::same(theme::R)),
                 fill,
                 Stroke::new(1.0, stroke),
                 StrokeKind::Inside,
@@ -268,6 +281,28 @@ pub fn focus_ring(ui: &Ui, response: &Response, rect: egui::Rect, p: &Palette, r
             StrokeKind::Outside,
         );
     }
+}
+
+/// How wide `segmented` draws these options.
+pub fn segmented_width(ui: &Ui, options: &[(Option<Icon>, &str)], icon_only: bool) -> f32 {
+    let font = FontId::new(12.0, theme::font::sans_500());
+    let widths: f32 = options
+        .iter()
+        .map(|(icon, t)| {
+            let tw = if icon_only {
+                0.0
+            } else {
+                ui.fonts_mut(|f| {
+                    f.layout_no_wrap((*t).to_owned(), font.clone(), Color32::PLACEHOLDER)
+                        .size()
+                        .x
+                })
+            };
+            let gap = if tw > 0.0 { 6.0 } else { 0.0 };
+            20.0 + if icon.is_some() { 14.0 + gap } else { 0.0 } + tw
+        })
+        .sum();
+    widths + 2.0 * (options.len() as f32 - 1.0) + 4.0
 }
 
 /// `.segmented`: a track with one pressed option. Returns the clicked index, if any. With `icon_only`
@@ -958,7 +993,12 @@ pub enum MenuItem<'a> {
         label: &'a str,
         hint: Option<&'a str>,
         danger: bool,
+        /// Some for radio and check items: a tick column, ticked when true.
+        check: Option<bool>,
+        enabled: bool,
     },
+    /// `.menu .heading`: an uppercase group title.
+    Heading(&'a str),
     Separator,
 }
 
@@ -969,36 +1009,49 @@ impl<'a> MenuItem<'a> {
             label,
             hint: None,
             danger: false,
+            check: None,
+            enabled: true,
         }
     }
-    pub fn hint(self, text: &'a str) -> Self {
-        match self {
-            Self::Item {
-                icon,
-                label,
-                danger,
-                ..
-            } => Self::Item {
-                icon,
-                label,
-                hint: Some(text),
-                danger,
-            },
-            s => s,
+    /// A text-only item.
+    pub fn plain(label: &'a str) -> Self {
+        Self::Item {
+            icon: None,
+            label,
+            hint: None,
+            danger: false,
+            check: None,
+            enabled: true,
         }
     }
-    pub fn danger(self) -> Self {
-        match self {
-            Self::Item {
-                icon, label, hint, ..
-            } => Self::Item {
-                icon,
-                label,
-                hint,
-                danger: true,
-            },
-            s => s,
+    /// A radio or check item with the tick column.
+    pub fn check(label: &'a str, on: bool) -> Self {
+        Self::Item {
+            icon: None,
+            label,
+            hint: None,
+            danger: false,
+            check: Some(on),
+            enabled: true,
         }
+    }
+    pub fn hint(mut self, text: &'a str) -> Self {
+        if let Self::Item { hint, .. } = &mut self {
+            *hint = Some(text);
+        }
+        self
+    }
+    pub fn danger(mut self) -> Self {
+        if let Self::Item { danger, .. } = &mut self {
+            *danger = true;
+        }
+        self
+    }
+    pub fn enabled(mut self, on: bool) -> Self {
+        if let Self::Item { enabled, .. } = &mut self {
+            *enabled = on;
+        }
+        self
     }
 }
 
@@ -1040,6 +1093,7 @@ pub fn drop_menu(
         top.max(8.0),
     );
     let mut result = MenuResult::Open;
+    let font = FontId::proportional(13.0);
     let area = egui::Area::new(id)
         .order(egui::Order::Foreground)
         .fixed_pos(pos)
@@ -1051,9 +1105,15 @@ pub fn drop_menu(
                 .shadow(p.shadow)
                 .inner_margin(5)
                 .show(ui, |ui| {
-                    ui.set_min_width(200.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    let font = FontId::proportional(13.0);
+                    let has_icons = items.iter().any(|it| {
+                        matches!(
+                            it,
+                            MenuItem::Item { icon: Some(_), .. }
+                                | MenuItem::Item { check: Some(_), .. }
+                        )
+                    });
+                    let lead = if has_icons { 25.0 } else { 0.0 };
                     let row_w = items
                         .iter()
                         .map(|it| match it {
@@ -1070,11 +1130,11 @@ pub fn drop_menu(
                                             .x
                                     }) + 10.0
                                 });
-                                20.0 + 15.0 + 10.0 + l + h
+                                20.0 + lead + l + h
                             }
-                            MenuItem::Separator => 0.0,
+                            _ => 0.0,
                         })
-                        .fold(200.0f32 - 10.0, f32::max);
+                        .fold(190.0f32, f32::max);
                     for (i, it) in items.iter().enumerate() {
                         match it {
                             MenuItem::Separator => {
@@ -1088,32 +1148,76 @@ pub fn drop_menu(
                                 );
                                 ui.add_space(6.0);
                             }
+                            MenuItem::Heading(text) => {
+                                let (rect, _) =
+                                    ui.allocate_exact_size(Vec2::new(row_w, 22.0), Sense::hover());
+                                let mut job = egui::text::LayoutJob::default();
+                                job.append(
+                                    &text.to_uppercase(),
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: FontId::new(11.0, theme::font::sans_600()),
+                                        color: p.faint,
+                                        extra_letter_spacing: 0.66,
+                                        ..Default::default()
+                                    },
+                                );
+                                let g = ui.fonts_mut(|f| f.layout_job(job));
+                                ui.painter().galley(
+                                    egui::pos2(
+                                        rect.left() + 10.0,
+                                        rect.bottom() - 3.0 - g.size().y,
+                                    ),
+                                    g,
+                                    p.faint,
+                                );
+                            }
                             MenuItem::Item {
                                 icon,
                                 label,
                                 hint,
                                 danger,
+                                check,
+                                enabled,
                             } => {
+                                let sense = if *enabled {
+                                    Sense::click()
+                                } else {
+                                    Sense::hover()
+                                };
                                 let (rect, r) =
-                                    ui.allocate_exact_size(Vec2::new(row_w, 32.0), Sense::click());
-                                r.widget_info(|| {
-                                    egui::WidgetInfo::labeled(egui::Role::MenuItem, true, *label)
+                                    ui.allocate_exact_size(Vec2::new(row_w, 32.0), sense);
+                                r.widget_info(|| match check {
+                                    Some(on) => egui::WidgetInfo::selected(
+                                        egui::Role::MenuItemRadio,
+                                        *enabled,
+                                        *on,
+                                        *label,
+                                    ),
+                                    None => egui::WidgetInfo::labeled(
+                                        egui::Role::MenuItem,
+                                        *enabled,
+                                        *label,
+                                    ),
                                 });
-                                if r.hovered() || r.has_focus() {
+                                if *enabled && (r.hovered() || r.has_focus()) {
                                     ui.painter().rect_filled(
                                         rect,
                                         CornerRadius::same(theme::R_SM),
                                         p.surface_3,
                                     );
                                 }
+                                let alpha = if *enabled { 1.0 } else { 0.5 };
                                 let (ink, icon_ink) = if *danger {
                                     (p.error, p.error)
                                 } else {
                                     (p.ink, p.muted)
                                 };
+                                let (ink, icon_ink) =
+                                    (ink.gamma_multiply(alpha), icon_ink.gamma_multiply(alpha));
                                 let mut x = rect.left() + 10.0;
-                                if let Some(icon) = icon {
-                                    icons::paint(
+                                match (icon, check) {
+                                    (Some(icon), _) => icons::paint(
                                         ui.painter(),
                                         egui::Rect::from_min_size(
                                             egui::pos2(x, rect.center().y - 7.5),
@@ -1121,8 +1225,20 @@ pub fn drop_menu(
                                         ),
                                         icon,
                                         icon_ink,
-                                    );
-                                    x += 25.0;
+                                    ),
+                                    (None, Some(true)) => icons::paint(
+                                        ui.painter(),
+                                        egui::Rect::from_min_size(
+                                            egui::pos2(x + 1.0, rect.center().y - 7.0),
+                                            Vec2::splat(14.0),
+                                        ),
+                                        icons::CHECK,
+                                        p.accent,
+                                    ),
+                                    _ => {}
+                                }
+                                if has_icons {
+                                    x += lead;
                                 }
                                 ui.painter().text(
                                     egui::pos2(x, rect.center().y),
@@ -1161,6 +1277,42 @@ pub fn drop_menu(
         }
     }
     result
+}
+
+/// Splitter.svelte: a 6 px handle over the edge between two panes; an accent line on hover and
+/// while dragging, double-click resets. Returns the new size when it changed.
+#[allow(clippy::too_many_arguments)]
+pub fn splitter(
+    ui: &mut Ui,
+    p: &Palette,
+    id: egui::Id,
+    x: f32,
+    y_range: egui::Rangef,
+    size: f32,
+    min: f32,
+    max: f32,
+    after: bool,
+    label: &str,
+) -> Option<f32> {
+    let rect = egui::Rect::from_x_y_ranges((x - 3.0)..=(x + 3.0), y_range);
+    let r = ui.interact(rect, id, Sense::click_and_drag());
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Splitter, true, label));
+    if r.hovered() || r.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+        ui.painter()
+            .rect_filled(rect.shrink2(Vec2::new(2.0, 0.0)), 0, p.accent);
+    }
+    if r.double_clicked() {
+        return Some(f32::NAN);
+    }
+    if r.dragged() {
+        let dx = r.drag_delta().x;
+        let next = (size + if after { -dx } else { dx }).clamp(min, max);
+        if next != size {
+            return Some(next);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

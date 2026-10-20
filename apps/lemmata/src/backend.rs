@@ -28,6 +28,20 @@ pub enum Msg {
     ZipInfo(Result<lemmata_shell::projects::ZipInfo, String>),
     Imported(Result<Vec<PathBuf>, String>),
     TemplateSaved(String, bool, Result<String, String>),
+    /// A file of the open project, read to show it.
+    FileRead(String, Result<String, String>),
+    /// A file read again because another program changed it.
+    DiskText(String, Result<String, String>),
+    FileWritten {
+        path: String,
+        written: String,
+        result: Result<(), String>,
+    },
+    Outline(Result<lemmata_project::Outline, String>),
+    /// The project's info again: after a config change, or new files.
+    Info(Result<lemmata_shell::ProjectInfo, String>),
+    /// A command's result that only matters when it failed.
+    Done(Result<(), String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

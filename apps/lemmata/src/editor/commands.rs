@@ -970,6 +970,87 @@ pub fn shift_heading(d: &mut Doc, delta: isize) -> bool {
     true
 }
 
+// ── Templates ──────────────────────────────────────────────────────────────
+
+/// Inserts a snippet template at the main selection (Editor.svelte insertTemplate): a multi-line
+/// block after text starts on a new line; `\t` and two-space levels become the indentation unit;
+/// later lines take the current line's indentation; `${}` and `${text}` mark fields and the first
+/// one is selected.
+pub fn insert_template(d: &mut Doc, template: &str, indent: Indent) {
+    let r = d.selection.main();
+    let line = d.line_of(r.from());
+    let line_text = d.line(line);
+    let col = r.from() - d.line_start(line);
+    let before: String = line_text.chars().take(col).collect();
+    let mut prefix = String::new();
+    let mut cur_indent = leading_ws(&line_text).to_owned();
+    if template.contains('\n') && r.is_empty() {
+        if before.trim().is_empty() {
+            cur_indent = before.clone();
+        } else {
+            prefix = format!("\n{cur_indent}");
+        }
+    }
+    let unit = indent.unit();
+    // Two spaces per level in generated blocks, and tabs, become the chosen unit.
+    let lines: Vec<String> = template
+        .split('\n')
+        .enumerate()
+        .map(|(i, l)| {
+            let lead = l.chars().take_while(|c| *c == '\t').count();
+            let rest = &l[lead..];
+            let spaces = rest.chars().take_while(|c| *c == ' ').count() / 2 * 2;
+            let body = &rest[spaces..];
+            let levels = lead + spaces / 2;
+            let ind = if i == 0 {
+                String::new()
+            } else {
+                cur_indent.clone()
+            };
+            format!("{ind}{}{body}", unit.repeat(levels))
+        })
+        .collect();
+    let text = lines.join("\n");
+    // Fields: the first one's text is selected; the markers go.
+    let mut out = String::new();
+    let mut first: Option<(usize, usize)> = None;
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$'
+            && chars.get(i + 1) == Some(&'{')
+            && let Some(close) = chars[i + 2..].iter().position(|c| *c == '}')
+        {
+            let inner: String = chars[i + 2..i + 2 + close].iter().collect();
+            let start = out.chars().count();
+            out.push_str(&inner);
+            if first.is_none() {
+                first = Some((start, start + inner.chars().count()));
+            }
+            i += 3 + close;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    let at = r.from() + prefix.chars().count();
+    let insert = format!("{prefix}{out}");
+    let n = insert.chars().count();
+    let sel = match first {
+        Some((a, b)) => Range::new(at + a, at + b),
+        None => Range::cursor(r.from() + n),
+    };
+    d.apply(
+        ChangeSet::new(vec![Change {
+            from: r.from(),
+            to: r.to(),
+            insert,
+        }]),
+        Selection::single(sel),
+        EditKind::Other,
+    );
+}
+
 // ── Brackets ───────────────────────────────────────────────────────────────
 
 const BRACKETS: [(char, char); 3] = [('(', ')'), ('[', ']'), ('{', '}')];
@@ -1181,6 +1262,28 @@ mod tests {
         assert_eq!(d.text(), "  \\chapter{Intro}");
         let mut d = doc("plain", 0);
         assert!(!shift_heading(&mut d, 1));
+    }
+
+    #[test]
+    fn templates_indent_and_select_their_first_field() {
+        let mut d = doc("Some text", 9);
+        insert_template(
+            &mut d,
+            "\\begin{itemize}\n\t\\item ${}\n\\end{itemize}",
+            Indent::Spaces(2),
+        );
+        assert_eq!(
+            d.text(),
+            "Some text\n\\begin{itemize}\n  \\item \n\\end{itemize}"
+        );
+        assert_eq!(d.selection.main(), Range::cursor(34));
+        let mut d = doc("    ", 4);
+        insert_template(&mut d, "\\href{${https://}}{${}}", Indent::Spaces(4));
+        assert_eq!(d.text(), "    \\href{https://}{}");
+        assert_eq!(
+            d.slice(d.selection.main().from(), d.selection.main().to()),
+            "https://"
+        );
     }
 
     #[test]

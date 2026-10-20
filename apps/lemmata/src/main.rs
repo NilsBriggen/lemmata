@@ -22,6 +22,8 @@ mod icons;
 mod theme;
 #[allow(dead_code)]
 mod widgets;
+#[allow(dead_code)]
+mod workspace;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

@@ -399,7 +399,15 @@ impl Geo<'_> {
     }
 }
 
-pub fn show(ui: &mut Ui, p: &Palette, ed: &mut Editor, style: &Style, id: egui::Id) -> Output {
+/// `label` names the editor for screen readers ("Text of main.tex").
+pub fn show(
+    ui: &mut Ui,
+    p: &Palette,
+    ed: &mut Editor,
+    style: &Style,
+    id: egui::Id,
+    label: &str,
+) -> Output {
     let mut out = Output::default();
     let mut area = ui.available_rect_before_wrap();
     ui.painter().rect_filled(area, 0, p.code_bg);
@@ -744,9 +752,8 @@ pub fn show(ui: &mut Ui, p: &Palette, ed: &mut Editor, style: &Style, id: egui::
 
         // The pointer.
         let response = ui.interact(visible, id, Sense::click_and_drag());
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, true, "Editor")
-        });
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, true, label));
         if response.hovered() {
             ui.ctx().set_cursor_icon(if mods.alt {
                 egui::CursorIcon::Crosshair
@@ -1376,7 +1383,14 @@ mod tests {
                 move |ui, ed: &mut Editor| {
                     let rect = ui.ctx().content_rect();
                     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                    show(&mut child, &p, ed, &style(), egui::Id::unique("ed"));
+                    show(
+                        &mut child,
+                        &p,
+                        ed,
+                        &style(),
+                        egui::Id::unique("ed"),
+                        "Editor",
+                    );
                 },
                 ed,
             );

@@ -5,9 +5,10 @@ use crate::screens::{dialogs, library, onboarding, welcome};
 use crate::store::{Dirs, Groups, Recents, Settings};
 use crate::theme::{self, Palette};
 use crate::widgets;
+use crate::workspace::{self, Workspace};
 use eframe::egui::{self, FontId};
 use lemmata_shell::open_with::Request;
-use lemmata_shell::{Event, InstallRequest, ProjectInfo, TexStatus};
+use lemmata_shell::{Event, InstallRequest, TexStatus};
 
 pub struct App {
     dirs: Dirs,
@@ -26,10 +27,24 @@ pub struct App {
     library: library::State,
     open_error: Option<String>,
     no_main_in: Option<String>,
-    project: Option<ProjectInfo>,
+    project: Option<Workspace>,
     /// Startup has decided between the welcome, the last project and the library.
     started: bool,
     dialog: Option<Dialog>,
+    quit: Quit,
+}
+
+/// Closing the window with unsaved files (App.svelte onCloseRequested).
+#[derive(Default, PartialEq)]
+enum Quit {
+    #[default]
+    No,
+    /// Saving first; the window closes once everything is on disk.
+    Saving,
+    /// Asking: these files aren't saved (and why, when saving failed).
+    Asking(Vec<String>, Option<String>),
+    /// Closing now.
+    Closing,
 }
 
 /// The dialog open over the welcome or the library.
@@ -77,6 +92,7 @@ impl App {
             project: None,
             started: false,
             dialog: None,
+            quit: Quit::No,
         }
     }
 
@@ -342,6 +358,14 @@ impl App {
         let Some(msg) = self.on_dialog_msg(msg) else {
             return;
         };
+        // The open project's answers go to it.
+        let msg = match &mut self.project {
+            Some(ws) => match ws.on_msg(&self.backend, &self.settings, msg) {
+                Some(m) => m,
+                None => return,
+            },
+            None => msg,
+        };
         match msg {
             Msg::Tex(status) => {
                 self.checking = false;
@@ -357,7 +381,8 @@ impl App {
             Msg::Opened(path, Ok(info)) => {
                 self.recents.remember(&path, now_ms());
                 self.recents.save(&self.dirs);
-                self.project = Some(info);
+                self.close_project();
+                self.project = Some(Workspace::open(info, &self.dirs, &self.backend));
             }
             Msg::Opened(path, Err(e)) => {
                 // A folder without a main document can get one.
@@ -442,7 +467,18 @@ impl App {
                 self.welcome = None;
                 self.handle_request(r);
             }
-            Msg::Event(_) => {}
+            Msg::Done(Err(e)) => {
+                if let Some(ws) = &mut self.project {
+                    ws.notice(e, workspace::Tone::Error);
+                }
+            }
+            Msg::Event(_) | Msg::Done(Ok(())) => {}
+            // Answers for a project that has closed since.
+            Msg::FileRead(..)
+            | Msg::DiskText(..)
+            | Msg::FileWritten { .. }
+            | Msg::Outline(_)
+            | Msg::Info(_) => {}
         }
     }
 
@@ -466,6 +502,124 @@ impl App {
                 let path = last.path.clone();
                 self.open_project(path);
             }
+        }
+    }
+
+    /// Closing the window saves first. With autosave on that is silent; otherwise, or when saving
+    /// fails, it asks.
+    fn closing(&mut self, ctx: &egui::Context) {
+        let p = self.palette;
+        if ctx.input(|i| i.viewport().close_requested()) && self.quit != Quit::Closing {
+            let unsaved = self
+                .project
+                .as_ref()
+                .map(|w| w.buffers.unsaved())
+                .unwrap_or_default();
+            if !unsaved.is_empty() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if self.settings.autosave_ms > 0.0 {
+                    if let Some(ws) = &mut self.project {
+                        ws.save_all(&self.backend, &self.settings);
+                    }
+                    self.quit = Quit::Saving;
+                } else {
+                    self.quit = Quit::Asking(unsaved, None);
+                }
+            } else {
+                self.close_project();
+            }
+        }
+        if self.quit == Quit::Saving
+            && let Some(ws) = &self.project
+            && !ws.writing()
+        {
+            let unsaved = ws.buffers.unsaved();
+            if unsaved.is_empty() {
+                self.quit = Quit::Closing;
+                self.close_project();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                let failed = ws.buffers.failed.clone();
+                let why = if ws.buffers.conflicts.is_empty() {
+                    failed.join(", ")
+                } else {
+                    "they changed on disk".into()
+                };
+                self.quit = Quit::Asking(unsaved, Some(why));
+            }
+        }
+        let Quit::Asking(files, error) = &self.quit else {
+            return;
+        };
+        let (files, error) = (files.clone(), error.clone());
+        let mut choice = None;
+        widgets::modal(
+            ctx,
+            &p,
+            "Close Lemmata?",
+            480.0,
+            |ui| {
+                let text = match &error {
+                    Some(e) => format!("These files could not be saved: {e}"),
+                    None => "These files have changes that aren't saved:".into(),
+                };
+                ui.label(egui::RichText::new(text).color(p.ink));
+                for f in &files {
+                    ui.label(
+                        egui::RichText::new(format!("• {f}"))
+                            .font(FontId::monospace(12.0))
+                            .color(p.ink),
+                    );
+                }
+            },
+            Some(&mut |ui: &mut egui::Ui| {
+                if error.is_none()
+                    && widgets::Button::new("Save and close")
+                        .kind(widgets::Kind::Primary)
+                        .show(ui, &p)
+                        .clicked()
+                {
+                    choice = Some(2);
+                }
+                if widgets::Button::new("Close without saving")
+                    .kind(widgets::Kind::Primary)
+                    .fill(p.error)
+                    .ink(egui::Color32::WHITE)
+                    .show(ui, &p)
+                    .clicked()
+                {
+                    choice = Some(1);
+                }
+                if widgets::Button::new("Cancel").show(ui, &p).clicked() {
+                    choice = Some(0);
+                }
+            }),
+        );
+        match choice {
+            Some(0) => self.quit = Quit::No,
+            Some(1) => {
+                // Nothing more is saved; the session is still remembered.
+                if let Some(ws) = self.project.take() {
+                    workspace::session::save(&self.dirs, &ws.root, &ws.session());
+                }
+                self.quit = Quit::Closing;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Some(_) => {
+                if let Some(ws) = &mut self.project {
+                    ws.save_all(&self.backend, &self.settings);
+                }
+                self.quit = Quit::Saving;
+            }
+            None => {}
+        }
+    }
+
+    /// Saves what's unsaved and remembers where the user was, then shows the library.
+    fn close_project(&mut self) {
+        if let Some(mut ws) = self.project.take() {
+            ws.save_all(&self.backend, &self.settings);
+            workspace::session::save(&self.dirs, &ws.root, &ws.session());
         }
     }
 
@@ -550,6 +704,7 @@ impl eframe::App for App {
         }
         self.screen(ui);
         self.show_dialog(&ctx);
+        self.closing(&ctx);
     }
 
     fn on_exit(&mut self) {
@@ -626,24 +781,12 @@ impl App {
             return;
         }
 
-        if let Some(project) = &self.project {
-            // shortcut: the editor arrives in M3; until then an open project shows its name and a way back.
-            ui.painter().rect_filled(rect, 0, p.app);
-            let name = project.name.clone();
-            ui.vertical_centered(|ui| {
-                ui.add_space(rect.height() / 2.0 - 40.0);
-                ui.label(
-                    egui::RichText::new(&name)
-                        .font(FontId::new(26.0, theme::font::display()))
-                        .color(p.ink),
-                );
-                if widgets::Button::new("Back to all projects")
-                    .show(ui, &p)
-                    .clicked()
-                {
-                    self.project = None;
-                }
-            });
+        if let Some(ws) = &mut self.project {
+            match ws.show(ui, &p, &mut self.settings, &self.backend) {
+                Some(workspace::Action::Library) => self.close_project(),
+                Some(workspace::Action::Settings) => self.save_settings(&ctx),
+                None => {}
+            }
             return;
         }
 
@@ -912,6 +1055,113 @@ mod tests {
         h.get_all_by_label("New project").next().unwrap().click();
         wait_for(&mut h, "My templates", |h| {
             h.query_by_label("My templates").is_some()
+        });
+    }
+
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap().flatten() {
+            let t = to.join(e.file_name());
+            if e.path().is_dir() {
+                copy_dir(&e.path(), &t);
+            } else {
+                std::fs::copy(e.path(), t).unwrap();
+            }
+        }
+    }
+
+    /// The article fixture as the last project, opened by the app; None without TeX.
+    fn in_article(tmp: &std::path::Path) -> Option<(Harness<'static, App>, std::path::PathBuf)> {
+        let project = tmp.join("rl-thesis");
+        copy_dir(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/article"),
+            &project,
+        );
+        let d = dirs(tmp);
+        let mut recents = Recents::default();
+        recents.remember(&project.to_string_lossy(), 1.0);
+        recents.save(&d);
+        Settings {
+            first_run_done: true,
+            ..Settings::default()
+        }
+        .save(&d);
+        let mut h = app(tmp);
+        let opened = |h: &Harness<App>| h.query_all_by_label("main.tex").next().is_some();
+        wait_for(&mut h, "the project or onboarding", |h| {
+            opened(h) || h.query_by_label("Check again").is_some()
+        });
+        if !opened(&h) {
+            return None;
+        }
+        wait_for(&mut h, "the main file", |h| {
+            h.query_by_label("Text of main.tex").is_some()
+        });
+        wait_for(&mut h, "the outline", |h| {
+            h.query_by_label_contains("words").is_some()
+        });
+        h.run_steps(3);
+        Some((h, project))
+    }
+
+    #[test]
+    fn the_editor_screen_shows_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        let _ = h.try_snapshot("editor-split-light");
+        assert!(h.query_by_label("Recompile").is_some());
+        assert!(
+            h.query_by_label("method.tex").is_some(),
+            "the tree lists the chapters"
+        );
+    }
+
+    #[test]
+    fn typing_saves_after_the_delay_and_the_file_changes_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex").type_text("% typed here");
+        h.run_steps(2);
+        assert!(h.query_by_label("Unsaved").is_some());
+        wait_for(&mut h, "the autosave", |h| {
+            h.query_by_label("Saved").is_some()
+        });
+        let text = std::fs::read_to_string(project.join("main.tex")).unwrap();
+        assert!(text.contains("% typed here"), "{text}");
+    }
+
+    #[test]
+    fn an_outside_change_with_unsaved_edits_asks_which_version_to_keep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        // Autosave off, so the edit stays unsaved.
+        h.state_mut().settings.autosave_ms = 0.0;
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex").type_text("% mine");
+        h.run_steps(2);
+        std::fs::write(
+            project.join("main.tex"),
+            "\\documentclass{article}\n% theirs\n",
+        )
+        .unwrap();
+        wait_for(&mut h, "the conflict dialog", |h| {
+            h.query_by_label_contains("changed on disk").is_some()
+        });
+        h.get_by_label("Load the version on disk").click();
+        wait_for(&mut h, "the disk's text", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .is_some_and(|w| w.editors["main.tex"].doc.text().contains("% theirs"))
         });
     }
 
