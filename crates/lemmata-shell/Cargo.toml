@@ -33,6 +33,10 @@ url = "2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 ring = "0.17"
+# The self-updater: the Tauri updater's signatures and versions.
+minisign-verify = "0.3"
+semver = "1"
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile.workspace = true

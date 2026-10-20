@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(texts(r"more code \end{verbatim} text", &mut s), ["text"]);
     }
 
-    /// Shared with the editor's spell checker (apps/desktop/src/lib/spell/prose.test.ts).
+    /// Shared with the editor's spell checker.
     #[test]
     fn matches_shared_cases() {
         let path = concat!(

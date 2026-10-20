@@ -186,16 +186,7 @@ async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
 /// Brings the cache up to date with the template collection. Returns how many templates it has.
 /// Files that fail their check are not kept; a template then stays as it was, or absent.
 pub async fn refresh(cache: &Path) -> Result<usize, String> {
-    static PROVIDER: std::sync::Once = std::sync::Once::new();
-    PROVIDER.call_once(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(120))
-        .user_agent(concat!("Lemmata/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::http_client(Duration::from_secs(120))?;
     // Debug builds can point elsewhere (a local copy of the repository) to test changes before they're published.
     #[cfg(debug_assertions)]
     let base = std::env::var("LEMMATA_TEMPLATES_URL").unwrap_or_else(|_| BASE.to_string());

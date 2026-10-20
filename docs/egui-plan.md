@@ -86,7 +86,7 @@ Used by the hover preview, the symbol palette and the completion glyphs. **RaTeX
 ## Tests and automation
 - `cargo test --workspace` unchanged. Ported vitest cases become Rust tests next to the new modules.
 - Replace WebdriverIO/tauri-driver with **`egui_kittest`** (AccessKit queries, in-process, headless, and it covers macOS, which tauri-driver never did). Port the 40 scenarios in `scripts/automation/scenarios.mjs` and the `check` invariants one by one; the intents are the spec. Keep the seeded random walk (`walk.mjs`).
-- Keep the `lemmata-dev` MCP stack (`mcp.mjs`, `client.mjs`, the Unix socket or named pipe). Replace `automation.rs` + `window.eval` + `automation.ts` with an in-process server that answers `state`, `check`, `click`, `fill`, `key`, `type`, `query`, `text`, `invoke`, `setting` and so on by AccessKit label or role. It only exists in debug builds with `LEMMATA_AUTOMATION=1`.
+- The `lemmata-dev` MCP stack and the automation socket are dropped (decided in M9): the scenarios, the `check` invariants and the seeded walk run in process as kittest tests (`apps/lemmata/src/scenarios.rs`).
 - Drop: `dev:mock`, `.claude/launch.json` `ui-preview` (after the visual-reference captures are done), `wdio.conf.ts`, `invariants.ts`, `tauri-driver`, `webkit2gtk-driver`, `xvfb` and msedgedriver CI steps, the `__lemmata` bundle grep, Node and pnpm CI steps.
 - CI: keep fmt, clippy `-D warnings`, `tex-integration`, `package-cli.sh`, audit; swap the Tauri build for the egui build and a kittest job on the three OSes.
 
@@ -130,6 +130,7 @@ Per milestone: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `
 | M6 egui app: plus spell and grammar checks, review comments, TODOs, Git, History with latexdiff, citation picker and bibliography manager, figure/table dialogs, rename, project search, file actions, Preferences, Project settings | 34.9 MB | linux x86_64, 2026-10-20 |
 | M7 egui app: plus the command palette and quick open, shortcuts sheet, word count, reports, What's new, presenting with a presenter window, drag and drop in the tree and from the computer, single instance and `lemmata://` registration | 35.2 MB | linux x86_64, 2026-10-20 |
 | After the audit fixes, with dependencies built for size except the per-frame and per-keystroke ones, and without reqwest's charset and HTTP/2 | 31.0 MB | linux x86_64, 2026-10-20; start-up 50 ms CPU to the first screen, 0 CPU while idle, 51 MB resident |
+| M9: plus the self-updater (minisign checks, AppImage/app/setup install) and the macOS Apple Event handler | 31.1 MB | linux x86_64, 2026-10-21 |
 
 M4: the release profile switched to `panic = "unwind"` (+2.8 MB) so a PDF that makes hayro panic leaves that page blank instead of ending the app with unsaved edits. The alternative is rendering in a child process with `abort`. The hayro stack (hayro-interpret, hayro-syntax, vello_cpu, fearless_simd, JBIG2/JPEG 2000) is about 3.5 MB of the rest; JPEG, GIF and WebP decoding for image tabs adds about 0.4 MB.
 
@@ -191,10 +192,11 @@ RaTeX's one visible flaw in the sheet: `\overbrace{a+b}^{n}\underbrace{c+d}_{m}`
 - The package offer ("This needs the X package…") is a toast with "Add it" and a dismiss button, not the separate toast with a package icon and "Not now".
 - F2 in the editor opens "Rename label or citation key" on the name under the cursor; the Svelte app listed F2 as "Rename symbol" but only the palette opened the dialog.
 - Tree Copy and Cut also put the paths on the system clipboard: egui only reports Ctrl+V when the clipboard holds something, so Paste needs it.
-- Preferences: "Check now" for updates comes with the self-updater in M9; the automatic-check setting is kept.
 - Editor fonts other than Plex Mono are looked up with fc-match on Linux and by file name in the font folders on macOS and Windows; a family the lookup misses falls back to Plex Mono, as the browser did for fonts that aren't installed.
 - Modals that scroll (Preferences, Project settings, Bibliography) give their list a fixed maximum height up front: an egui area only offers the height it had on the last frame, so content could never grow it.
 - Presenting: the slides go full screen on the window's own screen and P opens the presenter window; eframe doesn't list monitors, so the Svelte app's "slides to the projector, presenter view here" on a second screen isn't automatic. Drag the presenter window to the other screen.
-- macOS hands files and links to a running (or starting) app through Apple Events, which eframe doesn't pass on; on macOS, "Open with" and `lemmata://` links reach Lemmata only through the command line until the packaging work in M9 adds the bundle's event handler.
+- macOS: files and links arrive as Apple Events through an own handler (`src/macos.rs`), installed as AppKit finishes launching. It is built by CI on macOS but has not been tried on a Mac.
+- Updates: the self-updater reads the same `latest.json` and checks the same minisign signatures. On Linux only the AppImage updates itself, as before; .deb and .rpm installs say to update with the package manager. Windows runs the new NSIS setup with `/P /R` after quitting; that this matches cargo-packager's installer is unchecked until a release on Windows.
+- Packaging: cargo-packager (cargo-generate-rpm for the .rpm) replaces Tauri's bundler with the same asset names; its config and `scripts/package-app.sh` run only in the release workflow, so the first tag is their first test. Apple signing secrets are no longer passed: the app is signed ad hoc, as the Tauri builds were without a Developer ID.
 - Single instance: a later launch hands its file or link over a localhost socket guarded by a token in a user-only file in the cache folder, where the Tauri plugin used D-Bus, a named pipe or a Mach port. As before, only release builds do this.
 - Vim keys are dropped (decided in M8): the Svelte app's Keyboard choice (CodeMirror's Vim emulation) is gone from Welcome and Preferences, and a saved `keymap` setting is ignored.

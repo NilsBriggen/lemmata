@@ -55,9 +55,62 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl"] }
 
+# Files and links opened from Finder arrive as Apple Events (src/macos.rs); winit already uses these.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSAppleEventDescriptor",
+    "NSAppleEventManager",
+    "NSNotification",
+    "NSString",
+    "NSURL",
+] }
+
 [dev-dependencies]
 # What eframe's `system_fonts` feature installs in the real app, for glyphs outside the bundled fonts.
 egui_system_font_provider = "0.37"
 tempfile.workspace = true
 zip.workspace = true
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot", "eframe"] }
+
+# cargo-packager (release.yml): the installers Tauri's bundler made, under the same asset names.
+[package.metadata.packager]
+product-name = "Lemmata"
+identifier = "dev.briggen.lemmata"
+publisher = "Nils Briggen"
+category = "Productivity"
+description = "Local-first LaTeX editor"
+long-description = "Lemmata is a LaTeX editor with a live PDF preview and click-to-jump between PDF and source, running on your own TeX Live installation."
+homepage = "https://lemmata.briggen.dev"
+copyright = "© 2026 Nils Briggen. GPL-3.0."
+license-file = "../../LICENSE"
+out-dir = "../../target/packager"
+icons = ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+binaries = [{ path = "lemmata-app", main = true }]
+resources = [
+    { src = "../../templates", target = "templates" },
+    { src = "../../data/dictionaries", target = "dictionaries" },
+]
+file-associations = [{ extensions = ["tex"], mime-type = "text/x-tex", name = "LaTeX document", description = "LaTeX document" }]
+deep-link-protocols = [{ schemes = ["lemmata"] }]
+
+[package.metadata.packager.deb]
+# wgpu draws with Vulkan; winit reads the keyboard layout through xkbcommon.
+depends = ["libvulkan1", "libxkbcommon0"]
+
+[package.metadata.packager.macos]
+minimum-system-version = "10.15"
+
+# cargo-generate-rpm (release.yml): cargo-packager makes no .rpm.
+[package.metadata.generate-rpm]
+name = "lemmata"
+summary = "Local-first LaTeX editor"
+requires = { vulkan-loader = "*", libxkbcommon = "*" }
+assets = [
+    { source = "target/release/lemmata-app", dest = "/usr/bin/lemmata-app", mode = "755" },
+    { source = "../../templates/**/*", dest = "/usr/lib/lemmata-app/templates/", mode = "644" },
+    { source = "../../data/dictionaries/**/*", dest = "/usr/lib/lemmata-app/dictionaries/", mode = "644" },
+    { source = "../../packaging/linux/lemmata.desktop", dest = "/usr/share/applications/lemmata.desktop", mode = "644" },
+    { source = "icons/128x128.png", dest = "/usr/share/icons/hicolor/128x128/apps/lemmata-app.png", mode = "644" },
+]

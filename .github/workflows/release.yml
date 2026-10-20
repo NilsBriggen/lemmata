@@ -29,13 +29,10 @@ jobs:
           fi
           version=${GITHUB_REF_NAME#v}
           cargo_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          package_version=$(python3 -c 'import json; print(json.load(open("apps/desktop/package.json"))["version"])')
-          for found in "$cargo_version" "$package_version"; do
-            if [[ "$found" != "$version" ]]; then
-              echo "::error::Tag $GITHUB_REF_NAME does not match the version in Cargo.toml ($cargo_version) or apps/desktop/package.json ($package_version)."
-              exit 1
-            fi
-          done
+          if [[ "$cargo_version" != "$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the version in Cargo.toml ($cargo_version)."
+            exit 1
+          fi
 
   # The full CI on the tagged commit: nothing is published unless it passes. The builds run meanwhile.
   ci:
@@ -63,21 +60,12 @@ jobs:
           - label: windows_x86_64
             runner: windows-latest
             target: x86_64-pc-windows-msvc
-            bundles: nsis,msi
+            bundles: nsis,wix
     runs-on: ${{ matrix.runner }}
     env:
-      # LTO only for real releases; PR builds in ci.yml stay fast.
-      CARGO_PROFILE_RELEASE_LTO: thin
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      # Empty until there is an Apple Developer account; Tauri then skips signing.
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # The updater's signatures, with the key the Tauri builds used (the app checks them against its public key).
+      CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v7
 
@@ -88,44 +76,31 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install Tauri system libraries
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-
-      - name: Fetch texlab (bundled language server)
-        shell: bash
-        run: scripts/fetch-texlab.sh ${{ matrix.target }}
-
-      - name: Build
+      - name: Install the packagers
         shell: bash
         run: |
-          # Missing secrets arrive as empty strings, which Tauri would treat
-          # as "sign with this"; drop them so it doesn't try.
-          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            if [[ -z "${!v}" ]]; then unset "$v"; fi
-          done
-          # Without a Developer ID, sign ad hoc: Apple Silicon won't run unsigned apps.
-          if [[ "$RUNNER_OS" == macOS && -z "${APPLE_CERTIFICATE:-}" ]]; then export APPLE_SIGNING_IDENTITY=-; fi
+          cargo install cargo-packager --locked
+          if [[ "$RUNNER_OS" == Linux ]]; then cargo install cargo-generate-rpm --locked; fi
+
+      - name: Build and package
+        shell: bash
+        run: |
           bundles='${{ matrix.bundles }}'
           # WiX can't version an MSI with a pre-release suffix, so betas ship the NSIS installer only.
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then bundles=${bundles//,msi/}; fi
-          # Updater artifacts need the signing key; build without them until it's configured.
-          updater=false
-          if [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then updater=true; fi
-          config="{\"bundle\":{\"externalBin\":[\"binaries/texlab\"],\"createUpdaterArtifacts\":$updater}}"
-          pnpm --filter lemmata-desktop tauri build --target ${{ matrix.target }} --bundles "$bundles" --config "$config"
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then bundles=${bundles//,wix/}; fi
+          scripts/package-app.sh ${{ matrix.target }} "$bundles"
 
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.label }}
-          path: target/${{ matrix.target }}/release/bundle/
+          path: |
+            target/packager/*.AppImage*
+            target/packager/*.deb
+            target/packager/*.rpm
+            target/packager/*.dmg
+            target/packager/*.app.tar.gz*
+            target/packager/*-setup.exe*
+            target/packager/*.msi
           if-no-files-found: error
 
   # The command-line tool, as archives on the release (scripts/package-cli.sh; CI runs it on every push too).

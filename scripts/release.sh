@@ -12,13 +12,12 @@ cd "$(dirname "$0")/.."
 command -v git-cliff >/dev/null || { echo "install git-cliff (pacman -S git-cliff or cargo install git-cliff)" >&2; exit 1; }
 
 sed -i.bak -E "0,/^version = \".*\"/s//version = \"$version\"/" Cargo.toml && rm Cargo.toml.bak
-sed -i.bak -E "s/\"version\": \"[^\"]*\"/\"version\": \"$version\"/" apps/desktop/package.json && rm apps/desktop/package.json.bak
 cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace >/dev/null
 
 # Only the new version's section is added on top, so sections edited by hand stay as they are.
 section=$(git cliff --unreleased --tag "v$version" --strip header)
 { head -n 3 CHANGELOG.md; echo; echo "$section"; tail -n +4 CHANGELOG.md; } > CHANGELOG.md.new && mv CHANGELOG.md.new CHANGELOG.md
-git add Cargo.toml Cargo.lock apps/desktop/package.json CHANGELOG.md
+git add Cargo.toml Cargo.lock CHANGELOG.md
 git commit -m "chore(release): v$version"
 git tag -a "v$version" -m "Lemmata $version"
 echo "Tagged v$version. Push with: git push --follow-tags"

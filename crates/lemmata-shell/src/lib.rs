@@ -17,6 +17,7 @@ pub mod spell;
 pub mod tectonic;
 pub mod terminal;
 pub mod tools;
+pub mod update;
 
 use lemmata_project::{Config, Entry, Project};
 use lemmata_tex::detect::Detection;
@@ -168,6 +169,20 @@ pub struct TexStatus {
 }
 
 /// Detects TeX, remembers the result and gives latexmk another chance.
+/// HTTPS with rustls on ring, as lemmata-bib and lemmata-spell set it up.
+pub(crate) fn http_client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
+    static PROVIDER: std::sync::Once = std::sync::Once::new();
+    PROVIDER.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(timeout)
+        .user_agent(concat!("Lemmata/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 fn run_detection(state: &Shell) -> Detection {
     let extra = state.extra_tex_dirs.lock_safe().clone();
     let detection = lemmata_tex::detect(&extra);

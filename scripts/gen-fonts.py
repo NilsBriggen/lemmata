@@ -2,15 +2,17 @@
 """Writes the UI fonts to apps/lemmata/assets/fonts as plain TTF.
 
 epaint can't read WOFF, so this unwraps the same @fontsource latin and latin-ext
-subsets the Svelte bundle ships. Run from the repo root after `pnpm install`:
-    python3 scripts/gen-fonts.py
+subsets the Svelte bundle shipped. Run from the repo root with the @fontsource packages
+installed somewhere (npm install --prefix /tmp/fonts @fontsource/young-serif ...):
+    python3 scripts/gen-fonts.py /tmp/fonts/node_modules/@fontsource
 """
 
+import sys
 from pathlib import Path
 
 from fontTools.ttLib import TTFont
 
-SRC = Path("apps/desktop/node_modules/@fontsource")
+SRC = Path(sys.argv[1])
 OUT = Path("apps/lemmata/assets/fonts")
 FONTS = [
     ("young-serif", 400),

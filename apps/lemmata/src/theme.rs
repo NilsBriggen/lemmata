@@ -1,4 +1,4 @@
-//! Lemmata's look, ported token for token from `apps/desktop/src/app.css`: Overleaf's layout (dark
+//! Lemmata's look, ported token for token from the Svelte app's `app.css`: Overleaf's layout (dark
 //! toolbar and file sidebar, light editor, grey PDF ground) in the identity of `docs/pitch.html`.
 
 use eframe::egui::{

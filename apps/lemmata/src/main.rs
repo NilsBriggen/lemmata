@@ -7,6 +7,8 @@ mod editor;
 mod icons;
 mod instance;
 mod lsp;
+#[cfg(target_os = "macos")]
+mod macos;
 mod panels;
 mod pdf;
 mod screens;
@@ -32,6 +34,8 @@ fn main() -> eframe::Result {
             return Ok(());
         }
     }
+    #[cfg(target_os = "macos")]
+    macos::listen();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Lemmata")
@@ -40,9 +44,15 @@ fn main() -> eframe::Result {
             .with_min_inner_size([900.0, 560.0]),
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "Lemmata",
         options,
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
-    )
+    );
+    // An installed update: the new version (or its installer) starts once this one is gone.
+    if let Some((program, args)) = app::AFTER_EXIT.lock().ok().and_then(|mut a| a.take()) {
+        instance::release(&store::Dirs::system().cache);
+        let _ = std::process::Command::new(program).args(args).spawn();
+    }
+    result
 }

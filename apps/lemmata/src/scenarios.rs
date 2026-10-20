@@ -520,7 +520,14 @@ fn snapshot(h: &mut Harness<App>, label: &str) {
 }
 
 /// The session's first save takes no snapshot, so a named one right after has something to keep.
+/// Waits until history is on (opening a project sets it up in the background) first.
 fn no_automatic_snapshot(h: &mut Harness<App>) {
+    wait_for(h, "history", |h| {
+        matches!(
+            ws(h).history.status,
+            Some(lemmata_shell::history::HistoryStatus::On)
+        )
+    });
     ws_mut(h).0.history.last = Some(std::time::Instant::now());
 }
 

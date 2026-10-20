@@ -56,6 +56,11 @@ pub fn forward(dir: &Path, args: &[String], cwd: &Path) -> bool {
     BufReader::new(s).read_line(&mut answer).is_ok() && answer.trim() == "ok"
 }
 
+/// Stops handing launches to this process: it is quitting, and the next Lemmata takes over.
+pub fn release(dir: &Path) {
+    let _ = std::fs::remove_file(file(dir));
+}
+
 /// Becomes the instance others hand their launches to: `on` gets each one's arguments and folder.
 pub fn listen(
     dir: &Path,

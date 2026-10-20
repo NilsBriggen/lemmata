@@ -19,7 +19,7 @@ pub struct Server {
 }
 
 /// The texlab release Lemmata downloads on first use, and the checksums of its archives
-/// (the same pins as scripts/fetch-texlab.sh).
+/// (bump both with the version).
 pub const TEXLAB_VERSION: &str = "v5.26.0";
 
 fn texlab_asset() -> Option<(&'static str, &'static str)> {

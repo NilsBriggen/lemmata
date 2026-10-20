@@ -18,6 +18,8 @@ pub struct Prefs {
     pub snippets: Option<Vec<Snippet>>,
     /// Opened for the snippets alone (the palette's "Edit snippets…"): closing them closes all.
     pub only_snippets: bool,
+    pub checking_updates: bool,
+    pub update_message: Option<String>,
 }
 
 pub enum Out {
@@ -28,6 +30,7 @@ pub enum Out {
     AutoTex,
     Download(String),
     TestGrammar,
+    CheckUpdates,
 }
 
 const INDENTS: [(&str, &str); 4] = [
@@ -488,7 +491,6 @@ fn body(
     section_end(ui, p);
 
     heading(ui, p, "Updates");
-    // shortcut: "Check now" comes with the self-updater (M9); the setting is kept already.
     changed |= widgets::checkbox(
         ui,
         p,
@@ -496,6 +498,24 @@ fn body(
         "Check for updates automatically",
     )
     .clicked();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let label = if st.checking_updates {
+            "Checking…"
+        } else {
+            "Check now"
+        };
+        if Button::new(label)
+            .enabled(!st.checking_updates)
+            .show(ui, p)
+            .clicked()
+        {
+            *out = Some(Out::CheckUpdates);
+        }
+        if let Some(m) = &st.update_message {
+            ui.label(egui::RichText::new(m).color(p.muted));
+        }
+    });
     if changed && out.is_none() {
         *out = Some(Out::Changed);
     }

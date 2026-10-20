@@ -17,6 +17,14 @@ pub enum PrefsMsg {
     Grammar(Result<(), String>),
 }
 
+/// The self-updater's answers.
+pub enum UpdateMsg {
+    /// Whether the user asked (Preferences' "Check now"), and what was found.
+    Checked(bool, Result<Option<lemmata_shell::update::Update>, String>),
+    Progress(f32),
+    Ready(Result<lemmata_shell::update::AfterExit, String>),
+}
+
 pub enum Msg {
     Event(Event),
     /// A job's result, applied to the open project on the UI thread (see `Workspace::job`).
@@ -24,6 +32,7 @@ pub enum Msg {
     Tex(TexStatus),
     /// Answers for the Preferences dialog.
     Prefs(PrefsMsg),
+    Update(UpdateMsg),
     /// A folder or file the user picked, for the job that asked.
     Picked(Pick, Option<PathBuf>),
     Opened(String, Result<lemmata_shell::ProjectInfo, String>),
@@ -131,20 +140,27 @@ pub struct Backend {
     pub project: std::sync::atomic::AtomicU64,
 }
 
-/// Where the bundled templates/ and dictionaries/ are: next to the program in a package, the
+/// Where the bundled templates/ and dictionaries/ are: where each package puts resources, or the
 /// repository's own folders (through apps/lemmata/resources) in a development build.
 pub fn resources_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("LEMMATA_RESOURCES") {
         return dir.into();
     }
-    let packaged = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|d| d.join("resources")));
-    match packaged {
-        Some(d) if d.is_dir() => d,
-        // shortcut: development builds read the repository through symlinks; packaging (M9) copies the folders.
-        _ => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources"),
-    }
+    let exe = std::env::current_exe().ok();
+    let dir = exe.as_deref().and_then(|e| e.parent());
+    // Windows: beside the program. macOS: Contents/Resources. Linux packages: /usr/lib/<name>.
+    let candidates = dir.into_iter().flat_map(|d| {
+        [
+            d.to_path_buf(),
+            d.join("../Resources"),
+            d.join("../lib/lemmata-app"),
+            d.join("../lib/Lemmata"),
+        ]
+    });
+    candidates
+        .into_iter()
+        .find(|d| d.join("templates").is_dir())
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources"))
 }
 
 impl Backend {
@@ -205,6 +221,17 @@ impl Backend {
             let _ = tx.send(job(shell).await);
             ctx.request_repaint();
         });
+    }
+
+    /// Sends messages from work that reports more than once (a download's progress).
+    pub fn sender(&self) -> impl Fn(Msg) + Send + Sync + 'static {
+        let (tx, ctx) = (std::sync::Mutex::new(self.tx.clone()), self.ctx.clone());
+        move |m| {
+            if let Ok(tx) = tx.lock() {
+                let _ = tx.send(m);
+            }
+            ctx.request_repaint();
+        }
     }
 
     /// A native folder or file chooser, without blocking the UI.

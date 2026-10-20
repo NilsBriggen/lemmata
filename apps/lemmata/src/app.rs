@@ -1,7 +1,7 @@
 //! The app: which screen shows, and what the screens' actions do. This is what App.svelte did.
 
-use crate::backend::{Backend, Msg, Pick, PrefsMsg};
-use crate::screens::{dialogs, library, onboarding, prefs, report, welcome, whats_new};
+use crate::backend::{Backend, Msg, Pick, PrefsMsg, UpdateMsg};
+use crate::screens::{dialogs, library, onboarding, prefs, report, update, welcome, whats_new};
 use crate::store::{Dirs, Groups, Recents, Settings};
 use crate::theme::{self, Palette};
 use crate::widgets;
@@ -38,8 +38,18 @@ pub struct App {
     open_file_after: Option<String>,
     /// What's new since the version used last, once after an update.
     whats_new: Vec<&'static whats_new::Release>,
+    update: Option<update::Toast>,
+    /// When updates were last looked for.
+    update_checked: Option<std::time::Instant>,
     quit: Quit,
 }
+
+/// What runs once the window has closed: an installed update (main.rs starts it).
+pub static AFTER_EXIT: std::sync::Mutex<Option<lemmata_shell::update::AfterExit>> =
+    std::sync::Mutex::new(None);
+
+/// Automatic update checks, as often as App.svelte's.
+const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 /// Closing the window with unsaved files (App.svelte onCloseRequested).
 #[derive(Default, PartialEq)]
@@ -90,6 +100,15 @@ impl App {
             });
             std::thread::spawn(crate::instance::register_scheme);
         }
+        #[cfg(target_os = "macos")]
+        {
+            let (shell, ctx) = (backend.shell.clone(), cc.egui_ctx.clone());
+            crate::macos::on_opened(move |urls| {
+                shell.on_opened(&urls);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                ctx.request_repaint();
+            });
+        }
         let tex_dir = settings.tex_dir.clone();
         backend.spawn(move |shell| Msg::Tex(shell.tex_status(tex_dir)));
         Self {
@@ -114,6 +133,8 @@ impl App {
             report: None,
             open_file_after: None,
             whats_new: Vec::new(),
+            update: None,
+            update_checked: None,
             quit: Quit::No,
         }
     }
@@ -549,6 +570,87 @@ impl App {
             | Msg::GrammarFound(..)
             | Msg::Apply(..) => {}
             Msg::Prefs(m) => self.on_prefs_msg(ctx, m),
+            Msg::Update(m) => self.on_update_msg(ctx, m),
+        }
+    }
+
+    fn check_updates(&mut self, asked: bool) {
+        self.update_checked = Some(std::time::Instant::now());
+        self.backend.spawn_async(move |_| async move {
+            let r = lemmata_shell::update::check(env!("CARGO_PKG_VERSION")).await;
+            Msg::Update(UpdateMsg::Checked(asked, r))
+        });
+    }
+
+    fn on_update_msg(&mut self, ctx: &egui::Context, m: UpdateMsg) {
+        match m {
+            UpdateMsg::Checked(asked, r) => {
+                let text = match r {
+                    Ok(None) => "Lemmata is up to date.".to_owned(),
+                    Ok(Some(u)) => {
+                        let text = format!("Lemmata {} is available.", u.version);
+                        if self.update.as_ref().is_none_or(|t| t.progress.is_none()) {
+                            self.update = Some(update::Toast {
+                                update: u,
+                                progress: None,
+                                error: None,
+                            });
+                        }
+                        text
+                    }
+                    // Automatic checks fail quietly (offline, a package-manager install).
+                    Err(e) => format!("Couldn't check for updates: {e}"),
+                };
+                if asked && let Some(st) = &mut self.prefs {
+                    st.checking_updates = false;
+                    st.update_message = Some(text);
+                }
+            }
+            UpdateMsg::Progress(f) => {
+                if let Some(t) = &mut self.update {
+                    t.progress = Some(f);
+                }
+            }
+            UpdateMsg::Ready(Ok(after)) => {
+                // Quitting saves everything first; main.rs then starts the new version.
+                if let Ok(mut a) = AFTER_EXIT.lock() {
+                    *a = Some(after);
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            UpdateMsg::Ready(Err(e)) => {
+                if let Some(t) = &mut self.update {
+                    t.progress = None;
+                    t.error = Some(e);
+                }
+            }
+        }
+    }
+
+    fn show_update(&mut self, ctx: &egui::Context) {
+        if !cfg!(test)
+            && self.settings.check_for_updates
+            && self.update.is_none()
+            && self
+                .update_checked
+                .is_none_or(|t| t.elapsed() > UPDATE_INTERVAL)
+        {
+            self.check_updates(false);
+        }
+        let Some(t) = &mut self.update else { return };
+        match update::show(ctx, &self.palette, t) {
+            None => {}
+            Some(update::Out::Later) => self.update = None,
+            Some(update::Out::Install) => {
+                t.progress = Some(0.0);
+                t.error = None;
+                let (u, send) = (t.update.clone(), self.backend.sender());
+                self.backend.spawn_async(move |_| async move {
+                    let progress = |f| send(Msg::Update(UpdateMsg::Progress(f)));
+                    let r = lemmata_shell::update::install(&u, progress).await;
+                    Msg::Update(UpdateMsg::Ready(r))
+                });
+            }
         }
     }
 
@@ -610,6 +712,11 @@ impl App {
                 let r = shell.spell_download(code.clone()).await;
                 Msg::Prefs(PrefsMsg::Downloaded(code, r))
             }),
+            Some(prefs::Out::CheckUpdates) => {
+                st.checking_updates = true;
+                st.update_message = None;
+                self.check_updates(true);
+            }
             Some(prefs::Out::TestGrammar) => {
                 let url = if self.settings.grammar == "custom" {
                     self.settings.grammar_url.trim().to_owned()
@@ -752,7 +859,13 @@ impl App {
             }),
         );
         match choice {
-            Some(0) => self.quit = Quit::No,
+            Some(0) => {
+                // Staying: an installed update waits for the next quit's restart, not this one.
+                if let Ok(mut a) = AFTER_EXIT.lock() {
+                    *a = None;
+                }
+                self.quit = Quit::No;
+            }
             Some(1) => {
                 // Nothing more is saved; the session is still remembered.
                 if let Some(ws) = self.project.take() {
@@ -878,6 +991,7 @@ impl eframe::App for App {
                 }
             }
         }
+        self.show_update(&ctx);
         self.closing(&ctx);
     }
 
@@ -2410,6 +2524,40 @@ pub(crate) mod tests {
             Settings::load(&d).last_seen_version,
             env!("CARGO_PKG_VERSION")
         );
+    }
+
+    #[test]
+    fn an_update_is_offered_and_a_failed_download_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(mut h) = in_library(tmp.path()) else {
+            return;
+        };
+        let toast = || update::Toast {
+            update: lemmata_shell::update::Update {
+                version: "9.9.9".into(),
+                // Nothing listens there: the download fails at once.
+                url: "http://127.0.0.1:9/Lemmata.AppImage".into(),
+                signature: String::new(),
+            },
+            progress: None,
+            error: None,
+        };
+        h.state_mut().update = Some(toast());
+        wait_for(&mut h, "the toast", |h| {
+            h.query_by_label("Lemmata 9.9.9 is available.").is_some()
+        });
+        h.run_steps(2);
+        let _ = h.try_snapshot("update-light");
+        h.get_by_label("Later").click();
+        h.run_steps(2);
+        assert!(h.state().update.is_none());
+        h.state_mut().update = Some(toast());
+        h.run_steps(3);
+        h.get_by_label("Install and restart").click();
+        wait_for(&mut h, "the failure", |h| {
+            h.query_by_label_contains("The update failed").is_some()
+        });
+        assert!(AFTER_EXIT.lock().unwrap().is_none(), "nothing to start");
     }
 
     /// A file dropped from the computer, as egui-winit hands it over.

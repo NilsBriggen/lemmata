@@ -1,4 +1,4 @@
-"""Checks finalize-release.py against the file names Tauri's bundler produces."""
+"""Checks finalize-release.py against the file names scripts/package-app.sh produces."""
 
 import json
 import subprocess
@@ -8,29 +8,29 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("finalize-release.py")
 
-TAURI_OUTPUT = {
+PACKAGER_OUTPUT = {
     "linux_x86_64": [
-        "bundle/appimage/Lemmata_0.3.0_amd64.AppImage",
-        "bundle/appimage/Lemmata_0.3.0_amd64.AppImage.sig",
-        "bundle/deb/Lemmata_0.3.0_amd64.deb",
-        "bundle/rpm/Lemmata-0.3.0-1.x86_64.rpm",
+        "lemmata-app_0.3.0_x86_64.AppImage",
+        "lemmata-app_0.3.0_x86_64.AppImage.sig",
+        "lemmata-app_0.3.0_amd64.deb",
+        "lemmata-0.3.0-1.x86_64.rpm",
     ],
     "macos_universal": [
-        "bundle/dmg/Lemmata_0.3.0_universal.dmg",
-        "bundle/macos/Lemmata.app.tar.gz",
-        "bundle/macos/Lemmata.app.tar.gz.sig",
+        "Lemmata_0.3.0_universal.dmg",
+        "Lemmata.app.tar.gz",
+        "Lemmata.app.tar.gz.sig",
     ],
     "windows_x86_64": [
-        "bundle/nsis/Lemmata_0.3.0_x64-setup.exe",
-        "bundle/nsis/Lemmata_0.3.0_x64-setup.exe.sig",
-        "bundle/msi/Lemmata_0.3.0_x64_en-US.msi",
+        "Lemmata_0.3.0_x64-setup.exe",
+        "Lemmata_0.3.0_x64-setup.exe.sig",
+        "Lemmata_0.3.0_x64_en-US.msi",
     ],
 }
 
 
 def run(version: str, tag: str, cli_name: str | None = None) -> Path:
     tmp = Path(tempfile.mkdtemp())
-    for label, files in TAURI_OUTPUT.items():
+    for label, files in PACKAGER_OUTPUT.items():
         for rel in files:
             p = tmp / "artifacts" / label / rel
             p.parent.mkdir(parents=True, exist_ok=True)
