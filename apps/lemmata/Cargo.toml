@@ -40,6 +40,7 @@ dirs = "7"
 open = "5"
 regex.workspace = true
 url = "2"
+getrandom = "0.3"
 ropey = "1.6"
 unicode-segmentation = "1"
 rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "wayland", "tokio"] }

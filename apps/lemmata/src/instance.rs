@@ -63,7 +63,7 @@ pub fn listen(
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
-    let token = token();
+    let token = token().ok_or_else(|| std::io::Error::other("no secure random source"))?;
     std::fs::create_dir_all(dir)?;
     write_private(&file(dir), &format!("{port} {token}"))?;
     std::thread::Builder::new()
@@ -93,20 +93,12 @@ pub fn listen(
     Ok(())
 }
 
-/// A random token from the OS's randomness, through std's hasher keys.
-fn token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    (0..4)
-        .map(|_| {
-            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-            h.write_u128(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos()),
-            );
-            format!("{:016x}", h.finish())
-        })
-        .collect()
+/// 32 bytes from the OS's secure random source, as hex. None if it can't give any: then no
+/// instance listens, rather than one with a guessable token.
+fn token() -> Option<String> {
+    let mut b = [0u8; 32];
+    getrandom::fill(&mut b).ok()?;
+    Some(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {

@@ -3539,6 +3539,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "egui_system_font_provider",
+ "getrandom 0.3.4",
  "hayro",
  "image",
  "lemmata-bib",
