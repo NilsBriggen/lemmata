@@ -3726,7 +3726,6 @@ dependencies = [
  "lemmata-git",
  "lemmata-grammar",
  "lemmata-history",
- "lemmata-log",
  "lemmata-pkgmap",
  "lemmata-project",
  "lemmata-spell",

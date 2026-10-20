@@ -129,6 +129,7 @@ Per milestone: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `
 | M5 egui app: plus completion, snippets, folds, problems in the editor, RaTeX maths, hover cards, texlab client | 32.2 MB | linux x86_64, 2026-10-20; texlab (14.6 MB) is downloaded on first use, not shipped |
 | M6 egui app: plus spell and grammar checks, review comments, TODOs, Git, History with latexdiff, citation picker and bibliography manager, figure/table dialogs, rename, project search, file actions, Preferences, Project settings | 34.9 MB | linux x86_64, 2026-10-20 |
 | M7 egui app: plus the command palette and quick open, shortcuts sheet, word count, reports, What's new, presenting with a presenter window, drag and drop in the tree and from the computer, single instance and `lemmata://` registration | 35.2 MB | linux x86_64, 2026-10-20 |
+| After the audit fixes, with dependencies built for size except the per-frame and per-keystroke ones, and without reqwest's charset and HTTP/2 | 31.0 MB | linux x86_64, 2026-10-20; start-up 50 ms CPU to the first screen, 0 CPU while idle, 51 MB resident |
 
 M4: the release profile switched to `panic = "unwind"` (+2.8 MB) so a PDF that makes hayro panic leaves that page blank instead of ending the app with unsaved edits. The alternative is rendering in a child process with `abort`. The hayro stack (hayro-interpret, hayro-syntax, vello_cpu, fearless_simd, JBIG2/JPEG 2000) is about 3.5 MB of the rest; JPEG, GIF and WebP decoding for image tabs adds about 0.4 MB.
 

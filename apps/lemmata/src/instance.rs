@@ -156,7 +156,12 @@ pub fn register_scheme() {
             let run = |cmd: &str, args: &[&str]| {
                 let mut c = std::process::Command::new(cmd);
                 lemmata_env::host(&mut c);
-                let _ = c.args(args).status();
+                // Their complaints (a missing qtpaths, say) are no business of the app's output.
+                let _ = c
+                    .args(args)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
             };
             run("update-desktop-database", &[&dir.to_string_lossy()]);
             run("xdg-mime", &["default", &name, "x-scheme-handler/lemmata"]);
