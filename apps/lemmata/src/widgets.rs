@@ -35,6 +35,7 @@ pub struct Button<'a> {
     enabled: bool,
     trailing: Option<Icon>,
     ink: Option<Color32>,
+    angle: f32,
 }
 
 impl<'a> Button<'a> {
@@ -48,6 +49,7 @@ impl<'a> Button<'a> {
             enabled: true,
             trailing: None,
             ink: None,
+            angle: 0.0,
         }
     }
     /// An icon-only button (`.btn.icon`, drawn with `show_icon`); `label` is its accessible name.
@@ -65,6 +67,11 @@ impl<'a> Button<'a> {
     /// An icon after the text, as "Continue →".
     pub fn trailing_icon(mut self, icon: Icon) -> Self {
         self.trailing = Some(icon);
+        self
+    }
+    /// Turns the leading icon, for a spinner.
+    pub fn icon_angle(mut self, angle: f32) -> Self {
+        self.angle = angle;
         self
     }
     /// A text colour other than the kind's (`.skip { color: var(--muted) }`).
@@ -192,7 +199,7 @@ impl<'a> Button<'a> {
                     egui::pos2(x, rect.center().y - icon_size / 2.0),
                     Vec2::splat(icon_size),
                 );
-                icons::paint(painter, r, icon, ink);
+                icons::paint_rotated(painter, r, icon, ink, self.angle);
                 x += icon_size + 6.0;
             }
             if let Some(galley) = galley {
@@ -481,10 +488,15 @@ impl Rich {
         // A Label wraps at the available width, so the job's own width becomes the Ui's.
         let width = self.0.wrap.max_width;
         if width.is_finite() {
-            ui.scope(|ui| {
-                ui.set_max_width(width);
-                ui.add(egui::Label::new(self.0).selectable(false))
-            })
+            // In a horizontal row a Label would not wrap at all, so it gets a box of its own.
+            ui.allocate_ui_with_layout(
+                Vec2::new(width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_max_width(width);
+                    ui.add(egui::Label::new(self.0).selectable(false).wrap())
+                },
+            )
             .inner
         } else {
             ui.add(egui::Label::new(self.0).selectable(false).extend())

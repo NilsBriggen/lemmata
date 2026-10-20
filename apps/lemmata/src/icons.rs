@@ -31,7 +31,14 @@ pub fn show(ui: &mut Ui, icon: Icon, size: f32, color: Color32) -> Response {
 }
 
 pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
+    paint_rotated(painter, rect, icon, color, 0.0);
+}
+
+/// Turned by `angle` radians about the centre, for the spinning refresh icon (`.spin`).
+pub fn paint_rotated(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32, angle: f32) {
     let scale = rect.width() / 24.0;
+    let rot = egui::emath::Rot2::from_angle(angle);
+    let center = rect.center();
     let width = STROKE * scale;
     let stroke = Stroke::new(width, color);
     for d in icon {
@@ -39,7 +46,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             let points: Vec<Pos2> = line
                 .points
                 .iter()
-                .map(|p| rect.min + p.to_vec2() * scale)
+                .map(|p| center + rot * ((rect.min + p.to_vec2() * scale) - center))
                 .collect();
             if !line.closed {
                 // Round caps.

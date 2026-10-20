@@ -12,6 +12,9 @@ pub fn harness<'a>(p: Palette, mut ui: impl FnMut(&mut egui::Ui) + 'a) -> Harnes
     Harness::builder()
         .with_size(WINDOW)
         .with_context_setup(move |ctx| {
+            ctx.add_font_provider(std::sync::Arc::new(
+                egui_system_font_provider::SystemFontProvider::new(),
+            ));
             theme::install_fonts(ctx);
             theme::apply(ctx, &p);
         })

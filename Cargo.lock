@@ -3263,6 +3263,8 @@ dependencies = [
  "dirs",
  "eframe",
  "egui_kittest",
+ "egui_system_font_provider",
+ "lemmata-shell",
  "lemmata-tex",
  "serde",
  "serde_json",
