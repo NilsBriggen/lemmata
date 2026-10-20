@@ -1,0 +1,28 @@
+[package]
+name = "lemmata-app"
+description = "Lemmata, the LaTeX editor: the native egui interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "lemmata-app"
+path = "src/main.rs"
+
+[dependencies]
+# Only what the app draws with: no bundled egui fonts, no GLES or WebGPU backends.
+eframe = { version = "0.37", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "links",
+    "system_fonts",
+    "wayland",
+    "x11",
+    "wgpu_no_default_features",
+] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl"] }
+
+[dev-dependencies]
+egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
