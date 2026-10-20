@@ -132,6 +132,44 @@ fn in_repository(root: &Path) -> bool {
 /// Which files of the project differ from the last commit. Empty when the
 /// folder isn't in a git repository (or git isn't installed). Never changes
 /// anything in the repository.
+/// `text` (a git config file) with only the `[core]` and `[extensions]` keys `git init` writes.
+fn safe_config_text(text: &str) -> String {
+    const KEYS: [&str; 8] = [
+        "repositoryformatversion",
+        "filemode",
+        "bare",
+        "logallrefupdates",
+        "ignorecase",
+        "precomposeunicode",
+        "symlinks",
+        "objectformat",
+    ];
+    let mut out = String::new();
+    let mut keep = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            let name = t.trim_matches(['[', ']']).trim().to_ascii_lowercase();
+            keep = name == "core" || name == "extensions";
+            if keep {
+                out.push_str(&format!("[{name}]\n"));
+            }
+        } else if keep && !t.starts_with(['#', ';']) && t.contains('=') {
+            let key = t
+                .split('=')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            if KEYS.contains(&key.as_str()) {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 pub fn working_status(root: &Path) -> Vec<FileStatus> {
     // Checked without spawning git, since this runs after every save.
     if !in_repository(root) {
@@ -190,6 +228,7 @@ impl History {
                 separate: true,
             };
             h.exclude_build_folder()?;
+            h.safe_config()?;
             return Ok(h);
         }
         let out = lemmata_env::host(&mut Command::new(&git))
@@ -230,6 +269,18 @@ impl History {
         no_window(&mut unset);
         let _ = unset.output();
         History::open(root)
+    }
+
+    /// The store can arrive with the project (committed to a cloned repository), and git config
+    /// can name programs to run (core.fsmonitor, filters). Only the keys `git init` writes stay.
+    fn safe_config(&self) -> Result<()> {
+        let path = self.git_dir.join("config");
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let kept = safe_config_text(&text);
+        if kept != text {
+            std::fs::write(&path, kept)?;
+        }
+        Ok(())
     }
 
     /// Keeps `.lemmata/` out of snapshots without editing the user's .gitignore.
@@ -487,6 +538,21 @@ fn parse_entry(entry: &str) -> Option<Snapshot> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_shipped_store_loses_keys_that_run_programs() {
+        let cfg = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tfsmonitor = touch /tmp/x\n[filter \"x\"]\n\tclean = sh -c evil\n[extensions]\n\tobjectformat = sha1\n";
+        assert_eq!(
+            safe_config_text(cfg),
+            "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n[extensions]\n\tobjectformat = sha1\n"
+        );
+        let clean = safe_config_text(cfg);
+        assert_eq!(
+            safe_config_text(&clean),
+            clean,
+            "a safe config is left alone"
+        );
+    }
+
     #[test]
     fn working_status_sees_real_changes() {
         let Some(git) = find_git() else { return };

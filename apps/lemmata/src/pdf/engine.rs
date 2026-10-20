@@ -316,7 +316,12 @@ fn draw<'a>(
 ) -> ColorImage {
     let (w, h) = page.render_dimensions();
     let k = (MAX_PIXELS / (w * h * scale * scale)).sqrt().min(1.0);
-    let s = (scale * k).max(0.01);
+    // No floor on the scale: a page declared absurdly large is simply drawn tiny, never
+    // allocated at full size.
+    let s = scale * k;
+    if !(s.is_finite() && w * s >= 1.0 && h * s >= 1.0) {
+        return blank(page, scale);
+    }
     let pix = PixmapSettings {
         x_scale: s,
         y_scale: s,

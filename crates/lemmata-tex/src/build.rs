@@ -102,8 +102,32 @@ pub fn latexmk_args(project: &Project, miktex: bool) -> Vec<OsString> {
     if c.draft {
         args.push("-usepretex=\\PassOptionsToPackage{draft}{graphicx}".into());
     }
+    // A project's latexmkrc is a Perl program: only a trusted project's runs. The user's own
+    // rc files still apply.
+    if !project.trusted {
+        args.push("-norc".into());
+        for rc in user_rcs().into_iter().filter(|p| p.is_file()) {
+            args.push("-r".into());
+            args.push(rc.into());
+        }
+    }
     args.push(project.main.as_os_str().to_owned());
     args
+}
+
+/// The user's own latexmk rc files, where latexmk looks for them.
+fn user_rcs() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    home.into_iter()
+        .flat_map(|h| {
+            [
+                h.join(".latexmkrc"),
+                h.join(".config").join("latexmk").join("latexmkrc"),
+            ]
+        })
+        .collect()
 }
 
 /// Builds the project. Sending on `cancel` (or dropping the sender) stops the
@@ -507,20 +531,12 @@ fn warm_ok(project: &Project) -> bool {
     if !changed_since(project, &outdir.join(OK_STAMP)) {
         return false;
     }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from);
     let rcs = [
         project.root.join("latexmkrc"),
         project.root.join(".latexmkrc"),
     ]
     .into_iter()
-    .chain(home.into_iter().flat_map(|h| {
-        [
-            h.join(".latexmkrc"),
-            h.join(".config").join("latexmk").join("latexmkrc"),
-        ]
-    }));
+    .chain(user_rcs());
     if rcs.into_iter().any(|p| p.exists()) {
         return false;
     }
@@ -1009,6 +1025,10 @@ mod tests {
             .collect();
         assert!(args.contains(&"-pdf".to_string()));
         assert!(args.contains(&"-no-shell-escape".to_string()));
+        assert!(
+            args.contains(&"-norc".to_string()),
+            "a project's latexmkrc doesn't run until it is trusted"
+        );
         assert_eq!(args.last().unwrap(), "main.tex");
 
         p.config.engine = lemmata_project::Engine::Lualatex;

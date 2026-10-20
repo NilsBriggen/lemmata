@@ -96,6 +96,8 @@ pub enum NoticeAction {
     PasteAsText(String, usize, String, String),
     /// Undoes the last file operation in the tree.
     UndoFiles,
+    /// Lets this project's latexmkrc run (and shell escape, when it asks for it).
+    TrustProject,
 }
 
 impl NoticeAction {
@@ -109,6 +111,7 @@ impl NoticeAction {
             NoticeAction::LinkZotero => "Add it",
             NoticeAction::PasteAsText(..) => "Paste as text instead",
             NoticeAction::UndoFiles => "Undo",
+            NoticeAction::TrustProject => "Use it",
         }
     }
 }
@@ -204,6 +207,8 @@ pub struct Workspace {
     pub table: Option<insert::TableDialog>,
     /// Run once every write in flight has finished (changes on disk that must not lose edits).
     pub after_writes: Vec<AfterWrites>,
+    /// "Use it" on the latexmkrc notice: the next frame puts the project on the trust list.
+    pub trust_requested: bool,
     /// Spelling and grammar, shared by the editors.
     pub checks: crate::writing::Checks,
     /// The spell-check language last asked for, with the project's words then.
@@ -327,6 +332,7 @@ impl Workspace {
             shortcut_sheet: None,
             table: None,
             after_writes: Vec::new(),
+            trust_requested: false,
             checks: crate::writing::Checks::default(),
             spell_asked: None,
             dictionaries_offered: HashSet::new(),
@@ -1318,6 +1324,13 @@ impl Workspace {
             self.shortcuts(&ctx, backend, settings, &mut action);
         }
         self.snapshot_timer(backend);
+        if std::mem::take(&mut self.trust_requested)
+            && !settings.shell_escape_projects.contains(&self.root)
+        {
+            settings.shell_escape_projects.push(self.root.clone());
+            action = Some(Action::Settings);
+            self.build_soon(false, true);
+        }
         if !self.writing() && !self.after_writes.is_empty() {
             for then in std::mem::take(&mut self.after_writes) {
                 then(self, backend);

@@ -191,6 +191,9 @@ pub struct Project {
     pub main: PathBuf,
     /// Every file that could be the main file, relative to `root`.
     pub main_candidates: Vec<PathBuf>,
+    /// The project may run its own latexmkrc (Perl). Off for a project just opened: the app
+    /// turns it on for projects the user allowed to run programs.
+    pub trusted: bool,
 }
 
 impl Project {
@@ -241,6 +244,7 @@ impl Project {
             config,
             main,
             main_candidates,
+            trusted: false,
         })
     }
 

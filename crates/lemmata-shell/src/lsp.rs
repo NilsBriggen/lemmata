@@ -253,6 +253,13 @@ async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(
             "message without Content-Length",
         ));
     };
+    // A message is far smaller; a wrong length must not allocate gigabytes.
+    if len > 64 << 20 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "message too large",
+        ));
+    }
     let mut buf = vec![0; len];
     reader.read_exact(&mut buf).await?;
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
@@ -291,5 +298,8 @@ mod tests {
         );
         assert_eq!(read_message(&mut r).await.unwrap().as_deref(), Some("{}"));
         assert_eq!(read_message(&mut r).await.unwrap(), None);
+        // A wrong length is an error, not a huge allocation.
+        let mut r = BufReader::new(&b"Content-Length: 99999999999999\r\n\r\n{}"[..]);
+        assert!(read_message(&mut r).await.is_err());
     }
 }

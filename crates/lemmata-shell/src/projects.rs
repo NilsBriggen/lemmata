@@ -470,7 +470,16 @@ fn extract_project<R: Read + Seek>(
                 Some(prefix) => path.strip_prefix(prefix).unwrap_or(path),
                 None => path.as_path(),
             };
-            if rel.as_os_str().is_empty() || rel.components().any(|c| c.as_os_str() == "__MACOSX") {
+            // A repository's or Lemmata's own settings can name programs to run (git's
+            // core.fsmonitor, say): those never come in from a zip.
+            if rel.as_os_str().is_empty()
+                || rel.components().any(|c| {
+                    matches!(
+                        c.as_os_str().to_str(),
+                        Some("__MACOSX" | ".git" | ".lemmata")
+                    )
+                })
+            {
                 continue;
             }
             let dest = target.join(rel);
@@ -573,6 +582,23 @@ mod tests {
         assert!(out.join("main.tex").is_file());
         assert!(out.join("ch/1.tex").is_file());
         assert!(!out.join("__MACOSX").exists());
+    }
+
+    #[test]
+    fn leaves_out_repository_and_lemmata_settings() {
+        let d = tempfile::tempdir().unwrap();
+        let z = d.path().join("x.zip");
+        make_zip(
+            &z,
+            &[
+                ("main.tex", "x"),
+                (".git/config", "[core]\n\tfsmonitor = sh -c evil"),
+                (".lemmata/history/config", "x"),
+            ],
+        );
+        let out = import_zip(&z, d.path(), "x").unwrap().remove(0);
+        assert!(out.join("main.tex").is_file());
+        assert!(!out.join(".git").exists() && !out.join(".lemmata").exists());
     }
 
     #[test]

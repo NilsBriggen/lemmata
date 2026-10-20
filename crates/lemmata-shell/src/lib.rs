@@ -437,6 +437,8 @@ impl Shell {
             .ok_or("No project is open.")?;
         // A downloaded project's lemmata.toml can't run programs on its own: the user must have allowed it.
         project.config.shell_escape &= shell_escape;
+        // The same consent lets the project's latexmkrc run.
+        project.trusted = shell_escape;
         let known = self.detection.lock_safe().clone();
         let detection = match known {
             Some(d) => d,

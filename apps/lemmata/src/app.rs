@@ -412,6 +412,19 @@ impl App {
                 self.close_project();
                 let ready = self.tex.as_ref().is_some_and(|t| t.detection.ready);
                 let mut ws = Workspace::open(info, &self.dirs, &self.backend, ready);
+                // A project's latexmkrc is a Perl program: it runs only once the user says so.
+                let rc = ["latexmkrc", ".latexmkrc"]
+                    .iter()
+                    .any(|f| ws.info.root.join(f).is_file());
+                if rc && !self.settings.shell_escape_projects.contains(&ws.root) {
+                    ws.notices.push(
+                        workspace::Notice::new(
+                            "This project has a latexmkrc, which can run programs on your computer, so builds leave it out. Use it only if you trust the project.",
+                            workspace::Tone::Info,
+                        )
+                        .action(workspace::NoticeAction::TrustProject),
+                    );
+                }
                 if let Some(file) = self.open_file_after.take() {
                     ws.open_requested(&self.backend, &file);
                 }
@@ -2517,6 +2530,54 @@ mod tests {
                 .as_ref()
                 .is_some_and(|w| w.active.as_deref() == Some("chapters/method.tex"))
         });
+    }
+
+    #[test]
+    fn a_projects_latexmkrc_waits_for_consent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("paper");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\nHi\n\\end{document}\n",
+        )
+        .unwrap();
+        std::fs::write(project.join(".latexmkrc"), "system('touch pwned');").unwrap();
+        let d = dirs(tmp.path());
+        let mut recents = Recents::default();
+        recents.remember(&project.to_string_lossy(), 1.0);
+        recents.save(&d);
+        Settings {
+            first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
+            ..Settings::default()
+        }
+        .save(&d);
+        let mut h = app(tmp.path());
+        wait_for(&mut h, "the project or onboarding", |h| {
+            h.state().project.is_some() || h.query_by_label("Check again").is_some()
+        });
+        if h.state().project.is_none() {
+            return;
+        }
+        let asks = |h: &Harness<App>| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .notices
+                .iter()
+                .any(|n| n.action == Some(crate::workspace::NoticeAction::TrustProject))
+        };
+        assert!(asks(&h), "the notice offers to use it");
+        wait_for(&mut h, "the notice", |h| {
+            h.query_by_label("Use it").is_some()
+        });
+        assert!(h.state().settings.shell_escape_projects.is_empty());
+        h.get_by_label("Use it").click();
+        h.run_steps(3);
+        let root = h.state().project.as_ref().unwrap().root.clone();
+        assert_eq!(h.state().settings.shell_escape_projects, [root]);
     }
 
     #[test]

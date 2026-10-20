@@ -5,7 +5,7 @@
 //! file only the user can read. A second launch finds the file, connects, sends its arguments with
 //! the token and quits; the first opens what they name and comes to the front.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -59,35 +59,41 @@ pub fn forward(dir: &Path, args: &[String], cwd: &Path) -> bool {
 /// Becomes the instance others hand their launches to: `on` gets each one's arguments and folder.
 pub fn listen(
     dir: &Path,
-    on: impl Fn(Vec<String>, String) + Send + 'static,
+    on: impl Fn(Vec<String>, String) + Send + Sync + 'static,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let token = token().ok_or_else(|| std::io::Error::other("no secure random source"))?;
     std::fs::create_dir_all(dir)?;
     write_private(&file(dir), &format!("{port} {token}"))?;
+    let shared = std::sync::Arc::new((token, on));
     std::thread::Builder::new()
         .name("instance".into())
         .spawn(move || {
             for s in listener.incoming().flatten() {
-                let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
-                let mut line = String::new();
-                let Ok(mut reader) = s.try_clone().map(BufReader::new) else {
-                    continue;
-                };
-                if reader.read_line(&mut line).is_err() {
-                    continue;
-                }
-                // Only someone who could read the file (this user) may ask.
-                let Ok(launch) = serde_json::from_str::<Launch>(&line) else {
-                    continue;
-                };
-                if launch.token != token {
-                    continue;
-                }
-                let mut s = s;
-                let _ = writeln!(s, "ok");
-                on(launch.args, launch.cwd);
+                // Each on its own thread, so a client that stalls holds up nobody else.
+                let shared = shared.clone();
+                std::thread::spawn(move || {
+                    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut line = String::new();
+                    let Ok(reader) = s.try_clone().map(BufReader::new) else {
+                        return;
+                    };
+                    // A launch is a few hundred bytes: more is not one, and must not fill memory.
+                    if reader.take(64 * 1024).read_line(&mut line).is_err() {
+                        return;
+                    }
+                    // Only someone who could read the file (this user) may ask.
+                    let Ok(launch) = serde_json::from_str::<Launch>(&line) else {
+                        return;
+                    };
+                    if launch.token != shared.0 {
+                        return;
+                    }
+                    let mut s = s;
+                    let _ = writeln!(s, "ok");
+                    (shared.1)(launch.args, launch.cwd);
+                });
             }
         })?;
     Ok(())

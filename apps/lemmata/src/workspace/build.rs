@@ -438,6 +438,7 @@ impl Workspace {
             NoticeAction::SetUpTex => {}
             NoticeAction::LinkZotero => self.link_zotero(backend, settings),
             NoticeAction::UndoFiles => self.undo_files(backend),
+            NoticeAction::TrustProject => self.trust_requested = true,
             NoticeAction::PasteAsText(path, from, table, text) => {
                 if let Some(ed) = self.editors.get_mut(&path) {
                     let to = from + table.chars().count();
