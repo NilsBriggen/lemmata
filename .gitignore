@@ -11,3 +11,6 @@ apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/binaries/
 .claude/worktrees/
 /spikes/*/target
+/apps/lemmata/tests/snapshots/*.old.png
+/apps/lemmata/tests/snapshots/*.diff.png
+/apps/lemmata/tests/snapshots/*.new.png

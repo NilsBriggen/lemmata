@@ -2,6 +2,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+#[allow(dead_code)]
+mod screens;
+#[allow(dead_code)]
+mod spell;
+#[allow(dead_code)]
+mod store;
+#[cfg(test)]
+mod testing;
 // shortcut: icons, widgets and some tokens are unused until the panels land in M2; drop the allows then.
 #[allow(dead_code)]
 mod icons;
