@@ -19,9 +19,11 @@ mod testing;
 #[allow(dead_code)]
 mod icons;
 mod lsp;
+mod panels;
 mod pdf;
 #[allow(dead_code)]
 mod theme;
+mod when;
 #[allow(dead_code)]
 mod widgets;
 #[allow(dead_code)]

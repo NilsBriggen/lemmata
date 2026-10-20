@@ -2,9 +2,17 @@
 //! and their editors, saving with conflict checks, outside changes, the session, and the layout
 //! of toolbar, sidebar, code column and PDF pane.
 
+mod bib;
 pub mod buffers;
 mod build;
 mod chrome;
+pub mod files;
+mod history;
+mod insert;
+pub mod panels;
+mod project_settings;
+mod rename;
+mod search;
 pub mod session;
 mod symbols;
 pub mod tree;
@@ -30,6 +38,9 @@ pub enum Action {
     Library,
     /// A setting changed (layout, widths, tree sort…); save it.
     Settings,
+    Preferences,
+    /// "Save as template…" for this project's folder.
+    SaveTemplate(String),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -66,20 +77,32 @@ impl Notice {
 pub enum NoticeAction {
     /// Adds `\usepackage{…}` for something just inserted.
     AddPackage(String),
+    /// Downloads a spell-check dictionary.
+    Download(String),
     /// Export for arXiv although the build failed (flattened or not).
     ArxivAnyway(bool),
     /// Build normally again after a draft export.
     DraftOff,
     SetUpTex,
+    /// Loads zotero.bib in the main file.
+    LinkZotero,
+    /// Puts back the pasted text a table was made from: the file, where, the table, the text.
+    PasteAsText(String, usize, String, String),
+    /// Undoes the last file operation in the tree.
+    UndoFiles,
 }
 
 impl NoticeAction {
     fn label(&self) -> &'static str {
         match self {
             NoticeAction::AddPackage(_) => "Add it",
+            NoticeAction::Download(_) => "Download",
             NoticeAction::ArxivAnyway(_) => "Export anyway",
             NoticeAction::DraftOff => "Switch to Normal",
             NoticeAction::SetUpTex => "Set up TeX",
+            NoticeAction::LinkZotero => "Add it",
+            NoticeAction::PasteAsText(..) => "Paste as text instead",
+            NoticeAction::UndoFiles => "Undo",
         }
     }
 }
@@ -92,7 +115,12 @@ pub enum Menu {
     Sort(Rect),
     Heading(Rect),
     Tab(String, Rect),
+    /// The tree's right-click menu: on a row, or on its empty space.
+    Tree(Option<String>, Rect),
 }
+
+/// Work that waits for the writes in flight.
+pub type AfterWrites = Box<dyn FnOnce(&mut Workspace, &Backend)>;
 
 pub struct Workspace {
     pub info: ProjectInfo,
@@ -114,6 +142,8 @@ pub struct Workspace {
     pub total_words: u32,
     pub collapsed: HashSet<String>,
     pub tree_cursor: Option<String>,
+    pub sel: files::TreeSel,
+    pub files: files::FileActions,
     pub outline_open: bool,
     pub outline_folded: HashSet<String>,
     pub open_error: Option<String>,
@@ -149,6 +179,33 @@ pub struct Workspace {
     offered: HashSet<String>,
     /// The symbol palette, while open.
     pub symbols: Option<symbols::SymbolPalette>,
+    pub cite: Option<bib::CitePicker>,
+    /// Project search, in the sidebar's place.
+    pub search: Option<search::ProjectSearch>,
+    pub bib_manager: Option<bib::BibManager>,
+    pub figure: Option<insert::FigureDialog>,
+    pub rename: Option<rename::RenameSymbol>,
+    pub project_settings: Option<project_settings::ProjectSettings>,
+    pub table: Option<insert::TableDialog>,
+    /// Run once every write in flight has finished (changes on disk that must not lose edits).
+    pub after_writes: Vec<AfterWrites>,
+    /// Spelling and grammar, shared by the editors.
+    pub checks: crate::writing::Checks,
+    /// The spell-check language last asked for, with the project's words then.
+    spell_asked: Option<(String, Vec<String>)>,
+    /// Languages whose missing dictionary was offered this session.
+    dictionaries_offered: HashSet<String>,
+    /// The main file's language from babel or polyglossia, for "auto".
+    detected: &'static str,
+    /// The panel shown where the PDF is, if any.
+    pub panel: Option<panels::Panel>,
+    pub comments: panels::Comments,
+    pub todos: panels::Todos,
+    pub git: panels::Git,
+    pub history: history::History,
+    /// Paragraphs waiting for LanguageTool, and how many requests are out.
+    grammar_queue: Vec<String>,
+    grammar_out: usize,
     /// texlab: completion, hover, definitions and references.
     pub lsp: crate::lsp::Lsp,
     /// Find references' list: file, line (1-based), column, and the line's text.
@@ -216,6 +273,8 @@ impl Workspace {
             total_words: 0,
             collapsed: HashSet::new(),
             tree_cursor: None,
+            sel: Default::default(),
+            files: Default::default(),
             outline_open: true,
             outline_folded: HashSet::new(),
             open_error: None,
@@ -239,6 +298,25 @@ impl Workspace {
             lookups: Default::default(),
             offered: HashSet::new(),
             symbols: None,
+            cite: None,
+            search: None,
+            bib_manager: None,
+            figure: None,
+            rename: None,
+            project_settings: None,
+            table: None,
+            after_writes: Vec::new(),
+            checks: crate::writing::Checks::default(),
+            spell_asked: None,
+            dictionaries_offered: HashSet::new(),
+            detected: "en",
+            panel: None,
+            comments: Default::default(),
+            todos: Default::default(),
+            git: Default::default(),
+            history: Default::default(),
+            grammar_queue: Vec::new(),
+            grammar_out: 0,
             lsp: crate::lsp::Lsp::new(&root_for_lsp),
             references: None,
             lsp_tx: None,
@@ -273,7 +351,12 @@ impl Workspace {
         backend.spawn_async(|shell| async move { Msg::LspStarted(shell.lsp_start().await) });
         if let Ok(main) = std::fs::read_to_string(ws.info.root.join(&ws.info.main)) {
             Self::set_macros(&main);
+            ws.detected = crate::writing::spell::detect_language(&main);
         }
+        ws.checks.spell.shell = Some(backend.shell.clone());
+        ws.load_comments(backend);
+        ws.ensure_history(backend);
+        ws.refresh_git_status(backend);
         ws.pane.view.set_position(&ws.session_pdf);
         // The PDF on disk shows right away; it is only built again when something changed since.
         backend.spawn(|shell| Msg::Pdf(shell.read_pdf()));
@@ -402,6 +485,119 @@ impl Workspace {
                 self.references = Some(rows);
             }
         }
+    }
+
+    /// The spell-check language: a `% !TeX spellcheck` comment in the open file, the project's
+    /// choice, or the app's default (guessed from babel or polyglossia for "auto").
+    pub(super) fn spell_language(&self, settings: &Settings) -> String {
+        let magic = self
+            .active
+            .as_ref()
+            .filter(|a| tree::is_tex(a))
+            .and_then(|a| self.editors.get(a))
+            .and_then(|e| {
+                let head: Vec<String> = (0..e.doc.line_count().min(30))
+                    .map(|n| e.doc.line(n))
+                    .collect();
+                crate::writing::spell::magic_language(&head.join("\n"))
+            });
+        let fallback = if settings.spell_default == "auto" {
+            self.detected.to_owned()
+        } else {
+            settings.spell_default.clone()
+        };
+        magic
+            .or_else(|| self.info.config.spellcheck.clone())
+            .unwrap_or(fallback)
+    }
+
+    /// Loads another spell-check language when the file, project or settings ask for one, and
+    /// points grammar checking at the same language.
+    fn apply_language(&mut self, backend: &Backend, settings: &Settings) {
+        let lang = self.spell_language(settings);
+        let lang = if crate::writing::spell::LANGUAGES
+            .iter()
+            .any(|(c, _)| *c == lang)
+        {
+            lang
+        } else {
+            "off".to_owned()
+        };
+        let words = self.info.config.words.clone();
+        if self.spell_asked.as_ref() != Some(&(lang.clone(), words.clone())) {
+            self.spell_asked = Some((lang.clone(), words.clone()));
+            let l = lang.clone();
+            backend.spawn(move |shell| {
+                let r = shell.spell_set_language(l.clone(), words);
+                Msg::SpellLoaded((l != "off").then_some(l), r)
+            });
+            // A language whose dictionary isn't here yet is offered, once a session.
+            if lang != "off" && self.dictionaries_offered.insert(lang.clone()) {
+                backend.spawn(move |shell| match shell.spell_available() {
+                    Ok(list) => match list.into_iter().find(|d| d.code == lang && !d.installed) {
+                        Some(d) => Msg::Dictionary(d),
+                        None => Msg::Done(Ok(())),
+                    },
+                    Err(_) => Msg::Done(Ok(())),
+                });
+            }
+        }
+        let lang = self
+            .spell_asked
+            .as_ref()
+            .map_or("off".to_owned(), |a| a.0.clone());
+        self.checks
+            .grammar
+            .configure(&settings.grammar, &settings.grammar_url, &lang);
+        self.checks
+            .grammar
+            .set_ignored(&self.info.config.grammar_ignore);
+    }
+
+    /// Sends waiting paragraphs to LanguageTool, two at a time.
+    fn pump_grammar(&mut self, backend: &Backend) {
+        let Some(target) = self.checks.grammar.target.clone() else {
+            self.grammar_queue.clear();
+            return;
+        };
+        while self.grammar_out < 2 && !self.grammar_queue.is_empty() {
+            let text = self.grammar_queue.remove(0);
+            self.grammar_out += 1;
+            let t = target.clone();
+            backend.spawn_async(move |shell| async move {
+                let r = shell
+                    .grammar_check(t.0.clone(), t.1.clone(), text.clone())
+                    .await;
+                Msg::GrammarFound(t, text, r)
+            });
+        }
+    }
+
+    /// Runs `work` off the UI thread, then `then` with its result on the open project.
+    pub fn job<T: Send + 'static>(
+        backend: &Backend,
+        work: impl FnOnce(&lemmata_shell::Shell) -> T + Send + 'static,
+        then: impl FnOnce(&mut Workspace, &Backend, T) + Send + 'static,
+    ) {
+        backend.spawn(move |shell| {
+            let r = work(shell);
+            Msg::Apply(Box::new(move |ws, b| then(ws, b, r)))
+        });
+    }
+
+    /// The same for the shell's async calls.
+    pub fn job_async<T: Send + 'static, Fut: std::future::Future<Output = T> + Send + 'static>(
+        backend: &Backend,
+        work: impl FnOnce(std::sync::Arc<lemmata_shell::Shell>) -> Fut + Send + 'static,
+        then: impl FnOnce(&mut Workspace, &Backend, T) + Send + 'static,
+    ) {
+        backend.spawn_async(move |shell| async move {
+            let r = work(shell).await;
+            Msg::Apply(
+                Box::new(move |ws: &mut Workspace, b: &Backend| then(ws, b, r))
+                    as crate::backend::Job,
+            )
+        });
     }
 
     /// Something just inserted needs `pkg`: offer to load it, once, if the document doesn't.
@@ -712,11 +908,18 @@ impl Workspace {
                 ) {
                     WriteResult::Saved => {
                         self.after_save(backend, settings, &path);
+                        self.move_comments(backend, &path, &written);
+                        self.snapshot_after_save(backend);
+                        self.refresh_git_status(backend);
+                        if self.panel == Some(panels::Panel::Todos) {
+                            self.load_todos(backend);
+                        }
                         if path.ends_with(".tex") || path.ends_with(".bib") {
                             self.refresh_lookups(backend, false);
                         }
                         if path == self.info.main {
                             Self::set_macros(&written);
+                            self.detected = crate::writing::spell::detect_language(&written);
                         }
                         if path.ends_with(".tex") {
                             self.refresh_outline(backend);
@@ -762,6 +965,7 @@ impl Workspace {
                 self.total_words = o.total_words;
             }
             Msg::Outline(Err(_)) => {}
+            Msg::Apply(f) => f(self, backend),
             Msg::LspStarted(Ok(generation)) => {
                 self.lsp.generation = Some(generation);
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -802,6 +1006,60 @@ impl Workspace {
                 if Some(generation) == self.lsp.generation {
                     self.lsp.state = crate::lsp::State::Failed("texlab stopped.".into());
                 }
+            }
+            Msg::SpellLoaded(lang, Ok(())) => {
+                if self
+                    .spell_asked
+                    .as_ref()
+                    .map(|a| (a.0 != "off").then(|| a.0.clone()))
+                    == Some(lang.clone())
+                {
+                    self.checks.spell.set_loaded(lang);
+                }
+            }
+            Msg::SpellLoaded(_, Err(_)) => {
+                // Allow a retry; until then no word is marked.
+                self.spell_asked = None;
+                self.checks.spell.set_loaded(None);
+            }
+            Msg::Dictionary(d) => {
+                let size = (d.size_kb / 1024).max(1);
+                self.notices.push(
+                    Notice::new(
+                        format!(
+                            "Spell check in {} needs its dictionary (downloads {size} MB).",
+                            d.label
+                        ),
+                        Tone::Info,
+                    )
+                    .action(NoticeAction::Download(d.code)),
+                );
+            }
+            Msg::SpellDownloaded(code, Ok(())) => {
+                self.spell_asked = None;
+                self.notice(
+                    format!(
+                        "Spell check in {} is on.",
+                        crate::writing::spell::label(&code)
+                    ),
+                    Tone::Ok,
+                );
+            }
+            Msg::SpellDownloaded(_, Err(e)) => self.notice(e, Tone::Error),
+            Msg::GrammarFound(target, text, result) => {
+                self.grammar_out = self.grammar_out.saturating_sub(1);
+                if self.checks.grammar.target.as_ref() == Some(&target) {
+                    match result {
+                        Ok(m) => self.checks.grammar.store(text, m),
+                        Err(e) => {
+                            // Stops at the first failure; a later edit retries.
+                            self.checks.grammar.asked.remove(&text);
+                            self.checks.grammar.error = Some(e);
+                            self.grammar_queue.clear();
+                        }
+                    }
+                }
+                self.pump_grammar(backend);
             }
             Msg::Labels(Ok(l)) => {
                 self.lookups.labels = l;
@@ -850,6 +1108,22 @@ impl Workspace {
 
     /// Files or folders deleted by another program: their tabs close quietly, without saving.
     fn removed_outside(&mut self, backend: &Backend, removed: &[String]) {
+        if !self.close_gone(backend, removed) {
+            return;
+        }
+        let text = if removed.len() == 1 {
+            format!("{} was removed outside Lemmata.", removed[0])
+        } else {
+            format!(
+                "{} files or folders were removed outside Lemmata.",
+                removed.len()
+            )
+        };
+        self.notice(text, Tone::Info);
+    }
+
+    /// Closes the tabs of files that are gone, without saving. False when none was open.
+    fn close_gone(&mut self, backend: &Backend, removed: &[String]) -> bool {
         let gone = |p: &str| {
             removed
                 .iter()
@@ -857,7 +1131,7 @@ impl Workspace {
         };
         let closing: Vec<String> = self.editors.keys().filter(|p| gone(p)).cloned().collect();
         if closing.is_empty() {
-            return;
+            return false;
         }
         for p in &closing {
             self.buffers.forget(p);
@@ -871,15 +1145,7 @@ impl Workspace {
                 self.open_file(backend, &next);
             }
         }
-        let text = if removed.len() == 1 {
-            format!("{} was removed outside Lemmata.", removed[0])
-        } else {
-            format!(
-                "{} files or folders were removed outside Lemmata.",
-                removed.len()
-            )
-        };
-        self.notice(text, Tone::Info);
+        true
     }
 
     /// Index of the heading the cursor is under.
@@ -905,24 +1171,27 @@ impl Workspace {
         }
     }
 
-    pub fn show(
-        &mut self,
-        ui: &mut Ui,
-        p: &Palette,
-        settings: &mut Settings,
-        backend: &Backend,
-    ) -> Option<Action> {
-        let mut action = None;
-        self.indent = Indent::from_setting(&settings.indent);
-        if self.lookups.snippets != settings.snippets {
-            self.lookups.snippets = settings.snippets.clone();
-            self.lookups.generation += 1;
-        }
-        self.run_autosaves(ui, backend, settings);
-        let ctx = ui.ctx().clone();
-        self.poll_build(&ctx, backend, settings);
+    /// A dialog is open over the workspace.
+    pub fn modal_open(&self) -> bool {
+        self.symbols.is_some()
+            || self.cite.is_some()
+            || self.bib_manager.is_some()
+            || self.figure.is_some()
+            || self.table.is_some()
+            || self.rename.is_some()
+            || self.files.dialog.is_some()
+            || self.project_settings.is_some()
+            || self.history.label.is_some()
+    }
 
-        // The app's own keys come before the editor's.
+    fn shortcuts(
+        &mut self,
+        ctx: &egui::Context,
+        backend: &Backend,
+        settings: &mut Settings,
+        action: &mut Option<Action>,
+    ) {
+        let ctx = ctx.clone();
         if crate::shortcuts::consume(&ctx, "save") {
             self.save_all(backend, settings);
         }
@@ -936,6 +1205,24 @@ impl Workspace {
         }
         if self.active.is_some() && crate::shortcuts::consume(&ctx, "symbols") {
             self.symbols = Some(Default::default());
+        }
+        if crate::shortcuts::consume(&ctx, "snapshot") {
+            self.history.label = Some(String::new());
+        }
+        if self.active.is_some()
+            && crate::shortcuts::consume(&ctx, "add-comment")
+            && self.add_comment(backend, settings)
+        {
+            *action = Some(Action::Settings);
+        }
+        if self.active.is_some() && crate::shortcuts::consume(&ctx, "cite") {
+            self.open_cite(backend, None);
+        }
+        if self.active.is_some() && crate::shortcuts::consume(&ctx, "rename") {
+            self.open_rename(backend);
+        }
+        if crate::shortcuts::consume(&ctx, "search") {
+            self.open_search(None);
         }
         if crate::shortcuts::consume(&ctx, "sync") {
             self.sync_forward(backend);
@@ -956,6 +1243,37 @@ impl Workspace {
                 self.open_file(backend, &next);
             }
         }
+    }
+
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        settings: &mut Settings,
+        backend: &Backend,
+    ) -> Option<Action> {
+        let mut action = None;
+        self.indent = Indent::from_setting(&settings.indent);
+        self.apply_language(backend, settings);
+        if self.lookups.snippets != settings.snippets {
+            self.lookups.snippets = settings.snippets.clone();
+            self.lookups.generation += 1;
+        }
+        self.run_autosaves(ui, backend, settings);
+        let ctx = ui.ctx().clone();
+        self.poll_build(&ctx, backend, settings);
+
+        // The app's own keys come before the editor's; an open dialog keeps them.
+        self.tree_keys(&ctx, backend, settings);
+        if !self.modal_open() {
+            self.shortcuts(&ctx, backend, settings, &mut action);
+        }
+        self.snapshot_timer(backend);
+        if !self.writing() && !self.after_writes.is_empty() {
+            for then in std::mem::take(&mut self.after_writes) {
+                then(self, backend);
+            }
+        }
 
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0, p.surface);
@@ -974,6 +1292,11 @@ impl Workspace {
         let panes = Rect::from_min_max(pos2(full.left(), toolbar.bottom()), full.max);
         let show_editor = settings.layout != "pdf" || self.focus_mode;
         let show_pdf = settings.layout != "editor" && !self.focus_mode;
+        // The search lives in the sidebar: make sure it can be seen.
+        if self.search.as_ref().is_some_and(|s| s.wants_sidebar()) && !settings.sidebar_open {
+            settings.sidebar_open = true;
+            action = Some(Action::Settings);
+        }
         let show_sidebar = settings.sidebar_open && !self.focus_mode && settings.layout != "pdf";
         let side_w = if show_sidebar {
             settings.sidebar_width as f32
@@ -997,7 +1320,14 @@ impl Workspace {
         );
         let pdf = Rect::from_min_max(pos2(panes.right() - pdf_w, panes.top()), panes.max);
 
-        if show_sidebar {
+        if show_sidebar && self.search.is_some() {
+            self.search_panel(
+                &mut ui.new_child(egui::UiBuilder::new().max_rect(side)),
+                p,
+                backend,
+                settings,
+            );
+        } else if show_sidebar {
             chrome::sidebar(
                 &mut ui.new_child(egui::UiBuilder::new().max_rect(side)),
                 p,
@@ -1023,7 +1353,15 @@ impl Workspace {
             } else {
                 pdf
             };
-            if self.pdf_pane(
+            if self.panel.is_some() {
+                // The PDF pane keeps its state while a panel covers it.
+                self.show_panel(
+                    &mut ui.new_child(egui::UiBuilder::new().max_rect(inner)),
+                    p,
+                    backend,
+                    settings,
+                );
+            } else if self.pdf_pane(
                 &mut ui.new_child(egui::UiBuilder::new().max_rect(inner)),
                 p,
                 backend,
@@ -1087,6 +1425,12 @@ impl Workspace {
         }
 
         self.dialogs(&ctx, p, backend, settings);
+        self.bib_dialogs(&ctx, p, backend, settings);
+        self.insert_dialogs(&ctx, p, backend);
+        self.rename_dialog(&ctx, p, backend, settings);
+        self.file_dialogs(&ctx, p, backend, settings);
+        self.project_settings_dialog(&ctx, p, backend, settings, &mut action);
+        self.snapshot_dialog(&ctx, p, backend);
         if let Some(pal) = &mut self.symbols {
             match pal.show(&ctx, p) {
                 symbols::Picked::None => {}
@@ -1134,12 +1478,19 @@ impl Workspace {
             y = strip.bottom();
         }
         let bar = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 37.0));
-        if chrome::edit_bar(
+        let (sync, comment, cite) = chrome::edit_bar(
             &mut ui.new_child(egui::UiBuilder::new().max_rect(bar)),
             p,
             self,
-        ) {
+        );
+        if sync {
             self.sync_forward(backend);
+        }
+        if comment && self.add_comment(backend, settings) {
+            changed = true;
+        }
+        if cite {
+            self.open_cite(backend, None);
         }
         y = bar.bottom();
         if let Some(e) = self.open_error.clone() {
@@ -1250,7 +1601,7 @@ impl Workspace {
             .and_then(|a| self.editors.contains_key(&a).then_some(a))
         {
             Some(path) => {
-                let style = editor_style(settings, self.focus_mode);
+                let style = editor_style(ui.ctx(), settings, self.focus_mode);
                 if self.editors[&path].problems_gen != self.build.diag_gen {
                     let list = self.problems_of(&path);
                     let generation = self.build.diag_gen;
@@ -1258,6 +1609,13 @@ impl Workspace {
                         .get_mut(&path)
                         .unwrap()
                         .set_problems(generation, &list);
+                }
+                let key = (self.comments.generation, self.editors[&path].doc.version);
+                if self.editors[&path].comments_key != key {
+                    let ranges = self.comment_ranges(&path);
+                    let ed = self.editors.get_mut(&path).unwrap();
+                    ed.comments = ranges;
+                    ed.comments_key = key;
                 }
                 let ed = self.editors.get_mut(&path).unwrap();
                 let mut c = ui.new_child(egui::UiBuilder::new().max_rect(body));
@@ -1269,8 +1627,18 @@ impl Workspace {
                     egui::Id::unique(("editor", &path)),
                     &format!("Text of {}", tree::base_name(&path)),
                     &self.lookups,
+                    &mut self.checks,
                 );
                 let needs = out.needs_package.clone();
+                let comment_click = out.comment_click.clone();
+                let hover_search = out.hover_search.clone();
+                let pasted_table = out.pasted_table.clone();
+                let pasted_image = out.pasted_image.clone();
+                let (add_word, ignore_rule, grammar_check) = (
+                    out.add_word.clone(),
+                    out.ignore_rule.clone(),
+                    out.grammar_check.clone(),
+                );
                 let lsp_asks = (out.server_complete, out.server_hover, out.server_goto);
                 if out.changed {
                     self.buffers
@@ -1287,6 +1655,54 @@ impl Workspace {
                 if let Some(pkg) = needs {
                     self.needs_package(backend, pkg);
                 }
+                if let Some(img) = pasted_image {
+                    self.paste_image(backend, &path, &img);
+                }
+                if let Some((from, table, text)) = pasted_table {
+                    self.notices.push(
+                        Notice::new("Pasted as a table.", Tone::Info)
+                            .action(NoticeAction::PasteAsText(path.clone(), from, table, text)),
+                    );
+                }
+                match hover_search {
+                    Some(crate::editor::hover::Search::Online(key)) => {
+                        self.open_cite(backend, Some(key))
+                    }
+                    Some(crate::editor::hover::Search::Project(name)) => {
+                        self.open_search(Some(name))
+                    }
+                    None => {}
+                }
+                if let Some(id) = comment_click {
+                    self.comments.active = Some(id);
+                    self.comments.generation += 1;
+                    if self.open_panel(panels::Panel::Review, backend, settings) {
+                        changed = true;
+                    }
+                }
+                // Words and rules go into the project's settings, where they can be undone.
+                if let Some(w) = add_word {
+                    self.update_config(backend, |c| {
+                        c.words.push(w);
+                        c.words.sort();
+                        c.words.dedup();
+                    });
+                }
+                if let Some(id) = ignore_rule {
+                    self.checks.grammar.ignored.insert(id.clone());
+                    self.checks.grammar.generation += 1;
+                    self.update_config(backend, |c| {
+                        c.grammar_ignore.push(id);
+                        c.grammar_ignore.sort();
+                        c.grammar_ignore.dedup();
+                    });
+                }
+                for t in grammar_check {
+                    if self.checks.grammar.asked.insert(t.clone()) {
+                        self.grammar_queue.push(t);
+                    }
+                }
+                self.pump_grammar(backend);
                 self.lsp_sync(backend);
                 let ed = &self.editors[&path];
                 let at = |line: usize, col: usize| crate::lsp::utf16_col(&ed.doc.line(line), col);
@@ -1498,11 +1914,10 @@ impl Workspace {
 }
 
 /// The editor's look from the settings: Plex Mono at the font size, the line height, indentation.
-pub fn editor_style(s: &Settings, focus: bool) -> view::Style {
+pub fn editor_style(ctx: &egui::Context, s: &Settings, focus: bool) -> view::Style {
     let size = s.font_size as f32;
     view::Style {
-        // shortcut: "system" and named editor fonts need system font loading (Preferences, M6); Plex Mono for now.
-        font: FontId::monospace(size),
+        font: FontId::new(size, crate::theme::editor_family(ctx, &s.font_family)),
         line_height: size * s.line_height as f32,
         indent: Indent::from_setting(&s.indent),
         wrap: s.word_wrap,

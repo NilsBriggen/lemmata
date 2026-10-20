@@ -40,6 +40,7 @@ pub struct Button<'a> {
     angle: f32,
     radius: Option<CornerRadius>,
     icon_size: f32,
+    pill: Option<String>,
 }
 
 impl<'a> Button<'a> {
@@ -58,6 +59,7 @@ impl<'a> Button<'a> {
             angle: 0.0,
             radius: None,
             icon_size: 16.0,
+            pill: None,
         }
     }
     /// An icon-only button (`.btn.icon`, drawn with `show_icon`); `label` is its accessible name.
@@ -119,6 +121,11 @@ impl<'a> Button<'a> {
         self.on = on;
         self
     }
+    /// `.pill`: a count after the label (open comments, git changes).
+    pub fn pill(mut self, text: Option<&str>) -> Self {
+        self.pill = text.map(str::to_owned);
+        self
+    }
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -145,6 +152,14 @@ impl<'a> Button<'a> {
             ui.painter()
                 .layout_no_wrap(self.text.to_owned(), font, Color32::PLACEHOLDER)
         });
+        let pill = self.pill.as_ref().map(|t| {
+            ui.painter().layout_no_wrap(
+                t.clone(),
+                FontId::proportional(11.0),
+                Color32::from_rgb(0x1b, 0x1b, 0x1b),
+            )
+        });
+        let pill_w = pill.as_ref().map_or(0.0, |g| g.size().x + 12.0 + 4.0);
         let width = if icon_only {
             height
         } else {
@@ -162,6 +177,7 @@ impl<'a> Button<'a> {
         } else {
             Sense::hover()
         };
+        let width = width + pill_w;
         let content_w = width;
         let width = width.max(self.min_width);
         let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), sense);
@@ -246,6 +262,23 @@ impl<'a> Button<'a> {
                 let pos = egui::pos2(x, rect.center().y - galley.size().y / 2.0);
                 x += galley.size().x + 6.0;
                 painter.galley(pos, galley, ink);
+            }
+            if let Some(g) = pill {
+                let r = egui::Rect::from_min_size(
+                    egui::pos2(x - 2.0, rect.center().y - 8.5),
+                    Vec2::new(g.size().x + 12.0, 17.0),
+                );
+                painter.rect_filled(
+                    r,
+                    CornerRadius::same(9),
+                    Color32::from_rgba_unmultiplied(220, 160, 20, 217),
+                );
+                painter.galley(
+                    r.center() - g.size() / 2.0,
+                    g,
+                    Color32::from_rgb(0x1b, 0x1b, 0x1b),
+                );
+                x = r.right() + 6.0;
             }
             if let Some(icon) = self.trailing {
                 let r = egui::Rect::from_min_size(
@@ -540,7 +573,14 @@ pub fn select(
             state.bg_fill = p.surface;
             state.expansion = 0.0;
         }
+        // `select.input`: --border-strong, --faint on hover, the accent while open.
+        w.inactive.bg_stroke = Stroke::new(1.0, p.border_strong);
         w.hovered.bg_stroke = Stroke::new(1.0, p.faint);
+        w.active.bg_stroke = Stroke::new(1.0, p.accent);
+        w.open.bg_stroke = Stroke::new(1.0, p.accent);
+        for state in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+            state.corner_radius = CornerRadius::same(theme::R);
+        }
         let ink = p.ink;
         let r = egui::ComboBox::from_id_salt(name)
             .icon(move |ui, rect, _, _| {
@@ -842,6 +882,91 @@ pub fn text_input(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, mono:
     response
 }
 
+/// An input on the dark sidebar (`.search .row input`): 28 px, --chrome-3 with a --chrome-border.
+pub fn chrome_input(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str) -> Response {
+    let fill_slot = ui.painter().add(egui::Shape::Noop);
+    let r = egui::TextEdit::singleline(text)
+        .hint_text(egui::RichText::new(hint).size(12.5).color(p.chrome_muted))
+        .font(FontId::proportional(12.5))
+        .text_color(p.chrome_ink)
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 0)))
+        .align(egui::Align2::LEFT_CENTER)
+        .min_size(Vec2::new(0.0, 28.0))
+        .desired_width(ui.available_width())
+        .show(ui)
+        .response
+        .response;
+    ui.ctx().accesskit_node_builder(r.id, |n| n.set_label(hint));
+    let border = if r.has_focus() {
+        p.accent_on_dark
+    } else {
+        p.chrome_border
+    };
+    ui.painter().rect_stroke(
+        r.rect,
+        CornerRadius::same(theme::R_SM),
+        Stroke::new(1.0, border),
+        StrokeKind::Inside,
+    );
+    ui.painter().set(
+        fill_slot,
+        egui::Shape::rect_filled(r.rect, CornerRadius::same(theme::R_SM), p.chrome_3),
+    );
+    r
+}
+
+/// `textarea.input`: the multi-line field, styled like `text_input`, `rows` tall.
+pub fn text_area(
+    ui: &mut Ui,
+    p: &Palette,
+    text: &mut String,
+    hint: &str,
+    rows: usize,
+    enabled: bool,
+) -> Response {
+    let fill_slot = ui.painter().add(egui::Shape::Noop);
+    let out = ui.add_enabled(
+        enabled,
+        egui::TextEdit::multiline(text)
+            .hint_text(egui::RichText::new(hint).color(p.faint))
+            .font(FontId::proportional(13.0))
+            .text_color(p.ink)
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(10, 7)))
+            .desired_rows(rows)
+            .desired_width(ui.available_width()),
+    );
+    ui.ctx()
+        .accesskit_node_builder(out.id, |n| n.set_label(hint));
+    let rect = out.rect;
+    let focused = out.has_focus();
+    if focused {
+        ui.painter().rect_stroke(
+            rect.expand(1.5),
+            CornerRadius::same(theme::R + 2),
+            Stroke::new(3.0, Palette::mix(p.accent, 22.0)),
+            StrokeKind::Outside,
+        );
+    }
+    let border = if focused {
+        p.accent
+    } else if out.hovered() {
+        p.faint
+    } else {
+        p.border_strong
+    };
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(theme::R),
+        Stroke::new(1.0, border),
+        StrokeKind::Inside,
+    );
+    ui.painter().set(
+        fill_slot,
+        egui::Shape::rect_filled(rect, CornerRadius::same(theme::R), p.surface),
+    );
+    out
+}
+
 /// What a modal reports back each frame.
 pub struct ModalResponse<R> {
     pub inner: R,
@@ -981,6 +1106,13 @@ pub fn modal_placed<R>(
                     if let Some(footer) = footer {
                         let r = egui::Frame::new()
                             .fill(p.surface_2)
+                            // Inside the panel's 12 px corners.
+                            .corner_radius(CornerRadius {
+                                nw: 0,
+                                ne: 0,
+                                sw: 11,
+                                se: 11,
+                            })
                             .inner_margin(egui::Margin::symmetric(20, 12))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
@@ -1018,6 +1150,7 @@ pub fn modal_placed<R>(
 }
 
 /// A row of a drop menu.
+#[derive(Clone)]
 pub enum MenuItem<'a> {
     Item {
         icon: Option<Icon>,

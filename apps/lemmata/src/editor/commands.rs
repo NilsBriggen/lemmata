@@ -823,6 +823,80 @@ pub fn environment_indent(
     Some(if closing { base } else { base + indent.width() })
 }
 
+/// Reindent lines (CodeMirror's indentRange with the environment rules): the selected lines, or
+/// the whole file. Lines no rule speaks for keep their indentation; blank lines lose theirs.
+pub fn reindent_lines(d: &mut Doc, indent: Indent) -> bool {
+    let r = d.selection.main();
+    let (first, last) = if r.is_empty() {
+        (0, d.line_count() - 1)
+    } else {
+        (d.line_of(r.from()), d.line_of(r.to()))
+    };
+    let tokens = env_tokens(d, d.len());
+    let mut next = 0;
+    let mut open: Vec<(String, usize)> = Vec::new();
+    // Lines given a new indentation in this pass: later lines line up with the new one.
+    let mut new_cols: std::collections::HashMap<usize, usize> = Default::default();
+    let mut changes = Vec::new();
+    for n in 0..=last {
+        let start = d.line_start(n);
+        while next < tokens.len() && tokens[next].2 < start {
+            let (begin, name, _, line) = &tokens[next];
+            if *begin {
+                open.push((name.clone(), *line));
+            } else {
+                open.pop();
+            }
+            next += 1;
+        }
+        if n < first {
+            continue;
+        }
+        let text = d.line(n);
+        let Some((name, line)) = open.last() else {
+            continue;
+        };
+        let closing = text.trim_start().starts_with("\\end");
+        if VERBATIM.contains(&name.as_str()) || (name == "document" && !closing) {
+            continue;
+        }
+        let base = new_cols
+            .get(line)
+            .copied()
+            .unwrap_or_else(|| indent_columns(&d.line(*line), indent.tab_size()));
+        let cols = if text.trim().is_empty() {
+            0
+        } else if closing {
+            base
+        } else {
+            base + indent.width()
+        };
+        let lead = leading_ws(&text);
+        let norm = indent_string(cols, indent);
+        if lead != norm {
+            new_cols.insert(n, cols);
+            changes.push(Change {
+                from: start,
+                to: start + lead.chars().count(),
+                insert: norm,
+            });
+        }
+    }
+    if changes.is_empty() {
+        return false;
+    }
+    let cs = ChangeSet::new(changes);
+    let ranges = d
+        .selection
+        .ranges
+        .iter()
+        .map(|r| Range::new(cs.map(r.anchor, 1), cs.map(r.head, 1)))
+        .collect();
+    let sel = Selection::normalized(ranges, d.selection.main);
+    d.apply(cs, sel, EditKind::Other);
+    true
+}
+
 /// indentOnInput: once what's typed at the start of a line reads `\end{…}`, the line lines up
 /// with its `\begin` (part of the same undo step as the typing).
 pub fn indent_on_input(d: &mut Doc, indent: Indent) -> bool {
@@ -1006,6 +1080,17 @@ pub fn shift_heading(d: &mut Doc, delta: isize) -> bool {
 /// one is selected.
 /// Returns the fields (each with its linked copies) for the snippet to step through.
 pub fn insert_template(d: &mut Doc, template: &str, indent: Indent) -> Vec<Vec<(usize, usize)>> {
+    insert_block(d, template, indent, true)
+}
+
+/// `insert_template`, or with `fields` off the text as it is (a dialog's block, whose caption may
+/// hold a `${`), the cursor after it.
+pub fn insert_block(
+    d: &mut Doc,
+    template: &str,
+    indent: Indent,
+    fields: bool,
+) -> Vec<Vec<(usize, usize)>> {
     let r = d.selection.main();
     let line = d.line_of(r.from());
     let line_text = d.line(line);
@@ -1040,7 +1125,11 @@ pub fn insert_template(d: &mut Doc, template: &str, indent: Indent) -> Vec<Vec<(
         })
         .collect();
     let text = lines.join("\n");
-    let (out, fields) = super::snippet::parse(&text);
+    let (out, fields) = if fields {
+        super::snippet::parse(&text)
+    } else {
+        (text, Vec::new())
+    };
     let at = r.from() + prefix.chars().count();
     let insert = format!("{prefix}{out}");
     let n = insert.chars().count();
@@ -1137,6 +1226,38 @@ pub fn cursor_matching_bracket(d: &mut Doc, extend: bool) -> bool {
     true
 }
 
+/// insertCitation: the keys go into a `\cite{…}` still open before the cursor, after a comma;
+/// otherwise a new `\cite{keys}`.
+pub fn insert_citation(d: &mut Doc, keys: &[String]) {
+    static OPEN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\\\w*cite\w*\*?(?:\[[^\]]*\])*\{([^}]*)$").unwrap()
+    });
+    if keys.is_empty() {
+        return;
+    }
+    let pos = d.selection.main().head;
+    let n = d.line_of(pos);
+    let before = d.slice(d.line_start(n), pos);
+    let insert = match OPEN.captures(&before) {
+        Some(c) => {
+            let inside = &c[1];
+            let comma = if inside.is_empty() || inside.trim_end().ends_with(',') {
+                ""
+            } else {
+                ","
+            };
+            format!("{comma}{}", keys.join(","))
+        }
+        None => format!("\\cite{{{}}}", keys.join(",")),
+    };
+    let end = pos + insert.chars().count();
+    d.apply(
+        ChangeSet::new(vec![Change::insert(pos, insert)]),
+        Selection::cursor(end),
+        EditKind::Other,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1145,6 +1266,40 @@ mod tests {
         let mut d = Doc::new(text);
         d.selection = Selection::cursor(at);
         d
+    }
+
+    #[test]
+    fn citations_join_an_open_cite() {
+        let keys = ["a".to_owned(), "b".to_owned()];
+        for (text, want) in [
+            ("See ", "See \\cite{a,b}"),
+            ("See \\cite{x", "See \\cite{x,a,b"),
+            ("See \\citep[p.~3]{", "See \\citep[p.~3]{a,b"),
+            ("\\parencite{x, ", "\\parencite{x, a,b"),
+            ("\\cite{x} and ", "\\cite{x} and \\cite{a,b}"),
+        ] {
+            let mut d = doc(text, text.chars().count());
+            insert_citation(&mut d, &keys);
+            assert_eq!(d.text(), want);
+            assert_eq!(d.selection.main().head, d.len());
+        }
+    }
+
+    #[test]
+    fn reindent_follows_the_environments() {
+        let mut d = doc(
+            "\\begin{itemize}\n\\item a\n      \\begin{enumerate}\n\\item b\n\n   \n\\end{enumerate}\n  \\end{itemize}\n\\begin{document}\n  text\n\\end{document}",
+            0,
+        );
+        assert!(reindent_lines(&mut d, Indent::Spaces(2)));
+        assert_eq!(
+            d.text(),
+            "\\begin{itemize}\n  \\item a\n  \\begin{enumerate}\n    \\item b\n\n\n  \\end{enumerate}\n\\end{itemize}\n\\begin{document}\n  text\n\\end{document}"
+        );
+        assert!(
+            !reindent_lines(&mut d, Indent::Spaces(2)),
+            "already in shape"
+        );
     }
 
     #[test]

@@ -228,8 +228,33 @@ fn cap(s: &str) -> String {
         .unwrap_or_default()
 }
 
+/// A button on a card for a name the project doesn't define.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Search {
+    /// "Search the project" for a missing label.
+    Project(String),
+    /// "Search online" for a missing citation key.
+    Online(String),
+}
+
+/// The note for a missing name, with its search button.
+fn missing(ui: &mut Ui, p: &Palette, text: String, button: &str, search: Search) -> Option<Search> {
+    ui.label(egui::RichText::new(text).color(p.muted));
+    crate::widgets::Button::new(button)
+        .size(crate::widgets::Size::Sm)
+        .show(ui, p)
+        .clicked()
+        .then_some(search)
+}
+
 /// The card's contents, drawn into the tooltip (`.cm-hover-card`).
-pub fn card(ui: &mut Ui, p: &Palette, t: &Target, look: &Lookups, root: &std::path::Path) {
+pub fn card(
+    ui: &mut Ui,
+    p: &Palette,
+    t: &Target,
+    look: &Lookups,
+    root: &std::path::Path,
+) -> Option<Search> {
     ui.spacing_mut().item_spacing.y = 4.0;
     let head = |ui: &mut Ui, s: String| {
         ui.label(egui::RichText::new(s).size(11.0).color(p.muted));
@@ -246,9 +271,15 @@ pub fn card(ui: &mut Ui, p: &Palette, t: &Target, look: &Lookups, root: &std::pa
     };
     match t.kind {
         Kind::Ref => {
-            // shortcut: "Search the project" on a missing label comes with project search (M6).
             let Some(l) = look.labels.iter().find(|l| l.label == t.name) else {
-                return note(ui, format!("No \\label{{{}}} in the project.", t.name));
+                let text = format!("No \\label{{{}}} in the project.", t.name);
+                return missing(
+                    ui,
+                    p,
+                    text,
+                    "Search the project",
+                    Search::Project(t.name.clone()),
+                );
             };
             let env = l.env.as_str();
             let kind = if MATH_ENV.is_match(env) {
@@ -307,9 +338,14 @@ pub fn card(ui: &mut Ui, p: &Palette, t: &Target, look: &Lookups, root: &std::pa
             }
         }
         Kind::Cite => {
-            // shortcut: "Search online" for a missing key comes with the citation picker (M6).
             let Some(e) = look.cites.iter().find(|e| e.key == t.name) else {
-                return note(ui, "Not in any .bib file.".into());
+                return missing(
+                    ui,
+                    p,
+                    "Not in any .bib file.".into(),
+                    "Search online",
+                    Search::Online(t.name.clone()),
+                );
             };
             ui.label(
                 egui::RichText::new(if e.title.is_empty() { &e.key } else { &e.title })
@@ -336,7 +372,8 @@ pub fn card(ui: &mut Ui, p: &Palette, t: &Target, look: &Lookups, root: &std::pa
             let graphic = t.kind == Kind::Graphic;
             let exts: &[&str] = if graphic { GRAPHIC_EXTS } else { &["", ".tex"] };
             let Some(f) = resolve_file(&t.name, &look.files, exts) else {
-                return note(ui, format!("No file {} in the project.", t.name));
+                note(ui, format!("No file {} in the project.", t.name));
+                return None;
             };
             file_line(ui, &f);
             if graphic {
@@ -353,6 +390,7 @@ pub fn card(ui: &mut Ui, p: &Palette, t: &Target, look: &Lookups, root: &std::pa
             }
         }
     }
+    None
 }
 
 /// `.cm-hover-img`: at most 240 px, on white, read and decoded off the UI thread.

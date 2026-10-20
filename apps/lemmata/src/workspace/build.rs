@@ -439,7 +439,45 @@ impl Workspace {
             ),
             NoticeAction::DraftOff => self.set_config(backend, settings, |c| c.draft = false),
             NoticeAction::SetUpTex => {}
+            NoticeAction::LinkZotero => self.link_zotero(backend, settings),
+            NoticeAction::UndoFiles => self.undo_files(backend),
+            NoticeAction::PasteAsText(path, from, table, text) => {
+                if let Some(ed) = self.editors.get_mut(&path) {
+                    let to = from + table.chars().count();
+                    if to <= ed.doc.len() && ed.doc.slice(from, to) == table {
+                        ed.replace_range(from, to, &text);
+                        ed.refocus = true;
+                    }
+                }
+            }
             NoticeAction::AddPackage(pkg) => self.add_package(backend, settings, pkg),
+            NoticeAction::Download(code) => {
+                self.notice(
+                    format!(
+                        "Downloading the {} dictionary…",
+                        crate::writing::spell::label(&code)
+                    ),
+                    Tone::Info,
+                );
+                backend.spawn_async(move |shell| async move {
+                    let r = shell.spell_download(code.clone()).await;
+                    Msg::SpellDownloaded(code, r)
+                });
+            }
+        }
+    }
+
+    /// Changes lemmata.toml without building (words, ignored rules).
+    pub fn update_config(
+        &mut self,
+        backend: &Backend,
+        change: impl FnOnce(&mut lemmata_project::Config),
+    ) {
+        let mut next = self.info.config.clone();
+        change(&mut next);
+        if next != self.info.config {
+            self.info.config = next.clone();
+            backend.spawn(move |shell| Msg::Info(shell.set_config(next)));
         }
     }
 

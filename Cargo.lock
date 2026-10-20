@@ -3534,6 +3534,7 @@ name = "lemmata-app"
 version = "2.1.2"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "dirs",
  "eframe",
  "egui_kittest",
@@ -3541,9 +3542,13 @@ dependencies = [
  "hayro",
  "image",
  "lemmata-bib",
+ "lemmata-git",
+ "lemmata-grammar",
+ "lemmata-history",
  "lemmata-log",
  "lemmata-project",
  "lemmata-shell",
+ "lemmata-spell",
  "lemmata-synctex",
  "lemmata-tex",
  "open",

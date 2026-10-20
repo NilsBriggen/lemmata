@@ -7,9 +7,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+/// A job's result to apply to the open project on the UI thread.
+pub type Job = Box<dyn FnOnce(&mut crate::workspace::Workspace, &Backend) + Send>;
+
+/// What the Preferences dialog waits for.
+pub enum PrefsMsg {
+    Dictionaries(Vec<lemmata_spell::Available>),
+    Downloaded(String, Result<(), String>),
+    Grammar(Result<(), String>),
+}
+
 pub enum Msg {
     Event(Event),
+    /// A job's result, applied to the open project on the UI thread (see `Workspace::job`).
+    Apply(Job),
     Tex(TexStatus),
+    /// Answers for the Preferences dialog.
+    Prefs(PrefsMsg),
     /// A folder or file the user picked, for the job that asked.
     Picked(Pick, Option<PathBuf>),
     Opened(String, Result<lemmata_shell::ProjectInfo, String>),
@@ -68,6 +82,17 @@ pub enum Msg {
     LspStarted(Result<u64, String>),
     /// A message to texlab couldn't be sent: it stopped.
     LspLost(u64),
+    /// The spell checker loaded a language (None: off), or failed to.
+    SpellLoaded(Option<String>, Result<(), String>),
+    /// The dictionary for a language isn't here yet: offer it.
+    Dictionary(lemmata_spell::Available),
+    SpellDownloaded(String, Result<(), String>),
+    /// LanguageTool's findings for a paragraph text, asked of this server and language.
+    GrammarFound(
+        (String, String),
+        String,
+        Result<Vec<lemmata_grammar::Match>, String>,
+    ),
     /// An image or PDF of the project, read for its viewer tab.
     Viewed(String, Result<Viewed, String>),
 }

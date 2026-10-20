@@ -231,6 +231,150 @@ const FONT_FILES: [(&str, &[u8]); 12] = fonts!(
 );
 
 pub fn install_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(definitions(&[]));
+}
+
+/// An editor font looked up on this computer: its name, its data if found, and the pass that
+/// installed it (the fonts change from the next pass on).
+#[derive(Clone)]
+struct SystemFont {
+    name: String,
+    data: Option<Arc<FontData>>,
+    pass: u64,
+}
+
+fn system_fonts_id() -> egui::Id {
+    egui::Id::unique("system-fonts")
+}
+
+/// The editor's font for the Font setting: Plex Mono ("plex"), the system's monospace ("system"),
+/// or a named font when it is installed, with Plex Mono behind it for missing glyphs.
+pub fn editor_family(ctx: &egui::Context, setting: &str) -> FontFamily {
+    if setting == "plex" || setting.is_empty() {
+        return FontFamily::Monospace;
+    }
+    let mut list: Vec<SystemFont> = ctx
+        .data(|d| d.get_temp(system_fonts_id()))
+        .unwrap_or_default();
+    let pass = ctx.cumulative_pass_nr();
+    match list.iter().find(|f| f.name == setting) {
+        Some(f) if f.data.is_some() && pass > f.pass => {
+            FontFamily::Name(format!("editor:{setting}").into())
+        }
+        Some(_) => FontFamily::Monospace,
+        None => {
+            let data = find_system_font(setting)
+                .and_then(|path| std::fs::read(path).ok())
+                .map(|b| Arc::new(FontData::from_owned(b)));
+            let found = data.is_some();
+            list.push(SystemFont {
+                name: setting.to_owned(),
+                data,
+                pass,
+            });
+            if found {
+                ctx.set_fonts(definitions(&list));
+                ctx.request_repaint();
+            }
+            ctx.data_mut(|d| d.insert_temp(system_fonts_id(), list));
+            FontFamily::Monospace
+        }
+    }
+}
+
+/// Where a font family's regular face is on this computer, if anywhere.
+fn find_system_font(family: &str) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let query = if family == "system" {
+            "monospace"
+        } else {
+            family
+        };
+        let out = std::process::Command::new("fc-match")
+            .args(["-f", "%{file}\n%{family}", query])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let (file, families) = text.split_once('\n')?;
+        // fc-match always answers; only a match by name counts for a named font.
+        let named = family == "system"
+            || families
+                .split(',')
+                .any(|f| f.trim().eq_ignore_ascii_case(family));
+        return (named && !file.is_empty()).then(|| file.into());
+    }
+    #[allow(unreachable_code)]
+    {
+        let family = match family {
+            "system" if cfg!(target_os = "macos") => "Menlo",
+            "system" => "Consolas",
+            f => f,
+        };
+        let want: String = family
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase();
+        let mut dirs: Vec<std::path::PathBuf> = vec![
+            "/System/Library/Fonts".into(),
+            "/Library/Fonts".into(),
+            "C:\\Windows\\Fonts".into(),
+        ];
+        if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(std::path::Path::new(&home).join("Library/Fonts"));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(std::path::Path::new(&local).join("Microsoft\\Windows\\Fonts"));
+        }
+        let mut best: Option<(u8, std::path::PathBuf)> = None;
+        for dir in dirs {
+            let Ok(list) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for f in list.flatten() {
+                let path = f.path();
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if !["ttf", "otf", "ttc"].contains(&ext.as_str()) {
+                    continue;
+                }
+                let stem: String = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .collect::<String>()
+                    .to_lowercase();
+                // Consolas is consola.ttf: the name may drop its last letter.
+                if !(stem.starts_with(&want)
+                    || want.starts_with(&stem) && stem.len() + 1 >= want.len())
+                {
+                    continue;
+                }
+                let rank = if stem == want
+                    || stem == format!("{want}regular")
+                    || want.starts_with(&stem)
+                {
+                    0
+                } else {
+                    1
+                };
+                if best.as_ref().is_none_or(|(r, _)| rank < *r) {
+                    best = Some((rank, path));
+                }
+            }
+        }
+        best.map(|(_, p)| p)
+    }
+}
+
+/// The bundled fonts, and the editor fonts loaded from the system so far.
+fn definitions(system: &[SystemFont]) -> FontDefinitions {
     let mut defs = FontDefinitions::empty();
     for (name, bytes) in FONT_FILES {
         defs.font_data
@@ -251,7 +395,15 @@ pub fn install_fonts(ctx: &egui::Context) {
     set(&mut defs, FontFamily::Monospace, "ibm-plex-mono", 400);
     set(&mut defs, font::mono_500(), "ibm-plex-mono", 500);
     set(&mut defs, font::display(), "young-serif", 400);
-    ctx.set_fonts(defs);
+    for f in system {
+        let Some(data) = &f.data else { continue };
+        let key = format!("editor:{}", f.name);
+        defs.font_data.insert(key.clone(), data.clone());
+        let mut chain = vec![key.clone()];
+        chain.extend(defs.families[&FontFamily::Monospace].iter().cloned());
+        defs.families.insert(FontFamily::Name(key.into()), chain);
+    }
+    defs
 }
 
 /// The egui style for one theme: body text 13 px, controls as `.btn` and `.input`, menus as `.menu`.

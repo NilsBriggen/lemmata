@@ -127,6 +127,7 @@ Per milestone: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `
 | M3 egui app: plus the editor core and the workspace (no PDF yet) | 20.0 MB | linux x86_64, 2026-10-20 |
 | M4 egui app: plus building, logs, the hayro PDF view, image viewer, `panic = "unwind"` | 29.1 MB | linux x86_64, 2026-10-20; 26.3 MB with `panic = "abort"` |
 | M5 egui app: plus completion, snippets, folds, problems in the editor, RaTeX maths, hover cards, texlab client | 32.2 MB | linux x86_64, 2026-10-20; texlab (14.6 MB) is downloaded on first use, not shipped |
+| M6 egui app: plus spell and grammar checks, review comments, TODOs, Git, History with latexdiff, citation picker and bibliography manager, figure/table dialogs, rename, project search, file actions, Preferences, Project settings | 34.9 MB | linux x86_64, 2026-10-20 |
 
 M4: the release profile switched to `panic = "unwind"` (+2.8 MB) so a PDF that makes hayro panic leaves that page blank instead of ending the app with unsaved edits. The alternative is rendering in a child process with `abort`. The hayro stack (hayro-interpret, hayro-syntax, vello_cpu, fearless_simd, JBIG2/JPEG 2000) is about 3.5 MB of the rest; JPEG, GIF and WebP decoding for image tabs adds about 0.4 MB.
 
@@ -182,10 +183,14 @@ RaTeX's one visible flaw in the sheet: `\overbrace{a+b}^{n}\underbrace{c+d}_{m}`
 - PDF: selecting text works within the page the drag starts on, not across pages. Scrolling to a page, link or match animates for 0.3 s rather than the browser's smooth scroll.
 - PDF: search highlights are drawn with alpha, not `mix-blend-mode: multiply`.
 - SVG files in the project are not previewed (needs resvg, about 1 MB); other images and PDFs are.
-- The status bar's "Compiled in" has no "Finished at" time on hover yet (needs local time formatting).
 - "Present full screen" and the presenter window come with M7; the button shows a notice until then.
 - Maths is drawn by RaTeX with KaTeX's fonts, rasterized once per size; a few constructs lay out slightly differently from KaTeX (see the M1 spike notes).
 - Completion icons are drawn shapes (ƒ, ○, C, abc, ▢, a key) rather than CodeMirror's emoji and symbol glyphs.
-- texlab's hover notes show as plain text, not rendered Markdown. Rename (F2) arrives with the rename-symbol dialog in M6.
-- "Search the project" and "Search online" on hover cards for missing labels and keys arrive with project search and the citation picker (M6).
+- texlab's hover notes show as plain text, not rendered Markdown.
 - The package offer ("This needs the X package…") is a toast with "Add it" and a dismiss button, not the separate toast with a package icon and "Not now".
+- F2 in the editor opens "Rename label or citation key" on the name under the cursor; the Svelte app listed F2 as "Rename symbol" but only the palette opened the dialog.
+- Tree Copy and Cut also put the paths on the system clipboard: egui only reports Ctrl+V when the clipboard holds something, so Paste needs it.
+- Moving files by dragging them in the tree comes with drag and drop in M7; Cut and Paste move them until then.
+- Preferences: "Check now" for updates comes with the self-updater in M9; the automatic-check setting is kept.
+- Editor fonts other than Plex Mono are looked up with fc-match on Linux and by file name in the font folders on macOS and Windows; a family the lookup misses falls back to Plex Mono, as the browser did for fonts that aren't installed.
+- Modals that scroll (Preferences, Project settings, Bibliography) give their list a fixed maximum height up front: an egui area only offers the height it had on the last frame, so content could never grow it.

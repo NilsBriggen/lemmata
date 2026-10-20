@@ -9,7 +9,7 @@ use std::sync::Mutex;
 /// Commands run in parallel now; two git commands on one repository at once fail on its index lock.
 static GIT: Mutex<()> = Mutex::new(());
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum HistoryStatus {
     On,

@@ -1,7 +1,7 @@
 //! The app: which screen shows, and what the screens' actions do. This is what App.svelte did.
 
-use crate::backend::{Backend, Msg, Pick};
-use crate::screens::{dialogs, library, onboarding, welcome};
+use crate::backend::{Backend, Msg, Pick, PrefsMsg};
+use crate::screens::{dialogs, library, onboarding, prefs, welcome};
 use crate::store::{Dirs, Groups, Recents, Settings};
 use crate::theme::{self, Palette};
 use crate::widgets;
@@ -31,6 +31,7 @@ pub struct App {
     /// Startup has decided between the welcome, the last project and the library.
     started: bool,
     dialog: Option<Dialog>,
+    prefs: Option<prefs::Prefs>,
     quit: Quit,
 }
 
@@ -92,6 +93,7 @@ impl App {
             project: None,
             started: false,
             dialog: None,
+            prefs: None,
             quit: Quit::No,
         }
     }
@@ -496,7 +498,84 @@ impl App {
             | Msg::Packages(_)
             | Msg::HasPackage(..)
             | Msg::LspStarted(_)
-            | Msg::LspLost(_) => {}
+            | Msg::LspLost(_)
+            | Msg::SpellLoaded(..)
+            | Msg::Dictionary(_)
+            | Msg::SpellDownloaded(..)
+            | Msg::GrammarFound(..)
+            | Msg::Apply(_) => {}
+            Msg::Prefs(m) => self.on_prefs_msg(ctx, m),
+        }
+    }
+
+    fn open_prefs(&mut self) {
+        self.prefs = Some(prefs::Prefs::default());
+        self.backend.spawn(|shell| {
+            Msg::Prefs(PrefsMsg::Dictionaries(
+                shell.spell_available().unwrap_or_default(),
+            ))
+        });
+    }
+
+    fn on_prefs_msg(&mut self, ctx: &egui::Context, m: PrefsMsg) {
+        let Some(st) = &mut self.prefs else { return };
+        match m {
+            PrefsMsg::Dictionaries(d) => st.dicts = d,
+            PrefsMsg::Downloaded(code, Ok(())) => {
+                st.downloading = None;
+                self.settings.spell_default = code;
+                self.save_settings(ctx);
+                self.backend.spawn(|shell| {
+                    Msg::Prefs(PrefsMsg::Dictionaries(
+                        shell.spell_available().unwrap_or_default(),
+                    ))
+                });
+            }
+            PrefsMsg::Downloaded(_, Err(e)) => {
+                st.downloading = None;
+                st.spell_error = Some(e);
+            }
+            PrefsMsg::Grammar(r) => {
+                st.grammar_status = Some(r.err().unwrap_or_else(|| "connected".into()))
+            }
+        }
+    }
+
+    fn show_prefs(&mut self, ctx: &egui::Context) {
+        let Some(st) = &mut self.prefs else { return };
+        let system_dark = ctx.system_theme() == Some(egui::Theme::Dark);
+        let p = self.palette;
+        match prefs::show(
+            ctx,
+            &p,
+            st,
+            &mut self.settings,
+            self.tex.as_ref(),
+            system_dark,
+        ) {
+            None => {}
+            Some(prefs::Out::Changed) => self.save_settings(ctx),
+            Some(prefs::Out::Close) => self.prefs = None,
+            Some(prefs::Out::ChooseTex) => self.backend.pick(Pick::TexFolder),
+            Some(prefs::Out::AutoTex) => {
+                self.settings.tex_dir = None;
+                self.save_settings(ctx);
+                self.recheck(None);
+            }
+            Some(prefs::Out::Download(code)) => self.backend.spawn_async(move |shell| async move {
+                let r = shell.spell_download(code.clone()).await;
+                Msg::Prefs(PrefsMsg::Downloaded(code, r))
+            }),
+            Some(prefs::Out::TestGrammar) => {
+                let url = if self.settings.grammar == "custom" {
+                    self.settings.grammar_url.trim().to_owned()
+                } else {
+                    crate::writing::grammar::LOCAL_URL.to_owned()
+                };
+                self.backend.spawn_async(move |shell| async move {
+                    Msg::Prefs(PrefsMsg::Grammar(shell.grammar_status(url).await))
+                });
+            }
         }
     }
 
@@ -694,8 +773,7 @@ impl App {
                 let name = library::name_of(&path).to_owned();
                 self.dialog = Some(Dialog::SaveTemplate(dialogs::SaveTemplate::new(path, name)));
             }
-            // shortcut: Preferences is ported with the editor's settings (M6).
-            A::Preferences => {}
+            A::Preferences => self.open_prefs(),
         }
     }
 }
@@ -723,6 +801,7 @@ impl eframe::App for App {
         }
         self.screen(ui);
         self.show_dialog(&ctx);
+        self.show_prefs(&ctx);
         self.closing(&ctx);
     }
 
@@ -806,6 +885,12 @@ impl App {
             match ws.show(ui, &p, &mut self.settings, &self.backend) {
                 Some(workspace::Action::Library) => self.close_project(),
                 Some(workspace::Action::Settings) => self.save_settings(&ctx),
+                Some(workspace::Action::Preferences) => self.open_prefs(),
+                Some(workspace::Action::SaveTemplate(path)) => {
+                    let name = library::name_of(&path).to_owned();
+                    self.dialog =
+                        Some(Dialog::SaveTemplate(dialogs::SaveTemplate::new(path, name)));
+                }
                 None => {}
             }
             return;
@@ -1458,6 +1543,580 @@ mod tests {
         wait_for(&mut h, "the definition", |h| {
             h.state().project.as_ref().unwrap().active.as_deref() == Some("chapters/method.tex")
         });
+    }
+
+    #[test]
+    fn misspelled_words_are_marked_and_can_be_added_to_the_dictionary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        wait_for(&mut h, "the dictionary", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .checks
+                .spell
+                .lang
+                .is_some()
+        });
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        {
+            let app = h.state_mut();
+            let ed = app
+                .project
+                .as_mut()
+                .unwrap()
+                .editors
+                .get_mut("main.tex")
+                .unwrap();
+            let at = ed.doc.line_end(9);
+            ed.doc.selection = crate::editor::buffer::Selection::cursor(at);
+        }
+        h.key_press(egui::Key::Enter);
+        h.get_by_label("Text of main.tex")
+            .type_text("Teh quick brwon fox.");
+        h.run_steps(3);
+        assert!(
+            h.state_mut()
+                .project
+                .as_mut()
+                .unwrap()
+                .checks
+                .spell
+                .bad("brwon")
+        );
+        assert!(
+            !h.state_mut()
+                .project
+                .as_mut()
+                .unwrap()
+                .checks
+                .spell
+                .bad("quick")
+        );
+        let _ = h.try_snapshot("spell-light");
+        h.state_mut()
+            .project
+            .as_mut()
+            .unwrap()
+            .checks
+            .spell
+            .add("brwon");
+        assert!(
+            !h.state_mut()
+                .project
+                .as_mut()
+                .unwrap()
+                .checks
+                .spell
+                .bad("brwon")
+        );
+        // Adding through the workspace keeps the word in lemmata.toml.
+        {
+            let app = h.state_mut();
+            let ws = app.project.as_mut().unwrap();
+            ws.update_config(&app.backend, |c| c.words.push("brwon".into()));
+        }
+        wait_for(&mut h, "lemmata.toml", |_| {
+            std::fs::read_to_string(project.join("lemmata.toml")).is_ok_and(|t| t.contains("brwon"))
+        });
+    }
+
+    #[test]
+    fn the_review_todo_git_and_history_panels_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        // A comment on the selected title.
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        {
+            let app = h.state_mut();
+            let ed = app
+                .project
+                .as_mut()
+                .unwrap()
+                .editors
+                .get_mut("main.tex")
+                .unwrap();
+            let n = (0..ed.doc.line_count())
+                .find(|&n| ed.doc.line(n).starts_with("\\title"))
+                .unwrap();
+            let a = ed.doc.line_start(n) + 7;
+            ed.doc.selection = crate::editor::buffer::Selection::single(
+                crate::editor::buffer::Range::new(a, a + 7),
+            );
+        }
+        h.run_steps(1);
+        h.get_by_label("Comment").click();
+        h.run_steps(3);
+        h.get_by_label("Write a comment")
+            .type_text("Is this the final title?");
+        h.run_steps(2);
+        // The panel's button, not the editor toolbar's.
+        h.query_all_by_label("Comment").last().unwrap().click();
+        wait_for(&mut h, "comments.json", |_| {
+            std::fs::read_to_string(project.join(".lemmata/comments.json"))
+                .is_ok_and(|t| t.contains("final title"))
+        });
+        h.run_steps(3);
+        assert!(
+            !h.state().project.as_ref().unwrap().editors["main.tex"]
+                .comments
+                .is_empty(),
+            "the text is marked"
+        );
+        let _ = h.try_snapshot("review-light");
+
+        // TODOs.
+        std::fs::write(
+            project.join("notes.tex"),
+            "% TODO check the proof\n\\todo{cite more}\n",
+        )
+        .unwrap();
+        h.get_by_label("Close comments").click();
+        h.run_steps(2);
+        {
+            let app = h.state_mut();
+            let mut s = app.settings.clone();
+            app.project.as_mut().unwrap().open_panel(
+                crate::workspace::panels::Panel::Todos,
+                &app.backend,
+                &mut s,
+            );
+        }
+        wait_for(&mut h, "the TODOs", |h| {
+            h.query_by_label("check the proof").is_some()
+        });
+        let _ = h.try_snapshot("todos-light");
+
+        // Git: not a repository yet, then one.
+        h.get_by_label("Close TODOs").click();
+        h.run_steps(2);
+        h.get_by_label("Git").click();
+        wait_for(&mut h, "the git overview", |h| {
+            h.query_by_label("Turn this project into a git repository")
+                .is_some()
+        });
+        h.get_by_label("Turn this project into a git repository")
+            .click();
+        wait_for(&mut h, "the repository", |h| {
+            h.query_by_label("Commit message").is_some()
+        });
+        let _ = h.try_snapshot("git-light");
+
+        // History: the session's first save took a snapshot.
+        h.get_by_label("Close Git").click();
+        h.run_steps(2);
+        h.get_by_label("History").click();
+        wait_for(&mut h, "a snapshot", |h| {
+            !h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .history
+                .snapshots
+                .is_empty()
+        });
+        h.run_steps(2);
+        let _ = h.try_snapshot("history-light");
+    }
+
+    #[test]
+    fn citations_the_bibliography_and_project_search_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        {
+            let app = h.state_mut();
+            let ed = app
+                .project
+                .as_mut()
+                .unwrap()
+                .editors
+                .get_mut("main.tex")
+                .unwrap();
+            let n = (0..ed.doc.line_count())
+                .find(|&n| ed.doc.line(n).starts_with("\\maketitle"))
+                .unwrap();
+            ed.doc.selection = crate::editor::buffer::Selection::cursor(ed.doc.line_end(n));
+        }
+        // The edit bar's Cite opens the picker; Enter inserts the one match.
+        h.get_by_label("Cite").click();
+        wait_for(&mut h, "the entries", |h| {
+            h.query_by_label("schulman2017ppo").is_some()
+        });
+        h.get_by_label("Search the bibliography").type_text("ppo");
+        h.run_steps(2);
+        let _ = h.try_snapshot("cite-light");
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert!(
+            h.state().project.as_ref().unwrap().cite.is_none(),
+            "the picker closed"
+        );
+        let text = h.state().project.as_ref().unwrap().editors["main.tex"]
+            .doc
+            .text();
+        assert!(
+            text.contains("\\maketitle\\cite{schulman2017ppo}"),
+            "{text}"
+        );
+
+        // Two entries share a key: the manager renames the second.
+        let bib = project.join("refs.bib");
+        let mut b = std::fs::read_to_string(&bib).unwrap();
+        b.push_str("\n@misc{schulman2017ppo,\n  title = {A copy},\n}\n");
+        std::fs::write(&bib, &b).unwrap();
+        {
+            let app = h.state_mut();
+            let s = app.settings.clone();
+            app.project
+                .as_mut()
+                .unwrap()
+                .open_bib_manager(&app.backend, &s);
+        }
+        wait_for(&mut h, "the duplicate", |h| {
+            h.query_all_by_label("Rename key…").count() == 2
+        });
+        // The dialog grew: let it settle in the middle.
+        h.run_steps(3);
+        let _ = h.try_snapshot("bib-manager-light");
+        h.query_all_by_label("Rename key…").last().unwrap().click();
+        h.run_steps(4);
+        h.get_by_label("Rename").click();
+        wait_for(&mut h, "the new key", |_| {
+            std::fs::read_to_string(&bib)
+                .unwrap()
+                .contains("schulman2017ppoa")
+        });
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+
+        // Search the project, then replace on the checked lines.
+        h.state_mut()
+            .project
+            .as_mut()
+            .unwrap()
+            .open_search(Some("Equation~".into()));
+        wait_for(&mut h, "a hit", |h| {
+            h.query_by_label_contains("chapters/method.tex:6").is_some()
+        });
+        h.get_by_label("Show replace").click();
+        h.run_steps(2);
+        h.get_by_label("Replace with").click();
+        h.run_steps(1);
+        h.get_by_label("Replace with").type_text("Eq.~");
+        wait_for(&mut h, "the preview", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .search
+                .as_ref()
+                .is_some_and(|s| s.previewed("as in Eq.~"))
+        });
+        let _ = h.try_snapshot("search-light");
+        h.get_by_label("Replace all").click();
+        wait_for(&mut h, "the replacement", |_| {
+            std::fs::read_to_string(project.join("chapters/method.tex"))
+                .unwrap()
+                .contains("as in Eq.~\\ref{eq:objective}")
+        });
+    }
+
+    #[test]
+    fn figures_tables_and_pasted_cells_become_blocks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        std::fs::create_dir_all(project.join("figures")).unwrap();
+        image::RgbaImage::new(4, 4)
+            .save(project.join("figures/plot.png"))
+            .unwrap();
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        let to_line = |h: &mut Harness<App>, start: &str| {
+            let app = h.state_mut();
+            let ed = app
+                .project
+                .as_mut()
+                .unwrap()
+                .editors
+                .get_mut("main.tex")
+                .unwrap();
+            let n = (0..ed.doc.line_count())
+                .find(|&n| ed.doc.line(n).starts_with(start))
+                .unwrap();
+            ed.doc.selection = crate::editor::buffer::Selection::cursor(ed.doc.line_end(n));
+        };
+        let text = |h: &Harness<App>| {
+            h.state().project.as_ref().unwrap().editors["main.tex"]
+                .doc
+                .text()
+        };
+
+        // A table of 2 columns by 2 rows; its cells are tab stops.
+        to_line(&mut h, "\\maketitle");
+        h.get_by_label("Table").click();
+        h.run_steps(3);
+        h.get_by_label("2 columns by 2 rows").click();
+        h.run_steps(2);
+        let _ = h.try_snapshot("table-light");
+        h.get_by_label("Insert").click();
+        h.run_steps(2);
+        let t = text(&h);
+        assert!(
+            t.contains(
+                "\\maketitle\n\\begin{table}[htbp]\n    \\centering\n    \\begin{tabular}{ll}"
+            ),
+            "{t}"
+        );
+        assert!(t.contains("        Header 1 & Header 2 \\\\\n        \\midrule\n        Cell 1.1 & Cell 1.2 \\\\"), "{t}");
+        assert_eq!(
+            h.state().project.as_ref().unwrap().editors["main.tex"].selected_text(),
+            "Header 1"
+        );
+
+        // A figure from the project's images, with a caption.
+        to_line(&mut h, "\\input");
+        wait_for(&mut h, "the image in the tree", |h| {
+            h.query_by_label("plot.png").is_some()
+        });
+        h.get_by_label("Figure").click();
+        h.run_steps(3);
+        h.get_by_label("Caption").click();
+        h.run_steps(1);
+        h.get_by_label("Caption").type_text("A plot");
+        h.run_steps(2);
+        let _ = h.try_snapshot("figure-light");
+        h.get_by_label("Insert").click();
+        h.run_steps(2);
+        let t = text(&h);
+        assert!(t.contains("\\includegraphics[width=0.8\\linewidth]{figures/plot.png}\n    \\caption{A plot}\n    \\label{fig:a-plot}\n\\end{figure}"), "{t}");
+
+        // Cells from a spreadsheet: a table, and the toast turns it back into the text.
+        to_line(&mut h, "\\printbibliography");
+        h.event(egui::Event::Paste("a\tb\n1\t2".into()));
+        h.run_steps(2);
+        assert!(text(&h).contains("\\begin{tabular}{rr}"));
+        h.get_by_label("Paste as text instead").click();
+        h.run_steps(2);
+        let t = text(&h);
+        assert!(
+            t.contains("\\printbibliographya\tb\n1\t2") && !t.contains("{rr}"),
+            "{t}"
+        );
+
+        // A pasted screenshot is saved in the project and becomes a figure.
+        h.event(egui::Event::PasteImage(std::sync::Arc::new(
+            egui::ColorImage::filled([3, 3], egui::Color32::RED),
+        )));
+        wait_for(&mut h, "the pasted figure", |h| {
+            h.state().project.as_ref().unwrap().editors["main.tex"]
+                .doc
+                .text()
+                .contains("\\caption{}\n")
+        });
+    }
+
+    #[test]
+    fn f2_renames_a_label_everywhere() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.get_by_label("method.tex").click();
+        wait_for(&mut h, "method.tex", |h| {
+            h.query_by_label("Text of method.tex").is_some()
+        });
+        h.get_by_label("Text of method.tex").click();
+        h.run_steps(2);
+        {
+            let app = h.state_mut();
+            let ed = app
+                .project
+                .as_mut()
+                .unwrap()
+                .editors
+                .get_mut("chapters/method.tex")
+                .unwrap();
+            let at = ed.doc.text().find("ref{eq:objective}").unwrap() + 6;
+            ed.doc.selection = crate::editor::buffer::Selection::cursor(at);
+        }
+        h.run_steps(1);
+        h.key_press(egui::Key::F2);
+        wait_for(&mut h, "the uses", |h| {
+            h.query_by_label("2 places in 1 file:").is_some()
+        });
+        let _ = h.try_snapshot("rename-light");
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.get_by_label("New name").type_text("eq:loss");
+        h.run_steps(2);
+        h.get_by_label("Rename").click();
+        wait_for(&mut h, "the rename", |_| {
+            let t = std::fs::read_to_string(project.join("chapters/method.tex")).unwrap();
+            t.contains("\\label{eq:loss}") && t.contains("\\ref{eq:loss}")
+        });
+    }
+
+    #[test]
+    fn the_tree_creates_renames_deletes_and_undoes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let menu_on = |h: &mut Harness<App>, row: Option<&str>| {
+            let app = h.state_mut();
+            let ws = app.project.as_mut().unwrap();
+            ws.menu = Some(crate::workspace::Menu::Tree(
+                row.map(str::to_owned),
+                egui::Rect::from_min_size(egui::pos2(120.0, 300.0), egui::Vec2::ZERO),
+            ));
+        };
+        // New file, in the project folder; .tex is added.
+        menu_on(&mut h, None);
+        h.run_steps(2);
+        // The menu's item, not the header's button.
+        h.get_by_role_and_label(egui::accesskit::Role::MenuItem, "New file")
+            .click();
+        wait_for(&mut h, "the dialog", |h| h.query_by_label("Name").is_some());
+        h.get_by_label("Name").type_text("intro");
+        h.run_steps(1);
+        h.get_by_label("Create").click();
+        wait_for(&mut h, "the new file", |h| {
+            h.query_by_label("Text of intro.tex").is_some()
+        });
+        assert!(project.join("intro.tex").exists());
+
+        // Rename: the name without its extension is selected, so typing replaces it.
+        menu_on(&mut h, Some("intro.tex"));
+        h.run_steps(2);
+        h.get_by_label("Rename…").click();
+        wait_for(&mut h, "the rename dialog", |h| {
+            h.query_by_label("New name").is_some()
+        });
+        h.run_steps(1);
+        h.get_by_label("New name").type_text("introduction");
+        h.run_steps(1);
+        let _ = h.try_snapshot("file-rename-light");
+        h.get_by_label("Rename").click();
+        wait_for(&mut h, "the renamed file", |_| {
+            project.join("introduction.tex").exists()
+        });
+        wait_for(&mut h, "the tab", |h| {
+            h.query_by_label("Text of introduction.tex").is_some()
+        });
+
+        // Duplicate, then delete the copy and undo that.
+        menu_on(&mut h, Some("introduction.tex"));
+        h.run_steps(2);
+        h.get_by_label("Duplicate").click();
+        wait_for(&mut h, "the copy", |_| {
+            project.join("introduction copy.tex").exists()
+        });
+        menu_on(&mut h, Some("introduction copy.tex"));
+        h.run_steps(2);
+        h.get_by_label("Delete").click();
+        wait_for(&mut h, "the deletion", |_| {
+            !project.join("introduction copy.tex").exists()
+        });
+        wait_for(&mut h, "the undo button", |h| {
+            h.query_by_label("Undo").is_some()
+        });
+        h.get_by_label("Undo").click();
+        wait_for(&mut h, "the restored file", |_| {
+            project.join("introduction copy.tex").exists()
+        });
+
+        // The keyboard: select a row, F2 opens Rename.
+        wait_for(&mut h, "the restored row", |h| {
+            h.query_by_label("introduction copy.tex").is_some()
+        });
+        h.run_steps(2);
+        h.get_by_label("refs.bib").click();
+        h.run_steps(2);
+        h.key_press(egui::Key::F2);
+        wait_for(&mut h, "F2's rename dialog", |h| {
+            h.query_by_label("Rename refs.bib").is_some()
+        });
+    }
+
+    #[test]
+    fn preferences_snippets_and_project_settings_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        // Preferences from the menu: a checkbox saves at once.
+        h.get_by_label("Menu").click();
+        h.run_steps(2);
+        h.get_by_role_and_label(egui::accesskit::Role::MenuItem, "Preferences")
+            .click();
+        wait_for(&mut h, "the preferences", |h| {
+            h.query_by_label("Wrap long lines").is_some()
+        });
+        h.run_steps(3);
+        let folding = h.state().settings.folding;
+        h.get_by_label("Code folding for sections and environments")
+            .click();
+        h.run_steps(2);
+        assert_eq!(h.state().settings.folding, !folding);
+        let _ = h.try_snapshot("preferences-light");
+
+        // A snippet: incomplete ones are left out on Save.
+        h.get_by_label("Add…").click();
+        wait_for(&mut h, "the snippets", |h| {
+            h.query_by_label("New snippet").is_some()
+        });
+        h.run_steps(3);
+        h.get_by_label("New snippet").click();
+        h.run_steps(3);
+        h.get_by_label("Trigger").click();
+        h.get_by_label("Trigger").type_text("thm");
+        h.get_by_label("Text to insert").click();
+        h.get_by_label("Text to insert")
+            .type_text("\\begin{theorem}${}\\end{theorem}");
+        h.run_steps(2);
+        h.get_by_label("New snippet").click();
+        h.run_steps(3);
+        let _ = h.try_snapshot("snippets-light");
+        h.get_by_label("Save").click();
+        wait_for(&mut h, "the preferences again", |h| {
+            h.query_by_label("Edit 1…").is_some()
+        });
+        h.run_steps(3);
+        assert_eq!(h.state().settings.snippets[0].trigger, "thm");
+        h.get_by_label("Done").click();
+        h.run_steps(2);
+        assert!(h.state().prefs.is_none());
+
+        // Project settings from the status bar: shell escape is allowed for this computer too.
+        h.get_by_label("pdfLaTeX").click();
+        wait_for(&mut h, "the project settings", |h| {
+            h.query_by_label("Allow the document to run programs (shell escape)")
+                .is_some()
+        });
+        h.run_steps(3);
+        h.get_by_label("Allow the document to run programs (shell escape)")
+            .click();
+        h.run_steps(3);
+        let _ = h.try_snapshot("project-settings-light");
+        h.get_by_label("Save").click();
+        wait_for(&mut h, "lemmata.toml", |_| {
+            std::fs::read_to_string(project.join("lemmata.toml"))
+                .is_ok_and(|t| t.contains("shell_escape = true"))
+        });
+        let root = h.state().project.as_ref().unwrap().root.clone();
+        assert!(h.state().settings.shell_escape_projects.contains(&root));
     }
 
     #[test]

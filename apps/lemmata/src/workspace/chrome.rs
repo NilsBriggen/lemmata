@@ -198,16 +198,44 @@ pub fn toolbar(
         .kind(Kind::Chrome)
         .icon_size(17.0)
         .show_icon(&mut r, p);
-    for (icon, label) in [
-        (icons::GIT_BRANCH, "Git"),
-        (icons::HISTORY, "History"),
-        (icons::MESSAGE_SQUARE, "Comments"),
+    use super::panels::Panel;
+    let open_comments = ws.comments.threads.iter().filter(|t| !t.resolved).count();
+    let git_changes = ws.git.status.len();
+    for (icon, label, panel, count, tip) in [
+        (
+            icons::GIT_BRANCH,
+            "Git",
+            Panel::Git,
+            git_changes,
+            "Commit, pull and push with git",
+        ),
+        (
+            icons::HISTORY,
+            "History",
+            Panel::History,
+            0,
+            "Snapshots of the project, to compare and restore",
+        ),
+        (
+            icons::MESSAGE_SQUARE,
+            "Comments",
+            Panel::Review,
+            open_comments,
+            "Review comments",
+        ),
     ] {
-        // shortcut: the Git, History and Comments panels land in M6.
-        let _ = Button::new(label)
+        // .pill: a small amber count after the label.
+        let pill = (count > 0).then(|| count.to_string());
+        let b = Button::new(label)
             .with_icon(icon)
             .kind(Kind::Chrome)
-            .show(&mut r, p);
+            .on(ws.panel == Some(panel))
+            .pill(pill.as_deref())
+            .show(&mut r, p)
+            .on_hover_text(tip);
+        if b.clicked() && ws.toggle_panel(panel, backend, settings) {
+            action = Some(Action::Settings);
+        }
     }
     action
 }
@@ -287,7 +315,15 @@ pub fn sidebar(
         if label == "Sort and view" && b.clicked() {
             sort_rect = Some(b.rect);
         }
-        // shortcut: new file/folder, adding files and project search land with the file actions (M6).
+        if b.clicked() {
+            match label {
+                "Search in project" => ws.open_search(None),
+                "Add files" => ws.upload(backend, String::new()),
+                "New folder" => ws.new_item(true, String::new()),
+                "New file" => ws.new_item(false, String::new()),
+                _ => {}
+            }
+        }
     }
     if let Some(r) = sort_rect {
         ws.menu = if matches!(ws.menu, Some(Menu::Sort(_))) {
@@ -306,6 +342,19 @@ pub fn sidebar(
         .show(&mut child, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             tree_rows(ui, p, ws, settings, backend);
+            // The empty space under the rows: a click clears the selection, a right-click
+            // opens the folder-level menu.
+            let rest = ui.available_rect_before_wrap();
+            let r = ui.interact(rest, ui.scope_id().with("tree-space"), Sense::click());
+            if r.clicked() {
+                ws.sel.selected.clear();
+                ws.sel.focused = true;
+            }
+            if r.secondary_clicked()
+                && let Some(at) = r.interact_pointer_pos()
+            {
+                ws.menu = Some(Menu::Tree(None, Rect::from_min_size(at, Vec2::ZERO)));
+            }
         });
 
     // Outline.
@@ -383,14 +432,25 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
     let w = ui.available_width();
     let mut open = None;
     let mut toggle = None;
+    let mut click = None;
     for (e, depth) in &rows {
         let (rect, r) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
         let active = ws.active.as_deref() == Some(e.path.as_str());
         let cursor = ws.tree_cursor.as_deref() == Some(e.path.as_str());
+        let selected = ws.sel.is_selected(&e.path);
         r.widget_info(|| {
-            egui::WidgetInfo::selected(egui::Role::TreeItem, true, active || cursor, &e.name)
+            egui::WidgetInfo::selected(
+                egui::Role::TreeItem,
+                true,
+                active || cursor || selected,
+                &e.name,
+            )
         });
         let painter = ui.painter();
+        if selected && !active {
+            // .row.sel: --accent-on-dark at 20 %.
+            painter.rect_filled(rect, 0, p.accent_on_dark.gamma_multiply(0.2));
+        }
         if active {
             painter.rect_filled(rect, 0, p.chrome_active);
             painter.rect_filled(
@@ -442,6 +502,18 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
                 FontId::proportional(13.0),
                 ink,
             );
+            if ws
+                .git
+                .status
+                .iter()
+                .any(|(path, _)| path.starts_with(&format!("{}/", e.path)))
+            {
+                ui.painter().circle_filled(
+                    pos2(rect.right() - 13.0, rect.center().y),
+                    3.0,
+                    Color32::from_rgb(0xe5, 0xb5, 0x67),
+                );
+            }
             if !open_dir {
                 // .count: how many files the folded folder holds.
                 let n = tree::count_files(e).to_string();
@@ -473,6 +545,45 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
             let name = painter.layout_no_wrap(e.name.clone(), FontId::proportional(13.0), ink);
             let name_w = name.size().x;
             painter.galley(pos2(x, rect.center().y - name.size().y / 2.0), name, ink);
+            // The file's git status letter, and a dot on folders holding changes.
+            let mut git_note = String::new();
+            if let Some((_, st)) = ws.git.status.iter().find(|(path, _)| *path == e.path) {
+                let (c, title) = match st.as_str() {
+                    "M" => (
+                        Color32::from_rgb(0xe5, 0xb5, 0x67),
+                        "Changed since the last git commit",
+                    ),
+                    "R" => (
+                        Color32::from_rgb(0xe5, 0xb5, 0x67),
+                        "Renamed, not committed yet",
+                    ),
+                    "A" => (
+                        Color32::from_rgb(0x8f, 0xcf, 0x9f),
+                        "Added to git, not committed yet",
+                    ),
+                    "?" => (Color32::from_rgb(0x8f, 0xcf, 0x9f), "Not tracked by git"),
+                    "D" => (
+                        Color32::from_rgb(0xe5, 0x8c, 0x8c),
+                        "Deleted, not committed yet",
+                    ),
+                    _ => (Color32::from_rgb(0xe5, 0x8c, 0x8c), "Merge conflict"),
+                };
+                let right = if e.path == ws.info.main {
+                    rect.right() - 60.0
+                } else {
+                    rect.right() - 10.0
+                };
+                let gr =
+                    Rect::from_min_size(pos2(right - 14.0, rect.top()), vec2(14.0, rect.height()));
+                painter.text(
+                    gr.center(),
+                    Align2::CENTER_CENTER,
+                    st,
+                    FontId::new(10.5, theme::font::mono_500()),
+                    c,
+                );
+                git_note = format!("\n{title}");
+            }
             if e.path == ws.info.main {
                 // The MAIN badge.
                 let mut job = egui::text::LayoutJob::default();
@@ -504,7 +615,7 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
                 painter.galley(b.center() - g.size() / 2.0, g, p.accent_on_dark);
             }
             let tip = format!(
-                "{}{}{}",
+                "{}{}{}{git_note}",
                 e.path,
                 if opens { "" } else { " (not a text file)" },
                 if e.size > 0 {
@@ -518,7 +629,24 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
             }
         }
         if r.clicked() {
-            ws.tree_cursor = Some(e.path.clone());
+            click = Some((e.path.clone(), ui.input(|i| i.modifiers)));
+        }
+        if r.secondary_clicked()
+            && let Some(at) = r.interact_pointer_pos()
+        {
+            ws.menu = Some(Menu::Tree(
+                Some(e.path.clone()),
+                Rect::from_min_size(at, Vec2::ZERO),
+            ));
+        }
+    }
+    if let Some((path, mods)) = click {
+        let paths: Vec<String> = rows.iter().map(|(e, _)| e.path.clone()).collect();
+        ws.tree_click(&path, &paths, mods);
+        // With Ctrl or Shift a click only selects.
+        if mods.command || mods.shift {
+            open = None;
+            toggle = None;
         }
     }
     if let Some(t) = toggle
@@ -849,9 +977,11 @@ pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, b
 
 // ── Formatting bar ─────────────────────────────────────────────────────────
 
-/// True when "Go to PDF" was clicked.
-pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> bool {
+/// What the edit bar asked for that needs more than the editor: "Go to PDF", "Comment".
+pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> (bool, bool, bool) {
     let mut sync = false;
+    let mut cite = false;
+    let mut comment = false;
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, 0, p.surface);
     ui.painter().hline(
@@ -944,7 +1074,6 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> bool {
             with_editor(ws, |e, _| wrap_with(&mut e.doc, "$", "$"))
         }));
     }
-    // shortcut: Figure, Table and Cite open their dialogs in M6.
     if ibtn(&mut c, icons::PI, "Symbols")
         .on_hover_text(tip("Symbols", "symbols"))
         .clicked()
@@ -956,15 +1085,23 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> bool {
             with_editor(ws, |e, i| e.insert_template("\\href{${https://}}{${}}", i))
         }));
     }
-    let _ = ibtn(&mut c, icons::IMAGE, "Figure");
-    let _ = ibtn(&mut c, icons::TABLE, "Table");
-    let _ = Button::new("Cite")
+    if ibtn(&mut c, icons::IMAGE, "Figure").clicked() {
+        todo = Some(Box::new(|ws| ws.open_figure()));
+    }
+    if ibtn(&mut c, icons::TABLE, "Table").clicked() {
+        todo = Some(Box::new(|ws| ws.open_table()));
+    }
+    if Button::new("Cite")
         .with_icon(icons::BOOK_OPEN_TEXT)
         .kind(Kind::Ghost)
         .size(Size::Sm)
         .enabled(!disabled)
         .show(&mut c, p)
-        .on_hover_text(tip("Insert a citation", "cite"));
+        .on_hover_text(tip("Insert a citation", "cite"))
+        .clicked()
+    {
+        cite = true;
+    }
     sep(&mut c);
     for (icon, label, env) in [
         (icons::LIST, "Bulleted list", "itemize"),
@@ -978,14 +1115,17 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> bool {
         }
     }
     sep(&mut c);
-    // shortcut: comments land in M6.
-    let _ = Button::new("Comment")
+    if Button::new("Comment")
         .with_icon(icons::MESSAGE_SQUARE_PLUS)
         .kind(Kind::Ghost)
         .size(Size::Sm)
         .enabled(ws.active.is_some())
         .show(&mut c, p)
-        .on_hover_text(tip("Add a comment on the selection", "add-comment"));
+        .on_hover_text(tip("Add a comment on the selection", "add-comment"))
+        .clicked()
+    {
+        comment = true;
+    }
     if Button::new("Go to PDF")
         .with_icon(icons::LOCATE)
         .kind(Kind::Ghost)
@@ -1001,7 +1141,7 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> bool {
     if let Some(f) = todo {
         f(ws);
     }
-    sync
+    (sync, comment, cite)
 }
 
 /// Runs a command on the open file's editor with its indentation, and shows the result.
@@ -1090,12 +1230,14 @@ pub fn status_bar(
     }
     c.with_layout(egui::Layout::right_to_left(egui::Align::Center), |c| {
         c.spacing_mut().item_spacing.x = 16.0;
-        // shortcut: the notification bell (M7), spell language (M6) and completion status (M5) come later.
+        // shortcut: the notification bell comes with the notices list (M7).
         if let Some(o) = ws.build.outcome.as_ref().filter(|_| !ws.build.building) {
             use lemmata_tex::Status;
             if o.status == Status::Success {
-                // shortcut: the "Finished at" time on hover needs local time formatting; left out.
-                c.label(small(format!("Compiled in {:.1} s", o.duration_ms as f64 / 1000.0), p.ok));
+                let r = c.label(small(format!("Compiled in {:.1} s", o.duration_ms as f64 / 1000.0), p.ok));
+                if let Some(at) = ws.build.finished_at.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()) {
+                    r.on_hover_text(format!("Finished at {}", crate::when::time_ms(at.as_millis() as f64)));
+                }
             } else {
                 // The failure opens the logs that explain it.
                 let errors = ws.build.errors();
@@ -1114,9 +1256,17 @@ pub fn status_bar(
                 }
             }
         }
-        status_link(c, engine_name(ws.info.config.engine).into(), p.muted, "Compiler: change it in Project settings", false);
+        if status_link(c, engine_name(ws.info.config.engine).into(), p.muted, "Compiler: change it in Project settings", false).clicked() {
+            ws.open_project_settings();
+        }
         if ws.total_words > 0 {
             status_link(c, format!("{} words", group_digits(ws.total_words)), p.muted, "Words in the document body, without commands, maths or comments. Click for the count per file.", false);
+        }
+        let lang = ws.spell_language(settings);
+        if lang != "off"
+            && status_link(c, lang, p.muted, "Spell-check language: change it in Project settings", false).clicked()
+        {
+            ws.open_project_settings();
         }
         if ws.info.config.draft
             && status_link(c, "Draft mode".into(), p.warn, "Figures are drawn as boxes. Click to build normally again.", false).clicked()
@@ -1245,17 +1395,37 @@ pub fn menus(
                     ws.menu = None;
                     match i {
                         1 => *action = Some(Action::Library),
+                        7 | 8 | 10 | 11 => {
+                            use super::panels::Panel;
+                            let panel = [
+                                Panel::Git,
+                                Panel::History,
+                                Panel::Review,
+                                Panel::Review,
+                                Panel::Todos,
+                            ][i - 7];
+                            if ws.open_panel(panel, backend, settings) {
+                                *action = Some(Action::Settings);
+                            }
+                        }
+                        9 => ws.history.label = Some(String::new()),
+                        12 => ws.open_bib_manager(backend, settings),
+                        13 => ws.format_document(backend),
+                        14 => with_editor(ws, |e, i| e.reindent_lines(i)),
                         15 => ws.focus_mode = !ws.focus_mode,
                         18 => ws.export(backend, settings, Save::Pdf),
                         19 => ws.export(backend, settings, Save::Zip),
                         20 => ws.export(backend, settings, Save::Arxiv { flatten: false }),
                         21 => ws.export(backend, settings, Save::Arxiv { flatten: true }),
-                        27 => {
+                        2 => ws.open_project_settings(),
+                        3 => *action = Some(Action::SaveTemplate(ws.root.clone())),
+                        24 => *action = Some(Action::Preferences),
+                        26 => {
                             const GUIDE: &str =
                                 "https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md";
                             backend.spawn(|shell| Msg::Done(shell.open_url(GUIDE.into())));
                         }
-                        // shortcut: the other entries open panels and dialogs that land in M4–M7.
+                        // shortcut: word count, the shortcuts sheet, reports and the palette land in M7.
                         _ => ws.notice("Not in the native app yet.", Tone::Info),
                     }
                 }
@@ -1381,6 +1551,7 @@ pub fn menus(
                 }
             }
         }
+        Menu::Tree(entry, at) => ws.tree_menu(ctx, p, backend, settings, entry, at),
         Menu::Tab(path, anchor) => {
             let pinned = ws.pinned.contains(&path);
             let i = ws.tabs.iter().position(|t| *t == path).unwrap_or(0);

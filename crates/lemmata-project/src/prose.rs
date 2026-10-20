@@ -100,7 +100,7 @@ const NON_PROSE_ARGS: &[&str] = &[
     "texttt",
 ];
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct State {
     /// Inside a math or verbatim environment, with its name.
     env: Option<String>,

@@ -80,12 +80,26 @@ pub struct Output {
     pub wrap_environment: bool,
     /// A completion inserted something that needs this package.
     pub needs_package: Option<String>,
+    /// A screenshot was pasted, to save in the project and insert as a figure.
+    pub pasted_image: Option<std::sync::Arc<egui::ColorImage>>,
+    /// Pasted cells became a table: where, the table, and the text as it was pasted.
+    pub pasted_table: Option<(usize, String, String)>,
     /// Ask texlab for commands at this cursor, the name starting at `from`.
     pub server_complete: Option<(usize, usize)>,
     /// Ask texlab what is at this line and column (0-based chars).
     pub server_hover: Option<(usize, usize)>,
     /// F12 / Shift-F12 at the cursor: (line, column), and whether it's references.
     pub server_goto: Option<(usize, usize, bool)>,
+    /// "Add to dictionary" on a misspelled word.
+    pub add_word: Option<String>,
+    /// Paragraph texts to send to LanguageTool.
+    pub grammar_check: Vec<String>,
+    /// "Ignore this rule" on a grammar finding.
+    pub ignore_rule: Option<String>,
+    /// Commented text was clicked: the thread's id.
+    pub comment_click: Option<String>,
+    /// A search button on a hover card for a name the project doesn't define.
+    pub hover_search: Option<super::hover::Search>,
     /// F8 / Shift-F8: next or previous problem.
     pub next_problem: Option<i8>,
 }
@@ -125,6 +139,8 @@ pub struct Editor {
     goal_x: Option<f32>,
     /// Scroll so the main cursor shows (after typing, a jump, a search).
     pub reveal: bool,
+    /// Take the keyboard focus on the next frame (after a dialog that inserted text closes).
+    pub refocus: bool,
     /// Scroll so this line (0-based) is in the middle (go to line, a jump from the PDF).
     pub center_line: Option<usize>,
     last_activity: f64,
@@ -155,9 +171,24 @@ pub struct Editor {
     pub problems_gen: u64,
     /// The last maths preview that rendered, shown faded under an error while typing.
     last_math: Option<crate::writing::render::Math>,
+    /// The prose scanner's state at the start of each line, valid for the first `.1` lines.
+    prose: (Vec<crate::writing::prose::State>, usize),
+    /// The suggestions menu of a misspelled word.
+    spell_menu: Option<SpellMenu>,
+    /// The grammar tooltip on screen and where it hangs.
+    grammar_tip: Option<(GrammarMark, Pos2)>,
+    /// Paragraphs for grammar checking, for a document version, and when to ask about them.
+    grammar_paras: (u64, Vec<crate::writing::grammar::Paragraph>),
+    grammar_due: f64,
+    /// Grammar findings in the source, for a (document version, findings generation).
+    grammar_marks: ((u64, u64), Vec<GrammarMark>),
     /// A completion asked of texlab: the cursor and whether it was Ctrl-Space; its answer opens
     /// the list even when nothing local matched.
     awaiting_server: Option<(usize, bool)>,
+    /// Review comments on this file: thread id, char range, whether it's the active one.
+    pub comments: Vec<(String, usize, usize, bool)>,
+    /// What the comment ranges were computed for (comments generation, document version).
+    pub comments_key: (u64, u64),
     /// The hover card on screen: its line, what it shows, and where the card was drawn.
     hover: Option<(usize, super::hover::Target, Rect)>,
 }
@@ -176,6 +207,7 @@ impl Editor {
             cache_key: (0, 0, false, 0),
             goal_x: None,
             reveal: false,
+            refocus: false,
             center_line: None,
             last_activity: 0.0,
             drag: None,
@@ -198,7 +230,15 @@ impl Editor {
             problems_gen: u64::MAX,
             last_math: None,
             hover: None,
+            comments: Vec::new(),
+            comments_key: (u64::MAX, u64::MAX),
             awaiting_server: None,
+            prose: (Vec::new(), 0),
+            spell_menu: None,
+            grammar_tip: None,
+            grammar_paras: (u64::MAX, Vec::new()),
+            grammar_due: 0.0,
+            grammar_marks: ((u64::MAX, u64::MAX), Vec::new()),
         }
     }
 
@@ -219,6 +259,42 @@ impl Editor {
         let fields = cmd::insert_template(&mut self.doc, template, indent);
         self.snippet = super::snippet::Active::start(fields);
         after_command(self);
+    }
+
+    /// A figure or table from a dialog, on its own lines, as it is: the cursor goes after it.
+    pub fn insert_literal_block(&mut self, text: &str, indent: Indent) {
+        cmd::insert_block(&mut self.doc, text, indent, false);
+        after_command(self);
+        self.refocus = true;
+    }
+
+    /// Replaces `from..to` (chars) with `text`, the cursor after it.
+    pub fn replace_range(&mut self, from: usize, to: usize, text: &str) {
+        let end = from + text.chars().count();
+        self.doc.apply(
+            super::buffer::ChangeSet::new(vec![super::buffer::Change {
+                from,
+                to,
+                insert: text.into(),
+            }]),
+            super::buffer::Selection::cursor(end),
+            super::buffer::EditKind::Other,
+        );
+        after_command(self);
+    }
+
+    /// Reindent lines: the selection, or the whole file.
+    pub fn reindent_lines(&mut self, indent: Indent) {
+        cmd::reindent_lines(&mut self.doc, indent);
+        after_command(self);
+        self.refocus = true;
+    }
+
+    /// The citation picker's keys, at the cursor.
+    pub fn insert_citation(&mut self, keys: &[String]) {
+        cmd::insert_citation(&mut self.doc, keys);
+        after_command(self);
+        self.refocus = true;
     }
 
     /// Replaces `from..to` with a snippet (a completion).
@@ -315,6 +391,49 @@ impl Editor {
     pub fn selected_text(&self) -> String {
         let r = self.doc.selection.main();
         self.doc.slice(r.from(), r.to())
+    }
+}
+
+/// The suggestions menu of a misspelled word (`.lm-spell-menu`).
+struct SpellMenu {
+    word: String,
+    from: usize,
+    to: usize,
+    at: Pos2,
+    /// Filled in by a thread: suggestions take a moment.
+    suggestions: std::sync::Arc<std::sync::Mutex<Option<Vec<String>>>>,
+}
+
+/// A grammar finding where it is in the source.
+#[derive(Clone)]
+struct GrammarMark {
+    from: usize,
+    to: usize,
+    /// The source is exactly the flagged text, so replacements apply.
+    editable: bool,
+    flagged: String,
+    message: String,
+    replacements: Vec<String>,
+    rule: String,
+}
+
+impl Editor {
+    /// The prose scanner's state at the start of line `n`, scanning forward as needed.
+    fn prose_state(&mut self, n: usize) -> crate::writing::prose::State {
+        let (states, valid) = &mut self.prose;
+        if states.is_empty() {
+            states.push(Default::default());
+            *valid = 1;
+        }
+        states.truncate((*valid).max(1));
+        while states.len() <= n {
+            let k = states.len() - 1;
+            let mut st = states[k].clone();
+            crate::writing::prose::line_words(&self.doc.line(k), &mut st, 0);
+            states.push(st);
+        }
+        *valid = states.len();
+        states[n].clone()
     }
 }
 
@@ -577,6 +696,7 @@ impl Geo<'_> {
 }
 
 /// `label` names the editor for screen readers ("Text of main.tex").
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     p: &Palette,
@@ -585,6 +705,7 @@ pub fn show(
     id: egui::Id,
     label: &str,
     look: &Lookups,
+    checks: &mut crate::writing::Checks,
 ) -> Output {
     let mut out = Output::default();
     let journal = std::mem::take(&mut ed.doc.journal);
@@ -594,6 +715,13 @@ pub fn show(
         if let Some(s) = &mut ed.snippet {
             s.map(&journal);
         }
+        let first_line = journal
+            .iter()
+            .filter_map(|c| c.0.first())
+            .map(|c| ed.doc.line_of(c.from.min(ed.doc.len())))
+            .min()
+            .unwrap_or(0);
+        ed.prose.1 = ed.prose.1.min(first_line + 1);
         for u in &mut ed.unmatched.1 {
             *u = (
                 super::buffer::Doc::map_through(&journal, u.0, -1),
@@ -731,6 +859,54 @@ pub fn show(
                 .request_repaint_after(std::time::Duration::from_secs_f64(0.5 - idle + 0.01));
         }
     }
+    // Grammar: paragraphs near the screen are sent 1.5 s after typing stops (TYPING_DELAY).
+    let now_t = ui.input(|i| i.time);
+    if ed.tex && checks.grammar.target.is_some() {
+        if ed.grammar_paras.0 != ed.doc.version {
+            if ed.grammar_paras.0 != u64::MAX && now_t - ed.last_activity < 1.5 {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs_f64(
+                        1.5 - (now_t - ed.last_activity) + 0.01,
+                    ));
+            } else {
+                ed.grammar_paras = (
+                    ed.doc.version,
+                    crate::writing::grammar::paragraphs(&ed.doc.text()),
+                );
+                ed.grammar_due = now_t;
+            }
+        }
+        let key = (ed.grammar_paras.0, checks.grammar.generation);
+        if ed.grammar_marks.0 != key {
+            let src: Vec<char> = ed.doc.text().chars().collect();
+            let mut marks = Vec::new();
+            for para in &ed.grammar_paras.1 {
+                let text: String = para.text.iter().collect();
+                for m in checks.grammar.found(&text).unwrap_or_default() {
+                    let off = crate::writing::grammar::utf16_to_char(&para.text, m.offset);
+                    let end =
+                        crate::writing::grammar::utf16_to_char(&para.text, m.offset + m.length);
+                    if let Some((from, to, editable)) =
+                        crate::writing::grammar::to_source(para, off, end - off, &src)
+                    {
+                        marks.push(GrammarMark {
+                            from,
+                            to,
+                            editable,
+                            flagged: src[from..to.min(src.len())].iter().collect(),
+                            message: m.message.clone(),
+                            replacements: m.replacements.clone(),
+                            rule: m.rule_id.clone(),
+                        });
+                    }
+                }
+            }
+            ed.grammar_marks = (key, marks);
+        }
+    } else if !ed.grammar_marks.1.is_empty() {
+        ed.grammar_marks = ((u64::MAX, u64::MAX), Vec::new());
+        ed.grammar_paras = (u64::MAX, Vec::new());
+    }
     let mut popup_anchor: Option<Pos2> = None;
     let scrolled = scroll.show_viewport(&mut child, |ui, viewport| {
         ui.set_min_size(vec2(area.width(), total));
@@ -786,6 +962,24 @@ pub fn show(
         let fold_on = style.folding;
         let mut fold_clicks: Vec<(Rect, usize)> = Vec::new();
         let mut lint_marks: Vec<(Rect, usize)> = Vec::new();
+        let mut spell_words: Vec<(usize, usize, String)> = Vec::new();
+        // Paragraphs near the screen (40 lines around it) go to LanguageTool once.
+        if ed.grammar_due > 0.0 && checks.grammar.target.is_some() {
+            ed.grammar_due = 0.0;
+            let lo = ed.doc.line_start(first.saturating_sub(40));
+            let hi = ed.doc.line_end((last + 40).min(ed.doc.line_count()) - 1);
+            for para in ed
+                .grammar_paras
+                .1
+                .iter()
+                .filter(|pp| pp.from <= hi && pp.to >= lo)
+            {
+                let t: String = para.text.iter().collect();
+                if !checks.grammar.asked.contains(&t) {
+                    out.grammar_check.push(t);
+                }
+            }
+        }
 
         #[allow(clippy::needless_range_loop)] // n is also the line number.
         for n in first..last {
@@ -875,6 +1069,33 @@ pub fn show(
                     }
                 }
             }
+            // .cm-comment: commented text on a yellow ground with a darker line under it.
+            for (_, a, b, active) in ed
+                .comments
+                .iter()
+                .filter(|c| c.2 > start && c.1 < start + len)
+            {
+                let (pa, ra) = col_pos(&l, a.max(&start) - start, cw, tab);
+                let (pb, rb) = col_pos(&l, (*b).min(start + len) - start, cw, tab);
+                let fill =
+                    Color32::from_rgba_unmultiplied(240, 190, 40, if *active { 107 } else { 56 });
+                for row in ra..=rb {
+                    let y = base.y + row as f32 * lh;
+                    let x0 = if row == ra {
+                        base.x + pa.x
+                    } else {
+                        base.x + l.hang
+                    };
+                    let x1 = if row == rb { base.x + pb.x } else { right_edge };
+                    let r = Rect::from_min_max(pos2(x0, y), pos2(x1, y + lh));
+                    painter.rect_filled(r, 0, fill);
+                    painter.hline(
+                        r.x_range(),
+                        r.bottom() - 1.0,
+                        Stroke::new(2.0, Color32::from_rgba_unmultiplied(220, 160, 20, 179)),
+                    );
+                }
+            }
             // Selections: 24 % accent; one running past the line's end fills to the right.
             for r in &ed.doc.selection.ranges {
                 if r.is_empty() || r.to() < start || r.from() > start + len {
@@ -958,6 +1179,53 @@ pub fn show(
                             Stroke::new(1.0, p.warn),
                         );
                         x += 2.5;
+                    }
+                }
+            }
+            // .cm-misspelled: a wavy --error line under each misspelled prose word.
+            if ed.tex && checks.spell.lang.is_some() {
+                let mut st = ed.prose_state(n);
+                for w in crate::writing::prose::line_words(&text, &mut st, start) {
+                    if checks.spell.bad(&w.text) {
+                        let (pa, ra) = col_pos(&l, w.from - start, cw, tab);
+                        let (pb, rb) = col_pos(&l, w.to - start, cw, tab);
+                        if ra == rb {
+                            let y = base.y + ra as f32 * lh + lh / 2.0 + style.font.size * 0.62;
+                            wavy(&painter, base.x + pa.x, base.x + pb.x, y, p.error);
+                        }
+                        spell_words.push((w.from, w.to, w.text));
+                    }
+                }
+            }
+            // .cm-grammar: a dotted 2 px accent line under grammar findings.
+            for g in ed
+                .grammar_marks
+                .1
+                .iter()
+                .filter(|g| g.to > start && g.from < start + len)
+            {
+                let (pa, ra) = col_pos(&l, g.from.max(start) - start, cw, tab);
+                let (pb, rb) = col_pos(&l, g.to.min(start + len) - start, cw, tab);
+                for row in ra..=rb {
+                    let y = base.y + row as f32 * lh + lh / 2.0 + style.font.size * 0.62 + 1.0;
+                    let x0 = if row == ra {
+                        base.x + pa.x
+                    } else {
+                        base.x + l.hang
+                    };
+                    let x1 = if row == rb {
+                        base.x + pb.x
+                    } else {
+                        right_edge - 6.0
+                    };
+                    let mut x = x0;
+                    while x < x1 {
+                        painter.rect_filled(
+                            Rect::from_min_size(pos2(x, y - 1.0), vec2(2.0, 2.0)),
+                            0,
+                            p.accent,
+                        );
+                        x += 4.0;
                     }
                 }
             }
@@ -1166,6 +1434,9 @@ pub fn show(
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         let response = ui.interact(visible, id, Sense::click_and_drag());
+        if std::mem::take(&mut ed.refocus) {
+            ui.memory_mut(|m| m.request_focus(id));
+        }
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, true, label));
         if response.hovered() {
@@ -1284,7 +1555,11 @@ pub fn show(
                                 egui::ScrollArea::vertical()
                                     .max_height(screen_r.height() * 0.5)
                                     .show(ui, |ui| {
-                                        super::hover::card(ui, p, &t, look, &look.root);
+                                        if let Some(s) =
+                                            super::hover::card(ui, p, &t, look, &look.root)
+                                        {
+                                            out.hover_search = Some(s);
+                                        }
                                     });
                             });
                     })
@@ -1293,6 +1568,163 @@ pub fn show(
                 if let Some(h) = &mut ed.hover {
                     h.2 = r;
                 }
+                if out.hover_search.is_some() {
+                    ed.hover = None;
+                }
+            }
+        }
+        // A click on commented text shows its thread.
+        if response.clicked()
+            && !ed.comments.is_empty()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let (at, _, _) = hit(&mut geo, ui, &ed.doc, pos);
+            out.comment_click = ed
+                .comments
+                .iter()
+                .find(|c| at >= c.1 && at < c.2)
+                .map(|c| c.0.clone());
+        }
+        // Right-click on a misspelled word: suggestions and "Add to dictionary".
+        if response.secondary_clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let (at, _, _) = hit(&mut geo, ui, &ed.doc, pos);
+            ed.spell_menu =
+                spell_words
+                    .iter()
+                    .find(|w| at >= w.0 && at <= w.1)
+                    .map(|(from, to, word)| {
+                        let cell = std::sync::Arc::new(std::sync::Mutex::new(None));
+                        if let Some(shell) = checks.spell.shell.clone() {
+                            let (c, w, ctx) = (cell.clone(), word.clone(), ui.ctx().clone());
+                            std::thread::spawn(move || {
+                                *c.lock().unwrap() = Some(shell.spell_suggest(w));
+                                ctx.request_repaint();
+                            });
+                        } else {
+                            *cell.lock().unwrap() = Some(Vec::new());
+                        }
+                        SpellMenu {
+                            word: word.clone(),
+                            from: *from,
+                            to: *to,
+                            at: pos,
+                            suggestions: cell,
+                        }
+                    });
+        }
+        // Hovering a grammar finding: its message, the fixes, and "Ignore this rule".
+        if ed.spell_menu.is_none()
+            && let Some(pos) = response.hover_pos()
+            && ui.input(|i| i.pointer.time_since_last_movement()) > 0.3
+        {
+            let (at, n, _) = hit(&mut geo, ui, &ed.doc, pos);
+            if let Some(g) = ed
+                .grammar_marks
+                .1
+                .iter()
+                .find(|g| at >= g.from && at < g.to)
+                .cloned()
+                && let Some(l) = geo.layouts.get(&n)
+            {
+                let pt = col_pos(
+                    l,
+                    g.from.max(ed.doc.line_start(n)) - ed.doc.line_start(n),
+                    cw,
+                    tab,
+                )
+                .0;
+                ed.grammar_tip = Some((g, screen(text_x, tops[n]) + pt.to_vec2()));
+            }
+        }
+        if let Some((g, at)) = ed.grammar_tip.clone() {
+            let mut keep = false;
+            let r = egui::Area::new(egui::Id::unique("grammar-tip"))
+                .order(egui::Order::Tooltip)
+                .pivot(egui::Align2::LEFT_BOTTOM)
+                .fixed_pos(at - vec2(0.0, 2.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0, p.border))
+                        .corner_radius(8)
+                        .shadow(p.shadow)
+                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .show(ui, |ui| {
+                            ui.set_max_width(340.0);
+                            ui.spacing_mut().item_spacing = vec2(4.0, 6.0);
+                            ui.label(egui::RichText::new(&g.message).size(13.0).color(p.ink));
+                            ui.horizontal_wrapped(|ui| {
+                                let button = |ui: &mut Ui, label: &str| {
+                                    let galley = ui.painter().layout_no_wrap(
+                                        label.into(),
+                                        FontId::proportional(12.0),
+                                        p.ink,
+                                    );
+                                    let (r, resp) = ui.allocate_exact_size(
+                                        galley.size() + vec2(16.0, 6.0),
+                                        Sense::click(),
+                                    );
+                                    let fill = if resp.hovered() {
+                                        p.surface_3
+                                    } else {
+                                        p.surface_2
+                                    };
+                                    ui.painter().rect(
+                                        r,
+                                        crate::theme::R_SM,
+                                        fill,
+                                        Stroke::new(1.0, p.border),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    ui.painter().galley(r.min + vec2(8.0, 3.0), galley, p.ink);
+                                    resp.widget_info(|| {
+                                        egui::WidgetInfo::labeled(egui::Role::Button, true, label)
+                                    });
+                                    resp.clicked()
+                                };
+                                if g.editable {
+                                    for rep_ in &g.replacements {
+                                        if button(
+                                            ui,
+                                            if rep_.is_empty() { "(delete)" } else { rep_ },
+                                        ) && ed.doc.slice(g.from, g.to) == g.flagged
+                                        {
+                                            ed.doc.apply(
+                                                super::buffer::ChangeSet::new(vec![
+                                                    super::buffer::Change {
+                                                        from: g.from,
+                                                        to: g.to,
+                                                        insert: rep_.clone(),
+                                                    },
+                                                ]),
+                                                ed.doc.selection.clone(),
+                                                super::buffer::EditKind::Other,
+                                            );
+                                            keep = false;
+                                            ed.grammar_tip = None;
+                                            return;
+                                        }
+                                    }
+                                }
+                                if button(ui, "Ignore this rule") {
+                                    out.ignore_rule = Some(g.rule.clone());
+                                    ed.grammar_tip = None;
+                                }
+                            });
+                        });
+                })
+                .response
+                .rect;
+            // The tip stays while the pointer is on the finding or on the tip itself.
+            if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                let (at, _, _) = hit(&mut geo, ui, &ed.doc, pos);
+                keep = r.expand(6.0).contains(pos)
+                    || (at >= g.from && at < g.to && response.hovered());
+            }
+            if !keep {
+                ed.grammar_tip = None;
             }
         }
         if response.is_pointer_button_down_on()
@@ -1541,6 +1973,102 @@ pub fn show(
         }
     }
 
+    if let Some(menu) = &ed.spell_menu {
+        let suggestions = menu.suggestions.lock().unwrap().clone();
+        let (word, from, to) = (menu.word.clone(), menu.from, menu.to);
+        let mut close = ui.input(|i| i.key_pressed(Key::Escape));
+        let r = egui::Area::new(egui::Id::unique("spell-menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(menu.at)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0, p.border))
+                    .corner_radius(crate::theme::R_LG)
+                    .shadow(p.shadow)
+                    .inner_margin(egui::Margin::same(5))
+                    .show(ui, |ui| {
+                        ui.set_min_width(200.0);
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let muted = |ui: &mut Ui, t: &str| {
+                            egui::Frame::NONE
+                                .inner_margin(egui::Margin::symmetric(10, 6))
+                                .show(ui, |ui| {
+                                    ui.label(egui::RichText::new(t).size(12.0).color(p.muted));
+                                });
+                        };
+                        let item = |ui: &mut Ui, t: &str, color: Color32| {
+                            let w = ui.available_width().max(200.0);
+                            let (r, resp) = ui.allocate_exact_size(vec2(w, 30.0), Sense::click());
+                            if resp.hovered() {
+                                ui.painter().rect_filled(r, crate::theme::R_SM, p.surface_3);
+                            }
+                            ui.painter().text(
+                                pos2(r.left() + 10.0, r.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                t,
+                                FontId::proportional(13.0),
+                                color,
+                            );
+                            resp.widget_info(|| {
+                                egui::WidgetInfo::labeled(egui::Role::MenuItem, true, t)
+                            });
+                            resp.clicked()
+                        };
+                        match &suggestions {
+                            None => muted(ui, "Finding suggestions…"),
+                            Some(list) if list.is_empty() => muted(ui, "No suggestions"),
+                            Some(list) => {
+                                for sgn in list {
+                                    if item(ui, sgn, p.ink) {
+                                        // The word may have moved if the user typed meanwhile.
+                                        if ed.doc.slice(from, to) == word {
+                                            ed.doc.apply(
+                                                super::buffer::ChangeSet::new(vec![
+                                                    super::buffer::Change {
+                                                        from,
+                                                        to,
+                                                        insert: sgn.clone(),
+                                                    },
+                                                ]),
+                                                Selection::cursor(from + sgn.chars().count()),
+                                                super::buffer::EditKind::Other,
+                                            );
+                                        }
+                                        close = true;
+                                    }
+                                }
+                            }
+                        }
+                        ui.add_space(4.0);
+                        let line_y = ui.cursor().top();
+                        ui.painter().hline(
+                            ui.min_rect().x_range(),
+                            line_y,
+                            Stroke::new(1.0, p.border),
+                        );
+                        ui.add_space(4.0);
+                        if item(ui, &format!("Add “{word}” to dictionary"), p.muted) {
+                            checks.spell.add(&word);
+                            out.add_word = Some(word.clone());
+                            close = true;
+                        }
+                    });
+            })
+            .response
+            .rect;
+        if ui.input(|i| i.pointer.any_pressed())
+            && ui
+                .input(|i| i.pointer.interact_pos())
+                .is_some_and(|pt| !r.contains(pt))
+        {
+            close = true;
+        }
+        if close {
+            ed.spell_menu = None;
+        }
+    }
+
     // Leaving the snippet's fields ends it.
     if ed
         .snippet
@@ -1665,8 +2193,34 @@ fn handle_event(
             }
             true
         }
+        Event::PasteImage(img) if ed.tex => {
+            out.pasted_image = Some(img.clone());
+            false
+        }
         Event::Paste(t) => {
-            cmd::paste(&mut ed.doc, t);
+            // Cells copied from a spreadsheet become a table, which a toast can turn back.
+            match ed
+                .tex
+                .then(|| crate::writing::table::tsv_to_tabular(t))
+                .flatten()
+            {
+                Some(table) => {
+                    let unit = indent.unit();
+                    let table: String = table
+                        .split('\n')
+                        .map(|l| {
+                            let n = l.chars().take_while(|c| *c == ' ').count() / 2;
+                            format!("{}{}", unit.repeat(n), &l[n * 2..])
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let from = ed.doc.selection.main().from();
+                    cmd::insert_text(&mut ed.doc, &table);
+                    out.needs_package = Some("booktabs".into());
+                    out.pasted_table = Some((from, table, t.clone()));
+                }
+                None => cmd::paste(&mut ed.doc, t),
+            }
             ed.reveal = true;
             true
         }
@@ -2493,6 +3047,7 @@ mod tests {
                         egui::Id::unique("ed"),
                         "Editor",
                         &Lookups::default(),
+                        &mut crate::writing::Checks::default(),
                     );
                 },
                 ed,
@@ -2533,6 +3088,7 @@ mod tests {
                         egui::Id::unique("ed"),
                         "Editor",
                         &Lookups::default(),
+                        &mut crate::writing::Checks::default(),
                     );
                 },
                 ed,
@@ -2590,6 +3146,7 @@ mod tests {
                         egui::Id::unique("ed"),
                         "Editor",
                         &look,
+                        &mut crate::writing::Checks::default(),
                     );
                 },
                 ed,
@@ -2712,5 +3269,60 @@ mod tests {
         h.run();
         assert!(h.state().hover.is_some(), "the card shows");
         h.snapshot("hover-input");
+    }
+
+    #[test]
+    fn grammar_findings_are_underlined_where_they_are_in_the_source() {
+        let p = theme::LIGHT;
+        let text = "Intro.\n\nWe has \\emph{robust} methods.";
+        let mut checks = crate::writing::Checks::default();
+        checks.grammar.configure("local", "", "en");
+        checks.grammar.store(
+            "We has robust methods.".into(),
+            vec![lemmata_grammar::Match {
+                offset: 3,
+                length: 3,
+                message: "Use “have” with “we”.".into(),
+                short_message: String::new(),
+                replacements: vec!["have".into()],
+                rule_id: "HE_VERB_AGR".into(),
+                category: "GRAMMAR".into(),
+            }],
+        );
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([520.0, 200.0])
+            .with_context_setup(move |ctx| {
+                theme::install_fonts(ctx);
+                theme::apply(ctx, &p);
+            })
+            .wgpu()
+            .build_ui_state(
+                move |ui, ed: &mut Editor| {
+                    let rect = ui.ctx().content_rect();
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                    show(
+                        &mut child,
+                        &p,
+                        ed,
+                        &style(),
+                        egui::Id::unique("ed"),
+                        "Editor",
+                        &Lookups::default(),
+                        &mut checks,
+                    );
+                },
+                Editor::new(text, true),
+            );
+        h.run();
+        h.run();
+        let marks: Vec<(usize, usize, bool)> = h
+            .state()
+            .grammar_marks
+            .1
+            .iter()
+            .map(|g| (g.from, g.to, g.editable))
+            .collect();
+        assert_eq!(marks, [(11, 14, true)], "\"has\" on line 3");
+        h.snapshot("grammar");
     }
 }
