@@ -18,6 +18,7 @@ mod testing;
 // shortcut: icons, widgets and some tokens are unused until the panels land in M2; drop the allows then.
 #[allow(dead_code)]
 mod icons;
+mod lsp;
 mod pdf;
 #[allow(dead_code)]
 mod theme;
@@ -25,6 +26,7 @@ mod theme;
 mod widgets;
 #[allow(dead_code)]
 mod workspace;
+mod writing;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

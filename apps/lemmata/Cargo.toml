@@ -26,6 +26,7 @@ lemmata-project.workspace = true
 lemmata-shell = { path = "../../crates/lemmata-shell" }
 lemmata-tex.workspace = true
 lemmata-log.workspace = true
+lemmata-bib.workspace = true
 lemmata-synctex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -38,6 +39,11 @@ unicode-segmentation = "1"
 rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "wayland", "tokio"] }
 tokio.workspace = true
 hayro = "0.8"
+ratex-parser = "0.1"
+ratex-layout = "0.1"
+ratex-types = "0.1"
+ratex-katex-fonts = "0.1"
+skrifa = "0.46"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl"] }
 

@@ -58,6 +58,16 @@ pub enum Msg {
     /// An export finished: what, the file name, and how many files went in.
     Exported(Save, String, Result<usize, String>),
     PackageAdded(Result<(), String>),
+    /// What completion and hover cards look up: labels, citation keys, package names.
+    Labels(Result<Vec<lemmata_project::extras::Label>, String>),
+    Cites(Result<Vec<lemmata_bib::Entry>, String>),
+    Packages(Vec<String>),
+    /// Whether the main file loads a package something just inserted needs.
+    HasPackage(String, bool),
+    /// texlab started (its generation) or why it didn't.
+    LspStarted(Result<u64, String>),
+    /// A message to texlab couldn't be sent: it stopped.
+    LspLost(u64),
     /// An image or PDF of the project, read for its viewer tab.
     Viewed(String, Result<Viewed, String>),
 }

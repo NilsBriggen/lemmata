@@ -823,6 +823,34 @@ pub fn environment_indent(
     Some(if closing { base } else { base + indent.width() })
 }
 
+/// indentOnInput: once what's typed at the start of a line reads `\end{…}`, the line lines up
+/// with its `\begin` (part of the same undo step as the typing).
+pub fn indent_on_input(d: &mut Doc, indent: Indent) -> bool {
+    static END: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"^\s*\\end\{?[^}]*\}?$").unwrap());
+    let head = d.selection.main().head;
+    let n = d.line_of(head);
+    let start = d.line_start(n);
+    let before = d.slice(start, head);
+    if !END.is_match(&before) {
+        return false;
+    }
+    let line = d.line(n);
+    let Some(cols) = environment_indent(d, start, &line, indent) else {
+        return false;
+    };
+    let lead = leading_ws(&line);
+    if indent_columns(lead, indent.tab_size()) == cols {
+        return false;
+    }
+    d.apply_merged(ChangeSet::new(vec![Change {
+        from: start,
+        to: start + lead.chars().count(),
+        insert: indent_string(cols, indent),
+    }]));
+    true
+}
+
 /// Enter: a line break, the new line indented by the environment rules or like the current line.
 pub fn insert_newline_and_indent(d: &mut Doc, indent: Indent) {
     let (c, s) = d.change_by_range(|d, r| {
@@ -976,7 +1004,8 @@ pub fn shift_heading(d: &mut Doc, delta: isize) -> bool {
 /// block after text starts on a new line; `\t` and two-space levels become the indentation unit;
 /// later lines take the current line's indentation; `${}` and `${text}` mark fields and the first
 /// one is selected.
-pub fn insert_template(d: &mut Doc, template: &str, indent: Indent) {
+/// Returns the fields (each with its linked copies) for the snippet to step through.
+pub fn insert_template(d: &mut Doc, template: &str, indent: Indent) -> Vec<Vec<(usize, usize)>> {
     let r = d.selection.main();
     let line = d.line_of(r.from());
     let line_text = d.line(line);
@@ -1011,34 +1040,17 @@ pub fn insert_template(d: &mut Doc, template: &str, indent: Indent) {
         })
         .collect();
     let text = lines.join("\n");
-    // Fields: the first one's text is selected; the markers go.
-    let mut out = String::new();
-    let mut first: Option<(usize, usize)> = None;
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '$'
-            && chars.get(i + 1) == Some(&'{')
-            && let Some(close) = chars[i + 2..].iter().position(|c| *c == '}')
-        {
-            let inner: String = chars[i + 2..i + 2 + close].iter().collect();
-            let start = out.chars().count();
-            out.push_str(&inner);
-            if first.is_none() {
-                first = Some((start, start + inner.chars().count()));
-            }
-            i += 3 + close;
-            continue;
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
+    let (out, fields) = super::snippet::parse(&text);
     let at = r.from() + prefix.chars().count();
     let insert = format!("{prefix}{out}");
     let n = insert.chars().count();
-    let sel = match first {
-        Some((a, b)) => Range::new(at + a, at + b),
-        None => Range::cursor(r.from() + n),
+    let fields: Vec<Vec<(usize, usize)>> = fields
+        .into_iter()
+        .map(|f| f.into_iter().map(|(a, b)| (at + a, at + b)).collect())
+        .collect();
+    let sel = match fields.first() {
+        Some(f) => Selection::normalized(f.iter().map(|&(a, b)| Range::new(a, b)).collect(), 0),
+        None => Selection::cursor(r.from() + n),
     };
     d.apply(
         ChangeSet::new(vec![Change {
@@ -1046,9 +1058,10 @@ pub fn insert_template(d: &mut Doc, template: &str, indent: Indent) {
             to: r.to(),
             insert,
         }]),
-        Selection::single(sel),
+        sel,
         EditKind::Other,
     );
+    fields
 }
 
 // ── Brackets ───────────────────────────────────────────────────────────────
@@ -1132,6 +1145,20 @@ mod tests {
         let mut d = Doc::new(text);
         d.selection = Selection::cursor(at);
         d
+    }
+
+    #[test]
+    fn typing_end_lines_it_up_with_its_begin() {
+        let mut d = Doc::new("    \\begin{itemize}\n        \\item a\n        \\end{itemize}");
+        let end = d.len();
+        d.selection = Selection::cursor(end);
+        assert!(indent_on_input(&mut d, Indent::Spaces(4)));
+        assert_eq!(d.line(2), "    \\end{itemize}");
+        assert_eq!(d.selection.main().head, d.len());
+        assert!(
+            !indent_on_input(&mut d, Indent::Spaces(4)),
+            "already lined up"
+        );
     }
 
     #[test]

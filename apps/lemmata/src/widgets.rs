@@ -872,6 +872,22 @@ pub fn modal_with<R>(
     body: impl FnOnce(&mut Ui) -> R,
     footer: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> ModalResponse<R> {
+    modal_placed(ctx, p, title, subtitle, width, false, body, footer)
+}
+
+/// `top`: `.backdrop.top`, the panel near the top (11 % down) instead of centred, for dialogs
+/// whose height changes while typing.
+#[allow(clippy::too_many_arguments)]
+pub fn modal_placed<R>(
+    ctx: &egui::Context,
+    p: &Palette,
+    title: &str,
+    subtitle: Option<&str>,
+    width: f32,
+    top: bool,
+    body: impl FnOnce(&mut Ui) -> R,
+    footer: Option<&mut dyn FnMut(&mut Ui)>,
+) -> ModalResponse<R> {
     let screen = ctx.content_rect();
     let mut closed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     // The backdrop: rgba(12, 17, 22, .42) over everything, swallowing clicks.
@@ -887,8 +903,16 @@ pub fn modal_with<R>(
     let width = width.min(screen.width() - 48.0);
     let panel = egui::Area::new(egui::Id::unique(("modal", title)))
         .order(egui::Order::Foreground)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .fixed_pos(screen.center())
+        .pivot(if top {
+            egui::Align2::CENTER_TOP
+        } else {
+            egui::Align2::CENTER_CENTER
+        })
+        .fixed_pos(if top {
+            egui::pos2(screen.center().x, screen.top() + screen.height() * 0.11)
+        } else {
+            screen.center()
+        })
         .show(ctx, |ui| {
             ui.set_width(width);
             egui::Frame::new()

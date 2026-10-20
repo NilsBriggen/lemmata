@@ -887,7 +887,7 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> bool {
         .clicked()
     {
         todo = Some(Box::new(|ws| {
-            with_editor(ws, |d, _| cmd::toggle_wrap(d, "textbf"))
+            with_editor(ws, |e, _| cmd::toggle_wrap(&mut e.doc, "textbf"))
         }));
     }
     if ibtn(&mut c, icons::ITALIC, "Italic")
@@ -895,7 +895,7 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> bool {
         .clicked()
     {
         todo = Some(Box::new(|ws| {
-            with_editor(ws, |d, _| cmd::toggle_wrap(d, "textit"))
+            with_editor(ws, |e, _| cmd::toggle_wrap(&mut e.doc, "textit"))
         }));
     }
     // `.heading`: the H and a small chevron, 2 px apart.
@@ -941,16 +941,19 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> bool {
     sep(&mut c);
     if ibtn(&mut c, icons::SIGMA, "Inline maths").clicked() {
         todo = Some(Box::new(|ws| {
-            with_editor(ws, |d, _| wrap_with(d, "$", "$"))
+            with_editor(ws, |e, _| wrap_with(&mut e.doc, "$", "$"))
         }));
     }
-    // shortcut: Symbols, Figure, Table and Cite open their dialogs in M5/M6.
-    let _ = ibtn(&mut c, icons::PI, "Symbols").on_hover_text(tip("Symbols", "symbols"));
+    // shortcut: Figure, Table and Cite open their dialogs in M6.
+    if ibtn(&mut c, icons::PI, "Symbols")
+        .on_hover_text(tip("Symbols", "symbols"))
+        .clicked()
+    {
+        todo = Some(Box::new(|ws| ws.symbols = Some(Default::default())));
+    }
     if ibtn(&mut c, icons::LINK, "Link").clicked() {
         todo = Some(Box::new(move |ws| {
-            with_editor(ws, |d, i| {
-                cmd::insert_template(d, "\\href{${https://}}{${}}", i)
-            })
+            with_editor(ws, |e, i| e.insert_template("\\href{${https://}}{${}}", i))
         }));
     }
     let _ = ibtn(&mut c, icons::IMAGE, "Figure");
@@ -970,7 +973,7 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> bool {
         if ibtn(&mut c, icon, label).clicked() {
             let t = format!("\\begin{{{env}}}\n\t\\item ${{}}\n\\end{{{env}}}");
             todo = Some(Box::new(move |ws| {
-                with_editor(ws, |d, i| cmd::insert_template(d, &t, i))
+                with_editor(ws, |e, i| e.insert_template(&t, i))
             }));
         }
     }
@@ -1002,9 +1005,10 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> bool {
 }
 
 /// Runs a command on the open file's editor with its indentation, and shows the result.
-fn with_editor(ws: &mut Workspace, f: impl FnOnce(&mut crate::editor::buffer::Doc, Indent)) {
+fn with_editor(ws: &mut Workspace, f: impl FnOnce(&mut view::Editor, Indent)) {
+    let indent = ws.indent;
     if let Some(ed) = ws.active_editor() {
-        f(&mut ed.doc, Indent::Spaces(4));
+        f(ed, indent);
         view::after_command(ed);
     }
 }
@@ -1121,6 +1125,31 @@ pub fn status_bar(
         }
         if ws.tex_outdated {
             c.label(small("Old TeX Live".into(), p.warn)).on_hover_text("Some packages may lack newer features");
+        }
+        match &ws.lsp.state {
+            crate::lsp::State::Starting => {
+                // .starting: a small spinning ring, then the words.
+                let r = c.label(small("Starting completion".into(), p.muted)).on_hover_text("The language server is starting");
+                let ring = Rect::from_center_size(pos2(r.rect.left() - 10.0, r.rect.center().y), vec2(8.0, 8.0));
+                let t = c.input(|i| i.time) as f32;
+                c.painter().add(egui::Shape::Path(egui::epaint::PathShape::line(
+                    (0..=12).map(|k| {
+                        let a = t * std::f32::consts::TAU / 0.8 + k as f32 * 0.4;
+                        ring.center() + vec2(a.cos(), a.sin()) * 3.5
+                    }).collect(),
+                    Stroke::new(1.5, p.muted),
+                )));
+                c.add_space(8.0);
+                c.ctx().request_repaint();
+            }
+            crate::lsp::State::Failed(_)
+                if status_link(c, "No completion".into(), p.muted, "Why is completion off?", false).clicked() =>
+            {
+                {
+                    ws.notice("Completion, hover and go to definition come from texlab, which Lemmata downloads the first time it's needed but couldn't start. Check the internet connection, or install texlab yourself (your package manager, or cargo install texlab), then reopen the project.", Tone::Info);
+                }
+            }
+            _ => {}
         }
     });
     changed
@@ -1348,7 +1377,7 @@ pub fn menus(
                 MenuResult::Clicked(i) => {
                     ws.menu = None;
                     let name = hs[i].0;
-                    with_editor(ws, |d, ind| heading(d, name, ind));
+                    with_editor(ws, |e, ind| heading(e, name, ind));
                 }
             }
         }
@@ -1411,7 +1440,8 @@ pub fn menus(
 }
 
 /// A heading command on the cursor's line (changing the one there), or a new one (Editor.svelte heading).
-fn heading(d: &mut crate::editor::buffer::Doc, name: &str, indent: Indent) {
+fn heading(e: &mut view::Editor, name: &str, indent: Indent) {
+    let d = &mut e.doc;
     let n = d.line_of(d.selection.main().head);
     let text = d.line(n);
     let trimmed = text.trim_start();
@@ -1443,7 +1473,7 @@ fn heading(d: &mut crate::editor::buffer::Doc, name: &str, indent: Indent) {
         }
     }
     if d.selection.main().is_empty() {
-        cmd::insert_template(d, &format!("\\{name}{{${{}}}}"), indent);
+        e.insert_template(&format!("\\{name}{{${{}}}}"), indent);
     } else {
         cmd::toggle_wrap(d, name);
     }

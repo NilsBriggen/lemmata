@@ -210,6 +210,9 @@ pub struct Doc {
     pub version: u64,
     /// The first line touched by the last change, for incremental work.
     pub changed_from_line: usize,
+    /// Every change since the view last looked, in order (undo and redo too), so positions it
+    /// keeps (folds, snippet fields, problems) can follow the text.
+    pub journal: Vec<ChangeSet>,
 }
 
 impl Doc {
@@ -222,6 +225,7 @@ impl Doc {
             last: None,
             version: 0,
             changed_from_line: 0,
+            journal: Vec::new(),
         }
     }
 
@@ -275,6 +279,7 @@ impl Doc {
         }
         self.changed_from_line = changes.0.first().map_or(0, |c| self.line_of(c.from));
         let inverse = changes.apply(&mut self.rope);
+        self.journal.push(changes.clone());
         self.selection = selection;
         self.version += 1;
         self.redo.clear();
@@ -300,6 +305,43 @@ impl Doc {
         self.last = Some((now, kind));
     }
 
+    /// Maps a position through the changes in `journal` (as `ChangeSet::map`).
+    pub fn map_through(journal: &[ChangeSet], pos: usize, assoc: i8) -> usize {
+        journal.iter().fold(pos, |p, c| c.map(p, assoc))
+    }
+
+    /// Applies `changes` as part of the last undo step (an edit that follows another, like the
+    /// renamed `\end` of a renamed `\begin`), keeping the selection mapped.
+    pub fn apply_merged(&mut self, changes: ChangeSet) {
+        if changes.is_empty() {
+            return;
+        }
+        let ranges = self
+            .selection
+            .ranges
+            .iter()
+            .map(|r| Range::new(changes.map(r.anchor, -1), changes.map(r.head, -1)))
+            .collect();
+        let sel = Selection::normalized(ranges, self.selection.main);
+        let inverse = changes.apply(&mut self.rope);
+        self.journal.push(changes.clone());
+        self.selection = sel;
+        self.version += 1;
+        match self.undo.last_mut() {
+            Some(step) => {
+                step.inverses.insert(0, inverse);
+                step.redos.push(changes);
+                step.after = self.selection.clone();
+            }
+            None => self.undo.push(Step {
+                inverses: vec![inverse],
+                redos: vec![changes],
+                before: self.selection.clone(),
+                after: self.selection.clone(),
+            }),
+        }
+    }
+
     /// Ends the current undo group, so the next edit starts a new one.
     pub fn break_group(&mut self) {
         self.last = None;
@@ -315,6 +357,7 @@ impl Doc {
         };
         for inv in &step.inverses {
             inv.apply(&mut self.rope);
+            self.journal.push(inv.clone());
         }
         self.changed_from_line = 0;
         self.selection = clamp(step.before.clone(), self.len());
@@ -330,6 +373,7 @@ impl Doc {
         };
         for c in &step.redos {
             c.apply(&mut self.rope);
+            self.journal.push(c.clone());
         }
         self.changed_from_line = 0;
         self.selection = clamp(step.after.clone(), self.len());

@@ -6,6 +6,7 @@ pub mod buffers;
 mod build;
 mod chrome;
 pub mod session;
+mod symbols;
 pub mod tree;
 pub mod viewer;
 
@@ -61,8 +62,10 @@ impl Notice {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum NoticeAction {
+    /// Adds `\usepackage{…}` for something just inserted.
+    AddPackage(String),
     /// Export for arXiv although the build failed (flattened or not).
     ArxivAnyway(bool),
     /// Build normally again after a draft export.
@@ -71,8 +74,9 @@ pub enum NoticeAction {
 }
 
 impl NoticeAction {
-    fn label(self) -> &'static str {
+    fn label(&self) -> &'static str {
         match self {
+            NoticeAction::AddPackage(_) => "Add it",
             NoticeAction::ArxivAnyway(_) => "Export anyway",
             NoticeAction::DraftOff => "Switch to Normal",
             NoticeAction::SetUpTex => "Set up TeX",
@@ -121,6 +125,8 @@ pub struct Workspace {
     pub cursor: (String, usize),
     /// Lines the session wants the cursor on, applied when the file opens.
     pending_line: HashMap<String, usize>,
+    /// Folds the session remembers for files not open yet (first lines, 1-based).
+    pending_folds: HashMap<String, Vec<usize>>,
     session_pdf: serde_json::Value,
     /// Files to open when the session is restored, in order, and which is active.
     restoring: Option<(Vec<String>, Option<String>)>,
@@ -135,6 +141,20 @@ pub struct Workspace {
     auto_writes: HashSet<String>,
     /// A `\usepackage` to add once the main file is saved.
     adding_package: Option<String>,
+    /// The indentation setting, for edits made from outside the editor (toolbar, dialogs).
+    pub indent: Indent,
+    /// Labels, citation keys, packages, files and snippets, for completion and hover cards.
+    pub lookups: crate::editor::complete::Lookups,
+    /// Packages already offered this session, so the offer comes once.
+    offered: HashSet<String>,
+    /// The symbol palette, while open.
+    pub symbols: Option<symbols::SymbolPalette>,
+    /// texlab: completion, hover, definitions and references.
+    pub lsp: crate::lsp::Lsp,
+    /// Find references' list: file, line (1-based), column, and the line's text.
+    pub references: Option<Vec<(String, usize, usize, String)>>,
+    /// Messages to texlab go through one task, so they arrive in the order they were made.
+    lsp_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 /// Rough word count of a selection: words outside comments and commands (App.svelte countWords).
@@ -178,6 +198,7 @@ pub fn count_words(text: &str) -> usize {
 impl Workspace {
     pub fn open(info: ProjectInfo, dirs: &Dirs, backend: &Backend, tex_ready: bool) -> Self {
         let root = info.root.to_string_lossy().into_owned();
+        let root_for_lsp = root.clone();
         let saved = session::load(dirs, &root);
         let mut ws = Self {
             info,
@@ -204,6 +225,7 @@ impl Workspace {
             notices: Vec::new(),
             cursor: (String::new(), 1),
             pending_line: HashMap::new(),
+            pending_folds: HashMap::new(),
             session_pdf: serde_json::Value::Null,
             restoring: None,
             pane: crate::pdf::pane::Pane::new(backend.ctx()),
@@ -213,12 +235,20 @@ impl Workspace {
             no_build: HashSet::new(),
             auto_writes: HashSet::new(),
             adding_package: None,
+            indent: Indent::Spaces(2),
+            lookups: Default::default(),
+            offered: HashSet::new(),
+            symbols: None,
+            lsp: crate::lsp::Lsp::new(&root_for_lsp),
+            references: None,
+            lsp_tx: None,
         };
         // Where you left off, or the main file.
         let (tabs, active) = match saved {
             Some(s) if !s.tabs.is_empty() => {
                 ws.collapsed = s.collapsed.unwrap_or_default().into_iter().collect();
                 ws.pinned = s.pinned.unwrap_or_default();
+                ws.pending_folds = s.folds.clone().unwrap_or_default().into_iter().collect();
                 ws.session_pdf = s.pdf;
                 if let Some(a) = &s.active {
                     ws.pending_line.insert(a.clone(), s.line);
@@ -236,6 +266,14 @@ impl Workspace {
         }
         ws.restoring = Some((tabs, active));
         ws.refresh_outline(backend);
+        ws.refresh_lookups(backend, true);
+        // texlab starts in the background (downloaded the first time); completion and hover
+        // gain its answers once it's ready.
+        ws.lsp.state = crate::lsp::State::Starting;
+        backend.spawn_async(|shell| async move { Msg::LspStarted(shell.lsp_start().await) });
+        if let Ok(main) = std::fs::read_to_string(ws.info.root.join(&ws.info.main)) {
+            Self::set_macros(&main);
+        }
         ws.pane.view.set_position(&ws.session_pdf);
         // The PDF on disk shows right away; it is only built again when something changed since.
         backend.spawn(|shell| Msg::Pdf(shell.read_pdf()));
@@ -267,8 +305,147 @@ impl Workspace {
         });
     }
 
+    fn lsp_send(&self, _backend: &Backend, messages: Vec<String>) {
+        if let Some(tx) = &self.lsp_tx {
+            for body in messages {
+                let _ = tx.send(body);
+            }
+        }
+    }
+
+    /// Ends texlab with the project.
+    pub fn stop_lsp(&self, backend: &Backend) {
+        if let Some(generation) = self.lsp.generation {
+            backend.spawn_async(
+                move |shell| async move { Msg::Done(shell.lsp_stop(generation).await) },
+            );
+        }
+    }
+
+    /// Tells texlab about the open files' current text.
+    fn lsp_sync(&mut self, backend: &Backend) {
+        if self.lsp.state != crate::lsp::State::Ready {
+            return;
+        }
+        #[allow(clippy::type_complexity)]
+        let texts: Vec<(String, u64, Box<dyn Fn() -> String + '_>)> = self
+            .editors
+            .iter()
+            .map(|(p, e)| {
+                (
+                    p.clone(),
+                    e.doc.version,
+                    Box::new(move || e.doc.text()) as Box<dyn Fn() -> String>,
+                )
+            })
+            .collect();
+        let docs: Vec<(String, u64, &dyn Fn() -> String)> = texts
+            .iter()
+            .map(|(p, v, f)| (p.clone(), *v, f.as_ref()))
+            .collect();
+        let msgs = self.lsp.sync(&docs);
+        drop(docs);
+        drop(texts);
+        self.lsp_send(backend, msgs);
+    }
+
+    fn on_lsp(&mut self, backend: &Backend, a: crate::lsp::Answer) {
+        use crate::lsp::Answer;
+        match a {
+            Answer::Ready => self.lsp_sync(backend),
+            Answer::Completion {
+                path,
+                head,
+                from,
+                items,
+            } => {
+                self.lookups.server = Some((path, head, from, items));
+                self.lookups.generation += 1;
+            }
+            Answer::Hover {
+                path,
+                line,
+                col,
+                text,
+            } => {
+                self.lookups.hover = Some((path, line, col, text));
+            }
+            Answer::Locations {
+                references: false,
+                places,
+            } => {
+                if let Some((path, line, _)) = places.into_iter().next() {
+                    self.goto(backend, &path, line);
+                }
+            }
+            Answer::Locations {
+                references: true,
+                places,
+            } => {
+                let rows = places
+                    .into_iter()
+                    .map(|(path, line, col)| {
+                        let text = match self.editors.get(&path) {
+                            Some(e) if line >= 1 && line <= e.doc.line_count() => {
+                                e.doc.line(line - 1)
+                            }
+                            _ => std::fs::read_to_string(self.info.root.join(&path))
+                                .ok()
+                                .and_then(|t| {
+                                    t.lines().nth(line.saturating_sub(1)).map(str::to_owned)
+                                })
+                                .unwrap_or_default(),
+                        };
+                        (path, line, col, text.trim().to_owned())
+                    })
+                    .collect();
+                self.references = Some(rows);
+            }
+        }
+    }
+
+    /// Something just inserted needs `pkg`: offer to load it, once, if the document doesn't.
+    pub fn needs_package(&mut self, backend: &Backend, pkg: String) {
+        if self.offered.insert(pkg.clone()) {
+            backend.spawn(move |shell| {
+                let has = shell.has_package(pkg.clone()).unwrap_or(true);
+                Msg::HasPackage(pkg, has)
+            });
+        }
+    }
+
+    /// The main file's `\newcommand`s for the maths previews (setMathMacros).
+    fn set_macros(text: &str) {
+        let preamble = text.split("\\begin{document}").next().unwrap_or("");
+        crate::writing::render::set_macros(crate::writing::math::collect_macros(preamble));
+    }
+
     pub fn refresh_outline(&self, backend: &Backend) {
         backend.spawn(|shell| Msg::Outline(shell.outline()));
+    }
+
+    /// Reads labels and citation keys again (after saves and outside changes); the package list
+    /// only once.
+    pub fn refresh_lookups(&mut self, backend: &Backend, packages: bool) {
+        backend.spawn(|shell| Msg::Labels(shell.labels()));
+        backend.spawn(|shell| Msg::Cites(shell.bib_entries().map(|b| b.entries)));
+        if packages {
+            backend.spawn(|shell| Msg::Packages(shell.package_names()));
+        }
+        fn files(list: &[lemmata_project::Entry], out: &mut Vec<String>) {
+            for e in list {
+                if e.is_dir {
+                    files(&e.children, out);
+                } else {
+                    out.push(e.path.clone());
+                }
+            }
+        }
+        let mut f = Vec::new();
+        files(&self.info.tree, &mut f);
+        self.lookups.files = f;
+        self.lookups.root = self.info.root.clone();
+        self.lookups.generation += 1;
     }
 
     pub fn notice(&mut self, text: impl Into<String>, tone: Tone) {
@@ -438,7 +615,14 @@ impl Workspace {
             line,
             collapsed: Some(self.collapsed.iter().cloned().collect()),
             pinned: Some(self.pinned.clone()),
-            folds: None,
+            folds: Some(
+                self.editors
+                    .iter()
+                    .map(|(p, e)| (p.clone(), e.folds.lines(&e.doc)))
+                    .chain(self.pending_folds.clone())
+                    .filter(|(_, l)| !l.is_empty())
+                    .collect(),
+            ),
             pdf: if self.pane.has_pdf() {
                 self.pane.view.position()
             } else {
@@ -453,6 +637,10 @@ impl Workspace {
             Msg::FileRead(path, Ok(text)) => {
                 let tex = tree::is_tex(&path);
                 let mut ed = Editor::new(&text, tex);
+                ed.path = path.clone();
+                if let Some(lines) = self.pending_folds.remove(&path) {
+                    ed.set_folds(&lines);
+                }
                 if let Some(line) = self.pending_line.remove(&path) {
                     ed.goto_line(line.max(1));
                 }
@@ -524,6 +712,12 @@ impl Workspace {
                 ) {
                     WriteResult::Saved => {
                         self.after_save(backend, settings, &path);
+                        if path.ends_with(".tex") || path.ends_with(".bib") {
+                            self.refresh_lookups(backend, false);
+                        }
+                        if path == self.info.main {
+                            Self::set_macros(&written);
+                        }
                         if path.ends_with(".tex") {
                             self.refresh_outline(backend);
                         }
@@ -568,8 +762,71 @@ impl Workspace {
                 self.total_words = o.total_words;
             }
             Msg::Outline(Err(_)) => {}
+            Msg::LspStarted(Ok(generation)) => {
+                self.lsp.generation = Some(generation);
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                self.lsp_tx = Some(tx);
+                backend.spawn_async(move |shell| async move {
+                    while let Some(body) = rx.recv().await {
+                        if shell.lsp_send(generation, body).await.is_err() {
+                            return Msg::LspLost(generation);
+                        }
+                    }
+                    Msg::Done(Ok(()))
+                });
+                let init = self.lsp.initialize();
+                self.lsp_send(backend, vec![init]);
+            }
+            Msg::LspStarted(Err(e)) => self.lsp.state = crate::lsp::State::Failed(e),
+            Msg::LspLost(generation) => {
+                if Some(generation) == self.lsp.generation
+                    && self.lsp.state == crate::lsp::State::Ready
+                {
+                    self.lsp.state = crate::lsp::State::Failed("texlab stopped.".into());
+                    self.notice(
+                        "The language server (texlab) stopped answering, so completion and hover may be missing. Reopen the project to restart it.",
+                        Tone::Info,
+                    );
+                }
+            }
+            Msg::Event(lemmata_shell::Event::LspMessage { generation, body }) => {
+                if Some(generation) == self.lsp.generation {
+                    let (answer, replies) = self.lsp.on_message(&body);
+                    self.lsp_send(backend, replies);
+                    if let Some(a) = answer {
+                        self.on_lsp(backend, a);
+                    }
+                }
+            }
+            Msg::Event(lemmata_shell::Event::LspExit { generation }) => {
+                if Some(generation) == self.lsp.generation {
+                    self.lsp.state = crate::lsp::State::Failed("texlab stopped.".into());
+                }
+            }
+            Msg::Labels(Ok(l)) => {
+                self.lookups.labels = l;
+                self.lookups.generation += 1;
+            }
+            Msg::Cites(Ok(c)) => {
+                self.lookups.cites = c;
+                self.lookups.generation += 1;
+            }
+            Msg::Labels(Err(_)) | Msg::Cites(Err(_)) => {}
+            Msg::Packages(p) => {
+                self.lookups.packages = p;
+                self.lookups.generation += 1;
+            }
+            Msg::HasPackage(pkg, has) => {
+                if !has {
+                    self.notices.push(
+                        Notice::new(format!("This needs the {pkg} package, which your document doesn't load yet."), Tone::Info)
+                            .action(NoticeAction::AddPackage(pkg)),
+                    );
+                }
+            }
             Msg::Info(Ok(info)) => {
                 self.info = info;
+                self.refresh_lookups(backend, false);
                 if std::mem::take(&mut self.build.after_config) {
                     self.build_soon(false, false);
                 }
@@ -656,6 +913,11 @@ impl Workspace {
         backend: &Backend,
     ) -> Option<Action> {
         let mut action = None;
+        self.indent = Indent::from_setting(&settings.indent);
+        if self.lookups.snippets != settings.snippets {
+            self.lookups.snippets = settings.snippets.clone();
+            self.lookups.generation += 1;
+        }
         self.run_autosaves(ui, backend, settings);
         let ctx = ui.ctx().clone();
         self.poll_build(&ctx, backend, settings);
@@ -671,6 +933,9 @@ impl Workspace {
         }
         if crate::shortcuts::consume(&ctx, "recompile") {
             self.recompile(backend, settings);
+        }
+        if self.active.is_some() && crate::shortcuts::consume(&ctx, "symbols") {
+            self.symbols = Some(Default::default());
         }
         if crate::shortcuts::consume(&ctx, "sync") {
             self.sync_forward(backend);
@@ -822,6 +1087,25 @@ impl Workspace {
         }
 
         self.dialogs(&ctx, p, backend, settings);
+        if let Some(pal) = &mut self.symbols {
+            match pal.show(&ctx, p) {
+                symbols::Picked::None => {}
+                symbols::Picked::Close => self.symbols = None,
+                symbols::Picked::Insert(tex, pkg, keep) => {
+                    let template = crate::editor::complete::template_of(&tex);
+                    let indent = self.indent;
+                    if let Some(ed) = self.active_editor() {
+                        ed.insert_template(&template, indent);
+                    }
+                    if let Some(pkg) = pkg {
+                        self.needs_package(backend, pkg.to_owned());
+                    }
+                    if !keep {
+                        self.symbols = None;
+                    }
+                }
+            }
+        }
         chrome::menus(&ctx, p, self, settings, backend, &mut action);
         self.toasts(&ctx, p, backend, settings);
         action
@@ -883,7 +1167,83 @@ impl Workspace {
             y = r.bottom();
         }
         let status = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 26.0), rect.max);
-        let body = Rect::from_min_max(pos2(rect.left(), y), pos2(rect.right(), status.top()));
+        let mut body = Rect::from_min_max(pos2(rect.left(), y), pos2(rect.right(), status.top()));
+        // .cm-lsp-reference-panel: Find references' list, under the text.
+        if let Some(refs) = self.references.clone() {
+            let row = 13.0 * 1.4;
+            let mut files = refs.iter().map(|r| &r.0).collect::<Vec<_>>();
+            files.dedup();
+            let h = ((refs.len() + files.len()) as f32 * row + 6.0).min(120.0);
+            let panel = Rect::from_min_max(pos2(body.left(), body.bottom() - h), body.max);
+            body.max.y = panel.top();
+            ui.painter().rect_filled(panel, 0, p.surface_2);
+            ui.painter().hline(
+                panel.x_range(),
+                panel.top() + 0.5,
+                Stroke::new(1.0, p.border),
+            );
+            let mut c =
+                ui.new_child(egui::UiBuilder::new().max_rect(panel.shrink2(vec2(6.0, 3.0))));
+            let mut go = None;
+            egui::ScrollArea::vertical()
+                .id_salt("references")
+                .auto_shrink([false, false])
+                .show(&mut c, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let mut cur: Option<&String> = None;
+                    for (i, (path, line, col, text)) in refs.iter().enumerate() {
+                        if cur != Some(path) {
+                            cur = Some(path);
+                            ui.label(
+                                egui::RichText::new(path)
+                                    .font(FontId::new(13.0, theme::font::mono_500()))
+                                    .color(p.ink),
+                            );
+                        }
+                        let (r, resp) = ui.allocate_exact_size(
+                            vec2(ui.available_width(), row),
+                            egui::Sense::click(),
+                        );
+                        if i == 0 {
+                            ui.painter().rect_filled(
+                                r,
+                                0,
+                                egui::Color32::from_rgba_unmultiplied(0x00, 0x77, 0xee, 0x44),
+                            );
+                        }
+                        let mut job = egui::text::LayoutJob::default();
+                        let f = |c: egui::Color32| egui::TextFormat {
+                            font_id: FontId::monospace(13.0),
+                            color: c,
+                            ..Default::default()
+                        };
+                        job.append(
+                            &format!("{:>5}", format!("{line}: ")),
+                            0.0,
+                            f(p.ink.gamma_multiply(0.7)),
+                        );
+                        job.append(text, 0.0, f(p.ink));
+                        let g = ui.fonts_mut(|fo| fo.layout_job(job));
+                        ui.painter().galley(
+                            pos2(r.left(), r.center().y - g.size().y / 2.0),
+                            g,
+                            p.ink,
+                        );
+                        if resp
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            go = Some((path.clone(), *line, *col));
+                        }
+                    }
+                });
+            if let Some((path, line, _)) = go {
+                self.goto(backend, &path, line);
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.references = None;
+            }
+        }
         match self
             .active
             .clone()
@@ -891,6 +1251,14 @@ impl Workspace {
         {
             Some(path) => {
                 let style = editor_style(settings, self.focus_mode);
+                if self.editors[&path].problems_gen != self.build.diag_gen {
+                    let list = self.problems_of(&path);
+                    let generation = self.build.diag_gen;
+                    self.editors
+                        .get_mut(&path)
+                        .unwrap()
+                        .set_problems(generation, &list);
+                }
                 let ed = self.editors.get_mut(&path).unwrap();
                 let mut c = ui.new_child(egui::UiBuilder::new().max_rect(body));
                 let out = view::show(
@@ -900,7 +1268,10 @@ impl Workspace {
                     &style,
                     egui::Id::unique(("editor", &path)),
                     &format!("Text of {}", tree::base_name(&path)),
+                    &self.lookups,
                 );
+                let needs = out.needs_package.clone();
+                let lsp_asks = (out.server_complete, out.server_hover, out.server_goto);
                 if out.changed {
                     self.buffers
                         .edit(&path, Instant::now(), Self::autosave_ms(settings));
@@ -913,6 +1284,38 @@ impl Workspace {
                 if let Some(sel) = out.selection {
                     self.selection_words = if sel.is_empty() { 0 } else { count_words(&sel) };
                 }
+                if let Some(pkg) = needs {
+                    self.needs_package(backend, pkg);
+                }
+                self.lsp_sync(backend);
+                let ed = &self.editors[&path];
+                let at = |line: usize, col: usize| crate::lsp::utf16_col(&ed.doc.line(line), col);
+                let mut msgs = Vec::new();
+                if let Some((head, from)) = lsp_asks.0 {
+                    let n = ed.doc.line_of(head);
+                    let u = at(n, head - ed.doc.line_start(n));
+                    msgs.extend(self.lsp.complete(&path, n, u, head, from));
+                }
+                if let Some((line, col)) = lsp_asks.1
+                    && self
+                        .lookups
+                        .hover
+                        .as_ref()
+                        .is_none_or(|h| h.0 != path || h.1 != line || h.2 != col)
+                {
+                    let u = at(line, col);
+                    self.lookups.hover = Some((path.clone(), line, col, String::new()));
+                    msgs.extend(self.lsp.hover(&path, line, u, col));
+                }
+                if let Some((line, col, references)) = lsp_asks.2 {
+                    let u = at(line, col);
+                    if references {
+                        msgs.extend(self.lsp.references(&path, line, u));
+                    } else {
+                        msgs.extend(self.lsp.definition(&path, line, u));
+                    }
+                }
+                self.lsp_send(backend, msgs);
             }
             None if self
                 .active
@@ -1028,7 +1431,7 @@ impl Workspace {
         if n.action.is_none() && n.tone != Tone::Error {
             ctx.request_repaint_after(Duration::from_millis(500));
         }
-        let (text, tone, act) = (n.text.clone(), n.tone, n.action);
+        let (text, tone, act) = (n.text.clone(), n.tone, n.action.clone());
         let screen = ctx.content_rect();
         let mut dismissed = false;
         let mut run = None;
@@ -1066,13 +1469,13 @@ impl Workspace {
                             ui.add(
                                 egui::Label::new(egui::RichText::new(&text).color(p.ink)).wrap(),
                             );
-                            if let Some(a) = act
+                            if let Some(a) = &act
                                 && Button::new(a.label())
                                     .size(widgets::Size::Sm)
                                     .show(ui, p)
                                     .clicked()
                             {
-                                run = Some(a);
+                                run = Some(a.clone());
                             }
                             if Button::icon(crate::icons::X, "Dismiss")
                                 .size(widgets::Size::Sm)
@@ -1104,6 +1507,10 @@ pub fn editor_style(s: &Settings, focus: bool) -> view::Style {
         indent: Indent::from_setting(&s.indent),
         wrap: s.word_wrap,
         auto_close: s.auto_close,
+        folding: s.folding,
+        env_sync: s.env_sync,
+        autocomplete: s.autocomplete,
+        math_preview: true,
         focus,
     }
 }

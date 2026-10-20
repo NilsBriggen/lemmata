@@ -126,6 +126,7 @@ Per milestone: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `
 | M2 egui app: welcome, onboarding, library, all of lemmata-shell linked | 17.6 MB | linux x86_64, 2026-10-20 |
 | M3 egui app: plus the editor core and the workspace (no PDF yet) | 20.0 MB | linux x86_64, 2026-10-20 |
 | M4 egui app: plus building, logs, the hayro PDF view, image viewer, `panic = "unwind"` | 29.1 MB | linux x86_64, 2026-10-20; 26.3 MB with `panic = "abort"` |
+| M5 egui app: plus completion, snippets, folds, problems in the editor, RaTeX maths, hover cards, texlab client | 32.2 MB | linux x86_64, 2026-10-20; texlab (14.6 MB) is downloaded on first use, not shipped |
 
 M4: the release profile switched to `panic = "unwind"` (+2.8 MB) so a PDF that makes hayro panic leaves that page blank instead of ending the app with unsaved edits. The alternative is rendering in a child process with `abort`. The hayro stack (hayro-interpret, hayro-syntax, vello_cpu, fearless_simd, JBIG2/JPEG 2000) is about 3.5 MB of the rest; JPEG, GIF and WebP decoding for image tabs adds about 0.4 MB.
 
@@ -183,3 +184,8 @@ RaTeX's one visible flaw in the sheet: `\overbrace{a+b}^{n}\underbrace{c+d}_{m}`
 - SVG files in the project are not previewed (needs resvg, about 1 MB); other images and PDFs are.
 - The status bar's "Compiled in" has no "Finished at" time on hover yet (needs local time formatting).
 - "Present full screen" and the presenter window come with M7; the button shows a notice until then.
+- Maths is drawn by RaTeX with KaTeX's fonts, rasterized once per size; a few constructs lay out slightly differently from KaTeX (see the M1 spike notes).
+- Completion icons are drawn shapes (ƒ, ○, C, abc, ▢, a key) rather than CodeMirror's emoji and symbol glyphs.
+- texlab's hover notes show as plain text, not rendered Markdown. Rename (F2) arrives with the rename-symbol dialog in M6.
+- "Search the project" and "Search online" on hover cards for missing labels and keys arrive with project search and the citation picker (M6).
+- The package offer ("This needs the X package…") is a toast with "Add it" and a dismiss button, not the separate toast with a package icon and "Not now".

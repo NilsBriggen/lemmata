@@ -490,7 +490,7 @@ fn system_tool(name: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn no_window_std(cmd: &mut std::process::Command) {
+pub fn no_window_std(cmd: &mut std::process::Command) {
     lemmata_env::host(cmd);
     #[cfg(windows)]
     {
@@ -500,7 +500,7 @@ fn no_window_std(cmd: &mut std::process::Command) {
     let _ = cmd;
 }
 
-fn run_tool(name: &str, args: &[&OsString]) -> Result<(), String> {
+pub fn run_tool(name: &str, args: &[&OsString]) -> Result<(), String> {
     let mut cmd = std::process::Command::new(system_tool(name));
     cmd.args(args).stdin(Stdio::null());
     no_window_std(&mut cmd);

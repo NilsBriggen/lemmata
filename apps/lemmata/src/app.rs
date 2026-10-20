@@ -490,7 +490,13 @@ impl App {
             | Msg::SaveTo(..)
             | Msg::Exported(..)
             | Msg::PackageAdded(_)
-            | Msg::Viewed(..) => {}
+            | Msg::Viewed(..)
+            | Msg::Labels(_)
+            | Msg::Cites(_)
+            | Msg::Packages(_)
+            | Msg::HasPackage(..)
+            | Msg::LspStarted(_)
+            | Msg::LspLost(_) => {}
         }
     }
 
@@ -631,6 +637,7 @@ impl App {
     fn close_project(&mut self) {
         if let Some(mut ws) = self.project.take() {
             ws.save_all(&self.backend, &self.settings);
+            ws.stop_lsp(&self.backend);
             workspace::session::save(&self.dirs, &ws.root, &ws.session());
         }
     }
@@ -1247,6 +1254,32 @@ mod tests {
             let b = &h.state().project.as_ref().unwrap().build;
             !b.building && b.errors() > 0
         });
+        h.run_steps(2);
+        {
+            let ed = &h.state().project.as_ref().unwrap().editors["main.tex"];
+            assert!(
+                ed.problems.iter().any(|p| ed.doc.line_of(p.from) == 10),
+                "the editor marks line 11"
+            );
+        }
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        // F8 steps from problem to problem (there is a warning on line 5 too).
+        let line = |h: &Harness<App>| {
+            let ed = &h.state().project.as_ref().unwrap().editors["main.tex"];
+            ed.doc.line_of(ed.doc.selection.main().head)
+        };
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            h.key_press(egui::Key::F8);
+            h.run_steps(2);
+            seen.push(line(&h));
+        }
+        assert!(
+            seen.contains(&10),
+            "F8 reaches the error on line 11: {seen:?}"
+        );
+        let _ = h.try_snapshot("editor-problem-light");
         h.get_by_label("Logs").click();
         h.run_steps(3);
         assert!(
@@ -1337,6 +1370,94 @@ mod tests {
             h.step();
         }
         let _ = h.try_snapshot("pdf-narrow-dark");
+    }
+
+    #[test]
+    fn the_symbol_palette_inserts_what_is_clicked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Symbols").click();
+        h.run_steps(4);
+        let _ = h.try_snapshot("symbols-light");
+        h.get_by_label("\\alpha").click();
+        h.run_steps(3);
+        assert!(
+            h.state().project.as_ref().unwrap().symbols.is_none(),
+            "a click closes it"
+        );
+        let text = h.state().project.as_ref().unwrap().editors["main.tex"]
+            .doc
+            .text();
+        assert!(text.contains("\\alpha"), "{text}");
+    }
+
+    #[test]
+    fn texlab_adds_commands_and_goes_to_definitions() {
+        if lemmata_shell::lsp::find_texlab(std::path::Path::new("/nonexistent")).is_none() {
+            return; // no texlab on this machine, and tests don't download it
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        wait_for(&mut h, "texlab", |h| {
+            h.state().project.as_ref().unwrap().lsp.state == crate::lsp::State::Ready
+        });
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        // A command only texlab knows.
+        {
+            let app = h.state_mut();
+            let ed = app
+                .project
+                .as_mut()
+                .unwrap()
+                .editors
+                .get_mut("main.tex")
+                .unwrap();
+            let end = ed.doc.line_end(9);
+            ed.doc.selection = crate::editor::buffer::Selection::cursor(end);
+        }
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex").type_text("\\sectionma");
+        wait_for(&mut h, "texlab's completions", |h| {
+            h.state().project.as_ref().unwrap().editors["main.tex"]
+                .completion
+                .as_ref()
+                .is_some_and(|c| {
+                    c.items
+                        .iter()
+                        .any(|i| i.0.display.as_deref() == Some("\\sectionmark"))
+                })
+        });
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        // F12 on \input{chapters/method} opens that file.
+        {
+            let app = h.state_mut();
+            let ed = app
+                .project
+                .as_mut()
+                .unwrap()
+                .editors
+                .get_mut("main.tex")
+                .unwrap();
+            let n = (0..ed.doc.line_count())
+                .find(|&n| ed.doc.line(n).contains("\\input"))
+                .unwrap();
+            let at = ed.doc.line_start(n) + 10;
+            ed.doc.selection = crate::editor::buffer::Selection::cursor(at);
+        }
+        h.run_steps(2);
+        h.key_press(egui::Key::F12);
+        wait_for(&mut h, "the definition", |h| {
+            h.state().project.as_ref().unwrap().active.as_deref() == Some("chapters/method.tex")
+        });
     }
 
     #[test]

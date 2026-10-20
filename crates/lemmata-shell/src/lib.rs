@@ -867,7 +867,16 @@ impl Shell {
         if let Some(old) = slot.take() {
             old.stop().await;
         }
-        *slot = Some(lsp::start(self.sink.clone(), &root, bin.as_deref(), generation).await?);
+        *slot = Some(
+            lsp::start(
+                self.sink.clone(),
+                &root,
+                &self.dirs.data,
+                bin.as_deref(),
+                generation,
+            )
+            .await?,
+        );
         Ok(generation)
     }
 

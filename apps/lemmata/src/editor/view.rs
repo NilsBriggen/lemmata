@@ -4,7 +4,11 @@
 
 use super::buffer::{Doc, Range, Selection};
 use super::commands::{self as cmd, Indent};
+use super::complete::{self, Apply, Lookups};
+use super::envs;
+use super::fold::{self, Folds};
 use super::highlight::{Highlighter, Token};
+use super::popup::{self, Completion};
 use super::search::{self, Search};
 use crate::shortcuts;
 use crate::theme::Palette;
@@ -33,8 +37,32 @@ pub struct Style {
     pub indent: Indent,
     pub wrap: bool,
     pub auto_close: bool,
+    /// Sections, environments and comment blocks can fold.
+    pub folding: bool,
+    /// Renaming `\begin{x}` renames its `\end{x}`; Enter closes an open environment.
+    pub env_sync: bool,
+    /// The completion list opens while typing.
+    pub autocomplete: bool,
+    /// The maths under the cursor is previewed above it.
+    pub math_preview: bool,
     /// Focus mode: the text in a centred column at most 88 characters wide.
     pub focus: bool,
+}
+
+/// A problem from the last build, shown in the text and the lint gutter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Problem {
+    pub from: usize,
+    pub to: usize,
+    pub severity: Severity,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Severity {
+    Error,
+    Warning,
+    Info,
 }
 
 /// What happened in the editor this frame, for the app.
@@ -50,6 +78,14 @@ pub struct Output {
     pub sync: Option<(usize, usize)>,
     /// Mod-Shift-e: ask which environment to wrap the selection in.
     pub wrap_environment: bool,
+    /// A completion inserted something that needs this package.
+    pub needs_package: Option<String>,
+    /// Ask texlab for commands at this cursor, the name starting at `from`.
+    pub server_complete: Option<(usize, usize)>,
+    /// Ask texlab what is at this line and column (0-based chars).
+    pub server_hover: Option<(usize, usize)>,
+    /// F12 / Shift-F12 at the cursor: (line, column), and whether it's references.
+    pub server_goto: Option<(usize, usize, bool)>,
     /// F8 / Shift-F8: next or previous problem.
     pub next_problem: Option<i8>,
 }
@@ -73,6 +109,8 @@ enum DragUnit {
 
 /// One open file: its text, history and how it is shown.
 pub struct Editor {
+    /// The file, relative to the project; matches texlab's answers to this editor.
+    pub path: String,
     pub doc: Doc,
     /// TeX files get highlighting, environment indentation and the formatting keys.
     pub tex: bool,
@@ -98,11 +136,36 @@ pub struct Editor {
     last_selection: Selection,
     /// Where the view is scrolled.
     pub scroll_y: f32,
+    pub folds: Folds,
+    /// Bumped when folds change, so heights are measured again.
+    folds_gen: u64,
+    heights_folds: u64,
+    hidden: Vec<bool>,
+    /// Which lines can fold, per document version.
+    foldable: (u64, HashMap<usize, bool>),
+    /// A snippet whose fields Tab steps through.
+    pub snippet: Option<super::snippet::Active>,
+    pub completion: Option<Completion>,
+    /// Typing (false) or Ctrl-Space (true) asked for completion this frame.
+    complete_wanted: Option<bool>,
+    /// `\begin`/`\end` spans without a partner, and when they were last computed.
+    unmatched: (u64, Vec<(usize, usize)>),
+    pub problems: Vec<Problem>,
+    /// Which build's problems these are.
+    pub problems_gen: u64,
+    /// The last maths preview that rendered, shown faded under an error while typing.
+    last_math: Option<crate::writing::render::Math>,
+    /// A completion asked of texlab: the cursor and whether it was Ctrl-Space; its answer opens
+    /// the list even when nothing local matched.
+    awaiting_server: Option<(usize, bool)>,
+    /// The hover card on screen: its line, what it shows, and where the card was drawn.
+    hover: Option<(usize, super::hover::Target, Rect)>,
 }
 
 impl Editor {
     pub fn new(text: &str, tex: bool) -> Self {
         Self {
+            path: String::new(),
             doc: Doc::new(text),
             tex,
             hl: Highlighter::default(),
@@ -122,6 +185,20 @@ impl Editor {
             last_cursor_line: 1,
             last_selection: Selection::cursor(0),
             scroll_y: 0.0,
+            folds: Folds::default(),
+            folds_gen: 0,
+            heights_folds: u64::MAX,
+            hidden: Vec::new(),
+            foldable: (u64::MAX, HashMap::new()),
+            snippet: None,
+            completion: None,
+            complete_wanted: None,
+            unmatched: (u64::MAX, Vec::new()),
+            problems: Vec::new(),
+            problems_gen: u64::MAX,
+            last_math: None,
+            hover: None,
+            awaiting_server: None,
         }
     }
 
@@ -135,6 +212,103 @@ impl Editor {
         let n = line.clamp(1, self.doc.line_count()) - 1;
         self.doc.selection = Selection::cursor(self.doc.line_start(n));
         self.center_line = Some(n);
+    }
+
+    /// Inserts a template at the selection (a toolbar button, a dialog), as a snippet.
+    pub fn insert_template(&mut self, template: &str, indent: Indent) {
+        let fields = cmd::insert_template(&mut self.doc, template, indent);
+        self.snippet = super::snippet::Active::start(fields);
+        after_command(self);
+    }
+
+    /// Replaces `from..to` with a snippet (a completion).
+    pub fn apply_snippet(&mut self, from: usize, to: usize, template: &str, indent: Indent) {
+        let fields = super::snippet::insert(&mut self.doc, from, to, template, indent);
+        self.snippet = super::snippet::Active::start(fields);
+        self.reveal = true;
+    }
+
+    /// Ends the snippet; extra cursors from linked fields go with it.
+    fn end_snippet(&mut self) {
+        if self.snippet.take().is_some() && self.doc.selection.ranges.len() > 1 {
+            let m = self.doc.selection.main();
+            self.doc.selection = Selection::single(m);
+        }
+    }
+
+    /// Shows a build's problems: each on its whole line (1-based), like Editor.svelte showDiagnostics.
+    pub fn set_problems(&mut self, generation: u64, list: &[(usize, Severity, String)]) {
+        self.problems_gen = generation;
+        let lines = self.doc.line_count();
+        self.problems = list
+            .iter()
+            .map(|(line, severity, message)| {
+                let n = line.clamp(&1, &lines) - 1;
+                Problem {
+                    from: self.doc.line_start(n),
+                    to: self.doc.line_end(n),
+                    severity: *severity,
+                    message: message.clone(),
+                }
+            })
+            .collect();
+    }
+
+    /// F8 / Shift-F8: selects the next (or previous) problem, wrapping around.
+    fn next_problem(&mut self, forward: bool) -> bool {
+        if self.problems.is_empty() {
+            return false;
+        }
+        let head = self.doc.selection.main().head;
+        let mut sorted: Vec<&Problem> = self.problems.iter().collect();
+        sorted.sort_by_key(|p| p.from);
+        let pick = if forward {
+            sorted.iter().find(|p| p.from > head).or(sorted.first())
+        } else {
+            sorted.iter().rev().find(|p| p.to < head).or(sorted.last())
+        };
+        if let Some(p) = pick {
+            self.doc.selection = Selection::single(Range::new(p.from, p.to));
+            self.reveal = true;
+        }
+        true
+    }
+
+    /// Folds the block starting on line `n` (0-based), or unfolds it when it is folded.
+    pub fn toggle_fold(&mut self, n: usize) {
+        if !self.folds.unfold_line(&self.doc, n) {
+            self.folds.fold(&self.doc, n);
+            // A cursor inside goes to the fold's first line.
+            if let Some((from, to)) = self.folds.starting(&self.doc, n) {
+                let main = self.doc.selection.main();
+                if main.head > from && main.head <= to {
+                    self.doc.selection = Selection::cursor(from);
+                }
+            }
+        }
+        self.folds_gen += 1;
+    }
+
+    /// Folds these lines (1-based), as the session remembered them.
+    pub fn set_folds(&mut self, lines: &[usize]) {
+        for &l in lines {
+            if l >= 1 && l <= self.doc.line_count() {
+                self.folds.fold(&self.doc, l - 1);
+            }
+        }
+        self.folds_gen += 1;
+    }
+
+    fn can_fold(&mut self, n: usize) -> bool {
+        if self.foldable.0 != self.doc.version {
+            self.foldable = (self.doc.version, HashMap::new());
+        }
+        let doc = &self.doc;
+        *self
+            .foldable
+            .1
+            .entry(n)
+            .or_insert_with(|| fold::fold_lines(doc, n).is_some())
     }
 
     /// The text of the main selection.
@@ -329,6 +503,8 @@ struct Geo<'a> {
     lay: &'a Lay<'a>,
     layouts: HashMap<usize, LineLayout>,
     tab: usize,
+    /// Lines a fold hides; Up and Down step over them.
+    hidden: &'a [bool],
 }
 
 impl Geo<'_> {
@@ -375,19 +551,20 @@ impl Geo<'_> {
     ) -> (usize, f32) {
         let (n, row, x) = self.place(ui, d, pos);
         let x = goal_x.unwrap_or(x);
+        let shown = |k: usize| !self.hidden.get(k).copied().unwrap_or(false);
+        let next = (n + 1..d.line_count()).find(|&k| shown(k));
+        let prev = (0..n).rev().find(|&k| shown(k));
         let target = if down {
             if row + 1 < self.rows(ui, d, n) {
                 Some((n, row + 1))
-            } else if n + 1 < d.line_count() {
-                Some((n + 1, 0))
             } else {
-                None
+                next.map(|k| (k, 0))
             }
         } else if row > 0 {
             Some((n, row - 1))
-        } else if n > 0 {
-            let r = self.rows(ui, d, n - 1);
-            Some((n - 1, r - 1))
+        } else if let Some(k) = prev {
+            let r = self.rows(ui, d, k);
+            Some((k, r - 1))
         } else {
             None
         };
@@ -407,8 +584,27 @@ pub fn show(
     style: &Style,
     id: egui::Id,
     label: &str,
+    look: &Lookups,
 ) -> Output {
     let mut out = Output::default();
+    let journal = std::mem::take(&mut ed.doc.journal);
+    if !journal.is_empty() {
+        ed.folds.map(&journal);
+        ed.folds_gen += 1;
+        if let Some(s) = &mut ed.snippet {
+            s.map(&journal);
+        }
+        for u in &mut ed.unmatched.1 {
+            *u = (
+                super::buffer::Doc::map_through(&journal, u.0, -1),
+                super::buffer::Doc::map_through(&journal, u.1, 1),
+            );
+        }
+        for pr in &mut ed.problems {
+            pr.from = super::buffer::Doc::map_through(&journal, pr.from, -1);
+            pr.to = super::buffer::Doc::map_through(&journal, pr.to, 1).max(pr.from);
+        }
+    }
     let mut area = ui.available_rect_before_wrap();
     ui.painter().rect_filled(area, 0, p.code_bg);
     ui.allocate_rect(area, Sense::hover());
@@ -461,10 +657,19 @@ pub fn show(
         ed.cache_key = key;
     }
     let hkey = (ed.doc.version, key.0, key.1, key.2, key.3);
-    if ed.heights_key != hkey || ed.heights.len() != ed.doc.line_count() {
+    if ed.heights_key != hkey
+        || ed.heights.len() != ed.doc.line_count()
+        || ed.heights_folds != ed.folds_gen
+    {
         let n = ed.doc.line_count();
+        ed.hidden = ed.folds.hidden(&ed.doc);
+        ed.heights_folds = ed.folds_gen;
         ed.heights.clear();
         for i in 0..n {
+            if ed.hidden[i] {
+                ed.heights.push(0.0);
+                continue;
+            }
             let text = ed.doc.line(i);
             let h = *ed.height_cache.entry(hash(&text)).or_insert_with(|| {
                 // Short lines can't wrap: no layout needed.
@@ -505,15 +710,28 @@ pub fn show(
     }
     ed.reveal = false;
 
+    let hidden = ed.hidden.clone();
     let mut geo = Geo {
         lay: &lay,
         layouts: HashMap::new(),
         tab,
+        hidden: &hidden,
     };
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area));
     let now = ui.input(|i| i.time);
     let mods = ui.input(|i| i.modifiers);
 
+    // Unpaired \begin/\end: looked for again half a second after typing stops.
+    if ed.tex && style.env_sync && ed.unmatched.0 != ed.doc.version {
+        let idle = ui.input(|i| i.time) - ed.last_activity;
+        if idle > 0.5 {
+            ed.unmatched = (ed.doc.version, envs::unmatched(&ed.doc));
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(0.5 - idle + 0.01));
+        }
+    }
+    let mut popup_anchor: Option<Pos2> = None;
     let scrolled = scroll.show_viewport(&mut child, |ui, viewport| {
         ui.set_min_size(vec2(area.width(), total));
         let origin = ui.min_rect().min;
@@ -565,9 +783,15 @@ pub fn show(
         };
         let lh = style.line_height;
         let right_edge = screen(text_x + text_w + 6.0, 0.0).x;
+        let fold_on = style.folding;
+        let mut fold_clicks: Vec<(Rect, usize)> = Vec::new();
+        let mut lint_marks: Vec<(Rect, usize)> = Vec::new();
 
         #[allow(clippy::needless_range_loop)] // n is also the line number.
         for n in first..last {
+            if ed.heights[n] == 0.0 {
+                continue;
+            }
             let text = ed.doc.line(n);
             let tokens = if ed.tex {
                 ed.hl.tokens(n, |k| ed.doc.line(k))
@@ -684,6 +908,140 @@ pub fn show(
                 }
             }
             painter.galley(screen(text_x + l.hang, top), l.galley.clone(), p.ink);
+            // .cm-lintRange: a wavy underline under each problem on this line.
+            for pr in ed
+                .problems
+                .iter()
+                .filter(|pr| pr.to >= start && pr.from <= start + len)
+            {
+                let a = pr.from.max(start) - start;
+                let b = (pr.to.min(start + len) - start).max(a);
+                let (pa, ra) = col_pos(&l, a, cw, tab);
+                let (pb, rb) = col_pos(&l, b, cw, tab);
+                for row in ra..=rb {
+                    let y = base.y + row as f32 * lh + lh / 2.0 + style.font.size * 0.62;
+                    let x0 = if row == ra {
+                        base.x + pa.x
+                    } else {
+                        base.x + l.hang
+                    };
+                    let x1 = if row == rb {
+                        base.x + pb.x
+                    } else {
+                        right_edge - 6.0
+                    };
+                    wavy(
+                        &painter,
+                        x0,
+                        x1.max(x0 + 6.0),
+                        y,
+                        severity_color(pr.severity, p),
+                    );
+                }
+            }
+            // .cm-unmatched-env: a dotted --warn underline.
+            if style.env_sync {
+                for &(a, b) in ed
+                    .unmatched
+                    .1
+                    .iter()
+                    .filter(|u| u.1 > start && u.0 < start + len)
+                {
+                    let (pa, _) = col_pos(&l, a.max(start) - start, cw, tab);
+                    let (pb, _) = col_pos(&l, b.min(start + len) - start, cw, tab);
+                    let y = base.y + lh / 2.0 + style.font.size * 0.62 + 1.0;
+                    let mut x = base.x + pa.x;
+                    while x < base.x + pb.x {
+                        painter.hline(
+                            x..=(x + 1.0).min(base.x + pb.x),
+                            y,
+                            Stroke::new(1.0, p.warn),
+                        );
+                        x += 2.5;
+                    }
+                }
+            }
+            // .cm-lint-marker in the gutter, the worst problem of the line.
+            if let Some(worst) = ed
+                .problems
+                .iter()
+                .filter(|pr| ed.doc.line_of(pr.from) == n)
+                .map(|pr| pr.severity)
+                .min_by_key(|s| *s as u8)
+            {
+                let r = Rect::from_center_size(
+                    pos2(
+                        gutter.left() + numbers_w + LINT_EM * em / 2.0,
+                        line_rect.top() + lh / 2.0,
+                    ),
+                    vec2(0.8 * em, 0.8 * em),
+                );
+                lint_marker(&painter, r, worst);
+                lint_marks.push((r.expand(2.0), n));
+            }
+            // .cm-snippetFieldPosition: a dotted line where an empty field waits.
+            if let Some(sn) = &ed.snippet {
+                for &(a, b) in sn.fields.iter().flatten() {
+                    if a == b && a >= start && a <= start + len {
+                        let pt = at(a - start);
+                        let mut y = pt.y + 2.0;
+                        while y < pt.y + lh - 2.0 {
+                            painter.vline(
+                                pt.x,
+                                y..=(y + 1.4).min(pt.y + lh - 2.0),
+                                Stroke::new(1.4, Color32::from_gray(0x88)),
+                            );
+                            y += 2.8;
+                        }
+                    }
+                }
+            }
+            // .cm-foldPlaceholder: "…" in an accent pill after a folded line; a click unfolds.
+            if ed.folds.starting(&ed.doc, n).is_some() {
+                let end = at(len);
+                let g =
+                    ui.fonts_mut(|f| f.layout_no_wrap("…".into(), style.font.clone(), p.accent));
+                let pill = Rect::from_min_size(
+                    pos2(end.x + 2.0, end.y + (lh - em * 1.25) / 2.0),
+                    vec2(g.size().x + 12.0, em * 1.25),
+                );
+                painter.rect_filled(pill, 4, p.accent_soft);
+                painter.galley(pill.center() - g.size() / 2.0, g, p.accent);
+                fold_clicks.push((pill, n));
+            }
+            // The fold gutter: ▾ on lines that can fold, ▸ on folded ones.
+            if ed.tex && fold_on {
+                let folded = ed.folds.starting(&ed.doc, n).is_some();
+                if folded || ed.can_fold(n) {
+                    let r = Rect::from_min_size(
+                        pos2(gutter.left() + numbers_w + LINT_EM * em, line_rect.top()),
+                        vec2(0.6 * em + 6.0, lh),
+                    );
+                    let hover = ui.rect_contains_pointer(r);
+                    // ▸ / ▾ at 12 px, drawn as triangles (the UI fonts don't have them).
+                    let c = r.center();
+                    let (w, hh) = (3.0, 4.5);
+                    let pts = if folded {
+                        vec![
+                            pos2(c.x - w + 1.0, c.y - hh + 1.0),
+                            pos2(c.x + w, c.y),
+                            pos2(c.x - w + 1.0, c.y + hh - 1.0),
+                        ]
+                    } else {
+                        vec![
+                            pos2(c.x - hh + 1.0, c.y - w + 1.0),
+                            pos2(c.x + hh - 1.0, c.y - w + 1.0),
+                            pos2(c.x, c.y + w),
+                        ]
+                    };
+                    painter.add(egui::Shape::convex_polygon(
+                        pts,
+                        if hover { p.ink } else { p.faint },
+                        Stroke::NONE,
+                    ));
+                    fold_clicks.push((r, n));
+                }
+            }
             // The line number, right-aligned; --ink-2 on the cursor's line.
             let color = if head_lines.contains(&n) && focused {
                 p.ink_2
@@ -698,6 +1056,47 @@ pub fn show(
                 color,
             );
             geo.layouts.insert(n, l);
+        }
+
+        // The problems of a line, on hovering its marker.
+        if let Some(pos) = ui.input(|i| i.pointer.hover_pos())
+            && let Some(&(r, n)) = lint_marks.iter().find(|(r, _)| r.contains(pos))
+        {
+            problem_tooltip(
+                ui,
+                p,
+                r.right_bottom(),
+                ed.problems.iter().filter(|pr| ed.doc.line_of(pr.from) == n),
+            );
+        }
+
+        // The maths under the cursor, previewed above it (writing/math.ts).
+        if ed.tex
+            && focused
+            && main.is_empty()
+            && style.math_preview
+            && let Some(span) = crate::writing::math::math_at(&ed.doc, main.head)
+            && !span.tex.trim().is_empty()
+        {
+            // Inline maths is anchored at its start; tall display maths at the cursor.
+            let anchor_pos = if span.display { main.head } else { span.from };
+            let n = ed.doc.line_of(anchor_pos);
+            if let Some(l) = geo.layouts.get(&n) {
+                let pt = col_pos(l, anchor_pos - ed.doc.line_start(n), cw, tab).0;
+                let at = screen(text_x, tops[n]) + pt.to_vec2();
+                math_preview(ui, p, ed, &span.tex, span.display, at, style.font.size, lh);
+            }
+        }
+
+        // Where the completion list hangs: under the start of the word being completed.
+        if let Some(c) = &ed.completion
+            && let Some((it, _)) = c.items.first()
+        {
+            let n = ed.doc.line_of(it.from);
+            if let Some(l) = geo.layouts.get(&n) {
+                let pt = col_pos(l, it.from - ed.doc.line_start(n), cw, tab).0;
+                popup_anchor = Some(screen(text_x, tops[n]) + pt.to_vec2());
+            }
         }
 
         // Cursors: 2 px accent, blinking at CodeMirror's 1.2 s, while focused.
@@ -750,7 +1149,22 @@ pub fn show(
             }
         }
 
-        // The pointer.
+        // The pointer: fold markers and placeholders first.
+        let mut fold_hit = false;
+        if ui.input(|i| i.pointer.primary_pressed())
+            && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
+            && let Some(&(_, n)) = fold_clicks.iter().find(|(r, _)| r.contains(pos))
+        {
+            ed.toggle_fold(n);
+            fold_hit = true;
+            ui.ctx().request_repaint();
+        }
+        if fold_clicks
+            .iter()
+            .any(|(r, _)| ui.rect_contains_pointer(*r))
+        {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
         let response = ui.interact(visible, id, Sense::click_and_drag());
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, true, label));
@@ -776,7 +1190,113 @@ pub fn show(
                 local.x,
             )
         };
+        // Hovering a problem's text shows its message too (after CodeMirror's 300 ms).
+        if response.hovered()
+            && !ed.problems.is_empty()
+            && ui.input(|i| i.pointer.time_since_last_movement()) > 0.3
+            && let Some(pos) = response.hover_pos()
+        {
+            let (at, _, _) = hit(&mut geo, ui, &ed.doc, pos);
+            let here: Vec<&Problem> = ed
+                .problems
+                .iter()
+                .filter(|pr| at >= pr.from && at <= pr.to && pr.to > pr.from)
+                .collect();
+            if !here.is_empty() {
+                problem_tooltip(ui, p, pos + vec2(0.0, 12.0), here.into_iter());
+            }
+        } else if response.hovered() && !ed.problems.is_empty() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(320));
+        }
+        // Hover cards (editor/hover.ts): after resting 300 ms on a \ref, \cite, image or input.
+        if ed.tex {
+            let rested = ui.input(|i| i.pointer.time_since_last_movement()) > 0.3;
+            let pointer = ui.input(|i| i.pointer.hover_pos());
+            let on_card = pointer
+                .zip(ed.hover.as_ref())
+                .is_some_and(|(pt, h)| h.2.expand(4.0).contains(pt));
+            let found = response.hover_pos().and_then(|pos| {
+                let (at, n, _) = hit(&mut geo, ui, &ed.doc, pos);
+                super::hover::target_at(&ed.doc.line(n), at - ed.doc.line_start(n)).map(|t| (n, t))
+            });
+            match found {
+                Some((n, t))
+                    if rested || ed.hover.as_ref().is_some_and(|h| h.0 == n && h.1 == t) =>
+                {
+                    let rect = ed
+                        .hover
+                        .as_ref()
+                        .filter(|h| h.0 == n && h.1 == t)
+                        .map_or(Rect::NOTHING, |h| h.2);
+                    ed.hover = Some((n, t, rect));
+                }
+                Some(_) => ui
+                    .ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(320)),
+                None if on_card => {}
+                None => {
+                    ed.hover = None;
+                    // Anything else texlab may know about (a package, a command): ask it.
+                    if rested && let Some(pos) = response.hover_pos() {
+                        let (at, n, _) = hit(&mut geo, ui, &ed.doc, pos);
+                        let col = at - ed.doc.line_start(n);
+                        let line_text = ed.doc.line(n);
+                        let on_word = line_text
+                            .chars()
+                            .nth(col)
+                            .is_some_and(|c| c.is_alphanumeric() || c == '\\');
+                        match &look.hover {
+                            Some((path, l, c, text))
+                                if *path == ed.path && *l == n && *c == col =>
+                            {
+                                if !text.is_empty() {
+                                    problem_tooltip_text(ui, p, pos + vec2(0.0, 14.0), text);
+                                }
+                            }
+                            _ if on_word => out.server_hover = Some((n, col)),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            if response.is_pointer_button_down_on() {
+                ed.hover = None;
+            }
+            if let Some((n, t, _)) = ed.hover.clone()
+                && let Some(l) = geo.layouts.get(&n)
+            {
+                let pt = col_pos(l, t.from.min(ed.doc.line(n).chars().count()), cw, tab).0;
+                let at = screen(text_x, tops[n]) + pt.to_vec2() + vec2(0.0, lh);
+                let r = egui::Area::new(egui::Id::unique("hover-card"))
+                    .order(egui::Order::Tooltip)
+                    .fixed_pos(at)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::new()
+                            .fill(p.surface)
+                            .stroke(Stroke::new(1.0, p.border))
+                            .corner_radius(8)
+                            .shadow(p.shadow)
+                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .show(ui, |ui| {
+                                let screen_r = ui.ctx().content_rect();
+                                ui.set_max_width(460.0f32.min(screen_r.width() * 0.7) - 24.0);
+                                egui::ScrollArea::vertical()
+                                    .max_height(screen_r.height() * 0.5)
+                                    .show(ui, |ui| {
+                                        super::hover::card(ui, p, &t, look, &look.root);
+                                    });
+                            });
+                    })
+                    .response
+                    .rect;
+                if let Some(h) = &mut ed.hover {
+                    h.2 = r;
+                }
+            }
+        }
         if response.is_pointer_button_down_on()
+            && !fold_hit
             && ed.drag.is_none()
             && ui.input(|i| i.pointer.any_pressed())
             && let Some(pos) = response.interact_pointer_pos()
@@ -868,10 +1388,173 @@ pub fn show(
         let events = ui.input(|i| i.events.clone());
         let page = (visible.height() / style.line_height).floor().max(1.0) as usize;
         for e in &events {
+            // An edit inside a \begin or \end name renames its partner in the same undo step.
+            let sync = ed.tex
+                && style.env_sync
+                && matches!(
+                    e,
+                    Event::Text(_)
+                        | Event::Paste(_)
+                        | Event::Key {
+                            key: Key::Backspace | Key::Delete,
+                            pressed: true,
+                            ..
+                        }
+                )
+                && cmd_is_plain(e)
+                && envs::near_token(&ed.doc, ed.doc.line_of(ed.doc.selection.main().head));
+            let before = sync.then(|| (envs::tokens(&ed.doc), ed.doc.journal.len()));
             if handle_event(ui, ed, style, e, &mut geo, page, &mut out) {
                 ed.last_activity = now;
             }
+            if let Some((toks, len)) = before
+                && ed.doc.journal.len() == len + 1
+                && let Some(p) = envs::paired_edit(&toks, &ed.doc.journal[len].clone(), &ed.doc)
+            {
+                ed.doc.apply_merged(p);
+            }
         }
+    }
+
+    // The completion list: computed again when the text, the cursor or the lookups change.
+    let main = ed.doc.selection.main();
+    let key = (ed.doc.version, main.head, look.generation);
+    let wanted = ed.complete_wanted.take();
+    let focused = ui.memory(|m| m.has_focus(id));
+    if !focused || !main.is_empty() || ed.doc.selection.ranges.len() > 1 {
+        ed.completion = None;
+    } else if let Some(explicit) = wanted
+        .or_else(|| {
+            ed.completion
+                .as_ref()
+                .filter(|c| c.key != key)
+                .map(|c| c.explicit)
+        })
+        .or_else(|| {
+            // texlab answered for this cursor after the list closed (or never opened).
+            ed.awaiting_server
+                .filter(|(h, _)| {
+                    *h == main.head
+                        && look
+                            .server
+                            .as_ref()
+                            .is_some_and(|s| s.0 == ed.path && s.1 == main.head)
+                })
+                .map(|(_, e)| e)
+        })
+    {
+        ed.awaiting_server = None;
+        let mut found: Vec<complete::Found> = [
+            complete::latex(&ed.doc, main.head, look, explicit),
+            complete::snippets(&ed.doc, main.head, look),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        // texlab's extra commands arrive on their own and join the list (lspCommandCompletions).
+        if complete::wants_server(&ed.doc, main.head, explicit) {
+            match &look.server {
+                Some((path, head, from, names)) if *path == ed.path && *head == main.head => {
+                    found.push(complete::Found {
+                        items: complete::server_items(names, *from, main.head),
+                        filter: true,
+                        from: *from,
+                    });
+                }
+                _ => {
+                    let n = ed.doc.line_of(main.head);
+                    let before = ed.doc.slice(ed.doc.line_start(n), main.head);
+                    let name = before
+                        .chars()
+                        .rev()
+                        .take_while(|c| c.is_ascii_alphabetic())
+                        .count();
+                    out.server_complete = Some((main.head, main.head - name));
+                    ed.awaiting_server = Some((main.head, explicit));
+                }
+            }
+        }
+        let items = complete::rank(&ed.doc, found);
+        ed.completion = (!items.is_empty()).then_some(Completion {
+            items,
+            selected: 0,
+            explicit,
+            key,
+            top: 0,
+        });
+    }
+    if let (Some(anchor), Some(c)) = (popup_anchor, &mut ed.completion) {
+        // A small rendered glyph beside each maths item (.cm-math-glyph, KaTeX's 1.21 em).
+        let mut glyph =
+            |ui: &Ui, tex: &str, at: Pos2, size: f32| match crate::writing::render::render(
+                ui.ctx(),
+                tex,
+                false,
+                size * 1.21,
+                p.ink,
+            ) {
+                Ok(m) => {
+                    let r = Rect::from_min_size(pos2(at.x, at.y - m.size.y / 2.0), m.size);
+                    ui.painter().image(
+                        m.texture.id(),
+                        r,
+                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    m.size.x
+                }
+                Err(_) => 0.0,
+            };
+        let mut info = |ui: &mut Ui, it: &complete::Item| {
+            if let Some(t) = &it.info {
+                ui.label(egui::RichText::new(t).color(p.ink));
+            } else if let Some(t) = &it.preview {
+                // .cm-math-info: the symbol large, the code it inserts under it.
+                ui.spacing_mut().item_spacing.y = 6.0;
+                if let Ok(m) = crate::writing::render::render(ui.ctx(), t, true, 13.0 * 1.21, p.ink)
+                {
+                    ui.image((m.texture.id(), m.size));
+                }
+                let code = match &it.apply {
+                    Apply::Snippet(a) => a.replace("${}", "▢"),
+                    _ => t.clone(),
+                };
+                ui.label(
+                    egui::RichText::new(code)
+                        .font(FontId::monospace(11.0))
+                        .color(p.muted),
+                );
+            }
+        };
+        if let popup::Picked::Item(i) = popup::show(
+            ui.ctx(),
+            p,
+            &style.font,
+            anchor,
+            style.line_height,
+            c,
+            &mut glyph,
+            &mut info,
+        ) {
+            accept(ed, i, style.indent, &mut out);
+            ui.memory_mut(|m| m.request_focus(id));
+        }
+    }
+
+    // Leaving the snippet's fields ends it.
+    if ed
+        .snippet
+        .as_ref()
+        .is_some_and(|s| !s.contains(&ed.doc.selection))
+    {
+        ed.end_snippet();
+    }
+    // A cursor put inside a fold (a search hit, go to line, typing) opens it.
+    let head = ed.doc.selection.main().head;
+    if ed.folds.0.iter().any(|f| head > f.0 && head <= f.1) {
+        ed.folds.reveal(head);
+        ed.folds_gen += 1;
+        ui.ctx().request_repaint();
     }
 
     // What changed this frame.
@@ -974,6 +1657,12 @@ fn handle_event(
             }
             ed.goal_x = None;
             ed.reveal = true;
+            if ed.tex {
+                cmd::indent_on_input(&mut ed.doc, style.indent);
+            }
+            if ed.tex && style.autocomplete {
+                ed.complete_wanted = Some(ed.complete_wanted.unwrap_or(false));
+            }
             true
         }
         Event::Paste(t) => {
@@ -1066,10 +1755,67 @@ fn key_press(
     out: &mut Output,
     indent: Indent,
 ) -> bool {
-    let d = &mut ed.doc;
     let shift = m.shift;
     let modk = cmd_key(&m);
     let is = |spec: &str| shortcuts::matches_spec(spec, m, key);
+    // completionKeymap: the open list takes the arrows, Enter and Escape.
+    if let Some(c) = &mut ed.completion
+        && !modk
+        && !m.alt
+    {
+        match key {
+            Key::ArrowDown => {
+                return {
+                    c.step(1);
+                    true
+                };
+            }
+            Key::ArrowUp => {
+                return {
+                    c.step(-1);
+                    true
+                };
+            }
+            Key::PageDown => {
+                return {
+                    c.step(6);
+                    true
+                };
+            }
+            Key::PageUp => {
+                return {
+                    c.step(-6);
+                    true
+                };
+            }
+            Key::Enter => {
+                let i = c.selected;
+                accept(ed, i, style.indent, out);
+                return true;
+            }
+            Key::Escape => {
+                ed.completion = None;
+                return true;
+            }
+            _ => {}
+        }
+    }
+    if ed.tex && m.ctrl && !m.alt && !shift && key == Key::Space {
+        ed.complete_wanted = Some(true);
+        return true;
+    }
+    // Enter after an unclosed \begin{X} adds its \end (environmentSync's keymap, Prec.high).
+    if ed.tex
+        && style.env_sync
+        && key == Key::Enter
+        && !modk
+        && !m.alt
+        && !shift
+        && envs::close_environment(&mut ed.doc, style.indent)
+    {
+        return reveal(ed);
+    }
+    let d = &mut ed.doc;
     let keep_goal = matches!(
         key,
         Key::ArrowUp | Key::ArrowDown | Key::PageUp | Key::PageDown
@@ -1099,11 +1845,11 @@ fn key_press(
         }
         if is(shortcuts::keys_of("next-problem")) {
             out.next_problem = Some(1);
-            return true;
+            return ed.next_problem(true);
         }
         if is(shortcuts::keys_of("prev-problem")) {
             out.next_problem = Some(-1);
-            return true;
+            return ed.next_problem(false);
         }
     }
     if is(shortcuts::keys_of("comment")) {
@@ -1141,6 +1887,50 @@ fn key_press(
         cmd::select_next_occurrence(d);
         return reveal(ed);
     }
+    // texlab: go to definition, find references.
+    if ed.tex && (is(shortcuts::keys_of("definition")) || is(shortcuts::keys_of("references"))) {
+        let h = ed.doc.selection.main().head;
+        let n = ed.doc.line_of(h);
+        out.server_goto = Some((
+            n,
+            h - ed.doc.line_start(n),
+            is(shortcuts::keys_of("references")),
+        ));
+        return true;
+    }
+    // foldKeymap: fold or unfold at the cursor, and everything.
+    if ed.tex && style.folding {
+        if is(shortcuts::keys_of("fold")) {
+            fold_at_cursor(ed);
+            return reveal(ed);
+        }
+        if is(shortcuts::keys_of("unfold")) {
+            let n = ed.doc.line_of(ed.doc.selection.main().head);
+            if ed.folds.unfold_line(&ed.doc, n) {
+                ed.folds_gen += 1;
+            }
+            return true;
+        }
+        if is("Ctrl-Alt-[") {
+            for n in 0..ed.doc.line_count() {
+                if fold::fold_lines(&ed.doc, n).is_some() && ed.folds.starting(&ed.doc, n).is_none()
+                {
+                    ed.folds.fold(&ed.doc, n);
+                }
+            }
+            // Nested folds inside an outer one stay folded; the cursor's own block opens.
+            let h = ed.doc.selection.main().head;
+            ed.folds.reveal(h);
+            ed.folds_gen += 1;
+            return true;
+        }
+        if is("Ctrl-Alt-]") {
+            ed.folds.0.clear();
+            ed.folds_gen += 1;
+            return true;
+        }
+    }
+    let d = &mut ed.doc;
     // History.
     if is("Mod-z") {
         d.undo();
@@ -1166,6 +1956,7 @@ fn key_press(
             } else {
                 cmd::char_left(&mut ed.doc, shift);
             }
+            skip_folds(ed, right);
             reveal(ed)
         }
         Key::ArrowUp | Key::ArrowDown => {
@@ -1227,6 +2018,14 @@ fn key_press(
             cmd::select_all(&mut ed.doc);
             true
         }
+        Key::Escape if ed.hover.is_some() => {
+            ed.hover = None;
+            true
+        }
+        Key::Escape if ed.snippet.is_some() => {
+            ed.end_snippet();
+            true
+        }
         Key::Escape => {
             if ed.search.is_some() {
                 ed.search = None;
@@ -1256,6 +2055,25 @@ fn key_press(
             }
             reveal(ed)
         }
+        Key::Tab if !modk && !m.alt && ed.snippet.is_some() => {
+            // nextSnippetField / prevSnippetField; reaching the last field ends the snippet.
+            let s = ed.snippet.as_mut().unwrap();
+            let next = if shift {
+                s.current.checked_sub(1)
+            } else {
+                Some(s.current + 1)
+            };
+            if let Some(k) = next.filter(|k| *k < s.fields.len()) {
+                s.current = k;
+                let last = k + 1 == s.fields.len();
+                ed.doc.selection = s.select(k);
+                ed.doc.break_group();
+                if last {
+                    ed.snippet = None;
+                }
+            }
+            reveal(ed)
+        }
         Key::Tab if !modk && !m.alt => {
             // indentWithTab: Tab indents the lines, Shift-Tab outdents them.
             if shift {
@@ -1266,6 +2084,286 @@ fn key_press(
             reveal(ed)
         }
         _ => false,
+    }
+}
+
+/// Ctrl-Shift-[: folds the innermost block that contains the cursor's line.
+fn fold_at_cursor(ed: &mut Editor) {
+    let n = ed.doc.line_of(ed.doc.selection.main().head);
+    for k in (0..=n).rev() {
+        if ed.folds.starting(&ed.doc, k).is_some() {
+            continue;
+        }
+        if let Some((_, last)) = fold::fold_lines(&ed.doc, k)
+            && (k == n || last >= n)
+        {
+            ed.toggle_fold(k);
+            return;
+        }
+    }
+}
+
+/// Arrow keys step over a folded block instead of into it, like CodeMirror's atomic folds.
+fn skip_folds(ed: &mut Editor, forward: bool) {
+    let folds = ed.folds.0.clone();
+    if folds.is_empty() {
+        return;
+    }
+    let ranges: Vec<Range> = ed
+        .doc
+        .selection
+        .ranges
+        .iter()
+        .map(
+            |r| match folds.iter().find(|f| r.head > f.0 && r.head <= f.1) {
+                Some(f) => {
+                    // Forward lands at the start of the line after the fold.
+                    let head = if forward {
+                        (f.1 + 1).min(ed.doc.len())
+                    } else {
+                        f.0
+                    };
+                    if r.is_empty() {
+                        Range::cursor(head)
+                    } else {
+                        Range::new(r.anchor, head)
+                    }
+                }
+                None => *r,
+            },
+        )
+        .collect();
+    ed.doc.selection = Selection::normalized(ranges, ed.doc.selection.main);
+}
+
+/// `.cm-math-preview`: the formula above `at`; on an error, the last good one faded with the
+/// message under it.
+#[allow(clippy::too_many_arguments)]
+fn math_preview(
+    ui: &Ui,
+    p: &Palette,
+    ed: &mut Editor,
+    tex: &str,
+    display: bool,
+    at: Pos2,
+    font_size: f32,
+    line_h: f32,
+) {
+    use crate::writing::render;
+    let size = font_size * 1.1 * 1.21;
+    let result = render::render(ui.ctx(), tex, display, size, p.ink);
+    if let Ok(m) = &result {
+        ed.last_math = Some(m.clone());
+    }
+    // Above the line, or below it when there is no room (strictSide: false).
+    let h = result.as_ref().map_or(60.0, |m| m.size.y) + 22.0;
+    let above = at.y - 4.0 - h >= ui.ctx().content_rect().top();
+    let (pivot, pos) = if above {
+        (egui::Align2::LEFT_BOTTOM, at - vec2(14.0, 4.0))
+    } else {
+        (egui::Align2::LEFT_TOP, at + vec2(-14.0, line_h + 4.0))
+    };
+    egui::Area::new(egui::Id::unique("math-preview"))
+        .order(egui::Order::Tooltip)
+        .pivot(pivot)
+        .fixed_pos(pos)
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(crate::theme::R_LG)
+                .shadow(p.shadow)
+                .inner_margin(egui::Margin::symmetric(14, 10))
+                .show(ui, |ui| {
+                    ui.set_max_width(ui.ctx().content_rect().width() * 0.7);
+                    match &result {
+                        Ok(m) => {
+                            ui.image((m.texture.id(), m.size));
+                        }
+                        Err(e) => {
+                            if let Some(old) = &ed.last_math {
+                                ui.add(
+                                    egui::Image::new((old.texture.id(), old.size))
+                                        .tint(Color32::from_white_alpha(115)),
+                                );
+                            }
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(e)
+                                    .font(FontId::monospace(12.0))
+                                    .color(p.error),
+                            );
+                        }
+                    }
+                });
+        });
+}
+
+fn severity_color(s: Severity, p: &Palette) -> Color32 {
+    match s {
+        Severity::Error => p.error,
+        Severity::Warning => p.warn,
+        Severity::Info => Color32::from_gray(0x99),
+    }
+}
+
+/// A wavy line from x0 to x1 around y, like `text-decoration-style: wavy`.
+fn wavy(painter: &egui::Painter, x0: f32, x1: f32, y: f32, color: Color32) {
+    let mut pts = Vec::new();
+    let mut x = x0;
+    let mut up = true;
+    while x <= x1 {
+        pts.push(pos2(x, if up { y - 1.2 } else { y + 1.2 }));
+        x += 2.0;
+        up = !up;
+    }
+    painter.add(egui::Shape::line(pts, Stroke::new(1.0, color)));
+}
+
+/// CodeMirror's lint markers: a red circle, a yellow triangle, a blue square.
+fn lint_marker(painter: &egui::Painter, r: Rect, s: Severity) {
+    let k = r.width() / 40.0;
+    let at = |x: f32, y: f32| r.min + vec2(x * k, y * k);
+    let stroke = |c: u32| {
+        Stroke::new(
+            6.0 * k,
+            Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8),
+        )
+    };
+    let fill = |c: u32| Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+    match s {
+        Severity::Error => {
+            painter.circle(r.center(), 15.0 * k, fill(0xff8877), stroke(0xff4433));
+        }
+        Severity::Warning => {
+            painter.add(egui::Shape::convex_polygon(
+                vec![at(20.0, 6.0), at(37.0, 35.0), at(3.0, 35.0)],
+                fill(0xffee88),
+                stroke(0xffdd77),
+            ));
+        }
+        Severity::Info => {
+            painter.add(egui::Shape::convex_polygon(
+                vec![at(5.0, 5.0), at(35.0, 5.0), at(35.0, 35.0), at(5.0, 35.0)],
+                fill(0xaaaaff),
+                stroke(0x7777ee),
+            ));
+        }
+    }
+}
+
+/// texlab's hover note (`.cm-lsp-hover-tooltip`) as plain text.
+fn problem_tooltip_text(ui: &Ui, p: &Palette, at: Pos2, text: &str) {
+    egui::Area::new(egui::Id::unique("lsp-hover"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(at)
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(8)
+                .shadow(p.shadow)
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.set_max_width(460.0);
+                    ui.label(
+                        egui::RichText::new(text.replace("```latex", "").replace("```", ""))
+                            .color(p.ink),
+                    );
+                });
+        });
+}
+
+/// `.cm-tooltip-lint`: each problem with a coloured bar on its left.
+fn problem_tooltip<'a>(ui: &Ui, p: &Palette, at: Pos2, list: impl Iterator<Item = &'a Problem>) {
+    let list: Vec<&Problem> = list.collect();
+    egui::Area::new(egui::Id::unique("lint-tooltip"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(at)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(8)
+                .shadow(p.shadow)
+                .show(ui, |ui| {
+                    ui.set_max_width(480.0);
+                    for pr in list {
+                        let resp = egui::Frame::NONE
+                            .inner_margin(egui::Margin {
+                                left: 13,
+                                right: 6,
+                                top: 3,
+                                bottom: 3,
+                            })
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new(&pr.message).color(p.ink))
+                            })
+                            .response;
+                        let bar = Rect::from_min_size(resp.rect.min, vec2(5.0, resp.rect.height()));
+                        let c = match pr.severity {
+                            Severity::Error => Color32::from_rgb(0xdd, 0x11, 0x11),
+                            Severity::Warning => Color32::from_rgb(0xff, 0xa5, 0x00),
+                            Severity::Info => Color32::from_gray(0x99),
+                        };
+                        ui.painter().rect_filled(bar, 0, c);
+                    }
+                });
+        });
+}
+
+/// Inserts completion `i` and closes the list (`\begin` opens the list of environments next).
+fn accept(ed: &mut Editor, i: usize, indent: Indent, out: &mut Output) {
+    let Some(c) = ed.completion.take() else {
+        return;
+    };
+    let Some((it, _)) = c.items.into_iter().nth(i) else {
+        return;
+    };
+    let head = ed.doc.selection.main().head;
+    let to = it.to.max(head);
+    match &it.apply {
+        Apply::Snippet(t) => ed.apply_snippet(it.from, to, t, indent),
+        Apply::Text(t) => {
+            let at = it.from + t.chars().count();
+            ed.doc.apply(
+                super::buffer::ChangeSet::new(vec![super::buffer::Change {
+                    from: it.from,
+                    to,
+                    insert: t.clone(),
+                }]),
+                Selection::cursor(at),
+                super::buffer::EditKind::Other,
+            );
+        }
+        Apply::Begin => {
+            let t = "\\begin{";
+            ed.doc.apply(
+                super::buffer::ChangeSet::new(vec![super::buffer::Change {
+                    from: it.from,
+                    to,
+                    insert: t.into(),
+                }]),
+                Selection::cursor(it.from + t.chars().count()),
+                super::buffer::EditKind::Other,
+            );
+            ed.complete_wanted = Some(true);
+        }
+    }
+    ed.doc.break_group();
+    ed.reveal = true;
+    if it.pkg.is_some() {
+        out.needs_package = it.pkg;
+    }
+}
+
+/// A text edit without Ctrl/Alt (those are commands, not typing).
+fn cmd_is_plain(e: &Event) -> bool {
+    match e {
+        Event::Key { modifiers, .. } => !modifiers.ctrl && !modifiers.alt && !modifiers.mac_cmd,
+        _ => true,
     }
 }
 
@@ -1362,6 +2460,10 @@ mod tests {
             indent: Indent::Spaces(4),
             wrap: true,
             auto_close: true,
+            folding: true,
+            env_sync: true,
+            autocomplete: true,
+            math_preview: true,
             focus: false,
         }
     }
@@ -1390,6 +2492,7 @@ mod tests {
                         &style(),
                         egui::Id::unique("ed"),
                         "Editor",
+                        &Lookups::default(),
                     );
                 },
                 ed,
@@ -1402,5 +2505,212 @@ mod tests {
         h.run();
         assert!(h.state().doc.text().contains("% hello"));
         h.snapshot("editor-alone");
+    }
+
+    #[test]
+    fn folded_blocks_hide_their_lines_and_arrows_step_over_them() {
+        let text = "\\section{One}\nfirst\nsecond\n\\section{Two}\n\\begin{itemize}\n  \\item a\n  \\item b\n\\end{itemize}\n% a\n% b";
+        let mut ed = Editor::new(text, true);
+        ed.toggle_fold(0);
+        assert_eq!(ed.folds.lines(&ed.doc), [1]);
+        let p = theme::LIGHT;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([520.0, 300.0])
+            .with_context_setup(move |ctx| {
+                theme::install_fonts(ctx);
+                theme::apply(ctx, &p);
+            })
+            .wgpu()
+            .build_ui_state(
+                move |ui, ed: &mut Editor| {
+                    let rect = ui.ctx().content_rect();
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                    show(
+                        &mut child,
+                        &p,
+                        ed,
+                        &style(),
+                        egui::Id::unique("ed"),
+                        "Editor",
+                        &Lookups::default(),
+                    );
+                },
+                ed,
+            );
+        h.run();
+        h.get_by_label("Editor").click();
+        h.run();
+        // From the end of line 1, Right goes past the folded lines to the next section.
+        h.state_mut().doc.selection = Selection::cursor(13);
+        h.key_press(egui::Key::ArrowRight);
+        h.run();
+        let head = h.state().doc.selection.main().head;
+        assert_eq!(
+            h.state().doc.line_of(head),
+            3,
+            "the cursor skips the hidden lines"
+        );
+        h.key_press(egui::Key::ArrowUp);
+        h.run();
+        assert_eq!(
+            h.state().doc.line_of(h.state().doc.selection.main().head),
+            0,
+            "Up steps over them too"
+        );
+        assert_eq!(h.state().folds.lines(&h.state().doc), [1], "still folded");
+        h.snapshot("editor-folded");
+    }
+
+    fn harness(ed: Editor, size: [f32; 2]) -> egui_kittest::Harness<'static, Editor> {
+        harness_with(ed, size, Lookups::default())
+    }
+
+    fn harness_with(
+        ed: Editor,
+        size: [f32; 2],
+        look: Lookups,
+    ) -> egui_kittest::Harness<'static, Editor> {
+        let p = theme::LIGHT;
+        egui_kittest::Harness::builder()
+            .with_size(size)
+            .with_context_setup(move |ctx| {
+                theme::install_fonts(ctx);
+                theme::apply(ctx, &p);
+            })
+            .wgpu()
+            .build_ui_state(
+                move |ui, ed: &mut Editor| {
+                    let rect = ui.ctx().content_rect();
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                    show(
+                        &mut child,
+                        &p,
+                        ed,
+                        &style(),
+                        egui::Id::unique("ed"),
+                        "Editor",
+                        &look,
+                    );
+                },
+                ed,
+            )
+    }
+
+    #[test]
+    fn typing_a_command_offers_completions_and_enter_inserts_a_snippet() {
+        let mut h = harness(
+            Editor::new("\\begin{document}\n\n\\end{document}", true),
+            [560.0, 320.0],
+        );
+        h.run();
+        h.get_by_label("Editor").click();
+        h.run();
+        h.state_mut().doc.selection = Selection::cursor(17);
+        h.get_by_label("Editor").type_text("\\subsec");
+        h.run();
+        let first = h
+            .state()
+            .completion
+            .as_ref()
+            .map(|c| c.items[0].0.label.clone());
+        assert_eq!(first.as_deref(), Some("\\subsection"));
+        h.snapshot("completion");
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let ed = h.state();
+        assert_eq!(ed.doc.line(1), "\\subsection{}");
+        assert_eq!(
+            ed.doc.selection.main().head,
+            17 + 12,
+            "the cursor is in the braces"
+        );
+        assert!(ed.completion.is_none());
+        // \begin{ite + Enter: the whole environment, its \end and the cursor on the item.
+        h.state_mut().doc.selection = Selection::cursor(h.state().doc.line_end(1));
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.key_press(egui::Key::End);
+        h.key_press(egui::Key::Enter);
+        h.run();
+        h.get_by_label("Editor").type_text("\\begin{ite");
+        h.run();
+        assert_eq!(
+            h.state()
+                .completion
+                .as_ref()
+                .map(|c| c.items[0].0.label.clone())
+                .as_deref(),
+            Some("itemize")
+        );
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let text = h.state().doc.text();
+        assert!(
+            text.contains("\\begin{itemize}\n    \\item \n\\end{itemize}"),
+            "{text}"
+        );
+        // Renaming the \begin renames the \end.
+        h.get_by_label("Editor").type_text("x");
+        h.run();
+        assert!(h.state().doc.text().contains("\\item x"));
+    }
+
+    #[test]
+    fn maths_is_previewed_and_completed_with_glyphs() {
+        crate::writing::render::set_macros(Default::default());
+        let text = "Energy $E = \\frac{m}{2} v^2 + \\sqrt{x}$ here.\n\nNext $x = \\";
+        let mut h = harness(Editor::new(text, true), [560.0, 320.0]);
+        h.run();
+        h.get_by_label("Editor").click();
+        h.run();
+        h.state_mut().doc.selection = Selection::cursor(14);
+        h.run();
+        h.run();
+        h.snapshot("math-preview");
+        // \al in maths: \alpha first, with its glyph.
+        let end = h.state().doc.len();
+        h.state_mut().doc.selection = Selection::cursor(end);
+        h.get_by_label("Editor").type_text("al");
+        h.run();
+        let top: Vec<String> = h
+            .state()
+            .completion
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .take(3)
+            .map(|i| i.0.label.clone())
+            .collect();
+        assert!(top.contains(&"\\alpha".to_owned()), "{top:?}");
+        h.run();
+        h.snapshot("completion-maths");
+    }
+
+    #[test]
+    fn resting_on_an_input_shows_its_first_lines() {
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/article");
+        let look = Lookups {
+            files: vec!["chapters/method.tex".into(), "main.tex".into()],
+            root: fixture,
+            ..Default::default()
+        };
+        let mut h = harness_with(
+            Editor::new("Intro.\n\\input{chapters/method}\n", true),
+            [560.0, 320.0],
+            look,
+        );
+        h.run();
+        // Over "method" on line 2.
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(pos2(200.0, 12.0 + 21.45 * 1.5)));
+        h.run();
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        h.run();
+        h.run();
+        assert!(h.state().hover.is_some(), "the card shows");
+        h.snapshot("hover-input");
     }
 }

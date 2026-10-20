@@ -21,6 +21,8 @@ pub struct BuildState {
     pub outcome: Option<Outcome>,
     pub finished_at: Option<std::time::SystemTime>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Bumped whenever `diagnostics` is replaced, so editors show the new ones.
+    pub diag_gen: u64,
     pub logs_open: bool,
     /// What the engine says it is doing (Tectonic fetching packages).
     pub note: Option<String>,
@@ -50,6 +52,29 @@ impl BuildState {
 }
 
 impl Workspace {
+    /// The last build's problems in `path`, for its editor: line, severity, message with hint.
+    pub fn problems_of(&self, path: &str) -> Vec<(usize, crate::editor::view::Severity, String)> {
+        use crate::editor::view::Severity as S;
+        self.build
+            .diagnostics
+            .iter()
+            .filter(|d| d.file.as_deref().map(|f| f.strip_prefix("./").unwrap_or(f)) == Some(path))
+            .filter_map(|d| {
+                let line = d.line? as usize;
+                let sev = match d.severity {
+                    Severity::Error => S::Error,
+                    Severity::Warning => S::Warning,
+                    Severity::Info => S::Info,
+                };
+                let msg = match &d.hint {
+                    Some(h) => format!("{}\n{h}", d.message),
+                    None => d.message.clone(),
+                };
+                Some((line, sev, msg))
+            })
+            .collect()
+    }
+
     /// Builds once the saves under way are done: now, or after the autosave delay.
     pub fn build_soon(&mut self, auto: bool, force: bool) {
         let at = Instant::now()
@@ -286,6 +311,7 @@ impl Workspace {
                     Ok(o) if o.status == Status::Cancelled => {}
                     Ok(o) => {
                         self.build.diagnostics = o.diagnostics.clone();
+                        self.build.diag_gen += 1;
                         self.build.finished_at = Some(std::time::SystemTime::now());
                         // Like Overleaf: a failed build with no PDF opens the logs.
                         if matches!(o.status, Status::Failed | Status::Timeout) && o.pdf.is_none() && self.build.errors() > 0 {
@@ -327,6 +353,7 @@ impl Workspace {
                             hint: None,
                             fix: None,
                         }];
+                        self.build.diag_gen += 1;
                         self.build.logs_open = true;
                     }
                 }
@@ -412,6 +439,7 @@ impl Workspace {
             ),
             NoticeAction::DraftOff => self.set_config(backend, settings, |c| c.draft = false),
             NoticeAction::SetUpTex => {}
+            NoticeAction::AddPackage(pkg) => self.add_package(backend, settings, pkg),
         }
     }
 

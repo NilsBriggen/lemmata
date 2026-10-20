@@ -265,7 +265,11 @@ pub fn matches_spec(spec: &str, mods: Modifiers, key: Key) -> bool {
     ctrl == want_ctrl
         && mods.shift == want.shift
         && mods.alt == want.alt
-        && (key == want_key || (want_key == Key::Slash && key == Key::Questionmark))
+        && (key == want_key
+            || (want_key == Key::Slash && key == Key::Questionmark)
+            // Shift-[ arrives as `{` on most layouts.
+            || (want_key == Key::OpenBracket && key == Key::OpenCurlyBracket)
+            || (want_key == Key::CloseBracket && key == Key::CloseCurlyBracket))
 }
 
 /// Takes the key press of shortcut `id` out of this frame's input, if there is one.
