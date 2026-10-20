@@ -211,6 +211,10 @@ impl Project {
         if !valid_outdir(&config.outdir) {
             config.outdir = DEFAULT_OUTDIR.into();
         }
+        // So does a figures folder outside the project: pasted images go there.
+        if !valid_outdir(&config.figures_dir) {
+            config.figures_dir = "figures".into();
+        }
         let main_candidates = find_main_candidates(&root, &config.outdir);
         let main = match &config.main {
             Some(m) => {
@@ -870,10 +874,16 @@ mod tests {
         }
         let d = tempfile::tempdir().unwrap();
         write(d.path(), "main.tex", "\\documentclass{article}");
-        write(d.path(), "lemmata.toml", "outdir = \".\"\n");
+        write(
+            d.path(),
+            "lemmata.toml",
+            "outdir = \".\"\nfigures_dir = \"../..\"\n",
+        );
+        let p = Project::open(d.path()).unwrap();
+        assert_eq!(p.config.outdir, DEFAULT_OUTDIR);
         assert_eq!(
-            Project::open(d.path()).unwrap().config.outdir,
-            DEFAULT_OUTDIR
+            p.config.figures_dir, "figures",
+            "pasted images stay inside the project"
         );
     }
 

@@ -153,6 +153,8 @@ impl Workspace {
         at: usize,
     ) {
         let file = path.to_owned();
+        // The drop point holds while the text is as it was; after typing, the figure goes to the cursor.
+        let version = self.editors.get(path).map(|e| e.doc.version);
         Workspace::job(
             backend,
             move |s| {
@@ -167,8 +169,11 @@ impl Workspace {
                     match r {
                         Ok(rel) => {
                             if let Some(ed) = ws.editors.get_mut(&file) {
-                                let at = at.min(ed.doc.len());
-                                ed.doc.selection = crate::editor::buffer::Selection::cursor(at);
+                                if Some(ed.doc.version) == version {
+                                    ed.doc.selection = crate::editor::buffer::Selection::cursor(
+                                        at.min(ed.doc.len()),
+                                    );
+                                }
                                 ed.insert_template(&table::figure_snippet(&rel), indent);
                                 ed.refocus = true;
                             }

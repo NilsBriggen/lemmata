@@ -680,11 +680,17 @@ impl App {
             }
         }
         if self.quit == Quit::Saving
-            && let Some(ws) = &self.project
+            && let Some(ws) = &mut self.project
             && !ws.writing()
         {
             let unsaved = ws.buffers.unsaved();
-            if unsaved.is_empty() {
+            if !unsaved.is_empty()
+                && ws.buffers.failed.is_empty()
+                && ws.buffers.conflicts.is_empty()
+            {
+                // Typed while the last save ran: save that too.
+                ws.save_all(&self.backend, &self.settings);
+            } else if unsaved.is_empty() {
                 self.quit = Quit::Closing;
                 self.close_project();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);

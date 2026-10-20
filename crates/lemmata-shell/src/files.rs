@@ -439,10 +439,12 @@ fn reference_names(rel: &str) -> Vec<String> {
 }
 
 fn reference_regex(rel: &str) -> Regex {
-    let alts: Vec<String> = reference_names(rel)
+    let mut alts: Vec<String> = reference_names(rel)
         .iter()
         .map(|n| regex::escape(n))
         .collect();
+    // A folder: everything named inside it.
+    alts.push(format!("{}/[^}}]+", regex::escape(rel)));
     Regex::new(&format!(
         r"(\\(?:input|include|subfile|includegraphics|addbibresource|bibliography|lstinputlisting)\*?(?:\[[^\]]*\])?\{{)(\./)?({})(\}})",
         alts.join("|")
@@ -480,6 +482,8 @@ pub fn rewrite_references(text: &str, from: &str, to: &str) -> String {
         // Keep the reader's style: with or without the extension.
         let new = if c[3] == *from {
             to.to_string()
+        } else if let Some(rest) = c[3].strip_prefix(from).and_then(|r| r.strip_prefix('/')) {
+            format!("{to}/{rest}")
         } else {
             strip_ext(to)
         };
@@ -740,7 +744,7 @@ pub fn trash_into(root: &Path, paths: &[String]) -> CmdResult<TrashBatch> {
         .iter()
         .map(|rel| (root.join(rel), batch.join(rel)))
         .collect();
-    move_all(&pairs).inspect_err(|_| prune_empty(&batch))?;
+    move_all(&pairs, "to the trash").inspect_err(|_| prune_empty(&batch))?;
     let result = TrashBatch { id, paths };
     let manifest = serde_json::to_vec(&result)
         .map_err(err)
@@ -756,7 +760,9 @@ pub fn trash_into(root: &Path, paths: &[String]) -> CmdResult<TrashBatch> {
 
 /// Renames each `(from, to)` in turn. If one fails, the ones already done are
 /// moved back, so the caller sees all or nothing.
-fn move_all(pairs: &[(PathBuf, PathBuf)]) -> CmdResult<()> {
+/// Moves every pair or, when one fails, puts back the ones already moved. `what` ends the
+/// message: "to the trash", "back".
+fn move_all(pairs: &[(PathBuf, PathBuf)], what: &str) -> CmdResult<()> {
     for (i, (from, to)) in pairs.iter().enumerate() {
         let moved = to
             .parent()
@@ -765,7 +771,7 @@ fn move_all(pairs: &[(PathBuf, PathBuf)]) -> CmdResult<()> {
         if let Err(e) = moved {
             undo_moves(&pairs[..i]);
             let name = from.file_name().unwrap_or_default().to_string_lossy();
-            return Err(format!("Could not move {name} to the trash: {e}"));
+            return Err(format!("Could not move {name} {what}: {e}"));
         }
     }
     Ok(())
@@ -811,13 +817,13 @@ pub fn restore_from(root: &Path, id: &str) -> CmdResult<Vec<String>> {
             return Err(format!("{rel} exists again, so it can't be restored."));
         }
     }
-    for rel in &manifest.paths {
-        let dest = root.join(rel);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(err)?;
-        }
-        std::fs::rename(batch.join(rel), dest).map_err(err)?;
-    }
+    // All or nothing, so a failed restore can be tried again.
+    let pairs: Vec<(PathBuf, PathBuf)> = manifest
+        .paths
+        .iter()
+        .map(|rel| (batch.join(rel), root.join(rel)))
+        .collect();
+    move_all(&pairs, "back")?;
     let _ = std::fs::remove_dir_all(&batch);
     Ok(manifest.paths)
 }
@@ -1285,6 +1291,13 @@ mod tests {
             fig.ends_with("\\includegraphics[width=3cm]{./figures/b}"),
             "{fig}"
         );
+        // Moving a folder follows the files named inside it, and only those.
+        let moved = rewrite_references(text, "figures", "assets/figures");
+        assert!(moved.ends_with("{./assets/figures/a}"), "{moved}");
+        assert_eq!(
+            rewrite_references("\\input{figures2/x}", "figures", "f"),
+            "\\input{figures2/x}"
+        );
     }
 
     #[test]
@@ -1609,7 +1622,7 @@ mod tests {
             (r.join("gone.tex"), t.join("gone.tex")),
             (r.join("c.tex"), t.join("c.tex")),
         ];
-        assert!(move_all(&pairs).is_err());
+        assert!(move_all(&pairs, "to the trash").is_err());
         assert_eq!(std::fs::read_to_string(r.join("a.tex")).unwrap(), "a");
         assert_eq!(std::fs::read_to_string(r.join("c.tex")).unwrap(), "c");
         assert!(!t.join("a.tex").exists());

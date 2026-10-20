@@ -505,40 +505,43 @@ impl Workspace {
     fn run_trash(&mut self, backend: &Backend, paths: Vec<String>, system: bool) {
         // Saving afterwards would bring the files back: drop their edits first.
         self.trashed(backend, &paths);
-        Workspace::job(
-            backend,
-            move |s| {
-                if system {
-                    paths
-                        .iter()
-                        .try_for_each(|p| s.trash_path(p.clone()))
-                        .map(|_| None)
-                        .map_err(|e| (e, paths.clone()))
-                } else {
-                    s.trash_paths(paths.clone())
-                        .map(Some)
-                        .map_err(|e| (e, paths.clone()))
-                }
-                .map(|b| (b, paths))
-            },
-            move |ws, b, r| {
-                match r {
-                    Ok((None, paths)) => ws.notice(
-                        format!("Moved {} to the system trash.", describe(&paths)),
-                        Tone::Ok,
-                    ),
-                    Ok((Some(batch), paths)) => {
-                        ws.push_undo(
-                            format!("Delete {}", describe(&paths)),
-                            Undo::Restore(batch.id),
-                        );
-                        ws.undo_notice(format!("Deleted {}.", describe(&paths)));
+        // After any save in flight: a late save would bring a deleted file back.
+        self.after_writes.push(Box::new(move |_, backend| {
+            Workspace::job(
+                backend,
+                move |s| {
+                    if system {
+                        paths
+                            .iter()
+                            .try_for_each(|p| s.trash_path(p.clone()))
+                            .map(|_| None)
+                            .map_err(|e| (e, paths.clone()))
+                    } else {
+                        s.trash_paths(paths.clone())
+                            .map(Some)
+                            .map_err(|e| (e, paths.clone()))
                     }
-                    Err((e, _)) => ws.file_failure(e),
-                }
-                ws.refresh_tree(b);
-            },
-        );
+                    .map(|b| (b, paths))
+                },
+                move |ws, b, r| {
+                    match r {
+                        Ok((None, paths)) => ws.notice(
+                            format!("Moved {} to the system trash.", describe(&paths)),
+                            Tone::Ok,
+                        ),
+                        Ok((Some(batch), paths)) => {
+                            ws.push_undo(
+                                format!("Delete {}", describe(&paths)),
+                                Undo::Restore(batch.id),
+                            );
+                            ws.undo_notice(format!("Deleted {}.", describe(&paths)));
+                        }
+                        Err((e, _)) => ws.file_failure(e),
+                    }
+                    ws.refresh_tree(b);
+                },
+            );
+        }));
     }
 
     /// Copies next to the originals, named "… copy".

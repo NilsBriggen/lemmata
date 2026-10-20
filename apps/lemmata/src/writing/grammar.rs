@@ -270,7 +270,9 @@ impl Grammar {
 
     pub fn store(&mut self, text: String, matches: Vec<lemmata_grammar::Match>) {
         if self.found.len() >= 2000 {
+            // Both, or the paragraphs once asked would never be asked (and marked) again.
             self.found.clear();
+            self.asked.clear();
         }
         self.found.insert(text, matches);
         self.error = None;
@@ -293,6 +295,19 @@ pub fn utf16_to_char(text: &[char], units: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_cache_forgets_what_it_asked_too() {
+        let mut g = Grammar::default();
+        for i in 0..2000 {
+            let t = format!("paragraph {i}");
+            g.asked.insert(t.clone());
+            g.store(t, Vec::new());
+        }
+        g.store("one more".into(), Vec::new());
+        assert!(g.found("paragraph 1").is_none());
+        assert!(!g.asked.contains("paragraph 1"), "so it is asked again");
+    }
 
     fn text(p: &Paragraph) -> String {
         p.text.iter().collect()

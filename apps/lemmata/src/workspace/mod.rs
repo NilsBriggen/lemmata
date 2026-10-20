@@ -880,6 +880,8 @@ impl Workspace {
     /// A message for the open project; others are handed back.
     pub fn on_msg(&mut self, backend: &Backend, settings: &Settings, msg: Msg) -> Option<Msg> {
         match msg {
+            // Read twice (two quick opens): the editor from the first read keeps what was typed in it.
+            Msg::FileRead(path, Ok(_)) if self.editors.contains_key(&path) => {}
             Msg::FileRead(path, Ok(text)) => {
                 let tex = tree::is_tex(&path);
                 let mut ed = Editor::new(&text, tex);

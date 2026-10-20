@@ -173,8 +173,8 @@ impl Shell {
                 .map_err(crate::err)?
         };
         let header = "% Exported from Zotero by Lemmata. Changes here are overwritten on the next sync;\n% edit the references in Zotero instead.\n\n";
-        std::fs::write(
-            p.root.join(ZOTERO_BIB),
+        lemmata_bib::manage::write_atomic(
+            &p.root.join(ZOTERO_BIB),
             format!("{header}{}", text.trim_start()),
         )
         .map_err(crate::err)?;
@@ -190,19 +190,54 @@ impl Shell {
         let p = project(self)?;
         let main = p.main_abs();
         let text = std::fs::read_to_string(&main).map_err(crate::err)?;
-        let new = if let Some(pos) = text.find("\\bibliography{") {
-            let close = text[pos..].find('}').ok_or("Unclosed \\bibliography{.")? + pos;
-            format!("{},zotero{}", &text[..close], &text[close..])
-        } else if let Some(pos) = text.find("\\addbibresource") {
-            let line_end = text[pos..].find('\n').map_or(text.len(), |e| pos + e);
-            format!(
-                "{}\n\\addbibresource{{{ZOTERO_BIB}}}{}",
-                &text[..line_end],
-                &text[line_end..]
-            )
-        } else {
-            return Err("The document has no bibliography yet. Add \\addbibresource{zotero.bib} (biblatex) or \\bibliography{zotero} yourself.".into());
-        };
-        std::fs::write(&main, new).map_err(crate::err)
+        let new = link_zotero(&text)?;
+        lemmata_bib::manage::write_atomic(&main, new).map_err(crate::err)
+    }
+}
+
+/// The first `command` not in a `%` comment.
+fn find_live(text: &str, command: &str) -> Option<usize> {
+    text.match_indices(command).map(|(i, _)| i).find(|&i| {
+        let line = &text[text[..i].rfind('\n').map_or(0, |n| n + 1)..i];
+        !line
+            .char_indices()
+            .any(|(k, c)| c == '%' && !line[..k].ends_with('\\'))
+    })
+}
+
+/// `text` loading zotero.bib too.
+fn link_zotero(text: &str) -> CmdResult<String> {
+    if let Some(pos) = find_live(text, "\\bibliography{") {
+        let close = text[pos..].find('}').ok_or("Unclosed \\bibliography{.")? + pos;
+        Ok(format!("{},zotero{}", &text[..close], &text[close..]))
+    } else if let Some(pos) = find_live(text, "\\addbibresource") {
+        let line_end = text[pos..].find('\n').map_or(text.len(), |e| pos + e);
+        Ok(format!(
+            "{}\n\\addbibresource{{{ZOTERO_BIB}}}{}",
+            &text[..line_end],
+            &text[line_end..]
+        ))
+    } else {
+        Err("The document has no bibliography yet. Add \\addbibresource{zotero.bib} (biblatex) or \\bibliography{zotero} yourself.".into())
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::link_zotero;
+
+    #[test]
+    fn links_the_live_bibliography_not_a_commented_one() {
+        let t = "% \\bibliography{old}\n\\bibliography{refs}\n";
+        assert_eq!(
+            link_zotero(t).unwrap(),
+            "% \\bibliography{old}\n\\bibliography{refs,zotero}\n"
+        );
+        let t = "\\addbibresource{refs.bib}\nText";
+        assert_eq!(
+            link_zotero(t).unwrap(),
+            "\\addbibresource{refs.bib}\n\\addbibresource{zotero.bib}\nText"
+        );
+        assert!(link_zotero("% \\addbibresource{x.bib}").is_err());
     }
 }

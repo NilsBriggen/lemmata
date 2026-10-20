@@ -213,10 +213,7 @@ pub async fn build(
             Ok((f, g)) => (Stdio::from(f), Stdio::from(g)),
             Err(_) => (Stdio::null(), Stdio::null()),
         };
-    let mut limit = match project.config.timeout_secs {
-        0 => Duration::from_secs(60 * 60 * 24),
-        n => Duration::from_secs(n),
-    };
+    let mut limit = crate::build::time_limit(project);
     // The first build downloads the format and packages, which a short limit would cut off.
     if cache_dir().is_none_or(|c| !c.join("formats").is_dir()) {
         limit = limit.max(Duration::from_secs(15 * 60));
@@ -230,11 +227,22 @@ pub async fn build(
     let mut cancel = cancel;
     // Tectonic writes its notes straight into the output file, so reading it shows how far it is.
     let watch = async {
-        let mut shown = 0;
+        // Only what was added since the last look, up to its last full line.
+        let (mut shown, mut seen) = (0, 0u64);
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let text = std::fs::read(&output_path).unwrap_or_default();
-            let n = files_fetched(&String::from_utf8_lossy(&text));
+            let mut new = Vec::new();
+            if let Ok(mut f) = std::fs::File::open(&output_path) {
+                use std::io::{Read, Seek, SeekFrom};
+                let _ = f
+                    .seek(SeekFrom::Start(seen))
+                    .and_then(|_| f.read_to_end(&mut new));
+            }
+            let Some(end) = new.iter().rposition(|b| *b == b'\n') else {
+                continue;
+            };
+            seen += end as u64 + 1;
+            let n = shown + files_fetched(&String::from_utf8_lossy(&new[..=end]));
             if n != shown {
                 shown = n;
                 on_fetch(n);
@@ -279,9 +287,8 @@ pub async fn build(
         _ => {}
     }
 
-    let stderr_text = std::fs::read(&output_path)
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
-        .unwrap_or_default();
+    let stderr_text =
+        String::from_utf8_lossy(&crate::build::read_capped(&output_path)).into_owned();
     let mut diagnostics = read_log(project);
     merge_blg(project, &mut diagnostics, started_at);
     // Files in the build folder (.bbl, .aux) aren't something the user can edit.

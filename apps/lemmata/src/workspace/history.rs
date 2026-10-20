@@ -221,22 +221,26 @@ impl Workspace {
         }
     }
 
-    /// Before a restore: everything saved (so it's in the safety snapshot) and no autosave pending.
-    fn before_restore(
+    /// A restore runs once everything is saved (so it's in the safety snapshot); if something
+    /// couldn't be saved, nothing is restored.
+    fn after_saving(
         &mut self,
         backend: &Backend,
         settings: &crate::store::Settings,
-    ) -> Result<(), String> {
+        restore: impl FnOnce(&mut Workspace, &Backend) + 'static,
+    ) {
         self.save_all_quietly(backend, settings);
-        let left = self.buffers.unsaved();
-        if left.is_empty() {
-            Ok(())
-        } else {
-            Err(format!(
-                "{} could not be saved, so nothing was restored.",
-                left.join(", ")
-            ))
-        }
+        self.after_writes.push(Box::new(move |ws, b| {
+            let left = ws.buffers.unsaved();
+            if left.is_empty() {
+                restore(ws, b);
+            } else {
+                ws.history.error = Some(format!(
+                    "{} could not be saved, so nothing was restored.",
+                    left.join(", ")
+                ));
+            }
+        }));
     }
 
     /// Reads a file again from disk after a restore, a replace or a rename changed it. Edits made
@@ -655,25 +659,22 @@ impl Workspace {
             return;
         }
         if restore {
-            match self.before_restore(backend, settings) {
-                Err(e) => self.history.error = Some(e),
-                Ok(()) => {
-                    let (i, pa) = (id.clone(), path.clone());
-                    Self::job(
-                        backend,
-                        move |sh| sh.history_restore(i, pa.clone()).map(|_| pa),
-                        |ws, b, r| match r {
-                            Ok(path) => {
-                                ws.reload(b, &path);
-                                ws.history.diff = None;
-                                ws.history.confirm_restore = false;
-                                ws.load_history(b);
-                            }
-                            Err(e) => ws.history.error = Some(e),
-                        },
-                    );
-                }
-            }
+            let (i, pa) = (id.clone(), path.clone());
+            self.after_saving(backend, settings, move |_, b| {
+                Self::job(
+                    b,
+                    move |sh| sh.history_restore(i, pa.clone()).map(|_| pa),
+                    |ws, b, r| match r {
+                        Ok(path) => {
+                            ws.reload(b, &path);
+                            ws.history.diff = None;
+                            ws.history.confirm_restore = false;
+                            ws.load_history(b);
+                        }
+                        Err(e) => ws.history.error = Some(e),
+                    },
+                );
+            });
         }
         let rest = ui.available_rect_before_wrap();
         ui.painter().rect_filled(rest, 0, p.code_bg);
@@ -888,10 +889,12 @@ impl Workspace {
     }
 
     fn restore_all(&mut self, backend: &Backend, settings: &crate::store::Settings, id: String) {
-        if let Err(e) = self.before_restore(backend, settings) {
-            self.history.error = Some(e);
-            return;
-        }
+        self.after_saving(backend, settings, move |_, backend| {
+            Self::restore_all_now(backend, id)
+        });
+    }
+
+    fn restore_all_now(backend: &Backend, id: String) {
         Self::job(
             backend,
             move |sh| sh.history_restore_all(id),

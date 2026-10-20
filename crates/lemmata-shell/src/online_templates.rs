@@ -230,7 +230,8 @@ pub async fn refresh(cache: &Path) -> Result<usize, String> {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent).map_err(save)?;
             }
-            let tmp = target.with_extension("part");
+            // The whole name: main.tex and main.bib must not share a temp file.
+            let tmp = target.with_file_name(format!("{}.part", target.file_name().unwrap_or_default().to_string_lossy()));
             std::fs::write(&tmp, &bytes).map_err(save)?;
             std::fs::rename(&tmp, &target).map_err(save)
         });
