@@ -35,7 +35,8 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 [profile.release]
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Unwinding, so a PDF that panics the renderer (apps/lemmata/src/pdf/engine.rs) is caught, not fatal.
+panic = "unwind"
 strip = true
 
 [profile.dev]

@@ -42,6 +42,37 @@ pub enum Msg {
     Info(Result<lemmata_shell::ProjectInfo, String>),
     /// A command's result that only matters when it failed.
     Done(Result<(), String>),
+    /// A build finished (the number is the workspace's build sequence).
+    Built(u64, Result<lemmata_tex::Outcome, String>),
+    /// The project's PDF, read to show it.
+    Pdf(Result<Vec<u8>, String>),
+    /// Whether the PDF on disk is up to date, when the project opens.
+    PdfCurrent(bool),
+    Synced(Result<Vec<lemmata_synctex::PdfBox>, String>),
+    SourceHit(Result<Option<lemmata_shell::SourceHit>, String>),
+    /// The raw TeX log, read after this build.
+    Log(u64, Result<String, String>),
+    Cleaned(Result<usize, String>),
+    /// Where to save an export, or None when the dialog was cancelled.
+    SaveTo(Save, Option<PathBuf>),
+    /// An export finished: what, the file name, and how many files went in.
+    Exported(Save, String, Result<usize, String>),
+    PackageAdded(Result<(), String>),
+    /// An image or PDF of the project, read for its viewer tab.
+    Viewed(String, Result<Viewed, String>),
+}
+
+pub enum Viewed {
+    Pdf(Vec<u8>),
+    Image(egui::ColorImage),
+}
+
+/// The exports that ask where to save.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Save {
+    Pdf,
+    Zip,
+    Arxiv { flatten: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -166,5 +197,29 @@ impl Backend {
             let _ = tx.send(Msg::Picked(what, picked.map(|h| h.path().to_path_buf())));
             ctx.request_repaint();
         });
+    }
+
+    /// A native save dialog for an export, without blocking the UI.
+    pub fn save(&self, what: Save, name: String) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.runtime.spawn(async move {
+            let (title, filter, ext) = match what {
+                Save::Pdf => ("Export PDF", "PDF", "pdf"),
+                Save::Zip => ("Export the project as a zip", "Zip", "zip"),
+                Save::Arxiv { .. } => ("Export for arXiv", "Zip", "zip"),
+            };
+            let picked = rfd::AsyncFileDialog::new()
+                .set_title(title)
+                .set_file_name(name)
+                .add_filter(filter, &[ext])
+                .save_file()
+                .await;
+            let _ = tx.send(Msg::SaveTo(what, picked.map(|h| h.path().to_path_buf())));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn ctx(&self) -> &egui::Context {
+        &self.ctx
     }
 }

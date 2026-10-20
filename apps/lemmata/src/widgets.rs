@@ -176,6 +176,7 @@ impl<'a> Button<'a> {
                 .animate_bool_with_time(response.id, hovered, theme::EASE_SECS);
             let lerp = |a: Color32, b: Color32| a.lerp_to_gamma(b, t);
             let (fill, stroke, ink) = match self.kind {
+                Kind::Default if self.on => (p.accent_soft, p.accent, p.accent),
                 Kind::Default => (
                     lerp(p.surface, p.surface_2),
                     lerp(p.border_strong, p.faint),
@@ -186,10 +187,11 @@ impl<'a> Button<'a> {
                     lerp(p.accent, p.accent_hover),
                     p.accent_ink,
                 ),
+                // `.btn.on`: a pressed toggle shows in the accent colour.
                 Kind::Ghost => (
                     lerp(Color32::TRANSPARENT, p.surface_3),
                     Color32::TRANSPARENT,
-                    p.ink,
+                    if self.on { p.accent } else { p.ink },
                 ),
                 Kind::Danger => (
                     lerp(p.surface, p.surface_2),
@@ -657,6 +659,11 @@ impl Rich {
         self.0.wrap.max_width = width;
         self
     }
+    /// `text-align: center`.
+    pub fn centered(mut self) -> Self {
+        self.0.halign = egui::Align::Center;
+        self
+    }
     pub fn show(self, ui: &mut Ui) -> Response {
         // A Label wraps at the available width, so the job's own width becomes the Ui's.
         let width = self.0.wrap.max_width;
@@ -664,7 +671,7 @@ impl Rich {
             // In a horizontal row a Label would not wrap at all, so it gets a box of its own.
             ui.allocate_ui_with_layout(
                 Vec2::new(width, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
+                egui::Layout::top_down(self.0.halign),
                 |ui| {
                     ui.set_max_width(width);
                     ui.add(egui::Label::new(self.0).selectable(false).wrap())

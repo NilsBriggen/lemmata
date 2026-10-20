@@ -382,7 +382,8 @@ impl App {
                 self.recents.remember(&path, now_ms());
                 self.recents.save(&self.dirs);
                 self.close_project();
-                self.project = Some(Workspace::open(info, &self.dirs, &self.backend));
+                let ready = self.tex.as_ref().is_some_and(|t| t.detection.ready);
+                self.project = Some(Workspace::open(info, &self.dirs, &self.backend, ready));
             }
             Msg::Opened(path, Err(e)) => {
                 // A folder without a main document can get one.
@@ -478,7 +479,18 @@ impl App {
             | Msg::DiskText(..)
             | Msg::FileWritten { .. }
             | Msg::Outline(_)
-            | Msg::Info(_) => {}
+            | Msg::Info(_)
+            | Msg::Built(..)
+            | Msg::Pdf(_)
+            | Msg::PdfCurrent(_)
+            | Msg::Synced(_)
+            | Msg::SourceHit(_)
+            | Msg::Log(..)
+            | Msg::Cleaned(_)
+            | Msg::SaveTo(..)
+            | Msg::Exported(..)
+            | Msg::PackageAdded(_)
+            | Msg::Viewed(..) => {}
         }
     }
 
@@ -782,6 +794,8 @@ impl App {
         }
 
         if let Some(ws) = &mut self.project {
+            ws.tex_ready = tex.detection.ready;
+            ws.tex_outdated = tex.detection.outdated;
             match ws.show(ui, &p, &mut self.settings, &self.backend) {
                 Some(workspace::Action::Library) => self.close_project(),
                 Some(workspace::Action::Settings) => self.save_settings(&ctx),
@@ -1072,6 +1086,13 @@ mod tests {
 
     /// The article fixture as the last project, opened by the app; None without TeX.
     fn in_article(tmp: &std::path::Path) -> Option<(Harness<'static, App>, std::path::PathBuf)> {
+        in_article_with(tmp, Settings::default())
+    }
+
+    fn in_article_with(
+        tmp: &std::path::Path,
+        settings: Settings,
+    ) -> Option<(Harness<'static, App>, std::path::PathBuf)> {
         let project = tmp.join("rl-thesis");
         copy_dir(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/article"),
@@ -1083,7 +1104,7 @@ mod tests {
         recents.save(&d);
         Settings {
             first_run_done: true,
-            ..Settings::default()
+            ..settings
         }
         .save(&d);
         let mut h = app(tmp);
@@ -1110,12 +1131,212 @@ mod tests {
         let Some((mut h, _)) = in_article(tmp.path()) else {
             return;
         };
+        // Opening builds; the snapshot shows the PDF it made.
+        wait_for(&mut h, "the build", |h| {
+            h.query_by_label_contains("Compiled in").is_some()
+        });
+        wait_for(&mut h, "the PDF", |h| {
+            h.state().project.as_ref().unwrap().pane.view.rendered()
+        });
+        h.run_steps(3);
         let _ = h.try_snapshot("editor-split-light");
         assert!(h.query_by_label("Recompile").is_some());
         assert!(
             h.query_by_label("method.tex").is_some(),
             "the tree lists the chapters"
         );
+    }
+
+    #[test]
+    fn opening_builds_and_the_pdf_shows_with_its_logs_and_synctex() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        wait_for(&mut h, "the build", |h| {
+            h.query_by_label_contains("Compiled in").is_some()
+                || h.query_by_label_contains("error").is_some()
+        });
+        wait_for(&mut h, "the PDF", |h| h.query_by_label("Page").is_some());
+        let _ = project;
+        let ws = h.state().project.as_ref().unwrap();
+        assert_eq!(ws.pane.view.page_count(), 1);
+        assert!(ws.pane.view.outline.is_empty(), "no hyperref, no bookmarks");
+
+        // The logs replace the PDF, and come back.
+        h.get_by_label("Logs").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Problems").is_some());
+        h.get_by_label("Raw log").click();
+        wait_for(&mut h, "the raw log", |h| {
+            h.query_by_label_contains("This is").is_some()
+        });
+        h.get_by_label("Logs").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Problems").is_none());
+
+        // Ctrl+J on \maketitle shows that line in the PDF; a click on that box goes back.
+        {
+            let app = h.state_mut();
+            let ws = app.project.as_mut().unwrap();
+            ws.goto(&app.backend, "main.tex", 10);
+        }
+        h.run_steps(2);
+        {
+            let app = h.state_mut();
+            app.project.as_mut().unwrap().sync_forward(&app.backend);
+        }
+        wait_for(&mut h, "the SyncTeX box", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .pane
+                .view
+                .highlighted()
+                .is_some()
+        });
+
+        // Searching the PDF finds the title.
+        h.state_mut()
+            .project
+            .as_mut()
+            .unwrap()
+            .pane
+            .view
+            .search("expected return", true);
+        wait_for(&mut h, "the search", |h| {
+            h.state().project.as_ref().unwrap().pane.view.match_count() > 0
+        });
+        h.run_steps(2);
+        let _ = h.try_snapshot("editor-split-built-light");
+    }
+
+    #[test]
+    fn a_broken_document_lists_its_problems_with_the_source_around_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        wait_for(&mut h, "the first build", |h| {
+            h.query_by_label_contains("Compiled in").is_some()
+        });
+        // The library thumbnail is written after the first build.
+        wait_for(&mut h, "the thumbnail", |h| {
+            h.state()
+                .backend
+                .shell
+                .load_thumbnail(project.to_string_lossy().into())
+                .is_ok()
+        });
+        let main = project.join("main.tex");
+        let text = std::fs::read_to_string(&main).unwrap();
+        std::fs::write(
+            &main,
+            text.replace("\\maketitle", "\\maketitle\n\\notacommand"),
+        )
+        .unwrap();
+        wait_for(&mut h, "the outside change", |h| {
+            h.state().project.as_ref().unwrap().editors["main.tex"]
+                .doc
+                .text()
+                .contains("notacommand")
+        });
+        h.get_by_label("Recompile").click();
+        wait_for(&mut h, "the failed build", |h| {
+            let b = &h.state().project.as_ref().unwrap().build;
+            !b.building && b.errors() > 0
+        });
+        h.get_by_label("Logs").click();
+        h.run_steps(3);
+        assert!(
+            h.query_by_label("main.tex:11").is_some(),
+            "the card links to the line"
+        );
+        let _ = h.try_snapshot("logs-light");
+        h.get_by_label("main.tex:11").click();
+        h.run_steps(2);
+        assert_eq!(h.state().project.as_ref().unwrap().cursor.1, 11);
+    }
+
+    #[test]
+    fn images_and_pdfs_of_the_project_open_in_a_viewer_tab() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        // A 40×30 PNG, half transparent.
+        let img = image::RgbaImage::from_fn(40, 30, |x, _| {
+            image::Rgba([200, 60, 60, if x < 20 { 255 } else { 0 }])
+        });
+        img.save(project.join("plot.png")).unwrap();
+        {
+            let app = h.state_mut();
+            app.project
+                .as_mut()
+                .unwrap()
+                .open_file(&app.backend, "plot.png");
+        }
+        wait_for(&mut h, "the image", |h| {
+            matches!(
+                h.state().project.as_ref().unwrap().viewers.get("plot.png"),
+                Some(super::workspace::viewer::Viewer::Image { .. })
+            )
+        });
+        h.run_steps(2);
+        let _ = h.try_snapshot("viewer-image-light");
+        // The build's own PDF, opened as a file of the project.
+        wait_for(&mut h, "the build", |h| {
+            h.query_by_label_contains("Compiled in").is_some()
+        });
+        let pdf = h.state().backend.shell.read_pdf().unwrap();
+        std::fs::write(project.join("copy.pdf"), pdf).unwrap();
+        {
+            let app = h.state_mut();
+            app.project
+                .as_mut()
+                .unwrap()
+                .open_file(&app.backend, "copy.pdf");
+        }
+        wait_for(
+            &mut h,
+            "the PDF viewer",
+            |h| matches!(h.state().project.as_ref().unwrap().viewers.get("copy.pdf"), Some(super::workspace::viewer::Viewer::Pdf(v)) if v.page_count() == 1),
+        );
+    }
+
+    #[test]
+    fn dark_pages_in_a_narrow_pane_move_the_buttons_into_more() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            theme: "dark".into(),
+            pdf_dark: true,
+            pdf_width: 500.0,
+            ..Settings::default()
+        };
+        let Some((mut h, _)) = in_article_with(tmp.path(), settings) else {
+            return;
+        };
+        wait_for(&mut h, "the PDF", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .is_some_and(|w| w.pane.view.rendered())
+        });
+        assert!(h.query_by_label("Zoom in").is_none() && h.query_by_label("More").is_some());
+        h.get_by_label("More").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Page thumbnails").is_some());
+        h.get_by_label("Page thumbnails").click();
+        h.run_steps(3);
+        wait_for(&mut h, "the thumbnail", |h| {
+            h.state().project.as_ref().unwrap().pane.view.page_count() == 1
+        });
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            h.step();
+        }
+        let _ = h.try_snapshot("pdf-narrow-dark");
     }
 
     #[test]

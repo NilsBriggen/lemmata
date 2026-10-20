@@ -2,7 +2,7 @@
 //! TabStrip.svelte, EditorToolbar.svelte, the status bar of App.svelte, and their menus.
 
 use super::{Action, Menu, Tone, Workspace, tree};
-use crate::backend::{Backend, Msg};
+use crate::backend::{Backend, Msg, Save};
 use crate::editor::commands::{self as cmd, Indent};
 use crate::editor::view;
 use crate::icons::{self, Icon};
@@ -37,7 +37,7 @@ pub fn toolbar(
     p: &Palette,
     ws: &mut Workspace,
     settings: &mut Settings,
-    _backend: &Backend,
+    backend: &Backend,
 ) -> Option<Action> {
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, 0, p.chrome);
@@ -159,8 +159,17 @@ pub fn toolbar(
             Some(Menu::Compile(caret.rect))
         };
     }
-    let recompile = Button::new("Recompile")
+    // While building, the button stops the build, so it says so; its icon spins.
+    let building = ws.build.building;
+    let angle = if building {
+        r.ctx().request_repaint();
+        (r.input(|i| i.time) as f32 * std::f32::consts::TAU).rem_euclid(std::f32::consts::TAU)
+    } else {
+        0.0
+    };
+    let recompile = Button::new(if building { "Stop" } else { "Recompile" })
         .with_icon(icons::REFRESH_CW)
+        .icon_angle(angle)
         .icon_size(15.0)
         .kind(Kind::Primary)
         .min_width(128.0)
@@ -171,7 +180,18 @@ pub fn toolbar(
             se: 0,
         })
         .show(&mut r, p);
-    let _ = recompile.on_hover_text(format!("Recompile ({})", display(keys_of("recompile"))));
+    if recompile.clicked() {
+        if building {
+            ws.stop_build(backend);
+        } else {
+            ws.recompile(backend, settings);
+        }
+    }
+    let _ = recompile.on_hover_text(if building {
+        "Stop compiling".to_owned()
+    } else {
+        format!("Recompile ({})", display(keys_of("recompile")))
+    });
     r.add_space(4.0 + 6.0);
     r.spacing_mut().item_spacing.x = 6.0;
     let _ = Button::icon(icons::SETTINGS, "Project settings")
@@ -829,7 +849,9 @@ pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, b
 
 // ── Formatting bar ─────────────────────────────────────────────────────────
 
-pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) {
+/// True when "Go to PDF" was clicked.
+pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> bool {
+    let mut sync = false;
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, 0, p.surface);
     ui.painter().hline(
@@ -953,7 +975,7 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) {
         }
     }
     sep(&mut c);
-    // shortcut: comments land in M6 and Go to PDF with the PDF pane in M4.
+    // shortcut: comments land in M6.
     let _ = Button::new("Comment")
         .with_icon(icons::MESSAGE_SQUARE_PLUS)
         .kind(Kind::Ghost)
@@ -961,17 +983,22 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) {
         .enabled(ws.active.is_some())
         .show(&mut c, p)
         .on_hover_text(tip("Add a comment on the selection", "add-comment"));
-    let _ = Button::new("Go to PDF")
+    if Button::new("Go to PDF")
         .with_icon(icons::LOCATE)
         .kind(Kind::Ghost)
         .size(Size::Sm)
         .enabled(!disabled)
         .show(&mut c, p)
-        .on_hover_text(tip("Go to PDF", "sync"));
+        .on_hover_text(tip("Go to PDF", "sync"))
+        .clicked()
+    {
+        sync = true;
+    }
     let _ = indent;
     if let Some(f) = todo {
         f(ws);
     }
+    sync
 }
 
 /// Runs a command on the open file's editor with its indentation, and shows the result.
@@ -1011,7 +1038,15 @@ fn wrap_with(d: &mut crate::editor::buffer::Doc, open: &str, close: &str) {
 
 // ── Status bar ─────────────────────────────────────────────────────────────
 
-pub fn status_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace, _settings: &Settings) {
+/// True when a setting changed.
+pub fn status_bar(
+    ui: &mut Ui,
+    p: &Palette,
+    ws: &mut Workspace,
+    settings: &mut Settings,
+    backend: &Backend,
+) -> bool {
+    let mut changed = false;
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, 0, p.surface_2);
     ui.painter()
@@ -1051,16 +1086,60 @@ pub fn status_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace, _settings: &Sett
     }
     c.with_layout(egui::Layout::right_to_left(egui::Align::Center), |c| {
         c.spacing_mut().item_spacing.x = 16.0;
-        // shortcut: the notification bell (M7), build outcome (M4), spell language (M6) and completion status (M5) come later.
-        c.label(small(engine_name(ws.info.config.engine).into(), p.muted)).on_hover_text("Compiler: change it in Project settings");
-        if ws.total_words > 0 {
-            c.label(small(format!("{} words", group_digits(ws.total_words)), p.muted))
-                .on_hover_text("Words in the document body, without commands, maths or comments. Click for the count per file.");
+        // shortcut: the notification bell (M7), spell language (M6) and completion status (M5) come later.
+        if let Some(o) = ws.build.outcome.as_ref().filter(|_| !ws.build.building) {
+            use lemmata_tex::Status;
+            if o.status == Status::Success {
+                // shortcut: the "Finished at" time on hover needs local time formatting; left out.
+                c.label(small(format!("Compiled in {:.1} s", o.duration_ms as f64 / 1000.0), p.ok));
+            } else {
+                // The failure opens the logs that explain it.
+                let errors = ws.build.errors();
+                let text = match o.status {
+                    Status::Timeout => "Stopped: took too long".to_owned(),
+                    Status::Cancelled => "Stopped".to_owned(),
+                    _ if errors > 0 => format!("{errors} error{}", if errors == 1 { "" } else { "s" }),
+                    _ => "Compile failed".to_owned(),
+                };
+                if status_link(c, text, p.error, "Show the logs", true).clicked() {
+                    ws.build.logs_open = true;
+                    if settings.layout == "editor" {
+                        settings.layout = "split".into();
+                        changed = true;
+                    }
+                }
+            }
         }
-        if ws.info.config.draft {
-            c.label(small("Draft mode".into(), p.error)).on_hover_text("Figures are drawn as boxes. Click to build normally again.");
+        status_link(c, engine_name(ws.info.config.engine).into(), p.muted, "Compiler: change it in Project settings", false);
+        if ws.total_words > 0 {
+            status_link(c, format!("{} words", group_digits(ws.total_words)), p.muted, "Words in the document body, without commands, maths or comments. Click for the count per file.", false);
+        }
+        if ws.info.config.draft
+            && status_link(c, "Draft mode".into(), p.warn, "Figures are drawn as boxes. Click to build normally again.", false).clicked()
+        {
+            ws.set_config(backend, settings, |c| c.draft = false);
+        }
+        if ws.tex_outdated {
+            c.label(small("Old TeX Live".into(), p.warn)).on_hover_text("Some packages may lack newer features");
         }
     });
+    changed
+}
+
+/// `.status-link`: plain text until hovered, then underlined (`.bad` ones always are).
+fn status_link(ui: &mut Ui, text: String, color: Color32, tip: &str, bad: bool) -> egui::Response {
+    let r = ui.add(
+        egui::Label::new(egui::RichText::new(text).size(12.0).color(color)).sense(Sense::click()),
+    );
+    if bad || r.hovered() {
+        ui.painter().hline(
+            r.rect.x_range(),
+            r.rect.bottom() - 1.0,
+            Stroke::new(1.0, color),
+        );
+    }
+    r.on_hover_text(tip)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// 1,177 with the separator for thousands, as Intl.NumberFormat() in English.
@@ -1138,6 +1217,10 @@ pub fn menus(
                     match i {
                         1 => *action = Some(Action::Library),
                         15 => ws.focus_mode = !ws.focus_mode,
+                        18 => ws.export(backend, settings, Save::Pdf),
+                        19 => ws.export(backend, settings, Save::Zip),
+                        20 => ws.export(backend, settings, Save::Arxiv { flatten: false }),
+                        21 => ws.export(backend, settings, Save::Arxiv { flatten: true }),
                         27 => {
                             const GUIDE: &str =
                                 "https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md";
@@ -1173,30 +1256,30 @@ pub fn menus(
                 MenuItem::Separator,
                 MenuItem::plain("Clear cached files"),
             ]);
+            if ws.build.building {
+                items.push(MenuItem::plain("Stop compiling"));
+            }
             match widgets::drop_menu(ctx, p, id, anchor, true, &items) {
                 MenuResult::Open => {}
                 MenuResult::Closed => ws.menu = None,
-                MenuResult::Clicked(i) => {
-                    let mut next = cfg.clone();
-                    match i {
-                        1 | 2 => {
-                            settings.auto_compile = i == 1;
-                            *action = Some(Action::Settings);
-                        }
-                        5..=8 => next.engine = ENGINES[i - 5].0,
-                        12 | 13 => next.draft = i == 13,
-                        17 | 18 => next.stop_on_error = i == 18,
-                        20 => {
-                            ws.menu = None;
-                            backend.spawn(|shell| Msg::Done(shell.clean_build().map(|_| ())));
-                        }
-                        _ => {}
+                MenuResult::Clicked(i) => match i {
+                    1 | 2 => {
+                        settings.auto_compile = i == 1;
+                        *action = Some(Action::Settings);
                     }
-                    if next != cfg {
-                        ws.info.config = next.clone();
-                        backend.spawn(move |shell| Msg::Info(shell.set_config(next)));
+                    5..=8 => ws.set_config(backend, settings, |c| c.engine = ENGINES[i - 5].0),
+                    12 | 13 => ws.set_config(backend, settings, |c| c.draft = i == 13),
+                    17 | 18 => ws.set_config(backend, settings, |c| c.stop_on_error = i == 18),
+                    20 => {
+                        ws.menu = None;
+                        ws.clean(backend);
                     }
-                }
+                    21 => {
+                        ws.menu = None;
+                        ws.stop_build(backend);
+                    }
+                    _ => {}
+                },
             }
         }
         Menu::Sort(anchor) => {

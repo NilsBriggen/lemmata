@@ -18,6 +18,7 @@ mod testing;
 // shortcut: icons, widgets and some tokens are unused until the panels land in M2; drop the allows then.
 #[allow(dead_code)]
 mod icons;
+mod pdf;
 #[allow(dead_code)]
 mod theme;
 #[allow(dead_code)]

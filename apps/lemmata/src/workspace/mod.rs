@@ -3,9 +3,11 @@
 //! of toolbar, sidebar, code column and PDF pane.
 
 pub mod buffers;
+mod build;
 mod chrome;
 pub mod session;
 pub mod tree;
+pub mod viewer;
 
 use crate::backend::{Backend, Msg};
 use crate::editor::commands::Indent;
@@ -40,6 +42,42 @@ pub struct Notice {
     pub text: String,
     pub tone: Tone,
     pub at: Instant,
+    /// A button that does something about it; such notices stay until dismissed, like errors.
+    pub action: Option<NoticeAction>,
+}
+
+impl Notice {
+    pub fn new(text: impl Into<String>, tone: Tone) -> Self {
+        Self {
+            text: text.into(),
+            tone,
+            at: Instant::now(),
+            action: None,
+        }
+    }
+    pub fn action(mut self, a: NoticeAction) -> Self {
+        self.action = Some(a);
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NoticeAction {
+    /// Export for arXiv although the build failed (flattened or not).
+    ArxivAnyway(bool),
+    /// Build normally again after a draft export.
+    DraftOff,
+    SetUpTex,
+}
+
+impl NoticeAction {
+    fn label(self) -> &'static str {
+        match self {
+            NoticeAction::ArxivAnyway(_) => "Export anyway",
+            NoticeAction::DraftOff => "Switch to Normal",
+            NoticeAction::SetUpTex => "Set up TeX",
+        }
+    }
 }
 
 /// Which drop-down is open in the editor screen.
@@ -61,6 +99,8 @@ pub struct Workspace {
     /// Recently closed tabs, newest first.
     pub closed: Vec<String>,
     pub editors: HashMap<String, Editor>,
+    /// Images and PDFs open in tabs.
+    pub viewers: HashMap<String, viewer::Viewer>,
     pub buffers: Buffers,
     /// Writes under way, so a file is never written twice at once.
     in_flight: HashSet<String>,
@@ -84,6 +124,17 @@ pub struct Workspace {
     session_pdf: serde_json::Value,
     /// Files to open when the session is restored, in order, and which is active.
     restoring: Option<(Vec<String>, Option<String>)>,
+    pub pane: crate::pdf::pane::Pane,
+    pub build: build::BuildState,
+    /// TeX was found, so builds can run; and whether it's an old TeX Live.
+    pub tex_ready: bool,
+    pub tex_outdated: bool,
+    /// Saves that don't start a build (Recompile, exports and settings changes build themselves).
+    no_build: HashSet<String>,
+    /// Saves the autosave timer started; their build waits a little longer.
+    auto_writes: HashSet<String>,
+    /// A `\usepackage` to add once the main file is saved.
+    adding_package: Option<String>,
 }
 
 /// Rough word count of a selection: words outside comments and commands (App.svelte countWords).
@@ -125,7 +176,7 @@ pub fn count_words(text: &str) -> usize {
 }
 
 impl Workspace {
-    pub fn open(info: ProjectInfo, dirs: &Dirs, backend: &Backend) -> Self {
+    pub fn open(info: ProjectInfo, dirs: &Dirs, backend: &Backend, tex_ready: bool) -> Self {
         let root = info.root.to_string_lossy().into_owned();
         let saved = session::load(dirs, &root);
         let mut ws = Self {
@@ -136,6 +187,7 @@ impl Workspace {
             pinned: Vec::new(),
             closed: Vec::new(),
             editors: HashMap::new(),
+            viewers: HashMap::new(),
             buffers: Buffers::default(),
             in_flight: HashSet::new(),
             closing_after_save: HashSet::new(),
@@ -154,6 +206,13 @@ impl Workspace {
             pending_line: HashMap::new(),
             session_pdf: serde_json::Value::Null,
             restoring: None,
+            pane: crate::pdf::pane::Pane::new(backend.ctx()),
+            build: build::BuildState::default(),
+            tex_ready,
+            tex_outdated: false,
+            no_build: HashSet::new(),
+            auto_writes: HashSet::new(),
+            adding_package: None,
         };
         // Where you left off, or the main file.
         let (tabs, active) = match saved {
@@ -173,10 +232,14 @@ impl Workspace {
             _ => (vec![ws.info.main.clone()], Some(ws.info.main.clone())),
         };
         for t in &tabs {
-            ws.read(backend, t.clone());
+            ws.load(backend, t);
         }
         ws.restoring = Some((tabs, active));
         ws.refresh_outline(backend);
+        ws.pane.view.set_position(&ws.session_pdf);
+        // The PDF on disk shows right away; it is only built again when something changed since.
+        backend.spawn(|shell| Msg::Pdf(shell.read_pdf()));
+        backend.spawn(|shell| Msg::PdfCurrent(shell.pdf_is_current().unwrap_or(false)));
         ws
     }
 
@@ -184,36 +247,51 @@ impl Workspace {
         backend.spawn(move |shell| Msg::FileRead(path.clone(), shell.read_text(path)));
     }
 
+    /// Reads a file for its tab: text for the editor, or an image or PDF for a viewer.
+    fn load(&mut self, backend: &Backend, path: &str) {
+        if !tree::is_viewer_file(path) {
+            self.read(backend, path.into());
+            return;
+        }
+        self.viewers.insert(path.into(), viewer::Viewer::Loading);
+        let p = path.to_owned();
+        backend.spawn(move |shell| {
+            let r = shell.read_binary(p.clone()).and_then(|bytes| {
+                if p.to_lowercase().ends_with(".pdf") {
+                    Ok(crate::backend::Viewed::Pdf(bytes))
+                } else {
+                    viewer::decode(&p, &bytes).map(crate::backend::Viewed::Image)
+                }
+            });
+            Msg::Viewed(p, r)
+        });
+    }
+
     pub fn refresh_outline(&self, backend: &Backend) {
         backend.spawn(|shell| Msg::Outline(shell.outline()));
     }
 
     pub fn notice(&mut self, text: impl Into<String>, tone: Tone) {
-        self.notices.push(Notice {
-            text: text.into(),
-            tone,
-            at: Instant::now(),
-        });
+        self.notices.push(Notice::new(text, tone));
     }
 
     /// Shows a file: its tab if it's open, otherwise it's read first.
     pub fn open_file(&mut self, backend: &Backend, path: &str) {
-        if self.editors.contains_key(path) {
+        if self.editors.contains_key(path) || self.viewers.contains_key(path) {
             if !self.tabs.iter().any(|t| t == path) {
                 self.tabs.push(path.into());
             }
             self.active = Some(path.into());
             return;
         }
-        if !tree::is_text_file(path) {
-            // shortcut: images and PDFs open in the read-only viewer, which lands with the PDF pane (M4).
+        if !tree::is_text_file(path) && !tree::is_viewer_file(path) {
             return;
         }
         if !self.tabs.iter().any(|t| t == path) {
             self.tabs.push(path.into());
         }
         self.active = Some(path.into());
-        self.read(backend, path.into());
+        self.load(backend, path);
     }
 
     /// Goes to a line of a file, opening it first when needed.
@@ -283,6 +361,7 @@ impl Workspace {
         self.tabs.retain(|t| t != path);
         self.buffers.forget(path);
         self.editors.remove(path);
+        self.viewers.remove(path);
         if self.active.as_deref() == Some(path) {
             self.active = None;
             if let Some(next) = self.tabs.last().cloned() {
@@ -360,7 +439,11 @@ impl Workspace {
             collapsed: Some(self.collapsed.iter().cloned().collect()),
             pinned: Some(self.pinned.clone()),
             folds: None,
-            pdf: self.session_pdf.clone(),
+            pdf: if self.pane.has_pdf() {
+                self.pane.view.position()
+            } else {
+                self.session_pdf.clone()
+            },
         }
     }
 
@@ -386,6 +469,28 @@ impl Workspace {
                         self.pin_first();
                         self.restoring = None;
                     }
+                }
+            }
+            Msg::Viewed(path, result) => {
+                if self.viewers.contains_key(&path) {
+                    let v = match result {
+                        Ok(crate::backend::Viewed::Pdf(bytes)) => {
+                            let mut view = crate::pdf::view::PdfView::new(
+                                backend.ctx(),
+                                egui::Id::unique(("viewer", &path)),
+                            );
+                            view.load(bytes);
+                            viewer::Viewer::Pdf(Box::new(view))
+                        }
+                        Ok(crate::backend::Viewed::Image(img)) => viewer::Viewer::Image {
+                            size: img.size,
+                            image: Some(img),
+                            tex: None,
+                            actual: false,
+                        },
+                        Err(e) => viewer::Viewer::Error(e),
+                    };
+                    self.viewers.insert(path, v);
                 }
             }
             Msg::FileRead(path, Err(e)) => {
@@ -418,6 +523,7 @@ impl Workspace {
                     Self::autosave_ms(settings),
                 ) {
                     WriteResult::Saved => {
+                        self.after_save(backend, settings, &path);
                         if path.ends_with(".tex") {
                             self.refresh_outline(backend);
                         }
@@ -426,9 +532,12 @@ impl Workspace {
                         }
                     }
                     WriteResult::Conflict => {
+                        self.no_build.remove(&path);
                         self.closing_after_save.remove(&path);
                     }
                     WriteResult::Error(e) => {
+                        self.no_build.remove(&path);
+                        self.adding_package = None;
                         self.closing_after_save.remove(&path);
                         self.notice(format!("{path} was not saved: {e}"), Tone::Error);
                         self.open_error = Some(e);
@@ -459,7 +568,12 @@ impl Workspace {
                 self.total_words = o.total_words;
             }
             Msg::Outline(Err(_)) => {}
-            Msg::Info(Ok(info)) => self.info = info,
+            Msg::Info(Ok(info)) => {
+                self.info = info;
+                if std::mem::take(&mut self.build.after_config) {
+                    self.build_soon(false, false);
+                }
+            }
             Msg::Info(Err(e)) => self.notice(e, Tone::Error),
             Msg::Event(lemmata_shell::Event::FilesChanged { changed, removed }) => {
                 backend.spawn(|shell| Msg::Info(shell.project_info_cmd()));
@@ -472,7 +586,7 @@ impl Workspace {
                 }
                 self.refresh_outline(backend);
             }
-            other => return Some(other),
+            other => return self.on_build_msg(backend, settings, other),
         }
         None
     }
@@ -525,6 +639,7 @@ impl Workspace {
     fn run_autosaves(&mut self, ui: &Ui, backend: &Backend, settings: &Settings) {
         let now = Instant::now();
         for p in self.buffers.due(now) {
+            self.auto_writes.insert(p.clone());
             self.write(backend, &p, settings);
         }
         if let Some(t) = self.buffers.next_deadline() {
@@ -543,6 +658,7 @@ impl Workspace {
         let mut action = None;
         self.run_autosaves(ui, backend, settings);
         let ctx = ui.ctx().clone();
+        self.poll_build(&ctx, backend, settings);
 
         // The app's own keys come before the editor's.
         if crate::shortcuts::consume(&ctx, "save") {
@@ -552,6 +668,12 @@ impl Workspace {
             && let Some(a) = self.active.clone()
         {
             self.close_tab(backend, &a, settings);
+        }
+        if crate::shortcuts::consume(&ctx, "recompile") {
+            self.recompile(backend, settings);
+        }
+        if crate::shortcuts::consume(&ctx, "sync") {
+            self.sync_forward(backend);
         }
         if crate::shortcuts::consume(&ctx, "reopen-tab") {
             self.reopen_closed(backend);
@@ -619,17 +741,31 @@ impl Workspace {
                 backend,
             );
         }
-        if show_editor {
-            self.code_column(
+        if show_editor
+            && self.code_column(
                 &mut ui.new_child(egui::UiBuilder::new().max_rect(code)),
                 p,
                 settings,
                 backend,
-            );
+            )
+        {
+            action = Some(Action::Settings);
         }
         if show_pdf {
-            // shortcut: the PDF pane (pdf.js's replacement) lands in M4; until then its ground shows.
-            ui.painter().rect_filled(pdf, 0, p.pdf_ground);
+            // The pane starts right of its 1 px border.
+            let inner = if show_editor {
+                pdf.with_min_x(pdf.left() + 1.0)
+            } else {
+                pdf
+            };
+            if self.pdf_pane(
+                &mut ui.new_child(egui::UiBuilder::new().max_rect(inner)),
+                p,
+                backend,
+                settings,
+            ) {
+                action = Some(Action::Settings);
+            }
             if show_editor {
                 ui.painter()
                     .vline(pdf.left() + 0.5, pdf.y_range(), Stroke::new(1.0, p.border));
@@ -687,7 +823,7 @@ impl Workspace {
 
         self.dialogs(&ctx, p, backend, settings);
         chrome::menus(&ctx, p, self, settings, backend, &mut action);
-        self.toasts(&ctx, p);
+        self.toasts(&ctx, p, backend, settings);
         action
     }
 
@@ -697,7 +833,8 @@ impl Workspace {
         p: &Palette,
         settings: &mut Settings,
         backend: &Backend,
-    ) {
+    ) -> bool {
+        let mut changed = false;
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0, p.code_bg);
         let mut y = rect.top();
@@ -713,11 +850,13 @@ impl Workspace {
             y = strip.bottom();
         }
         let bar = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 37.0));
-        chrome::edit_bar(
+        if chrome::edit_bar(
             &mut ui.new_child(egui::UiBuilder::new().max_rect(bar)),
             p,
             self,
-        );
+        ) {
+            self.sync_forward(backend);
+        }
         y = bar.bottom();
         if let Some(e) = self.open_error.clone() {
             // .err-bar
@@ -775,6 +914,20 @@ impl Workspace {
                     self.selection_words = if sel.is_empty() { 0 } else { count_words(&sel) };
                 }
             }
+            None if self
+                .active
+                .as_ref()
+                .is_some_and(|a| self.viewers.contains_key(a)) =>
+            {
+                let path = self.active.clone().unwrap();
+                let v = self.viewers.get_mut(&path).unwrap();
+                viewer::show(
+                    &mut ui.new_child(egui::UiBuilder::new().max_rect(body)),
+                    p,
+                    &path,
+                    v,
+                );
+            }
             None if self.active.is_none() => {
                 // .no-file
                 let mut c = ui.new_child(
@@ -795,12 +948,16 @@ impl Workspace {
             // Still being read.
             None => {}
         }
-        chrome::status_bar(
+        if chrome::status_bar(
             &mut ui.new_child(egui::UiBuilder::new().max_rect(status)),
             p,
             self,
             settings,
-        );
+            backend,
+        ) {
+            changed = true;
+        }
+        changed
     }
 
     fn dialogs(
@@ -861,31 +1018,79 @@ impl Workspace {
         }
     }
 
-    fn toasts(&mut self, ctx: &egui::Context, p: &Palette) {
-        self.notices
-            .retain(|n| n.at.elapsed() < Duration::from_secs(6));
+    /// `.toast`: the newest notice at the bottom centre. Errors and offers to act stay until
+    /// dismissed; the rest go after 8 seconds.
+    fn toasts(&mut self, ctx: &egui::Context, p: &Palette, backend: &Backend, settings: &Settings) {
+        self.notices.retain(|n| {
+            n.action.is_some() || n.tone == Tone::Error || n.at.elapsed() < Duration::from_secs(8)
+        });
         let Some(n) = self.notices.last() else { return };
-        ctx.request_repaint_after(Duration::from_millis(500));
+        if n.action.is_none() && n.tone != Tone::Error {
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
+        let (text, tone, act) = (n.text.clone(), n.tone, n.action);
         let screen = ctx.content_rect();
+        let mut dismissed = false;
+        let mut run = None;
         egui::Area::new(egui::Id::unique("toast"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::CENTER_BOTTOM)
             .fixed_pos(pos2(screen.center().x, screen.bottom() - 20.0))
             .show(ctx, |ui| {
                 ui.set_max_width((screen.width() * 0.9).min(720.0));
-                let (fill, ink) = match n.tone {
-                    Tone::Error => (p.error_soft, p.error),
-                    Tone::Ok => (p.ok_soft, p.ok),
-                    Tone::Info => (p.surface, p.ink),
+                let border = if tone == Tone::Error {
+                    p.error
+                } else {
+                    p.border
                 };
                 egui::Frame::new()
-                    .fill(fill)
-                    .stroke(Stroke::new(1.0, p.border))
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0, border))
                     .corner_radius(theme::R_LG)
                     .shadow(p.shadow)
-                    .inner_margin(egui::Margin::symmetric(14, 10))
-                    .show(ui, |ui| ui.label(egui::RichText::new(&n.text).color(ink)));
+                    .inner_margin(egui::Margin {
+                        left: 12,
+                        right: 8,
+                        top: 8,
+                        bottom: 8,
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            let (icon, color) = match tone {
+                                Tone::Ok => (crate::icons::CIRCLE_CHECK, p.ok),
+                                Tone::Error => (crate::icons::INFO, p.error),
+                                Tone::Info => (crate::icons::INFO, p.accent),
+                            };
+                            crate::icons::show(ui, icon, 16.0, color);
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&text).color(p.ink)).wrap(),
+                            );
+                            if let Some(a) = act
+                                && Button::new(a.label())
+                                    .size(widgets::Size::Sm)
+                                    .show(ui, p)
+                                    .clicked()
+                            {
+                                run = Some(a);
+                            }
+                            if Button::icon(crate::icons::X, "Dismiss")
+                                .size(widgets::Size::Sm)
+                                .icon_size(14.0)
+                                .show_icon(ui, p)
+                                .clicked()
+                            {
+                                dismissed = true;
+                            }
+                        });
+                    });
             });
+        if dismissed || run.is_some() {
+            self.notices.pop();
+        }
+        if let Some(a) = run {
+            self.notice_action(backend, settings, a);
+        }
     }
 }
 

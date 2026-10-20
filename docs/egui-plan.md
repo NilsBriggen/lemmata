@@ -125,6 +125,9 @@ Per milestone: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `
 | M0 egui app: splash only (stripped, fat LTO, `panic = "abort"`) | 13.4 MB | linux x86_64, 2026-10-20 |
 | M2 egui app: welcome, onboarding, library, all of lemmata-shell linked | 17.6 MB | linux x86_64, 2026-10-20 |
 | M3 egui app: plus the editor core and the workspace (no PDF yet) | 20.0 MB | linux x86_64, 2026-10-20 |
+| M4 egui app: plus building, logs, the hayro PDF view, image viewer, `panic = "unwind"` | 29.1 MB | linux x86_64, 2026-10-20; 26.3 MB with `panic = "abort"` |
+
+M4: the release profile switched to `panic = "unwind"` (+2.8 MB) so a PDF that makes hayro panic leaves that page blank instead of ending the app with unsaved edits. The alternative is rendering in a child process with `abort`. The hayro stack (hayro-interpret, hayro-syntax, vello_cpu, fearless_simd, JBIG2/JPEG 2000) is about 3.5 MB of the rest; JPEG, GIF and WebP decoding for image tabs adds about 0.4 MB.
 
 M0's largest crates (`cargo bloat --crates`, unstripped `.text` 10.0 MiB): std 1.5 MiB, naga 1.1, wgpu-core 0.6, zbus 0.6 + accesskit_unix 0.5 (Linux accessibility over D-Bus), winit 0.5, skrifa + harfrust + read-fonts 1.0 (text), vello_cpu 0.3, wayland-client 0.4. The UI fonts add 404 KB.
 
@@ -175,3 +178,8 @@ RaTeX's one visible flaw in the sheet: `\overbrace{a+b}^{n}\underbrace{c+d}_{m}`
 - Show in file manager opens the project folder instead of selecting it in its parent.
 - The cached TeX status that made the Svelte app's start instant (texCache.ts) is not ported yet; the splash shows while TeX is detected.
 - Recent projects and library folders lived in the webview's localStorage and are not migrated from the Tauri app yet (settings are).
+- PDF: selecting text works within the page the drag starts on, not across pages. Scrolling to a page, link or match animates for 0.3 s rather than the browser's smooth scroll.
+- PDF: search highlights are drawn with alpha, not `mix-blend-mode: multiply`.
+- SVG files in the project are not previewed (needs resvg, about 1 MB); other images and PDFs are.
+- The status bar's "Compiled in" has no "Finished at" time on hover yet (needs local time formatting).
+- "Present full screen" and the presenter window come with M7; the button shows a notice until then.

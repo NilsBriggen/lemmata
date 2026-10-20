@@ -25,6 +25,8 @@ eframe = { version = "0.37", default-features = false, features = [
 lemmata-project.workspace = true
 lemmata-shell = { path = "../../crates/lemmata-shell" }
 lemmata-tex.workspace = true
+lemmata-log.workspace = true
+lemmata-synctex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 base64 = "0.22"
@@ -35,7 +37,8 @@ ropey = "1.6"
 unicode-segmentation = "1"
 rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "wayland", "tokio"] }
 tokio.workspace = true
-image = { version = "0.25", default-features = false, features = ["png"] }
+hayro = "0.8"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl"] }
 
 [dev-dependencies]
