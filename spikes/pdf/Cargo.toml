@@ -1,0 +1,18 @@
+# M1 spike, not part of the app: can hayro replace pdf.js? See docs/egui-plan.md.
+[package]
+name = "spike-pdf"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+hayro = "0.8"
+
+[profile.release]
+debug = false
+strip = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"

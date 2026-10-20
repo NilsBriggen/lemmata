@@ -1,0 +1,22 @@
+E = mc^2
+J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\left[\sum_{t=0}^{T} \gamma^t r_t\right]
+\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt\pi}{2}
+\begin{aligned} a &= b + c \\ d &= \frac{e}{f} \end{aligned}
+\begin{pmatrix} 1 & 0 \\ 0 & 1 \end{pmatrix} \begin{bmatrix} a & b \\ c & d \end{bmatrix}
+f(x) = \begin{cases} x^2 & x \ge 0 \\ -x & \text{otherwise} \end{cases}
+\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}
+\lim_{n \to \infty} \left(1 + \frac{1}{n}\right)^n = e
+\operatorname*{arg\,max}_{x \in \mathcal{X}} \; \log p(x \mid \theta)
+\left\lVert x \right\rVert_2 \le \sqrt{\sum_{i=1}^n x_i^2}
+\overbrace{a + b}^{n} \underbrace{c + d}_{m}
+\hat{\beta} = (X^\top X)^{-1} X^\top y
+\binom{n}{k} = \frac{n!}{k!(n-k)!}
+\mathfrak{g} \cong \mathfrak{sl}_2(\mathbb{C})
+\xrightarrow{f} \quad \hookrightarrow \quad \twoheadrightarrow
+\sqrt[3]{x^3 + y^3} \neq x + y
+\frac{\partial^2 u}{\partial t^2} = c^2 \nabla^2 u
+P(A \mid B) = \frac{P(B \mid A)\,P(A)}{P(B)}
+\color{red} x + \textcolor{blue}{y}
+\begin{array}{c|cc} & 1 & 2 \\ \hline a & b & c \end{array}
+\boldsymbol{\mu} = \tfrac{1}{2}\, \mathsf{T}(\phi)
+x \in [0, 1) \implies \lfloor 2x \rfloor \in \{0, 1\}

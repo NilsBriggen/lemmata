@@ -10,3 +10,4 @@ dist/
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/binaries/
 .claude/worktrees/
+/spikes/*/target

@@ -5,7 +5,7 @@ Lemmata v2.1.2 is a Tauri 2 shell around a Svelte 5 / CodeMirror 6 / pdf.js / Ka
 
 The 12 crates under `crates/` have no UI or Tauri dependencies and stay untouched. Only the `apps/desktop` frontend and the Tauri glue are replaced. Nothing is released until parity is complete (project rule: no rc or release with known gaps).
 
-**Decisions already made:** PDF engine is `hayro` (pure Rust), gated by a spike with `mupdf` as the fallback. texlab is downloaded on first use (pinned and checksummed), not bundled. Renderer is wgpu, as requested.
+**Decisions already made:** PDF engine is `hayro` (pure Rust); the M1 spike passed, so no `mupdf` fallback. Math is RaTeX (M1 spike). texlab is downloaded on first use (pinned and checksummed), not bundled. Renderer is wgpu, as requested.
 
 ## Branch and layout
 - `git switch -c egui` from `main` (matches the `2.0` precedent). Conventional commits, no Claude attribution (per user CLAUDE.md).
@@ -67,7 +67,7 @@ Custom widget on `ropey`, painting one `LayoutJob` per visible line.
 - **Spike (Milestone 1, go/no-go):** render `tests/fixtures` PDFs and a Beamer deck with hayro and compare against pdf.js (fidelity, speed for a 60-page thesis, text extraction coordinates). If it fails, switch to `mupdf` and say so before continuing.
 
 ### 3. Math (KaTeX replacement)
-Used by the hover preview, the symbol palette and the completion glyphs. Spike RaTeX (KaTeX-compatible, pure Rust) against `latex-rust` (TeX-faithful box layout, draws into egui) on the symbol list in `writing/symbols.ts` and the existing math tests. Choose the one that covers the symbol palette and is smaller. Both need a math font subset (about 100 KB). Preamble `\newcommand` macros (`collectMacros`) are expanded before layout, and errors show the message and stale state as today. Pre-render to cached textures keyed by source and size.
+Used by the hover preview, the symbol palette and the completion glyphs. **RaTeX** (decided in M1): `ratex-parser` + `ratex-layout` give a `DisplayList` of glyphs, lines, rects and paths, which the app paints with egui itself. `ratex-render` (tiny-skia + PNG) is not used. The KaTeX fonts (580 KB, OFL) are the ones the Svelte app shows today. Preamble macros (`collectMacros`) are passed as `\def`/`\renewcommand` before the formula; `\newcommand` of a name KaTeX predefines, such as `\R`, errors, just as KaTeX's `macros` option avoids. Errors show the message and stale state as today. Cache the painted shapes keyed by source and size.
 
 ## Other replacements for Tauri features
 | Tauri | Replacement |
@@ -127,3 +127,39 @@ Per milestone: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `
 M0's largest crates (`cargo bloat --crates`, unstripped `.text` 10.0 MiB): std 1.5 MiB, naga 1.1, wgpu-core 0.6, zbus 0.6 + accesskit_unix 0.5 (Linux accessibility over D-Bus), winit 0.5, skrifa + harfrust + read-fonts 1.0 (text), vello_cpu 0.3, wayland-client 0.4. The UI fonts add 404 KB.
 
 M0 at runtime: about 200 MB RSS shortly after start, most of it the Vulkan driver (NVIDIA). Startup timing is not measured yet; it needs a frame-time probe, planned for M2.
+
+## M1 spike results (2026-10-20)
+
+Code in `spikes/pdf` and `spikes/math` (standalone crates, not workspace members; `cargo run --release -- OUT_DIR …`).
+
+### PDF: hayro 0.8 — **go**
+Inputs were the `thesis-60`, `article`, `slides` (Beamer) and `thesis` fixtures built with latexmk, plus `spikes/pdf/stress.tex` (PNG and JPEG figures, TikZ shading, opacity and dashes, hyperref links and outline, T1 accents and ligatures, 43 pages).
+
+| | thesis-60 (76 pp.) | stress (43 pp.) | article | slides |
+|---|---|---|---|---|
+| Open + first page at 144 dpi | 4.1 ms | 9.2 ms | 3.2 ms | 1.3 ms |
+| Mean / p95 / max per page | 5.4 / 6.9 / 7.9 ms | 2.0 / 7.1 / 40.1 ms | 3.1 ms | 0.4 / 1.2 ms |
+| Pixels differing from poppler by > 64/255 (worst sampled page) | 5.1 % | 1.8 % | 0.6 % | 0.7 % |
+| pdftotext words found in our text layer | 99.6 % | 94.8 % | 85.2 % | — |
+| Links / outline entries | 0 / 0 (no hyperref) | 45 (43 GoTo, 2 URI) / 42 | — | 2 GoTo / 1 |
+
+- Every page checked by eye matches poppler; the pixel differences are anti-aliasing on dense text. Math, Beamer themes, shadings, transparency, dashed curves, PNG and JPEG all render.
+- Single-threaded CPU rendering is far inside a frame budget, so rendering on a worker thread and uploading textures is enough. No GPU path needed.
+- Text layer: a custom `hayro_interpret::Device` gets each glyph's unicode and advance box in page space. That is enough for selection, search and the SyncTeX pixel mapping. The misses are math tokens that pdftotext orders differently.
+- Links (`/Annots`, `/A /S /URI|GoTo`, `/Dest`) and the outline (`/Outlines` → `/First` / `/Next`) are read from raw dictionaries in about 40 lines. Named destinations still need resolving through the catalog's `/Names` tree.
+- Size: hayro alone is 6.1 MB stripped with the release profile, including std. vello_cpu, skrifa and kurbo are already in the egui build, so the marginal cost is expected to be lower; to be measured in M4.
+- Known limits: no encrypted PDFs, no blend modes or knockout groups (hayro's README), and non-embedded base-14 fonts need a font resolver. LaTeX embeds its fonts; included figures may not, so wire the resolver to the system fonts egui already loads.
+
+### Math: RaTeX 0.1.15 — **chosen**; latex-rust 3.0.1 — rejected
+
+| | RaTeX | latex-rust |
+|---|---|---|
+| Symbol palette (340 entries from `writing/symbols.ts`) | 339 (only `\!` fails, an empty render) | 326 (no `\supsetneq \thickapprox \uplus \hom \lbrace \rbrace \lbrack \rbrack \degree \copyright \pounds`, `\displaystyle`) |
+| 22 display formulas (`spikes/math/formulas.txt`) | 22, layout right | 21; `\operatorname*` fails, `array` rules and `\underbrace` placed wrong |
+| Preamble macros | `\def`, `\renewcommand` | none |
+| Look | KaTeX fonts, the same as the current preview | STIX Two, which is a visible change |
+| Speed per formula | 0.33 ms | 0.35 ms |
+| egui coupling | none (paint `DisplayList` ourselves) | its egui feature pins egui 0.36, the app is on 0.37 |
+| Licence | MIT, fonts OFL | MIT/Apache, fonts OFL |
+
+RaTeX's one visible flaw in the sheet: `\overbrace{a+b}^{n}\underbrace{c+d}_{m}` draws the braces slightly too wide and they touch. Report it upstream or patch it locally in M5. Size: a standalone RaTeX renderer binary is 4.9 MB, including tiny-skia, png and std, which the app won't use; the real cost is measured in M5.
