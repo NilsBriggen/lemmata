@@ -1910,7 +1910,6 @@ pub fn show(
                     found.push(complete::Found {
                         items: complete::server_items(names, *from, main.head),
                         filter: true,
-                        from: *from,
                     });
                 }
                 _ => {

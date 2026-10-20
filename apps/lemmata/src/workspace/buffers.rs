@@ -87,11 +87,6 @@ impl Buffers {
         self.deadlines.values().min().copied()
     }
 
-    /// No pending autosave runs (e.g. before a restore writes the files).
-    pub fn cancel_all(&mut self) {
-        self.deadlines.clear();
-    }
-
     /// What to write for `path`: the hash the disk must still have, or None when there is nothing
     /// to save (not dirty, or in conflict). `None` inside means "write whatever is there".
     pub fn begin_write(&mut self, path: &str) -> Option<Option<u32>> {
@@ -207,11 +202,6 @@ impl Buffers {
         self.deadlines.retain(|p, _| !inside(p));
         self.dirty = self.dirty.iter().map(|p| moved(p)).collect();
         self.conflicts = self.conflicts.iter().map(|p| moved(p)).collect();
-    }
-
-    /// The project closed.
-    pub fn clear(&mut self) {
-        *self = Self::default();
     }
 }
 
@@ -367,8 +357,6 @@ mod tests {
             "a closed file's pending save never runs"
         );
         assert_eq!(b.unsaved(), vec!["chapters/a.tex"]);
-        b.clear();
-        assert!(b.unsaved().is_empty());
     }
 
     #[test]

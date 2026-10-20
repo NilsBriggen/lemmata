@@ -89,7 +89,6 @@ pub enum NoticeAction {
     ArxivAnyway(bool),
     /// Build normally again after a draft export.
     DraftOff,
-    SetUpTex,
     /// Loads zotero.bib in the main file.
     LinkZotero,
     /// Puts back the pasted text a table was made from: the file, where, the table, the text.
@@ -107,7 +106,6 @@ impl NoticeAction {
             NoticeAction::Download(_) => "Download",
             NoticeAction::ArxivAnyway(_) => "Export anyway",
             NoticeAction::DraftOff => "Switch to Normal",
-            NoticeAction::SetUpTex => "Set up TeX",
             NoticeAction::LinkZotero => "Add it",
             NoticeAction::PasteAsText(..) => "Paste as text instead",
             NoticeAction::UndoFiles => "Undo",

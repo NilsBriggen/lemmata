@@ -347,10 +347,6 @@ impl Doc {
         self.last = None;
     }
 
-    pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
-    }
-
     pub fn undo(&mut self) -> bool {
         let Some(step) = self.undo.pop() else {
             return false;

@@ -415,10 +415,6 @@ impl Groups {
         self.members.remove(path);
     }
 
-    pub fn count_in(&self, id: &str) -> usize {
-        self.members.values().filter(|g| *g == id).count()
-    }
-
     pub fn in_view(&self, path: &str, view: &View) -> bool {
         match view {
             View::Root => !self.members.contains_key(path),
@@ -573,9 +569,9 @@ mod tests {
         s.create("B", Some("b".into()));
         s.move_project("/p/one", Some("a"));
         s.move_project("/p/two", Some("a"));
-        assert_eq!(s.count_in("a"), 2);
+        assert_eq!(s.members.values().filter(|g| *g == "a").count(), 2);
         s.move_project("/p/one", Some("b"));
-        assert_eq!(s.count_in("a"), 1);
+        assert_eq!(s.members.values().filter(|g| *g == "a").count(), 1);
         assert!(!s.clone().rename("a", "B"));
         let mut r = s.clone();
         assert!(r.rename("a", "Courses"));

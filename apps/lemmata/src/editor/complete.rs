@@ -571,8 +571,6 @@ const COMMON: &[&str] = &[
 pub struct Found {
     pub items: Vec<Item>,
     pub filter: bool,
-    /// Where the typed text starts.
-    pub from: usize,
 }
 
 fn chars(s: &str) -> usize {
@@ -647,7 +645,6 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
         return Some(Found {
             items: at(items, from, to),
             filter: true,
-            from,
         });
     }
 
@@ -666,7 +663,6 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
         return Some(Found {
             items: at(items, from, pos),
             filter: !typed.is_empty() || explicit,
-            from,
         });
     }
 
@@ -691,7 +687,6 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
         return Some(Found {
             items: at(items, from, pos),
             filter: true,
-            from,
         });
     }
 
@@ -719,7 +714,6 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
         return Some(Found {
             items: at(items, from, pos),
             filter: true,
-            from,
         });
     }
 
@@ -733,7 +727,6 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
         return Some(Found {
             items: at(items, from, pos),
             filter: true,
-            from,
         });
     }
 
@@ -772,7 +765,6 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
         return Some(Found {
             items: at(items, from, pos),
             filter: true,
-            from,
         });
     }
     None
@@ -816,7 +808,6 @@ pub fn snippets(d: &Doc, pos: usize, look: &Lookups) -> Option<Found> {
     Some(Found {
         items,
         filter: true,
-        from,
     })
 }
 
@@ -1147,8 +1138,6 @@ mod tests {
     #[test]
     fn labels_cites_files_and_packages() {
         assert_eq!(labels(&complete("See \\ref{", None)), ["sec:intro"]);
-        let r = complete("\\cref{a,s", None);
-        assert_eq!(r.as_ref().unwrap().from, 8);
         let r = complete("\\parencite[p.~3]{kn", None).unwrap();
         assert_eq!(r.items[0].detail.as_deref(), Some("Knuth, Donald 1984"));
         assert_eq!(r.items[0].info.as_deref(), Some("The TeXbook"));
@@ -1221,7 +1210,7 @@ mod tests {
         assert!(match_snippets(&l.snippets, "bad").is_empty());
         assert!(!valid_trigger("a") && valid_trigger("eq-1"));
         let d = Doc::new("Some text fig");
-        assert_eq!(snippets(&d, 13, &l).map(|f| f.from), Some(10));
+        assert!(snippets(&d, 13, &l).is_some());
         assert!(snippets(&Doc::new("\\fig"), 4, &l).is_none());
         assert!(snippets(&Doc::new("\\ref{fig"), 8, &l).is_none());
     }

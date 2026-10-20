@@ -432,7 +432,6 @@ impl Workspace {
                 format!("{}-arxiv.zip", self.info.name),
             ),
             NoticeAction::DraftOff => self.set_config(backend, settings, |c| c.draft = false),
-            NoticeAction::SetUpTex => {}
             NoticeAction::LinkZotero => self.link_zotero(backend, settings),
             NoticeAction::UndoFiles => self.undo_files(backend),
             NoticeAction::TrustProject => self.trust_requested = true,

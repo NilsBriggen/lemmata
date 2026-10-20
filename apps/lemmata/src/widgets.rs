@@ -429,30 +429,6 @@ pub fn segmented(
     clicked
 }
 
-#[derive(Clone, Copy)]
-pub enum Tone {
-    Error,
-    Warn,
-    Neutral,
-}
-
-/// `.badge`: an 18 px pill with a count or a short word.
-pub fn badge(ui: &mut Ui, p: &Palette, text: &str, tone: Tone) -> Response {
-    let font = FontId::new(11.0, theme::font::sans_600());
-    let (fill, ink) = match tone {
-        Tone::Error => (p.error, Color32::WHITE),
-        Tone::Warn => (p.warn, Color32::WHITE),
-        Tone::Neutral => (p.surface_3, p.muted),
-    };
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, ink);
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(galley.size().x + 12.0, 18.0), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(9), fill);
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, ink);
-    response
-}
-
 /// `kbd`: 11 px mono on the surface, with a 2 px bottom border.
 pub fn kbd(ui: &mut Ui, p: &Palette, keys: &str) -> Response {
     let galley = ui
@@ -968,8 +944,7 @@ pub fn text_area(
 }
 
 /// What a modal reports back each frame.
-pub struct ModalResponse<R> {
-    pub inner: R,
+pub struct ModalResponse {
     /// Esc, the × button or a click on the backdrop.
     pub closed: bool,
 }
@@ -983,7 +958,7 @@ pub fn modal<R>(
     width: f32,
     body: impl FnOnce(&mut Ui) -> R,
     footer: Option<&mut dyn FnMut(&mut Ui)>,
-) -> ModalResponse<R> {
+) -> ModalResponse {
     modal_with(ctx, p, title, None, width, body, footer)
 }
 
@@ -996,7 +971,7 @@ pub fn modal_with<R>(
     width: f32,
     body: impl FnOnce(&mut Ui) -> R,
     footer: Option<&mut dyn FnMut(&mut Ui)>,
-) -> ModalResponse<R> {
+) -> ModalResponse {
     modal_placed(ctx, p, title, subtitle, width, false, body, footer)
 }
 
@@ -1012,7 +987,7 @@ pub fn modal_placed<R>(
     top: bool,
     body: impl FnOnce(&mut Ui) -> R,
     footer: Option<&mut dyn FnMut(&mut Ui)>,
-) -> ModalResponse<R> {
+) -> ModalResponse {
     let screen = ctx.content_rect();
     let mut closed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     // The backdrop: rgba(12, 17, 22, .42) over everything, swallowing clicks.
@@ -1143,10 +1118,7 @@ pub fn modal_placed<R>(
     {
         closed = true;
     }
-    ModalResponse {
-        inner: panel.inner,
-        closed,
-    }
+    ModalResponse { closed }
 }
 
 /// A row of a drop menu.
@@ -1523,9 +1495,6 @@ mod tests {
                         false,
                         false,
                     );
-                    badge(ui, &p, "3", Tone::Error);
-                    badge(ui, &p, "12", Tone::Warn);
-                    badge(ui, &p, "draft", Tone::Neutral);
                     kbd(ui, &p, "Ctrl+Enter");
                 });
                 label(ui, &p, "Main file");

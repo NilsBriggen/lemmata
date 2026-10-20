@@ -4,11 +4,9 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2};
 use eframe::epaint::PathShape;
 
-#[allow(dead_code)]
 mod data {
     include!("icons_data.rs");
 }
-#[allow(unused_imports)] // shortcut: used by the panels from M2 on.
 pub use data::*;
 
 pub type Icon = &'static [&'static str];
@@ -350,7 +348,6 @@ mod tests {
     fn every_icon_parses_inside_its_box() {
         for icon in [
             ARROW_DOWN,
-            BELL,
             BOLD,
             CIRCLE_CHECK,
             GIT_BRANCH,

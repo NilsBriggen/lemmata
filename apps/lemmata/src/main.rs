@@ -3,31 +3,21 @@
 
 mod app;
 mod backend;
-#[allow(dead_code)]
 mod editor;
-mod instance;
-#[allow(dead_code)]
-mod screens;
-#[allow(dead_code)]
-mod shortcuts;
-#[allow(dead_code)]
-mod spell;
-#[allow(dead_code)]
-mod store;
-#[cfg(test)]
-mod testing;
-// shortcut: icons, widgets and some tokens are unused until the panels land in M2; drop the allows then.
-#[allow(dead_code)]
 mod icons;
+mod instance;
 mod lsp;
 mod panels;
 mod pdf;
-#[allow(dead_code)]
+mod screens;
+mod shortcuts;
+mod spell;
+mod store;
+#[cfg(test)]
+mod testing;
 mod theme;
 mod when;
-#[allow(dead_code)]
 mod widgets;
-#[allow(dead_code)]
 mod workspace;
 mod writing;
 

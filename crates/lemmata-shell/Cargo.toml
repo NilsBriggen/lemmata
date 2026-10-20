@@ -8,7 +8,6 @@ repository.workspace = true
 
 [dependencies]
 lemmata-tex.workspace = true
-lemmata-log.workspace = true
 lemmata-project.workspace = true
 lemmata-synctex.workspace = true
 lemmata-pkgmap.workspace = true
