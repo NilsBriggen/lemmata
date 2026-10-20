@@ -17,6 +17,17 @@ pub enum Msg {
     Tectonic(Result<(), String>),
     Terminal(Result<(), String>),
     Example(Result<PathBuf, String>),
+    /// The template list; `refreshed` once the online collection has been fetched (or failed).
+    Templates(
+        Result<Vec<lemmata_shell::projects::Template>, String>,
+        Option<Result<(), String>>,
+    ),
+    TemplateDeleted(String, Result<(), String>),
+    Created(Result<PathBuf, String>),
+    Cloned(Result<String, String>),
+    ZipInfo(Result<lemmata_shell::projects::ZipInfo, String>),
+    Imported(Result<Vec<PathBuf>, String>),
+    TemplateSaved(String, bool, Result<String, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -24,6 +35,8 @@ pub enum Pick {
     ProjectFolder,
     TexFolder,
     OverleafZip,
+    /// Where a new, cloned or imported project goes.
+    Parent,
 }
 
 pub struct Backend {
@@ -91,6 +104,19 @@ impl Backend {
         });
     }
 
+    /// Runs one of the shell's async calls and sends what it returns.
+    pub fn spawn_async<F, Fut>(&self, job: F)
+    where
+        F: FnOnce(Arc<Shell>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Msg> + Send + 'static,
+    {
+        let (shell, tx, ctx) = (self.shell.clone(), self.tx.clone(), self.ctx.clone());
+        self.runtime.spawn(async move {
+            let _ = tx.send(job(shell).await);
+            ctx.request_repaint();
+        });
+    }
+
     /// A native folder or file chooser, without blocking the UI.
     pub fn pick(&self, what: Pick) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
@@ -106,6 +132,12 @@ impl Backend {
                 Pick::TexFolder => {
                     dialog
                         .set_title("Choose the folder that contains pdflatex and latexmk")
+                        .pick_folder()
+                        .await
+                }
+                Pick::Parent => {
+                    dialog
+                        .set_title("Choose where to put the project")
                         .pick_folder()
                         .await
                 }

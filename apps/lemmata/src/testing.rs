@@ -50,3 +50,41 @@ pub fn detection() -> lemmata_tex::detect::Detection {
         outdated: false,
     }
 }
+
+/// The mock's recent projects, with rl-thesis just opened.
+pub fn recents(now: f64) -> crate::store::Recents {
+    crate::store::Recents(
+        [
+            ("/home/you/Documents/papers/rl-thesis", 0.0),
+            ("/home/you/Documents/uni/CA_Assignement_4", 86400e3),
+            ("/home/you/Documents/uni/NET_assignment_4", 3.0 * 86400e3),
+            ("/home/you/Documents/cv", 20.0 * 86400e3),
+        ]
+        .into_iter()
+        .map(|(path, back)| crate::store::Recent {
+            path: path.into(),
+            last_opened: now - back,
+        })
+        .collect(),
+    )
+}
+
+/// Draws the library as the screen behind a dialog.
+pub fn library_behind(ui: &mut egui::Ui, p: &Palette) {
+    use crate::screens::library;
+    let now = 1_800_000_000_000.0;
+    let recents = recents(now);
+    let mut groups = crate::store::Groups::default();
+    let mut settings = crate::store::Settings::default();
+    let mut st = library::State::default();
+    let mut c = library::Ctx {
+        recents: &recents,
+        groups: &mut groups,
+        settings: &mut settings,
+        error: None,
+        no_main_in: None,
+        thumbnail: &|_| None,
+        now_ms: now,
+    };
+    library::show(ui, p, &mut st, &mut c);
+}

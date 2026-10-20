@@ -29,6 +29,9 @@ const SHOTS = [
   { name: "library-project-menu", query: "", steps: [LIBRARY, { label: "Actions for rl-thesis" }] },
   { name: "library-new-project", query: "", steps: [LIBRARY, { text: "New project" }] },
   { name: "library-clone", query: "", steps: [LIBRARY, { text: "Clone a repository" }] },
+  { name: "library-new-project-papers", query: "", steps: [LIBRARY, { text: "New project" }, { text: "Papers" }] },
+  { name: "library-import", query: "", steps: [LIBRARY, { text: "Import from Overleaf" }] },
+  { name: "library-save-template", query: "", steps: [LIBRARY, { label: "Actions for rl-thesis" }, { text: "Save as template" }] },
 ];
 
 const chrome = process.env.CHROME;

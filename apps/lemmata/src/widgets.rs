@@ -527,6 +527,63 @@ pub fn select(
     *value != before
 }
 
+/// `.field`: an uppercase label over its control, 5 px apart.
+pub fn field<R>(ui: &mut Ui, p: &Palette, text: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 5.0;
+        label(ui, p, text);
+        // The input inside takes the label as its accessible name, as `<label for>` gives it.
+        ui.data_mut(|d| d.insert_temp(field_label_id(), text.to_owned()));
+        let r = add(ui);
+        ui.data_mut(|d| d.remove::<String>(field_label_id()));
+        r
+    })
+    .inner
+}
+
+fn field_label_id() -> egui::Id {
+    egui::Id::unique("field-label")
+}
+
+/// `.check`: a 15 px box in the accent colour and its label; the whole row toggles.
+pub fn checkbox(ui: &mut Ui, p: &Palette, value: &mut bool, text: &str) -> Response {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.into(), FontId::proportional(13.0), p.ink);
+    let (rect, r) = ui.allocate_exact_size(
+        Vec2::new(15.0 + 8.0 + galley.size().x, 18.0f32.max(galley.size().y)),
+        Sense::click(),
+    );
+    if r.clicked() {
+        *value = !*value;
+    }
+    r.widget_info(|| WidgetInfo::selected(egui::Role::CheckBox, true, *value, text));
+    let bx = Rect::from_min_size(
+        egui::pos2(rect.left(), rect.center().y - 7.5),
+        Vec2::splat(15.0),
+    );
+    if *value {
+        ui.painter()
+            .rect_filled(bx, CornerRadius::same(3), p.accent);
+        icons::paint(ui.painter(), bx.shrink(2.0), icons::CHECK, p.accent_ink);
+    } else {
+        ui.painter().rect(
+            bx,
+            CornerRadius::same(3),
+            p.surface,
+            Stroke::new(1.0, p.faint),
+            StrokeKind::Inside,
+        );
+    }
+    ui.painter().galley(
+        egui::pos2(bx.right() + 8.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        p.ink,
+    );
+    focus_ring(ui, &r, bx, p, 3);
+    r
+}
+
 /// Mixed-style text (`<b>`, `<code>`, colours) as one wrapping paragraph.
 #[derive(Default)]
 pub struct Rich(pub egui::text::LayoutJob);
@@ -697,16 +754,19 @@ pub fn text_input(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, mono:
     // The fill goes under the text, so its slot is taken before the text is drawn.
     let fill_slot = ui.painter().add(egui::Shape::Noop);
     let out = egui::TextEdit::singleline(text)
-        .hint_text(egui::RichText::new(hint).color(p.faint))
+        .hint_text(egui::RichText::new(hint).font(font.clone()).color(p.faint))
         .font(font)
         .text_color(p.ink)
-        .frame(egui::Frame::NONE)
-        .margin(egui::Margin::symmetric(10, 0))
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(10, 0)))
         .align(egui::Align2::LEFT_CENTER)
         .min_size(Vec2::new(0.0, 32.0))
         .desired_width(ui.available_width())
         .show(ui);
     let response = out.response.response;
+    if let Some(name) = ui.data(|d| d.get_temp::<String>(field_label_id())) {
+        ui.ctx()
+            .accesskit_node_builder(response.id, |n| n.set_label(name));
+    }
     let rect = response.rect;
     let focused = response.has_focus();
     let hovered = response.hovered();
@@ -757,6 +817,19 @@ pub fn modal<R>(
     body: impl FnOnce(&mut Ui) -> R,
     footer: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> ModalResponse<R> {
+    modal_with(ctx, p, title, None, width, body, footer)
+}
+
+/// `modal` with a muted line under the title.
+pub fn modal_with<R>(
+    ctx: &egui::Context,
+    p: &Palette,
+    title: &str,
+    subtitle: Option<&str>,
+    width: f32,
+    body: impl FnOnce(&mut Ui) -> R,
+    footer: Option<&mut dyn FnMut(&mut Ui)>,
+) -> ModalResponse<R> {
     let screen = ctx.content_rect();
     let mut closed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     // The backdrop: rgba(12, 17, 22, .42) over everything, swallowing clicks.
@@ -782,7 +855,8 @@ pub fn modal<R>(
                 .corner_radius(12)
                 .shadow(p.shadow_lg)
                 .show(ui, |ui| {
-                    ui.set_width(width);
+                    // Inside the 1 px border; the header, body and footer frames add their own padding.
+                    ui.set_width(width - 2.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
                     egui::Frame::new()
                         .inner_margin(egui::Margin {
@@ -792,12 +866,26 @@ pub fn modal<R>(
                             bottom: 4,
                         })
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(title)
-                                        .font(FontId::new(16.0, theme::font::sans_600()))
-                                        .color(p.ink),
-                                );
+                            ui.horizontal_top(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.set_width(ui.available_width() - 26.0 - 12.0);
+                                    ui.label(
+                                        egui::RichText::new(title)
+                                            .font(FontId::new(16.0, theme::font::sans_600()))
+                                            .color(p.ink),
+                                    );
+                                    if let Some(sub) = subtitle {
+                                        ui.add_space(3.0);
+                                        paragraph(
+                                            ui,
+                                            sub,
+                                            FontId::proportional(13.0),
+                                            p.muted,
+                                            1.45,
+                                            ui.available_width(),
+                                        );
+                                    }
+                                });
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Min),
                                     |ui| {

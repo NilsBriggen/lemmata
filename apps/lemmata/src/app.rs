@@ -1,7 +1,7 @@
 //! The app: which screen shows, and what the screens' actions do. This is what App.svelte did.
 
 use crate::backend::{Backend, Msg, Pick};
-use crate::screens::{library, onboarding, welcome};
+use crate::screens::{dialogs, library, onboarding, welcome};
 use crate::store::{Dirs, Groups, Recents, Settings};
 use crate::theme::{self, Palette};
 use crate::widgets;
@@ -29,6 +29,15 @@ pub struct App {
     project: Option<ProjectInfo>,
     /// Startup has decided between the welcome, the last project and the library.
     started: bool,
+    dialog: Option<Dialog>,
+}
+
+/// The dialog open over the welcome or the library.
+enum Dialog {
+    NewProject(dialogs::NewProject),
+    Clone(dialogs::Clone),
+    Import(dialogs::Import),
+    SaveTemplate(dialogs::SaveTemplate),
 }
 
 fn now_ms() -> f64 {
@@ -67,6 +76,7 @@ impl App {
             no_main_in: None,
             project: None,
             started: false,
+            dialog: None,
         }
     }
 
@@ -98,12 +108,240 @@ impl App {
             Request::Open(target) => {
                 self.open_project(target.project_root.to_string_lossy().into_owned())
             }
-            // shortcut: the Clone and New project dialogs land with the rest of the library's dialogs.
-            Request::Clone { .. } | Request::NewProject { .. } => {}
+            Request::Clone { url } => {
+                self.dialog = Some(Dialog::Clone(dialogs::Clone::new(
+                    self.default_parent(),
+                    url,
+                )))
+            }
+            Request::NewProject { template } => self.open_new_project(template),
+        }
+    }
+
+    /// A sensible place for new projects: next to the last one, else Documents.
+    fn default_parent(&self) -> String {
+        match self.recents.0.first() {
+            Some(r) => {
+                let p = r.path.trim_end_matches(['/', '\\']);
+                p.rfind(['/', '\\'])
+                    .map_or(String::new(), |i| p[..i].to_owned())
+            }
+            None => dirs::document_dir()
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn open_new_project(&mut self, initial: String) {
+        self.dialog = Some(Dialog::NewProject(dialogs::NewProject::new(
+            self.default_parent(),
+            initial,
+        )));
+        // The list on disk first, then the collection's templates arrive in the background.
+        self.backend
+            .spawn(|shell| Msg::Templates(shell.list_templates(), None));
+        self.backend.spawn_async(|shell| async move {
+            let refreshed = shell.refresh_templates().await.map(|_| ());
+            Msg::Templates(shell.list_templates(), Some(refreshed))
+        });
+    }
+
+    /// New, cloned and imported projects land in the folder the library shows, and open.
+    fn added(&mut self, paths: Vec<String>) {
+        self.recents.remember_all(&paths, now_ms());
+        self.recents.save(&self.dirs);
+        if self.library.file(&mut self.groups, &paths) {
+            self.groups.save(&self.dirs);
+        }
+        self.welcome = None;
+        if !self.settings.first_run_done {
+            self.settings.first_run_done = true;
+            self.settings.save(&self.dirs);
+        }
+        if paths.len() == 1 {
+            self.open_project(paths[0].clone());
+        } else {
+            // shortcut: the Svelte app showed this as a toast; toasts come with the editor's notices (M3).
+            self.library.template_note = Some((
+                format!("Imported {} projects.", paths.len()),
+                std::time::Instant::now(),
+            ));
+        }
+    }
+
+    fn on_dialog_msg(&mut self, msg: Msg) -> Option<Msg> {
+        let d = self.dialog.as_mut();
+        match (msg, d) {
+            (Msg::Templates(list, refreshed), Some(Dialog::NewProject(st))) => {
+                let first = st.templates.is_empty();
+                if let Ok(list) = list {
+                    st.set_templates(list, first);
+                }
+                if let Some(r) = refreshed {
+                    st.online_loading = false;
+                    st.online_error = r.err();
+                }
+            }
+            (Msg::TemplateDeleted(id, r), Some(Dialog::NewProject(st))) => match r {
+                Ok(()) => st.removed(&id),
+                Err(e) => st.error = Some(e),
+            },
+            (Msg::Created(r), Some(Dialog::NewProject(st))) => match r {
+                Ok(path) => {
+                    self.dialog = None;
+                    self.added(vec![path.to_string_lossy().into_owned()]);
+                }
+                Err(e) => {
+                    st.busy = false;
+                    st.error = Some(e);
+                }
+            },
+            (Msg::Cloned(r), Some(Dialog::Clone(st))) => match r {
+                Ok(path) => {
+                    self.dialog = None;
+                    self.added(vec![path]);
+                }
+                Err(e) => {
+                    st.busy = false;
+                    st.error = Some(e);
+                }
+            },
+            (Msg::ZipInfo(r), Some(Dialog::Import(st))) => match r {
+                Ok(info) => st.set_info(info),
+                Err(e) => st.error = Some(e),
+            },
+            (Msg::Imported(r), Some(Dialog::Import(st))) => match r {
+                Ok(paths) => {
+                    self.dialog = None;
+                    self.added(
+                        paths
+                            .iter()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .collect(),
+                    );
+                }
+                Err(e) => {
+                    st.busy = false;
+                    st.error = Some(e);
+                }
+            },
+            (Msg::TemplateSaved(path, trash, r), Some(Dialog::SaveTemplate(st))) => match r {
+                Ok(_) => {
+                    let name = st.name.trim().to_owned();
+                    self.dialog = None;
+                    self.library.template_note = Some((
+                        format!(
+                            "Template “{name}” saved. It's offered under My templates when you create a project."
+                        ),
+                        std::time::Instant::now(),
+                    ));
+                    if trash {
+                        self.library.deleting = Some(library::Deleting {
+                            path: path.clone(),
+                            busy: true,
+                            error: None,
+                        });
+                        self.backend.spawn(move |shell| {
+                            Msg::Trashed(path.clone(), shell.trash_project(path))
+                        });
+                    }
+                }
+                Err(e) => {
+                    st.busy = false;
+                    st.error = Some(e);
+                }
+            },
+            (Msg::Picked(Pick::Parent, Some(dir)), Some(d)) => {
+                let dir = dir.to_string_lossy().into_owned();
+                match d {
+                    Dialog::NewProject(st) => st.parent = dir,
+                    Dialog::Clone(st) => st.parent = dir,
+                    Dialog::Import(st) => st.parent = dir,
+                    Dialog::SaveTemplate(_) => {}
+                }
+            }
+            // A dialog closed since: its answer has nowhere to go.
+            (
+                Msg::Templates(..)
+                | Msg::TemplateDeleted(..)
+                | Msg::Created(_)
+                | Msg::Cloned(_)
+                | Msg::ZipInfo(_)
+                | Msg::Imported(_)
+                | Msg::TemplateSaved(..)
+                | Msg::Picked(Pick::Parent, _),
+                _,
+            ) => {}
+            (other, _) => return Some(other),
+        }
+        None
+    }
+
+    fn show_dialog(&mut self, ctx: &egui::Context) {
+        let p = self.palette;
+        let Some(d) = &mut self.dialog else { return };
+        let action = match d {
+            Dialog::NewProject(st) => dialogs::new_project(ctx, &p, st),
+            Dialog::Clone(st) => dialogs::clone(ctx, &p, st),
+            Dialog::Import(st) => dialogs::import(ctx, &p, st),
+            Dialog::SaveTemplate(st) => dialogs::save_template(ctx, &p, st),
+        };
+        let Some(action) = action else { return };
+        match (action, d) {
+            (dialogs::Action::Close, _) => self.dialog = None,
+            (dialogs::Action::ChooseParent, _) => self.backend.pick(Pick::Parent),
+            (dialogs::Action::DeleteTemplate(id), _) => {
+                self.backend.spawn(move |shell| {
+                    Msg::TemplateDeleted(id.clone(), shell.delete_template(id))
+                });
+            }
+            (dialogs::Action::Submit, Dialog::NewProject(st)) => {
+                st.busy = true;
+                st.error = None;
+                let (t, parent, name) = (st.chosen.clone(), st.parent.clone(), st.name.clone());
+                self.backend
+                    .spawn(move |shell| Msg::Created(shell.create_project(t, parent, name)));
+            }
+            (dialogs::Action::Submit, Dialog::Clone(st)) => {
+                st.busy = true;
+                st.error = None;
+                let (url, parent, name) = (st.url.clone(), st.parent.clone(), st.name());
+                self.backend.spawn_async(move |shell| async move {
+                    Msg::Cloned(shell.git_clone(url, parent, name).await)
+                });
+            }
+            (dialogs::Action::Submit, Dialog::Import(st)) => {
+                st.busy = true;
+                st.error = None;
+                let (zip, parent, name) = (st.zip.clone(), st.parent.clone(), st.name.clone());
+                self.backend.spawn(move |shell| {
+                    Msg::Imported(shell.import_overleaf_zip(zip, parent, name))
+                });
+            }
+            (dialogs::Action::Submit, Dialog::SaveTemplate(st)) => {
+                st.busy = true;
+                st.error = None;
+                let (path, name, desc, trash) = (
+                    st.path.clone(),
+                    st.name.clone(),
+                    st.description.clone(),
+                    st.trash,
+                );
+                self.backend.spawn(move |shell| {
+                    Msg::TemplateSaved(
+                        path.clone(),
+                        trash,
+                        shell.save_as_template(path, name, desc),
+                    )
+                });
+            }
         }
     }
 
     fn on_msg(&mut self, ctx: &egui::Context, msg: Msg) {
+        let Some(msg) = self.on_dialog_msg(msg) else {
+            return;
+        };
         match msg {
             Msg::Tex(status) => {
                 self.checking = false;
@@ -147,8 +385,24 @@ impl App {
                 self.save_settings(ctx);
                 self.recheck(Some(dir));
             }
-            // shortcut: the import dialog lands with the rest of the library's dialogs.
-            Msg::Picked(Pick::OverleafZip, _) | Msg::Picked(_, None) => {}
+            Msg::Picked(Pick::OverleafZip, Some(zip)) => {
+                let zip = zip.to_string_lossy().into_owned();
+                self.dialog = Some(Dialog::Import(dialogs::Import::new(
+                    zip.clone(),
+                    self.default_parent(),
+                )));
+                self.backend
+                    .spawn(move |shell| Msg::ZipInfo(shell.inspect_zip(zip)));
+            }
+            Msg::Picked(..) => {}
+            // Dialog answers arrive here only when no dialog is open.
+            Msg::Templates(..)
+            | Msg::TemplateDeleted(..)
+            | Msg::Created(_)
+            | Msg::Cloned(_)
+            | Msg::ZipInfo(_)
+            | Msg::Imported(_)
+            | Msg::TemplateSaved(..) => {}
             Msg::Trashed(path, Ok(())) => {
                 self.library.deleting = None;
                 self.library.thumbs.remove(&path);
@@ -256,8 +510,19 @@ impl App {
             }
             A::Settings => self.save_settings(ctx),
             A::Groups => self.groups.save(&self.dirs),
-            // shortcut: New project, Clone, Save as template and Preferences are the next dialogs to port.
-            A::NewProject | A::Clone | A::SaveTemplate(_) | A::Preferences => {}
+            A::NewProject => self.open_new_project(String::new()),
+            A::Clone => {
+                self.dialog = Some(Dialog::Clone(dialogs::Clone::new(
+                    self.default_parent(),
+                    String::new(),
+                )))
+            }
+            A::SaveTemplate(path) => {
+                let name = library::name_of(&path).to_owned();
+                self.dialog = Some(Dialog::SaveTemplate(dialogs::SaveTemplate::new(path, name)));
+            }
+            // shortcut: Preferences is ported with the editor's settings (M6).
+            A::Preferences => {}
         }
     }
 }
@@ -283,6 +548,19 @@ impl eframe::App for App {
             self.palette = palette;
             theme::apply(&ctx, &palette);
         }
+        self.screen(ui);
+        self.show_dialog(&ctx);
+    }
+
+    fn on_exit(&mut self) {
+        // Quitting mid-build must not leave latexmk, pdflatex and biber running.
+        self.backend.shell.stop_build();
+    }
+}
+
+impl App {
+    fn screen(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
         let p = self.palette;
         let rect = ui.max_rect();
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
@@ -315,7 +593,7 @@ impl eframe::App for App {
                         }
                         welcome::Action::Import => self.backend.pick(Pick::OverleafZip),
                         welcome::Action::Settings => self.save_settings(&ctx),
-                        welcome::Action::NewProject => {}
+                        welcome::Action::NewProject => self.open_new_project(String::new()),
                     }
                 }
                 return;
@@ -384,11 +662,6 @@ impl eframe::App for App {
             self.on_library(&ctx, a);
         }
     }
-
-    fn on_exit(&mut self) {
-        // Quitting mid-build must not leave latexmk, pdflatex and biber running.
-        self.backend.shell.stop_build();
-    }
 }
 
 #[cfg(test)]
@@ -450,6 +723,196 @@ mod tests {
             h.query_by_label_contains("No projects yet").is_some()
         });
         assert!(Settings::load(&dirs(tmp.path())).first_run_done);
+    }
+
+    /// A returning user with one project in `tmp`, back in the library; new projects default to `tmp`.
+    fn in_library(tmp: &std::path::Path) -> Option<Harness<'static, App>> {
+        let project = tmp.join("paper");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\nHi\n\\end{document}\n",
+        )
+        .unwrap();
+        let d = dirs(tmp);
+        let mut recents = Recents::default();
+        recents.remember(&project.to_string_lossy(), 1.0);
+        recents.save(&d);
+        Settings {
+            first_run_done: true,
+            ..Settings::default()
+        }
+        .save(&d);
+        let mut h = app(tmp);
+        wait_for(&mut h, "the project or onboarding", |h| {
+            h.query_by_label("Back to all projects").is_some()
+                || h.query_by_label("Check again").is_some()
+        });
+        // Without TeX the library stays behind the install guide.
+        h.query_by_label("Back to all projects")?;
+        h.get_by_label("Back to all projects").click();
+        wait_for(&mut h, "the library", |h| {
+            h.query_by_label("Your projects").is_some()
+        });
+        Some(h)
+    }
+
+    #[test]
+    fn a_new_project_from_the_gallery_is_created_and_opened() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(mut h) = in_library(tmp.path()) else {
+            return;
+        };
+        h.get_all_by_label("New project").next().unwrap().click();
+        // The collection's templates can reorder the categories; wait until they're in.
+        wait_for(&mut h, "the categories", |h| {
+            h.query_by_label("Papers").is_some()
+                && h.query_by_label_contains("Getting more templates")
+                    .is_none()
+        });
+        h.get_by_label("Papers").click();
+        wait_for(&mut h, "the Article template", |h| {
+            h.query_by_label("Article").is_some()
+        });
+        h.get_by_label("Article").click();
+        // The dialog re-centres a frame after its content changes; let it settle before clicking by position.
+        h.run_steps(3);
+        h.get_by_label("Folder name").click();
+        h.run_steps(1);
+        h.get_by_label("Folder name").type_text("thesis-draft");
+        h.run_steps(2);
+        h.get_by_label("Create project").click();
+        wait_for(&mut h, "the new project", |h| {
+            h.query_by_label("thesis-draft").is_some()
+                && h.query_by_label("Back to all projects").is_some()
+        });
+        assert!(
+            tmp.path().join("thesis-draft/main.tex").is_file(),
+            "the template was copied next to the last project"
+        );
+        assert!(
+            Recents::load(&dirs(tmp.path())).0[0]
+                .path
+                .ends_with("thesis-draft")
+        );
+    }
+
+    #[test]
+    fn a_repository_is_cloned_and_opened() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("remote/origin");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            repo.join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n",
+        )
+        .unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        if !(git(&["init", "-q"])
+            && git(&["add", "."])
+            && git(&[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "x",
+            ]))
+        {
+            return; // No git here.
+        }
+        let Some(mut h) = in_library(tmp.path()) else {
+            return;
+        };
+        h.get_by_label("Clone a repository…").click();
+        wait_for(&mut h, "the clone dialog", |h| {
+            h.query_by_label("Repository URL").is_some()
+        });
+        h.get_by_label("Repository URL")
+            .type_text(&repo.to_string_lossy());
+        h.run_steps(2);
+        h.get_by_label("Clone").click();
+        wait_for(&mut h, "the cloned project", |h| {
+            h.query_by_label("Back to all projects").is_some()
+        });
+        assert!(tmp.path().join("origin/main.tex").is_file());
+        // The folder name followed the URL; the clone sits next to the last project.
+        assert!(
+            Recents::load(&dirs(tmp.path())).0[0]
+                .path
+                .ends_with("origin")
+        );
+    }
+
+    #[test]
+    fn an_overleaf_zip_is_imported_and_opened() {
+        let tmp = tempfile::tempdir().unwrap();
+        // An Overleaf "Download → Source" zip: the project's files at the top level.
+        let zip_path = tmp.path().join("Seminar paper.zip");
+        {
+            let mut z = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+            z.start_file("main.tex", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(
+                &mut z,
+                b"\\documentclass{article}\n\\begin{document}\nz\n\\end{document}\n",
+            )
+            .unwrap();
+            z.finish().unwrap();
+        }
+        let Some(mut h) = in_library(tmp.path()) else {
+            return;
+        };
+        // What the file picker hands back after "Import from Overleaf…".
+        let ctx = h.ctx.clone();
+        h.state_mut()
+            .on_msg(&ctx, Msg::Picked(Pick::OverleafZip, Some(zip_path)));
+        wait_for(&mut h, "the zip's contents", |h| {
+            h.query_by_label("Folder name").is_some()
+        });
+        h.run_steps(3);
+        h.get_by_label("Import").click();
+        wait_for(&mut h, "the imported project", |h| {
+            h.query_by_label("Back to all projects").is_some()
+        });
+        let opened = &Recents::load(&dirs(tmp.path())).0[0].path;
+        assert!(
+            std::path::Path::new(opened).join("main.tex").is_file(),
+            "{opened}"
+        );
+    }
+
+    #[test]
+    fn a_project_saved_as_template_is_offered_for_new_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(mut h) = in_library(tmp.path()) else {
+            return;
+        };
+        h.get_by_label("Actions for paper").click();
+        wait_for(&mut h, "the project menu", |h| {
+            h.query_by_label("Save as template…").is_some()
+        });
+        h.get_by_label("Save as template…").click();
+        wait_for(&mut h, "the dialog", |h| {
+            h.query_by_label("Save template").is_some()
+        });
+        h.run_steps(3);
+        h.get_by_label("Save template").click();
+        wait_for(&mut h, "the saved note", |h| {
+            h.query_by_label_contains("Template “paper” saved")
+                .is_some()
+        });
+        h.get_all_by_label("New project").next().unwrap().click();
+        wait_for(&mut h, "My templates", |h| {
+            h.query_by_label("My templates").is_some()
+        });
     }
 
     #[test]

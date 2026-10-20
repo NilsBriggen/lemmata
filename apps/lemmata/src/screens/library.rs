@@ -1661,27 +1661,9 @@ mod snapshots {
     use super::*;
     use crate::testing;
 
-    /// The mock's recent projects, with rl-thesis just opened.
-    fn recents(now: f64) -> Recents {
-        Recents(
-            [
-                ("/home/you/Documents/papers/rl-thesis", 0.0),
-                ("/home/you/Documents/uni/CA_Assignement_4", 86400e3),
-                ("/home/you/Documents/uni/NET_assignment_4", 3.0 * 86400e3),
-                ("/home/you/Documents/cv", 20.0 * 86400e3),
-            ]
-            .into_iter()
-            .map(|(path, back)| Recent {
-                path: path.into(),
-                last_opened: now - back,
-            })
-            .collect(),
-        )
-    }
-
     fn render(p: Palette, view: &str, name: &str) -> egui_kittest::SnapshotResult {
         let now = 1_800_000_000_000.0;
-        let recents = recents(now);
+        let recents = testing::recents(now);
         let mut groups = Groups::default();
         let mut settings = Settings {
             library_view: view.into(),

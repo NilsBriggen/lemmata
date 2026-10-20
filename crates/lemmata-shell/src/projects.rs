@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Template {
     pub id: String,
     pub name: String,

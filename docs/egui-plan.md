@@ -164,3 +164,13 @@ Inputs were the `thesis-60`, `article`, `slides` (Beamer) and `thesis` fixtures 
 | Licence | MIT, fonts OFL | MIT/Apache, fonts OFL |
 
 RaTeX's one visible flaw in the sheet: `\overbrace{a+b}^{n}\underbrace{c+d}_{m}` draws the braces slightly too wide and they touch. Report it upstream or patch it locally in M5. Size: a standalone RaTeX renderer binary is 4.9 MB, including tiny-skia, png and std, which the app won't use; the real cost is measured in M5.
+
+## Known differences from the Svelte UI (to close or accept before any release)
+
+- Modals: the backdrop is dimmed but not blurred (`backdrop-filter: blur(2px)`); egui has no cheap blur.
+- Text: egui lays out IBM Plex about 1–2 % narrower than Chrome, so a paragraph can wrap one word later.
+- Long shell commands wrap only at spaces; Chrome also breaks after hyphens.
+- "Imported N projects." shows in the library's notice line instead of a toast, until toasts land in M3.
+- Show in file manager opens the project folder instead of selecting it in its parent.
+- The cached TeX status that made the Svelte app's start instant (texCache.ts) is not ported yet; the splash shows while TeX is detected.
+- Recent projects and library folders lived in the webview's localStorage and are not migrated from the Tauri app yet (settings are).
