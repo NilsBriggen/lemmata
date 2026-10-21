@@ -2,7 +2,7 @@ name: Windows
 
 # Builds a document on Windows with a real MiKTeX in the situations that have
 # broken for users (Perl missing, Perl failing to start) and reports timings,
-# and runs the app's end-to-end tests on Windows (WebView2).
+# and runs the app's tests and scenarios on Windows.
 # It runs on pushes to main that touch the build code (the paths below) and by hand:
 # Actions → Windows → Run workflow.
 on:
@@ -14,8 +14,8 @@ on:
       - "crates/lemmata-cli/**"
       - "crates/lemmata-log/**"
       - "crates/lemmata-project/**"
-      - "apps/desktop/**"
-      - "scripts/automation/**"
+      - "apps/lemmata/**"
+      - "crates/lemmata-shell/**"
       - "scripts/windows-smoke.ps1"
       - ".github/workflows/windows.yml"
 
@@ -26,24 +26,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # One job, so MiKTeX is installed once: the end-to-end tests first, then the build scenarios.
+  # One job, so MiKTeX is installed once: the app's scenarios first, then the build scenarios.
   windows:
     # The version bump of a release changes nothing the tests cover; its code was tested on the commit before.
     if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
-    # windows-latest (Server 2025) breaks msedgedriver with WebView2 apps ("DevToolsActivePort file
-    # doesn't exist"); 2022 works. https://github.com/actions/runner-images/issues/14738
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
       # Not cached: the choco install writes to Program Files, ProgramData and the registry, so restoring only
       # the install dir would give a broken MiKTeX. The install is also not the slow part worth risking that for.
       - name: Install MiKTeX
@@ -65,37 +57,14 @@ jobs:
           latexmk -pdf -interaction=nonstopmode main.tex
           Pop-Location
           exit 0 # the fixture has deliberate warnings; only the package installs matter here
-      - name: Install tauri-driver
-        run: cargo install tauri-driver --locked --version 2.1.0
-      # The runner's Edge WebDriver follows Edge, not WebView2; this fetches the driver matching the installed WebView2.
-      - name: Get the WebDriver matching WebView2
-        shell: pwsh
-        run: |
-          cargo install --git https://github.com/chippers/msedgedriver-tool
-          $dir = Join-Path $env:RUNNER_TEMP "edgedriver"
-          New-Item -ItemType Directory -Force $dir | Out-Null
-          Push-Location $dir
-          msedgedriver-tool.exe
-          Pop-Location
-          "MSEDGEDRIVER=$dir\msedgedriver.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-      - name: Build the app (debug, frontend embedded, with the test automation API)
-        run: pnpm --filter lemmata-desktop tauri build --debug --no-bundle
-        env:
-          VITE_LEMMATA_TEST: "1"
-      # Releases bundle texlab next to the app; the completion scenarios need it here too.
-      - name: Install texlab
-        shell: bash
-        run: |
-          scripts/fetch-texlab.sh x86_64-pc-windows-msvc
-          cp apps/desktop/src-tauri/binaries/texlab-x86_64-pc-windows-msvc.exe target/debug/texlab.exe
       # The Git panel scenario commits; runners have no git identity.
       - name: Set a git identity
         run: |
           git config --global user.name "Lemmata CI"
           git config --global user.email "ci@lemmata.invalid"
-      - name: Run end-to-end tests
-        run: pnpm --filter lemmata-desktop e2e
-      # Debug build: it reuses the app build's dependencies, and the timings are TeX's anyway.
+      - name: Run the app's tests and scenarios
+        run: cargo test -p lemmata-app
+      # Debug build: it reuses the test build's dependencies, and the timings are TeX's anyway.
       - name: Build the command-line tool
         if: ${{ !cancelled() }}
         run: cargo build -p lemmata-cli

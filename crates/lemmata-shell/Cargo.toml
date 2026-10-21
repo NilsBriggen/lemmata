@@ -1,0 +1,43 @@
+[package]
+name = "lemmata-shell"
+description = "The app's backend without a UI: projects, builds, files, LSP, git, history, spelling and the rest the shell calls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lemmata-tex.workspace = true
+lemmata-project.workspace = true
+lemmata-synctex.workspace = true
+lemmata-pkgmap.workspace = true
+lemmata-history.workspace = true
+lemmata-spell.workspace = true
+lemmata-bib.workspace = true
+lemmata-grammar.workspace = true
+lemmata-git.workspace = true
+lemmata-env.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net"] }
+which.workspace = true
+toml.workspace = true
+regex.workspace = true
+trash = "5"
+notify = "8"
+notify-debouncer-mini = "0.7"
+zip.workspace = true
+open = "5"
+url = "2"
+# The template collection: the same reqwest/rustls/ring line as lemmata-bib and lemmata-spell.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+ring = "0.17"
+# The self-updater: the Tauri updater's signatures and versions.
+minisign-verify = "0.3"
+semver = "1"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt"] }

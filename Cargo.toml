@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/desktop/src-tauri"]
+members = ["crates/*", "apps/lemmata"]
 
 [workspace.package]
-version = "2.1.3"
+version = "3.0.0-rc.1"
 edition = "2024"
 license = "GPL-3.0-only"
 repository = "https://github.com/NilsBriggen/lemmata"
@@ -33,7 +33,180 @@ tempfile = "3"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [profile.release]
+lto = "fat"
+codegen-units = 1
+# Unwinding, so a PDF that panics the renderer (apps/lemmata/src/pdf/engine.rs) is caught, not fatal.
+panic = "unwind"
 strip = true
+
+# Size: dependencies are built for size, except the ones on every frame or keystroke
+# (drawing, text, the PDF and maths renderers, spell check, regex, image decoding), which stay
+# built for speed. The workspace's own crates keep opt-level 3.
+[profile.release.package."*"]
+opt-level = "s"
+
+[profile.release.package.aho-corasick]
+opt-level = 3
+
+[profile.release.package.ecolor]
+opt-level = 3
+
+[profile.release.package.egui]
+opt-level = 3
+
+[profile.release.package.egui-wgpu]
+opt-level = 3
+
+[profile.release.package.egui-winit]
+opt-level = 3
+
+[profile.release.package.emath]
+opt-level = 3
+
+[profile.release.package.epaint]
+opt-level = 3
+
+[profile.release.package.fdeflate]
+opt-level = 3
+
+[profile.release.package.fearless_simd]
+opt-level = 3
+
+[profile.release.package.font-types]
+opt-level = 3
+
+[profile.release.package.gif]
+opt-level = 3
+
+[profile.release.package.harfrust]
+opt-level = 3
+
+[profile.release.package.hayro]
+opt-level = 3
+
+[profile.release.package.hayro-ccitt]
+opt-level = 3
+
+[profile.release.package.hayro-cmap]
+opt-level = 3
+
+[profile.release.package.hayro-interpret]
+opt-level = 3
+
+[profile.release.package.hayro-jbig2]
+opt-level = 3
+
+[profile.release.package.hayro-jpeg2000]
+opt-level = 3
+
+[profile.release.package.hayro-postscript]
+opt-level = 3
+
+[profile.release.package.hayro-syntax]
+opt-level = 3
+
+[profile.release.package.image]
+opt-level = 3
+
+[profile.release.package.image-webp]
+opt-level = 3
+
+[profile.release.package.kurbo]
+opt-level = 3
+
+[profile.release.package.memchr]
+opt-level = 3
+
+[profile.release.package.miniz_oxide]
+opt-level = 3
+
+[profile.release.package.peniko]
+opt-level = 3
+
+[profile.release.package.png]
+opt-level = 3
+
+[profile.release.package.ratex-font]
+opt-level = 3
+
+[profile.release.package.ratex-layout]
+opt-level = 3
+
+[profile.release.package.ratex-lexer]
+opt-level = 3
+
+[profile.release.package.ratex-parser]
+opt-level = 3
+
+[profile.release.package.read-fonts]
+opt-level = 3
+
+[profile.release.package.regex]
+opt-level = 3
+
+[profile.release.package.regex-automata]
+opt-level = 3
+
+[profile.release.package.regex-syntax]
+opt-level = 3
+
+[profile.release.package.ropey]
+opt-level = 3
+
+[profile.release.package.simd-adler32]
+opt-level = 3
+
+[profile.release.package.skrifa]
+opt-level = 3
+
+[profile.release.package.spellbook]
+opt-level = 3
+
+[profile.release.package.unicode-segmentation]
+opt-level = 3
+
+[profile.release.package.vello_common]
+opt-level = 3
+
+[profile.release.package.vello_cpu]
+opt-level = 3
+
+[profile.release.package.zune-core]
+opt-level = 3
+
+[profile.release.package.zune-jpeg]
+opt-level = 3
+
+# The workspace's crates that run once per build, save or click, not per frame or keystroke.
+[profile.release.package.lemmata-shell]
+opt-level = "s"
+
+[profile.release.package.lemmata-tex]
+opt-level = "s"
+
+[profile.release.package.lemmata-bib]
+opt-level = "s"
+
+[profile.release.package.lemmata-git]
+opt-level = "s"
+
+[profile.release.package.lemmata-history]
+opt-level = "s"
+
+[profile.release.package.lemmata-log]
+opt-level = "s"
+
+[profile.release.package.lemmata-synctex]
+opt-level = "s"
+
+[profile.release.package.lemmata-pkgmap]
+opt-level = "s"
+
+[profile.release.package.lemmata-grammar]
+opt-level = "s"
+
+[profile.release.package.lemmata-env]
+opt-level = "s"
 
 [profile.dev]
 debug = "line-tables-only"

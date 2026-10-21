@@ -5,13 +5,13 @@ Usage: finalize-release.py <artifacts-dir> <out-dir> <version> <tag> <repo>
 
 <artifacts-dir> holds one folder per build job, named after the platform
 label (linux_x86_64, linux_aarch64, macos_universal, windows_x86_64), each
-containing that job's Tauri bundle folder, and one folder per command-line
+containing that job's installers (scripts/package-app.sh), and one folder per command-line
 build, named cli_<label>, holding lemmata-cli_<version>_<label>.tar.gz (.zip on
 Windows) as scripts/package-cli.sh made it. This script:
 
   * copies every installer to Lemmata_<version>_<label><ext>
   * copies the command-line archives as they are
-  * writes latest.json for the Tauri updater when .sig files are present, but
+  * writes latest.json for the app's updater when .sig files are present, but
     only for plain X.Y.Z versions: a release candidate (X.Y.Z-rc.N) must never
     reach users of the stable channel through the updater
   * writes SHA256SUMS.txt
@@ -27,7 +27,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Suffix patterns from Tauri's bundler → the extension we publish.
+# Suffix patterns from cargo-packager and cargo-generate-rpm → the extension we publish.
 KINDS = [
     (".AppImage", ".AppImage"),
     (".deb", ".deb"),
@@ -115,7 +115,7 @@ def main() -> None:
         (out / name).write_text(json.dumps(manifest, indent=2) + "\n")
         print(f"wrote {name} for {', '.join(platforms)}")
     else:
-        print("no .sig files: skipping the updater manifest (TAURI_SIGNING_PRIVATE_KEY not set?)")
+        print("no .sig files: skipping the updater manifest (TAURI_SIGNING_PRIVATE_KEY secret not set?)")
 
     lines = []
     for f in sorted(out.iterdir()):

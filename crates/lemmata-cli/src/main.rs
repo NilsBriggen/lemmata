@@ -270,7 +270,9 @@ async fn watch(dir: PathBuf, json: bool) -> anyhow::Result<()> {
 
 /// Compiles the project and prints its diagnostics.
 async fn build(dir: &Path, json: bool) -> anyhow::Result<Outcome> {
-    let project = Project::open(dir).with_context(|| format!("opening {}", dir.display()))?;
+    let mut project = Project::open(dir).with_context(|| format!("opening {}", dir.display()))?;
+    // Run from the command line on purpose: the project's latexmkrc applies, as with latexmk.
+    project.trusted = true;
     let outcome = compile(&project).await?;
 
     if json {

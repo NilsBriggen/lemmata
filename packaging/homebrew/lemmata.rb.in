@@ -20,6 +20,5 @@ cask "lemmata" do
   zap trash: [
     "~/Library/Application Support/dev.briggen.lemmata",
     "~/Library/Caches/dev.briggen.lemmata",
-    "~/Library/WebKit/dev.briggen.lemmata",
   ]
 end

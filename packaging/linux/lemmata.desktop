@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lemmata
+Comment=Local-first LaTeX editor
+Exec=lemmata-app %U
+Icon=lemmata-app
+Terminal=false
+Categories=Office;Publishing;
+MimeType=text/x-tex;x-scheme-handler/lemmata;
+StartupWMClass=dev.briggen.lemmata

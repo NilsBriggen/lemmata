@@ -1,0 +1,11 @@
+# The snapshots are drawn on Linux. Linux CI renders with Mesa's software Vulkan, a few pixels
+# off; macOS and Windows antialias text differently and onboarding shows their own install
+# commands, so there snapshots only catch large changes. CI uploads the images to compare.
+[linux]
+max_failed_pixels = 10
+
+[mac]
+max_failed_pixels = 2000
+
+[windows]
+max_failed_pixels = 2000

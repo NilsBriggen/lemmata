@@ -41,20 +41,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install Tauri system libraries
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter lemmata-desktop build
-      - name: The normal build has no test automation
-        run: "! grep -rl __lemmata apps/desktop/dist"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: pnpm check
       - run: python3 -I scripts/test_finalize_release.py
 
   test:
@@ -74,19 +62,21 @@ jobs:
           # The command-line tool ships as one binary for both Mac architectures.
           targets: ${{ matrix.target == 'universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: Install Tauri system libraries
+      # The app's UI tests draw with wgpu: Mesa's software Vulkan (lavapipe) where there is no GPU.
+      - name: Install a software Vulkan driver
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
-      # The desktop crate embeds the built frontend, so build it before cargo.
-      - run: pnpm --filter lemmata-desktop build
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+      # Also builds the app on each OS, the macOS-only Apple Event code included.
       - run: cargo test --workspace
+      - name: Upload the snapshots that differ
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: snapshots-${{ runner.os }}
+          path: |
+            apps/lemmata/tests/snapshots/*.new.png
+            apps/lemmata/tests/snapshots/*.diff.png
+          if-no-files-found: ignore
       # The Tectonic download and a real build on every OS (the first build fetches its packages, so it is slow).
       # One thread: the tests share Tectonic's package cache.
       - name: Tectonic installs and builds
@@ -96,10 +86,10 @@ jobs:
       - name: Package the command-line tool
         shell: bash
         run: scripts/package-cli.sh ci ${{ matrix.cli }} ${{ matrix.target }}
-      # Release profile on one OS is enough to catch a broken release build; the frontend is already built above.
-      - name: Build the app without bundling
+      # Release profile on one OS is enough to catch a broken release build.
+      - name: Build the app in release mode
         if: runner.os == 'Linux'
-        run: pnpm --filter lemmata-desktop tauri build --no-bundle --config '{"build":{"beforeBuildCommand":""}}'
+        run: cargo build --release -p lemmata-app
 
   # The macOS test job runs on Apple silicon; the Intel download needs an Intel runner.
   tectonic-macos-intel:
@@ -167,7 +157,8 @@ jobs:
         env:
           LEMMATA_REQUIRE_TEX: "1"
 
-  e2e:
+  # The app's scenarios (apps/lemmata/src/scenarios.rs) with a real TeX Live: without one they skip the builds.
+  scenarios:
     if: ${{ !(github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release):')) }}
     runs-on: ubuntu-22.04
     steps:
@@ -175,9 +166,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: e2e
-      - name: Install Tauri libraries, WebKit's WebDriver and a virtual display
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf webkit2gtk-driver xvfb
+          key: scenarios
+      - name: Install a software Vulkan driver
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
       - uses: TeX-Live/setup-texlive-action@v4
         with:
           packages: |
@@ -206,27 +197,20 @@ jobs:
             beamer
             beamertheme-metropolis
             collection-fontsrecommended
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Install tauri-driver
-        run: cargo install tauri-driver --locked --version 2.1.0
-      - name: Build the app (debug, frontend embedded, with the test automation API)
-        run: pnpm --filter lemmata-desktop tauri build --debug --no-bundle
-        env:
-          VITE_LEMMATA_TEST: "1"
-      # Releases bundle texlab; the completion scenarios need it here too.
-      - name: Install texlab
-        run: |
-          scripts/fetch-texlab.sh x86_64-unknown-linux-gnu
-          sudo install apps/desktop/src-tauri/binaries/texlab-x86_64-unknown-linux-gnu /usr/local/bin/texlab
+            graphics
       # The Git panel scenario commits; runners have no git identity.
       - name: Set a git identity
         run: |
           git config --global user.name "Lemmata CI"
           git config --global user.email "ci@lemmata.invalid"
-      - name: Run end-to-end tests
-        run: xvfb-run --auto-servernum pnpm --filter lemmata-desktop e2e
+      - name: Run the app's tests and scenarios
+        run: cargo test -p lemmata-app
+      - name: Upload the snapshots that differ
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: snapshots-scenarios
+          path: |
+            apps/lemmata/tests/snapshots/*.new.png
+            apps/lemmata/tests/snapshots/*.diff.png
+          if-no-files-found: ignore

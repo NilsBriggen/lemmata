@@ -102,8 +102,32 @@ pub fn latexmk_args(project: &Project, miktex: bool) -> Vec<OsString> {
     if c.draft {
         args.push("-usepretex=\\PassOptionsToPackage{draft}{graphicx}".into());
     }
+    // A project's latexmkrc is a Perl program: only a trusted project's runs. The user's own
+    // rc files still apply.
+    if !project.trusted {
+        args.push("-norc".into());
+        for rc in user_rcs().into_iter().filter(|p| p.is_file()) {
+            args.push("-r".into());
+            args.push(rc.into());
+        }
+    }
     args.push(project.main.as_os_str().to_owned());
     args
+}
+
+/// The user's own latexmk rc files, where latexmk looks for them.
+fn user_rcs() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    home.into_iter()
+        .flat_map(|h| {
+            [
+                h.join(".latexmkrc"),
+                h.join(".config").join("latexmk").join("latexmkrc"),
+            ]
+        })
+        .collect()
 }
 
 /// Builds the project. Sending on `cancel` (or dropping the sender) stops the
@@ -142,10 +166,7 @@ pub async fn build_with(
     // latexmk's own output is the only explanation when it dies before TeX
     // writes a log (no Perl, a MiKTeX prompt), so keep it in a file.
     let output_path = project.outdir_abs().join("latexmk-output.txt");
-    let limit = match project.config.timeout_secs {
-        0 => Duration::from_secs(60 * 60 * 24),
-        n => Duration::from_secs(n),
-    };
+    let limit = time_limit(project);
     let mut cancel = cancel;
     let engine = tool(opts, project.config.engine.binary());
     let can_go_direct = engine.is_some();
@@ -279,9 +300,10 @@ pub async fn build_with(
     }
 
     if fell_back {
-        let tail = std::fs::read(&output_path)
-            .map(|b| tail_of(&String::from_utf8_lossy(&b), 4000))
-            .unwrap_or_default();
+        let tail = tail_of(
+            &String::from_utf8_lossy(&read_tail(&output_path, 16_000)),
+            4000,
+        );
         let mut note = lemmata_log::launcher::launcher_failure(&tail);
         note.severity = lemmata_log::Severity::Info;
         note.message = format!(
@@ -298,9 +320,10 @@ pub async fn build_with(
             .iter()
             .any(|d| d.severity == lemmata_log::Severity::Error)
     {
-        let tail = std::fs::read(&output_path)
-            .map(|b| tail_of(&String::from_utf8_lossy(&b), 4000))
-            .unwrap_or_default();
+        let tail = tail_of(
+            &String::from_utf8_lossy(&read_tail(&output_path, 16_000)),
+            4000,
+        );
         diagnostics.insert(0, lemmata_log::launcher::launcher_failure(&tail));
     }
 
@@ -387,12 +410,58 @@ pub(crate) fn out_file(project: &Project, ext: &str) -> PathBuf {
     project.outdir_abs().join(name)
 }
 
+/// The time a build may take: `timeout_secs`, where 0 (no limit, a day) is only for projects the
+/// user trusts; a downloaded project can't make a runaway build fill the disk for a day.
+pub(crate) fn time_limit(project: &Project) -> Duration {
+    match project.config.timeout_secs {
+        0 if project.trusted => Duration::from_secs(60 * 60 * 24),
+        0 => Duration::from_secs(lemmata_project::DEFAULT_TIMEOUT_SECS),
+        n => Duration::from_secs(n),
+    }
+}
+
+/// Logs bigger than this are read as their first and last half: a runaway document can write
+/// gigabytes, and errors sit near the start or the end.
+const LOG_CAP: u64 = 32 << 20;
+
+/// A build file, or only its first and last part when it is huge.
+pub(crate) fn read_capped(path: &Path) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let len = f.metadata().map_or(0, |m| m.len());
+    let mut out = Vec::new();
+    if len <= LOG_CAP {
+        let _ = f.read_to_end(&mut out);
+        return out;
+    }
+    let half = LOG_CAP / 2;
+    let _ = (&mut f).take(half).read_to_end(&mut out);
+    out.extend_from_slice(b"\n[... the middle of a very long log is left out ...]\n");
+    if f.seek(SeekFrom::End(-(half as i64))).is_ok() {
+        let _ = f.take(half).read_to_end(&mut out);
+    }
+    out
+}
+
+/// The last `n` bytes of a file.
+pub(crate) fn read_tail(path: &Path, n: u64) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let len = f.metadata().map_or(0, |m| m.len());
+    let _ = f.seek(SeekFrom::Start(len.saturating_sub(n)));
+    let mut out = Vec::new();
+    let _ = f.read_to_end(&mut out);
+    out
+}
+
 /// The diagnostics in the main log. A run from the precompiled preamble didn't read the preamble,
 /// so what it said then comes from the log of the run that made the format.
 pub(crate) fn read_log(project: &Project) -> Vec<Diagnostic> {
-    let mut log = std::fs::read(project.log_path())
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
-        .unwrap_or_default();
+    let mut log = String::from_utf8_lossy(&read_capped(&project.log_path())).into_owned();
     if project.config.engine == lemmata_project::Engine::Tectonic {
         log = crate::tectonic::normalize_log(&log);
     }
@@ -507,20 +576,12 @@ fn warm_ok(project: &Project) -> bool {
     if !changed_since(project, &outdir.join(OK_STAMP)) {
         return false;
     }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from);
     let rcs = [
         project.root.join("latexmkrc"),
         project.root.join(".latexmkrc"),
     ]
     .into_iter()
-    .chain(home.into_iter().flat_map(|h| {
-        [
-            h.join(".latexmkrc"),
-            h.join(".config").join("latexmk").join("latexmkrc"),
-        ]
-    }));
+    .chain(user_rcs());
     if rcs.into_iter().any(|p| p.exists()) {
         return false;
     }
@@ -661,9 +722,7 @@ async fn direct_build(
             return Ok(status);
         }
 
-        let log = std::fs::read(out_file(project, "log"))
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
-            .unwrap_or_default();
+        let log = String::from_utf8_lossy(&read_capped(&out_file(project, "log"))).into_owned();
         let rerun = [
             "Rerun to get",
             "Please rerun LaTeX",
@@ -999,6 +1058,31 @@ mod tests {
     }
 
     #[test]
+    fn huge_logs_and_endless_builds_are_bounded() {
+        let d = tempfile::tempdir().unwrap();
+        let big = d.path().join("big.log");
+        let mut text = b"! First error.\n".to_vec();
+        text.resize(LOG_CAP as usize + 1000, b'x');
+        text.extend_from_slice(b"\n! Last error.\n");
+        std::fs::write(&big, &text).unwrap();
+        let read = read_capped(&big);
+        assert!(read.len() <= LOG_CAP as usize + 100);
+        assert!(read.starts_with(b"! First error.") && read.ends_with(b"! Last error.\n"));
+        assert_eq!(read_tail(&big, 6), b"rror.\n");
+
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.config.timeout_secs = 0;
+        assert_eq!(
+            time_limit(&p),
+            Duration::from_secs(lemmata_project::DEFAULT_TIMEOUT_SECS),
+            "not a day for a downloaded project"
+        );
+        p.trusted = true;
+        assert_eq!(time_limit(&p), Duration::from_secs(60 * 60 * 24));
+    }
+
+    #[test]
     fn args_respect_config() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
@@ -1009,6 +1093,10 @@ mod tests {
             .collect();
         assert!(args.contains(&"-pdf".to_string()));
         assert!(args.contains(&"-no-shell-escape".to_string()));
+        assert!(
+            args.contains(&"-norc".to_string()),
+            "a project's latexmkrc doesn't run until it is trusted"
+        );
         assert_eq!(args.last().unwrap(), "main.tex");
 
         p.config.engine = lemmata_project::Engine::Lualatex;

@@ -2,6 +2,23 @@
 
 All notable changes to Lemmata.
 
+## 3.0.0-rc.1 (2026-10-21)
+
+Lemmata 3 is the same editor rebuilt as one native program, without a web view. This release candidate is for trying it before 3.0.0; the updater offers it to nobody.
+
+### Changed
+- Lemmata is a native app (egui on wgpu): the download is about a third smaller, and texlab downloads on first use instead of shipping with every copy.
+- Settings, recent projects, library folders and where you were in each project carry over from 2.x.
+- A touchpad pinch over the PDF zooms the pages on every system, and no longer the whole window on Linux.
+- Lemmata checks for and installs updates itself, from the same signed manifest. On Linux only the AppImage updates itself; .deb and .rpm installs update through the package manager.
+
+### Removed
+- The Vim keymap. A saved Vim setting is ignored.
+
+### Fixed
+- A downloaded project can't run programs through its latexmkrc until you trust it, and damaged files can't crash the app.
+- Edits survive project switches, reloads and failed saves, and restoring, deleting and moving files behave under real use.
+
 ## 2.1.3 (2026-10-20)
 
 ### Fixed

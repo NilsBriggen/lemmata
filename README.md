@@ -96,33 +96,25 @@ Each command can print JSON. See [the guide](docs/guide.md#the-command-line).
 
 ## Building from source
 
-You need:
-- Rust (stable), Node 24+ and pnpm;
-- the [Tauri system libraries](https://v2.tauri.app/start/prerequisites/) for your system;
-- `texlab` on your `PATH`, for completion and hover. `scripts/fetch-texlab.sh <target-triple>` fetches the pinned build; release builds bundle it.
+You need Rust (stable) and a GPU driver with Vulkan, Metal or DirectX 12. Completion and hover use texlab: the one on your `PATH`, or a pinned build Lemmata downloads on first use.
 
 ```bash
-pnpm install
-pnpm dev
+cargo run -p lemmata-app
 ```
-
-`pnpm dev` runs the app with hot reload. The other commands:
 
 | Command | What it does |
 |---|---|
-| `pnpm --filter lemmata-desktop dev:mock` | The interface in a browser, with sample data and no Rust |
-| `pnpm test` | Frontend tests |
-| `pnpm check` | Svelte and TypeScript checks |
-| `cargo test --workspace` | Rust tests. Run `pnpm --filter lemmata-desktop build` first |
+| `cargo test --workspace` | All tests, the app's UI scenarios included (they draw headless with wgpu; without TeX they skip the builds) |
+| `UPDATE_SNAPSHOTS=1 cargo test -p lemmata-app` | Accepts changed screenshots in `apps/lemmata/tests/snapshots` |
 | `cargo run -p lemmata-cli -- build tests/fixtures/article` | Builds a sample project from the command line |
-
-**End-to-end tests:** debug builds can be driven by scripts. See [scripts/automation/README.md](scripts/automation/README.md).
+| `scripts/package-app.sh <target> <formats>` | The installers, as a release makes them (needs cargo-packager) |
 
 ### Repository layout
 
 | Path | What |
 |---|---|
-| `apps/desktop` | The Svelte 5 interface. `src-tauri/` is the Tauri shell and its commands |
+| `apps/lemmata` | The app: egui on wgpu. `src/scenarios.rs` holds its end-to-end scenarios |
+| `crates/lemmata-shell` | What the app does without its interface: projects, files, builds, texlab, updates |
 | `crates/lemmata-tex` | Finds TeX and runs builds (latexmk, Tectonic) |
 | `crates/lemmata-log` | Turns TeX logs into plain-language diagnostics |
 | `crates/lemmata-synctex` | Jumps between the PDF and the source |
@@ -136,7 +128,7 @@ pnpm dev
 | `crates/lemmata-env` | Gives programs started from the AppImage the system's libraries |
 | `crates/lemmata-cli` | The `lemmata` command-line tool |
 | `data/install.toml` | TeX install commands per system |
-| `packaging/` | AUR and Homebrew templates |
+| `packaging/` | AUR and Homebrew templates, the Linux desktop entry |
 | `tests/fixtures` | Sample projects and real TeX logs |
 
 ### Releasing

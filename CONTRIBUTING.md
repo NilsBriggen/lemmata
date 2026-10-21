@@ -7,8 +7,7 @@ Thanks for helping. Bug reports, fixes for install instructions and code are all
 See [README.md](README.md#developing) for the toolchain. Then:
 
 ```bash
-pnpm install
-pnpm dev
+cargo run -p lemmata-app
 ```
 
 Before opening a pull request, run what CI runs:
@@ -17,14 +16,12 @@ Before opening a pull request, run what CI runs:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-pnpm check
-pnpm test
 cargo build -p lemmata-cli && scripts/check-fixtures.sh target/debug/lemmata
 ```
 
 ## Where things live
 
-[docs/PLAN.md](docs/PLAN.md) explains the architecture. In short: Rust crates under `crates/` do the work (TeX, logs, SyncTeX, history, spelling, bibliography), `apps/desktop/src-tauri` exposes them as commands, and `apps/desktop/src` is the Svelte interface.
+[docs/egui-plan.md](docs/egui-plan.md) explains the architecture. In short: Rust crates under `crates/` do the work (TeX, logs, SyncTeX, history, spelling, bibliography), `crates/lemmata-shell` ties them together for the app, and `apps/lemmata` is the interface, drawn with egui on wgpu.
 
 ## Easy first contributions
 

@@ -306,7 +306,7 @@ pub fn free_key(base: &str, taken: &[String]) -> String {
 }
 
 /// A crash mid-write must not leave a half-written file.
-pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+pub fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".lemmata-tmp");
     let tmp = std::path::PathBuf::from(tmp);
