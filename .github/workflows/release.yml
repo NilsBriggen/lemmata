@@ -75,12 +75,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          save-if: false
 
+      # Prebuilt where there are binaries (cargo-binstall), built from source otherwise.
       - name: Install the packagers
-        shell: bash
-        run: |
-          cargo install cargo-packager --locked
-          if [[ "$RUNNER_OS" == Linux ]]; then cargo install cargo-generate-rpm --locked; fi
+        uses: taiki-e/install-action@v2
+        with:
+          tool: ${{ runner.os == 'Linux' && 'cargo-packager,cargo-generate-rpm' || 'cargo-packager' }}
+          fallback: cargo-binstall
 
       - name: Build and package
         shell: bash
@@ -123,6 +125,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: cli-${{ matrix.target }}
+          save-if: false
       - name: Build and pack
         shell: bash
         run: scripts/package-cli.sh "${GITHUB_REF_NAME#v}" ${{ matrix.label }} ${{ matrix.target }}

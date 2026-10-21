@@ -39,6 +39,16 @@ packager_formats=$(echo "$formats" | tr ',' '\n' | grep -vx rpm | paste -sd, -)
 # AppImage tools are AppImages themselves; runners have no FUSE to mount them.
 APPIMAGE_EXTRACT_AND_RUN=1 cargo packager -p lemmata-app --release --formats "$packager_formats"
 
+# cargo-packager writes the .deb with gzip; xz makes it about 28% smaller, and dpkg and the
+# AUR's bsdtar read both.
+for deb in "$out"/*.deb; do
+  [[ -e $deb ]] || continue
+  tmp=$(mktemp -d)
+  dpkg-deb -R "$deb" "$tmp/pkg"
+  dpkg-deb -Zxz -z9 --root-owner-group -b "$tmp/pkg" "$deb" >/dev/null
+  rm -rf "$tmp"
+done
+
 if [[ ,$formats, == *,rpm,* ]]; then
   # RPM has no "-" in versions; a pre-release sorts before its release with "~".
   version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2 | tr '-' '~')
