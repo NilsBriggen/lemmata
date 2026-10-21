@@ -2,6 +2,17 @@
 
 All notable changes to Lemmata.
 
+## 3.0.0-rc.4 (2026-10-21)
+
+### Faster
+- A running build takes less CPU to show its progress.
+- Undo, typing and resizing the window stay quick in very long files.
+- The file tree and the bibliography stay quick in projects with thousands of files or entries.
+
+### Smaller
+- Lemmata holds less memory over a long session: maths previews, images in hover cards and the PDF's SyncTeX index are kept within bounds.
+- The program is about 350 KB smaller.
+
 ## 3.0.0-rc.3 (2026-10-21)
 
 ### Fixed
