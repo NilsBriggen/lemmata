@@ -22,8 +22,8 @@ pub const RELEASES: &[Release] = &[
                 "Lemmata no longer runs inside a web view. It is one program drawn by your graphics card, and the download is about a third smaller.",
             ),
             (
-                "Pinch to zoom the PDF",
-                "On a touchpad, pinching over the PDF zooms the pages on every system, and leaves the editor and the window as they are.",
+                "Smooth touchpad scrolling",
+                "A flick keeps the page moving and slows down after you lift your fingers, and pinching over the PDF zooms the pages, not the window. Ctrl and scroll zooms too.",
             ),
             (
                 "Everything comes along",

@@ -457,6 +457,9 @@ pub fn apply(ctx: &egui::Context, p: &Palette) {
     ctx.set_theme(theme);
     ctx.set_visuals_of(theme, visuals);
     ctx.style_mut_of(theme, |s| {
+        // Labels are the interface's text, not a document: no I-beam over them, as in the
+        // Svelte app. Text worth copying turns selection back on where it is drawn.
+        s.interaction.selectable_labels = false;
         s.text_styles = [
             (TextStyle::Small, FontId::proportional(12.0)),
             (TextStyle::Body, FontId::proportional(13.0)),

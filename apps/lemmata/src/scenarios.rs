@@ -477,6 +477,16 @@ fn a_pinch_zooms_the_pdf_not_the_editor() {
         before,
         ws(&h).pane.view.percent
     );
+    // A slow pinch is many tiny steps; they add up instead of rounding away.
+    let start = ws(&h).pane.view.percent;
+    for _ in 0..40 {
+        pinch(&mut h, pdf, 1.003);
+    }
+    assert!(
+        ws(&h).pane.view.percent >= start + 8,
+        "{start} → {}",
+        ws(&h).pane.view.percent
+    );
 }
 
 #[test]

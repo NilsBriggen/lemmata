@@ -481,40 +481,16 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
     };
     // Header: the breadcrumb on the left, the tools on the right.
     ui.horizontal(|ui| {
-        ui.set_min_height(36.0);
         let h1 = FontId::new(26.0, theme::font::display());
-        match (&active, searching) {
-            (Some(g), false) => {
-                // Also a drop target: dropping a project here takes it out of its folder.
-                let (crumb, dropped) = ui.dnd_drop_zone::<Dragged, _>(egui::Frame::new(), |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new("Your projects")
-                                .font(h1.clone())
-                                .color(p.muted),
-                        )
-                        .sense(Sense::click()),
-                    )
-                });
-                if let Some(d) = dropped {
-                    c.groups.move_project(&d.0, None);
-                    commit(st, action);
-                }
-                if crumb
-                    .inner
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
-                    st.view = View::Root;
-                }
-                icons::show(ui, icons::CHEVRON_RIGHT, 20.0, p.faint);
-                ui.label(egui::RichText::new(&g.name).font(h1).color(p.ink));
-            }
-            _ => {
-                ui.label(egui::RichText::new("Your projects").font(h1).color(p.ink));
-            }
-        }
+        // The tools now come first, so centre them on the title's height as before.
+        let title_h = ui.fonts_mut(|f| {
+            f.layout_no_wrap("Your projects".into(), h1.clone(), Color32::PLACEHOLDER)
+                .size()
+                .y
+        });
+        ui.set_min_height(title_h.max(36.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let gap = ui.spacing().item_spacing.x;
             ui.spacing_mut().item_spacing.x = 8.0;
             let sort = &mut st.sort_by_name;
             let mut value = if *sort {
@@ -581,6 +557,55 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
                 }
                 _ => {}
             }
+            // Tools first, so the breadcrumb gets what is left and truncates instead of running under them.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                match (&active, searching) {
+                    (Some(g), false) => {
+                        let (pos, galley, crumb) =
+                            egui::Label::new(egui::RichText::new("Your projects").font(h1.clone()))
+                                .selectable(false)
+                                .sense(Sense::click())
+                                .layout_in_ui(ui);
+                        let crumb = crumb.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        crumb.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::Role::Link, true, "Your projects")
+                        });
+                        // Also a drop target: dropping a project here takes it out of its folder.
+                        let over = crumb.dnd_hover_payload::<Dragged>().is_some();
+                        if over {
+                            ui.painter().rect(
+                                crumb.rect.expand(4.0),
+                                theme::R,
+                                p.accent_soft,
+                                Stroke::new(1.5, p.accent),
+                                StrokeKind::Outside,
+                            );
+                        }
+                        let color = if over || crumb.hovered() {
+                            p.accent
+                        } else {
+                            p.muted
+                        };
+                        ui.painter().galley(pos, galley, color);
+                        if let Some(d) = crumb.dnd_release_payload::<Dragged>() {
+                            c.groups.move_project(&d.0, None);
+                            commit(st, action);
+                        }
+                        if crumb.clicked() {
+                            st.view = View::Root;
+                        }
+                        icons::show(ui, icons::CHEVRON_RIGHT, 20.0, p.faint);
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&g.name).font(h1).color(p.ink))
+                                .truncate(),
+                        );
+                    }
+                    _ => {
+                        ui.label(egui::RichText::new("Your projects").font(h1).color(p.ink));
+                    }
+                }
+            });
         });
     });
     ui.add_space(18.0);
@@ -1662,6 +1687,7 @@ mod tests {
 mod snapshots {
     use super::*;
     use crate::testing;
+    use egui_kittest::kittest::Queryable;
 
     fn render(p: Palette, view: &str, name: &str) -> egui_kittest::SnapshotResult {
         let now = 1_800_000_000_000.0;
@@ -1686,6 +1712,39 @@ mod snapshots {
         });
         h.run();
         h.try_snapshot(name)
+    }
+
+    #[test]
+    fn long_folder_name_stops_before_the_tools() {
+        let name = "Computer Architecture and Operating Syst";
+        let mut groups = Groups::default();
+        let id = groups.create(name, None).unwrap();
+        let mut st = State {
+            view: View::Group(id),
+            ..State::default()
+        };
+        let recents = testing::recents(0.0);
+        let mut settings = Settings::default();
+        let mut h = testing::harness(theme::LIGHT, move |ui| {
+            let mut c = Ctx {
+                recents: &recents,
+                groups: &mut groups,
+                settings: &mut settings,
+                error: None,
+                no_main_in: None,
+                thumbnail: &|_| None,
+                now_ms: 0.0,
+            };
+            show(ui, &theme::LIGHT, &mut st, &mut c);
+        });
+        h.run();
+        let title = h.get_by_label(name).rect();
+        let rename = h.get_by_label("Rename").rect();
+        assert!(
+            title.width() > 0.0 && title.right() <= rename.left(),
+            "{title:?} runs under {rename:?}"
+        );
+        h.try_snapshot("library-long-folder-light").unwrap();
     }
 
     #[test]

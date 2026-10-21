@@ -39,6 +39,9 @@ pub struct App {
     /// What's new since the version used last, once after an update.
     whats_new: Vec<&'static whats_new::Release>,
     update: Option<update::Toast>,
+    momentum: crate::scroll::Momentum,
+    #[cfg(target_os = "linux")]
+    pinches: Option<crate::wayland::Pinches>,
     /// When updates were last looked for.
     update_checked: Option<std::time::Instant>,
     quit: Quit,
@@ -82,7 +85,13 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let dirs = Dirs::system();
         crate::migrate::run(&dirs);
-        Self::with_dirs(cc, dirs)
+        #[allow(unused_mut)]
+        let mut app = Self::with_dirs(cc, dirs);
+        #[cfg(target_os = "linux")]
+        {
+            app.pinches = crate::wayland::listen(cc, &cc.egui_ctx);
+        }
+        app
     }
 
     pub fn with_dirs(cc: &eframe::CreationContext<'_>, dirs: Dirs) -> Self {
@@ -136,6 +145,9 @@ impl App {
             open_file_after: None,
             whats_new: Vec::new(),
             update: None,
+            momentum: Default::default(),
+            #[cfg(target_os = "linux")]
+            pinches: None,
             update_checked: None,
             quit: Quit::No,
         }
@@ -962,6 +974,14 @@ fn palette_for(ctx: &egui::Context, s: &Settings) -> Palette {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.momentum.filter(raw_input, ctx);
+        #[cfg(target_os = "linux")]
+        if let Some(p) = &self.pinches {
+            p.drain_into(&mut raw_input.events);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         while let Ok(msg) = self.backend.rx.try_recv() {
@@ -998,6 +1018,10 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(p) = &mut self.pinches {
+            p.stop();
+        }
         // Quitting mid-build must not leave latexmk, pdflatex and biber running.
         self.backend.shell.stop_build();
     }
@@ -1678,6 +1702,38 @@ pub(crate) mod tests {
             h.step();
         }
         let _ = h.try_snapshot("pdf-narrow-dark");
+    }
+
+    #[test]
+    fn the_edit_bar_stays_out_of_a_wide_pdf_pane() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            pdf_width: 1400.0,
+            ..Settings::default()
+        };
+        let Some((mut h, _)) = in_article_with(tmp.path(), settings) else {
+            return;
+        };
+        let pdf_left = h.get_by_label("Resize the PDF panel").rect().center().x;
+        let right = |h: &Harness<App>, label: &str| h.get_by_label(label).rect().right();
+        assert!(right(&h, "Bold") <= pdf_left);
+        let _ = h.try_snapshot("edit-bar-narrow-light");
+        // The buttons past the edge scroll in sideways.
+        h.event(egui::Event::PointerMoved(
+            h.get_by_label("Bold").rect().center(),
+        ));
+        for _ in 0..10 {
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(-100.0, 0.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(2);
+        }
+        h.run_steps(10);
+        assert!(right(&h, "Go to PDF") <= pdf_left);
     }
 
     #[test]
@@ -2527,6 +2583,25 @@ pub(crate) mod tests {
             Settings::load(&d).last_seen_version,
             env!("CARGO_PKG_VERSION")
         );
+    }
+
+    #[test]
+    fn the_logo_is_a_button_and_labels_are_not_text_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        let cursor = |h: &mut Harness<App>, label: &str| {
+            h.get_by_label(label).hover();
+            h.run_steps(2);
+            h.output().platform_output.cursor_icon
+        };
+        assert_eq!(
+            cursor(&mut h, "Back to all projects"),
+            egui::CursorIcon::PointingHand
+        );
+        // A plain label of the interface: no I-beam.
+        assert_eq!(cursor(&mut h, "Outline"), egui::CursorIcon::Default);
     }
 
     #[test]

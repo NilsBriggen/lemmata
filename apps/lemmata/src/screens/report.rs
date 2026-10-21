@@ -122,7 +122,8 @@ pub fn show(ctx: &egui::Context, p: &Palette, system: &str, log: &str) -> Option
                                             .font(FontId::monospace(12.0))
                                             .color(p.ink),
                                     )
-                                    .wrap(),
+                                    .wrap()
+                                    .selectable(true),
                                 );
                             });
                     });

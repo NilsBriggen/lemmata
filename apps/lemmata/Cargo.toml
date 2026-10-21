@@ -72,6 +72,14 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 [target.'cfg(unix)'.dependencies]
 libloading = "0.8"
 
+# Touchpad pinches on Wayland (src/wayland.rs): winit already builds all of these.
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+raw-window-handle = "0.6"
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 rusty-leveldb = "4"
 

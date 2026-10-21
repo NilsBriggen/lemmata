@@ -1485,7 +1485,7 @@ impl Workspace {
                 panes.y_range(),
                 pdf_w,
                 300.0,
-                1400.0,
+                1400.0_f32.min(panes.width() - side_w - 320.0).max(300.0),
                 true,
                 "Resize the PDF panel",
             ) {

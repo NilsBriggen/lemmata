@@ -115,7 +115,11 @@ pub fn toolbar(
     brand.widget_info(|| {
         egui::WidgetInfo::labeled(egui::Role::Button, true, "Back to all projects")
     });
-    if brand.on_hover_text("Back to all projects").clicked() {
+    if brand
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Back to all projects")
+        .clicked()
+    {
         action = Some(Action::Library);
     }
     l.label(egui::RichText::new("/").color(p.chrome_muted));
@@ -1118,12 +1122,12 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> (bool, bool, bo
         Stroke::new(1.0, p.border),
     );
     let disabled = !ws.active.as_deref().is_some_and(tree::is_tex);
-    let mut c = ui.new_child(
+    let mut bar = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect.shrink2(vec2(10.0, 4.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    c.spacing_mut().item_spacing.x = 2.0;
+    bar.spacing_mut().item_spacing.x = 2.0;
     let tip = |label: &str, id: &str| format!("{label} ({})", display(keys_of(id)));
     let ibtn = |ui: &mut Ui, icon: Icon, label: &str| {
         Button::icon(icon, label)
@@ -1140,131 +1144,137 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> (bool, bool, bo
     #[allow(clippy::type_complexity)]
     let mut todo: Option<Box<dyn FnOnce(&mut Workspace)>> = None;
     let indent = Indent::Spaces(2);
-    if ibtn(&mut c, icons::BOLD, "Bold")
-        .on_hover_text(tip("Bold", "bold"))
-        .clicked()
-    {
-        todo = Some(Box::new(|ws| {
-            with_editor(ws, |e, _| cmd::toggle_wrap(&mut e.doc, "textbf"))
-        }));
-    }
-    if ibtn(&mut c, icons::ITALIC, "Italic")
-        .on_hover_text(tip("Italic", "italic"))
-        .clicked()
-    {
-        todo = Some(Box::new(|ws| {
-            with_editor(ws, |e, _| cmd::toggle_wrap(&mut e.doc, "textit"))
-        }));
-    }
-    // `.heading`: the H and a small chevron, 2 px apart.
-    let (hrect, h) = c.allocate_exact_size(
-        vec2(9.0 + 16.0 + 2.0 + 12.0 + 9.0, 26.0),
-        if disabled {
-            Sense::hover()
-        } else {
-            Sense::click()
-        },
-    );
-    h.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, !disabled, "Heading"));
-    if !disabled && h.hovered() {
-        c.painter()
-            .rect_filled(hrect, CornerRadius::same(theme::R), p.surface_3);
-    }
-    let ink = if disabled {
-        p.ink.gamma_multiply(0.5)
-    } else {
-        p.ink
-    };
-    icons::paint(
-        c.painter(),
-        Rect::from_min_size(
-            pos2(hrect.left() + 9.0, hrect.center().y - 8.0),
-            Vec2::splat(16.0),
-        ),
-        icons::HEADING,
-        ink,
-    );
-    icons::paint(
-        c.painter(),
-        Rect::from_min_size(
-            pos2(hrect.left() + 27.0, hrect.center().y - 6.0),
-            Vec2::splat(12.0),
-        ),
-        icons::CHEVRON_DOWN,
-        ink,
-    );
-    if h.on_hover_text("Heading").clicked() {
-        ws.menu = Some(Menu::Heading(hrect));
-    }
-    sep(&mut c);
-    if ibtn(&mut c, icons::SIGMA, "Inline maths").clicked() {
-        todo = Some(Box::new(|ws| {
-            with_editor(ws, |e, _| wrap_with(&mut e.doc, "$", "$"))
-        }));
-    }
-    if ibtn(&mut c, icons::PI, "Symbols")
-        .on_hover_text(tip("Symbols", "symbols"))
-        .clicked()
-    {
-        todo = Some(Box::new(|ws| ws.symbols = Some(Default::default())));
-    }
-    if ibtn(&mut c, icons::LINK, "Link").clicked() {
-        todo = Some(Box::new(move |ws| {
-            with_editor(ws, |e, i| e.insert_template("\\href{${https://}}{${}}", i))
-        }));
-    }
-    if ibtn(&mut c, icons::IMAGE, "Figure").clicked() {
-        todo = Some(Box::new(|ws| ws.open_figure()));
-    }
-    if ibtn(&mut c, icons::TABLE, "Table").clicked() {
-        todo = Some(Box::new(|ws| ws.open_table()));
-    }
-    if Button::new("Cite")
-        .with_icon(icons::BOOK_OPEN_TEXT)
-        .kind(Kind::Ghost)
-        .size(Size::Sm)
-        .enabled(!disabled)
-        .show(&mut c, p)
-        .on_hover_text(tip("Insert a citation", "cite"))
-        .clicked()
-    {
-        cite = true;
-    }
-    sep(&mut c);
-    for (icon, label, env) in [
-        (icons::LIST, "Bulleted list", "itemize"),
-        (icons::LIST_ORDERED, "Numbered list", "enumerate"),
-    ] {
-        if ibtn(&mut c, icon, label).clicked() {
-            let t = format!("\\begin{{{env}}}\n\t\\item ${{}}\n\\end{{{env}}}");
-            todo = Some(Box::new(move |ws| {
-                with_editor(ws, |e, i| e.insert_template(&t, i))
-            }));
-        }
-    }
-    sep(&mut c);
-    if Button::new("Comment")
-        .with_icon(icons::MESSAGE_SQUARE_PLUS)
-        .kind(Kind::Ghost)
-        .size(Size::Sm)
-        .enabled(ws.active.is_some())
-        .show(&mut c, p)
-        .on_hover_text(tip("Add a comment on the selection", "add-comment"))
-        .clicked()
-    {
-        comment = true;
-    }
-    if Button::new("Go to PDF")
-        .with_icon(icons::LOCATE)
-        .kind(Kind::Ghost)
-        .size(Size::Sm)
-        .enabled(!disabled)
-        .show(&mut c, p)
-        .on_hover_text(tip("Go to PDF", "sync"))
-        .clicked()
-    {
-        sync = true;
-    }
+    // Too narrow for every button: the rest scroll sideways instead of spilling onto the PDF.
+    egui::ScrollArea::horizontal()
+        .id_salt("edit-bar")
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(&mut bar, |c| {
+            if ibtn(c, icons::BOLD, "Bold")
+                .on_hover_text(tip("Bold", "bold"))
+                .clicked()
+            {
+                todo = Some(Box::new(|ws| {
+                    with_editor(ws, |e, _| cmd::toggle_wrap(&mut e.doc, "textbf"))
+                }));
+            }
+            if ibtn(c, icons::ITALIC, "Italic")
+                .on_hover_text(tip("Italic", "italic"))
+                .clicked()
+            {
+                todo = Some(Box::new(|ws| {
+                    with_editor(ws, |e, _| cmd::toggle_wrap(&mut e.doc, "textit"))
+                }));
+            }
+            // `.heading`: the H and a small chevron, 2 px apart.
+            let (hrect, h) = c.allocate_exact_size(
+                vec2(9.0 + 16.0 + 2.0 + 12.0 + 9.0, 26.0),
+                if disabled {
+                    Sense::hover()
+                } else {
+                    Sense::click()
+                },
+            );
+            h.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, !disabled, "Heading"));
+            if !disabled && h.hovered() {
+                c.painter()
+                    .rect_filled(hrect, CornerRadius::same(theme::R), p.surface_3);
+            }
+            let ink = if disabled {
+                p.ink.gamma_multiply(0.5)
+            } else {
+                p.ink
+            };
+            icons::paint(
+                c.painter(),
+                Rect::from_min_size(
+                    pos2(hrect.left() + 9.0, hrect.center().y - 8.0),
+                    Vec2::splat(16.0),
+                ),
+                icons::HEADING,
+                ink,
+            );
+            icons::paint(
+                c.painter(),
+                Rect::from_min_size(
+                    pos2(hrect.left() + 27.0, hrect.center().y - 6.0),
+                    Vec2::splat(12.0),
+                ),
+                icons::CHEVRON_DOWN,
+                ink,
+            );
+            if h.on_hover_text("Heading").clicked() {
+                ws.menu = Some(Menu::Heading(hrect));
+            }
+            sep(c);
+            if ibtn(c, icons::SIGMA, "Inline maths").clicked() {
+                todo = Some(Box::new(|ws| {
+                    with_editor(ws, |e, _| wrap_with(&mut e.doc, "$", "$"))
+                }));
+            }
+            if ibtn(c, icons::PI, "Symbols")
+                .on_hover_text(tip("Symbols", "symbols"))
+                .clicked()
+            {
+                todo = Some(Box::new(|ws| ws.symbols = Some(Default::default())));
+            }
+            if ibtn(c, icons::LINK, "Link").clicked() {
+                todo = Some(Box::new(move |ws| {
+                    with_editor(ws, |e, i| e.insert_template("\\href{${https://}}{${}}", i))
+                }));
+            }
+            if ibtn(c, icons::IMAGE, "Figure").clicked() {
+                todo = Some(Box::new(|ws| ws.open_figure()));
+            }
+            if ibtn(c, icons::TABLE, "Table").clicked() {
+                todo = Some(Box::new(|ws| ws.open_table()));
+            }
+            if Button::new("Cite")
+                .with_icon(icons::BOOK_OPEN_TEXT)
+                .kind(Kind::Ghost)
+                .size(Size::Sm)
+                .enabled(!disabled)
+                .show(c, p)
+                .on_hover_text(tip("Insert a citation", "cite"))
+                .clicked()
+            {
+                cite = true;
+            }
+            sep(c);
+            for (icon, label, env) in [
+                (icons::LIST, "Bulleted list", "itemize"),
+                (icons::LIST_ORDERED, "Numbered list", "enumerate"),
+            ] {
+                if ibtn(c, icon, label).clicked() {
+                    let t = format!("\\begin{{{env}}}\n\t\\item ${{}}\n\\end{{{env}}}");
+                    todo = Some(Box::new(move |ws| {
+                        with_editor(ws, |e, i| e.insert_template(&t, i))
+                    }));
+                }
+            }
+            sep(c);
+            if Button::new("Comment")
+                .with_icon(icons::MESSAGE_SQUARE_PLUS)
+                .kind(Kind::Ghost)
+                .size(Size::Sm)
+                .enabled(ws.active.is_some())
+                .show(c, p)
+                .on_hover_text(tip("Add a comment on the selection", "add-comment"))
+                .clicked()
+            {
+                comment = true;
+            }
+            if Button::new("Go to PDF")
+                .with_icon(icons::LOCATE)
+                .kind(Kind::Ghost)
+                .size(Size::Sm)
+                .enabled(!disabled)
+                .show(c, p)
+                .on_hover_text(tip("Go to PDF", "sync"))
+                .clicked()
+            {
+                sync = true;
+            }
+        });
     let _ = indent;
     if let Some(f) = todo {
         f(ws);

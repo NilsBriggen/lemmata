@@ -140,11 +140,13 @@ impl Problems {
                             ui.set_width(ui.available_width());
                             match &self.log {
                                 Some((_, Ok(t))) => {
-                                    Rich::new()
+                                    // The log is for copying from, like the Svelte app's <pre>.
+                                    let job = Rich::new()
                                         .add(t, FontId::monospace(12.0), p.ink_2)
                                         .line_height(18.0)
                                         .wrap(ui.available_width())
-                                        .show(ui);
+                                        .0;
+                                    ui.add(egui::Label::new(job).selectable(true));
                                 }
                                 Some((_, Err(e))) => {
                                     ui.label(egui::RichText::new(e).color(p.muted));

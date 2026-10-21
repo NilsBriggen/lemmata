@@ -762,9 +762,13 @@ impl PdfView {
         // Ctrl+wheel and pinch zoom from where they are.
         if resp.hovered() || resp.contains_pointer() {
             let z = ui.input(|i| i.zoom_delta());
-            if (z - 1.0).abs() > 1e-3 {
-                let now = self.percent as f32 / 100.0;
-                self.set_fit(Fit::Zoom(((now * z) * 100.0).round() / 100.0));
+            if z != 1.0 {
+                // Unrounded, so the small steps of a slow pinch add up.
+                let now = match self.fit {
+                    Fit::Zoom(f) => f,
+                    _ => self.percent as f32 / 100.0,
+                };
+                self.set_fit(Fit::Zoom(now * z));
             }
         }
         if resp.has_focus()

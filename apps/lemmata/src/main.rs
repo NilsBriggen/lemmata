@@ -13,12 +13,15 @@ mod migrate;
 mod panels;
 mod pdf;
 mod screens;
+mod scroll;
 mod shortcuts;
 mod spell;
 mod store;
 #[cfg(test)]
 mod testing;
 mod theme;
+#[cfg(target_os = "linux")]
+mod wayland;
 mod when;
 mod widgets;
 mod workspace;
