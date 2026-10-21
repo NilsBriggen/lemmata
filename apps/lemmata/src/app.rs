@@ -1178,8 +1178,9 @@ pub(crate) mod tests {
         if h.query_by_label("Check again").is_some() {
             // No TeX on this machine: onboarding, and "Continue without compiling" gets past it.
             h.get_by_label("Continue without compiling").click();
+            // The sidebar's button and the empty library's both say it.
             wait_for(&mut h, "the library", |h| {
-                h.query_by_label("New project").is_some()
+                h.query_all_by_label("New project").next().is_some()
             });
             return;
         }

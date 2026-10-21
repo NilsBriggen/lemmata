@@ -68,6 +68,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
       # Also builds the app on each OS, the macOS-only Apple Event code included.
       - run: cargo test --workspace
+      - name: Upload the snapshots that differ
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: snapshots-${{ runner.os }}
+          path: |
+            apps/lemmata/tests/snapshots/*.new.png
+            apps/lemmata/tests/snapshots/*.diff.png
+          if-no-files-found: ignore
       # The Tectonic download and a real build on every OS (the first build fetches its packages, so it is slow).
       # One thread: the tests share Tectonic's package cache.
       - name: Tectonic installs and builds
@@ -196,3 +205,12 @@ jobs:
           git config --global user.email "ci@lemmata.invalid"
       - name: Run the app's tests and scenarios
         run: cargo test -p lemmata-app
+      - name: Upload the snapshots that differ
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: snapshots-scenarios
+          path: |
+            apps/lemmata/tests/snapshots/*.new.png
+            apps/lemmata/tests/snapshots/*.diff.png
+          if-no-files-found: ignore
