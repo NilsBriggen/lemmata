@@ -1027,17 +1027,35 @@ pub fn classify(root: &Path, outdir: &str, written: &Written, paths: &[PathBuf])
 }
 
 /// What a file looked like when last seen: its size and modification time.
-type Stamp = Option<(u64, std::time::SystemTime)>;
+/// What a file looked like when last seen: size, modification time, and the content's hash
+/// while that time is too recent to tell two writes apart.
+#[derive(Clone, Copy)]
+struct Stamp {
+    len: u64,
+    modified: std::time::SystemTime,
+    hash: Option<u64>,
+}
+
+impl Stamp {
+    fn same(&self, other: &Stamp) -> bool {
+        self.len == other.len
+            && self.modified == other.modified
+            && self.hash.zip(other.hash).is_none_or(|(a, b)| a == b)
+    }
+}
+
+/// Modification times tick coarsely (a few ms on Linux, 2 s on FAT): within this of a write,
+/// another same-length write can carry the same time.
+const TICK: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Drops paths that look as this watcher saw them last time: on Linux every
 /// open is an event, so reading a file or listing a folder (the app does both
-/// when handling a change) would otherwise report itself forever. Only a stat,
-/// never a read: reading to compare would itself be the next event.
-// shortcut: same size and mtime is taken as unchanged, so a same-length edit within one mtime tick
-// (seconds on FAT or some network shares) goes unseen; hash then if that ever shows up.
+/// when handling a change) would otherwise report itself forever. So it is a
+/// stat, and a read only within `TICK` of a write: that keeps waking for those
+/// two seconds, then stops.
 fn drop_unchanged(
     root: &Path,
-    seen: &mut std::collections::HashMap<PathBuf, Stamp>,
+    seen: &mut std::collections::HashMap<PathBuf, Option<Stamp>>,
     changes: &mut Changes,
 ) {
     for p in &changes.removed {
@@ -1048,10 +1066,30 @@ fn drop_unchanged(
         let abs = root.join(p);
         let now = match std::fs::metadata(&abs) {
             Ok(m) if m.is_dir() => None,
-            Ok(m) => Some((m.len(), m.modified().unwrap_or(std::time::UNIX_EPOCH))),
+            Ok(m) => {
+                let modified = m.modified().unwrap_or(std::time::UNIX_EPOCH);
+                let recent = modified.elapsed().is_ok_and(|d| d < TICK);
+                let hash = if recent {
+                    match std::fs::read(&abs) {
+                        Ok(b) => Some(hash_bytes(&b)),
+                        Err(_) => return true,
+                    }
+                } else {
+                    None
+                };
+                Some(Stamp {
+                    len: m.len(),
+                    modified,
+                    hash,
+                })
+            }
             Err(_) => return true,
         };
-        seen.insert(abs, now) != Some(now)
+        match (seen.insert(abs, now), now) {
+            (Some(Some(was)), Some(now)) => !was.same(&now),
+            (Some(None), None) => false,
+            _ => true,
+        }
     });
 }
 
@@ -1394,6 +1432,20 @@ mod tests {
         assert!(run(&["ch", "main.tex"], &[]).is_empty());
         std::fs::write(root.join("main.tex"), "b").unwrap();
         assert_eq!(run(&["ch", "main.tex"], &[]), ["main.tex"]);
+        // Another same-length write within the same timestamp tick, as on CI's disks.
+        let when = std::fs::metadata(root.join("main.tex"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        std::fs::write(root.join("main.tex"), "c").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(root.join("main.tex"))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+        assert_eq!(run(&["main.tex"], &[]), ["main.tex"]);
+        assert!(run(&["main.tex"], &[]).is_empty());
         // A folder deleted and made again counts as new.
         assert!(run(&[], &["ch"]).is_empty());
         assert_eq!(run(&["ch"], &[]), ["ch"]);

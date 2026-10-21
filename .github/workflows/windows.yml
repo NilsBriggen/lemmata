@@ -41,9 +41,10 @@ jobs:
       - name: Install MiKTeX
         shell: pwsh
         run: |
-          # MiKTeX's servers time out now and then; try a few times.
-          foreach ($i in 1..3) { choco install miktex --no-progress -y; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 30 }
+          # MiKTeX's servers and Chocolatey's feed time out now and then; try a few times. choco exits 0
+          # even when the feed failed and nothing was installed, so the check is the file itself.
           $bin = "C:\Program Files\MiKTeX\miktex\bin\x64"
+          foreach ($i in 1..4) { choco install miktex --no-progress -y; if (Test-Path "$bin\pdflatex.exe") { break }; Start-Sleep 60 }
           if (-not (Test-Path "$bin\pdflatex.exe")) { throw "MiKTeX was not installed where expected" }
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
           & "$bin\initexmf.exe" --admin --set-config-value "[MPM]AutoInstall=1"
