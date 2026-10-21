@@ -17,7 +17,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - name: cargo audit
-        run: cargo install cargo-audit --locked && cargo audit
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+          fallback: cargo-binstall
+      - run: cargo audit
 

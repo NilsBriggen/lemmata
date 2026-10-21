@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
       # Not cached: the choco install writes to Program Files, ProgramData and the registry, so restoring only
       # the install dir would give a broken MiKTeX. The install is also not the slow part worth risking that for.

@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -59,19 +59,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           # The command-line tool ships as one binary for both Mac architectures.
           targets: ${{ matrix.target == 'universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # The app's UI tests draw with wgpu: Mesa's software Vulkan (lavapipe) where there is no GPU.
-      - name: Install a software Vulkan driver
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
-      # Also builds the app on each OS, the macOS-only Apple Event code included.
-      - run: cargo test --workspace
+      # Also builds the app on each OS, the macOS-only Apple Event code included. On Linux the app's
+      # tests run in `scenarios`, with TeX Live, so not twice.
+      - run: cargo test --workspace ${{ runner.os == 'Linux' && '--exclude lemmata-app' || '' }}
       - name: Upload the snapshots that differ
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -81,11 +78,6 @@ jobs:
             apps/lemmata/tests/snapshots/*.new.png
             apps/lemmata/tests/snapshots/*.diff.png
           if-no-files-found: ignore
-      # The Tectonic download and a real build on every OS (the first build fetches its packages, so it is slow).
-      # One thread: the tests share Tectonic's package cache.
-      - name: Tectonic installs and builds
-        timeout-minutes: 20
-        run: cargo test -p lemmata-tex -- --ignored --test-threads=1 --nocapture installs_the_pinned_release builds_a_project_with_bibtex_and_reports_errors fixture_with_biber_reports_the_limitation
       # The release's packaging, run here so it is tested on every push.
       - name: Package the command-line tool
         shell: bash
@@ -98,22 +90,28 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
         with:
           key: release
       - run: cargo build --release -p lemmata-app
 
-  # The macOS test job runs on Apple silicon; the Intel download needs an Intel runner.
-  tectonic-macos-intel:
+  # The Tectonic download and a real build on every OS, beside the tests rather than after them
+  # (the first build fetches its packages, so it is slow). Intel Macs download their own Tectonic.
+  tectonic:
     if: ${{ !(github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release):')) }}
-    runs-on: macos-15-intel
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # One thread: the tests share Tectonic's package cache.
       - name: Tectonic installs and builds
         timeout-minutes: 20
         run: cargo test -p lemmata-tex -- --ignored --test-threads=1 --nocapture installs_the_pinned_release builds_a_project_with_bibtex_and_reports_errors fixture_with_biber_reports_the_limitation
@@ -124,7 +122,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -180,7 +178,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
         with:
           key: scenarios

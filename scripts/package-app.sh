@@ -7,6 +7,7 @@
 #   scripts/package-app.sh <target> <formats>
 #   scripts/package-app.sh x86_64-unknown-linux-gnu appimage,deb,rpm
 #   scripts/package-app.sh universal-apple-darwin app,dmg      # both Mac architectures in one app
+#   PREBUILT=1 scripts/package-app.sh universal-apple-darwin app,dmg   # with target/<arch>/release built
 #   scripts/package-app.sh x86_64-pc-windows-msvc nsis,wix
 set -euo pipefail
 
@@ -18,8 +19,11 @@ rm -rf "$out"
 
 bin="target/$target/release"
 if [[ $target == universal-apple-darwin ]]; then
-  cargo build --release -p lemmata-app --target aarch64-apple-darwin
-  cargo build --release -p lemmata-app --target x86_64-apple-darwin
+  # PREBUILT: release.yml built each architecture on a runner of its own.
+  if [[ -z ${PREBUILT:-} ]]; then
+    cargo build --release -p lemmata-app --target aarch64-apple-darwin
+    cargo build --release -p lemmata-app --target x86_64-apple-darwin
+  fi
   mkdir -p "$bin"
   lipo -create -output "$bin/lemmata-app" \
     target/aarch64-apple-darwin/release/lemmata-app target/x86_64-apple-darwin/release/lemmata-app

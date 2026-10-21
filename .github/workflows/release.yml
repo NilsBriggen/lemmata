@@ -53,28 +53,21 @@ jobs:
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             bundles: appimage,deb,rpm
-          - label: macos_universal
-            runner: macos-14
-            target: universal-apple-darwin
-            bundles: app,dmg
           - label: windows_x86_64
             runner: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: nsis,wix
     runs-on: ${{ matrix.runner }}
-    env:
-      # The updater's signatures, with the key the Tauri builds used (the app checks them against its public key).
-      CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
-          targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+          targets: ${{ matrix.target }}
+      # Restores what warm-release-cache.yml built on main; a tag's own cache would never be hit again.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          shared-key: release-${{ matrix.target }}
           save-if: false
 
       # Prebuilt where there are binaries (cargo-binstall), built from source otherwise.
@@ -86,6 +79,11 @@ jobs:
 
       - name: Build and package
         shell: bash
+        # The updater's signatures, with the key the Tauri builds used (the app checks them against
+        # its public key). On this step only: rust-cache folds CARGO_* variables into its key.
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           bundles='${{ matrix.bundles }}'
           # WiX can't version an MSI with a pre-release suffix, so betas ship the NSIS installer only.
@@ -105,6 +103,68 @@ jobs:
             target/packager/*.msi
           if-no-files-found: error
 
+  # The Mac app is one program for both architectures. Building them one after the other took
+  # most of the release's time, so each builds on its own runner and `macos` joins them.
+  macos-bin:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: ${{ matrix.arch }}-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.arch }}-apple-darwin
+          save-if: false
+      - run: cargo build --release -p lemmata-app --target ${{ matrix.arch }}-apple-darwin
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-bin-${{ matrix.arch }}
+          path: target/${{ matrix.arch }}-apple-darwin/release/lemmata-app
+          if-no-files-found: error
+          retention-days: 1
+
+  macos:
+    needs: macos-bin
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Install the packager
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-packager
+          fallback: cargo-binstall
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos-bin-aarch64
+          path: target/aarch64-apple-darwin/release
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos-bin-x86_64
+          path: target/x86_64-apple-darwin/release
+      - name: Package
+        shell: bash
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          chmod +x target/*-apple-darwin/release/lemmata-app
+          PREBUILT=1 scripts/package-app.sh universal-apple-darwin app,dmg
+      # The name finalize-release.py and the Homebrew job expect.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos_universal
+          path: |
+            target/packager/*.dmg
+            target/packager/*.app.tar.gz*
+          if-no-files-found: error
+
   # The command-line tool, as archives on the release (scripts/package-cli.sh; CI runs it on every push too).
   cli:
     needs: verify
@@ -119,7 +179,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: ${{ matrix.target == 'universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -136,7 +196,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [build, cli, ci]
+    needs: [build, macos, cli, ci]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
