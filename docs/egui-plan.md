@@ -182,7 +182,7 @@ RaTeX's one visible flaw in the sheet: `\overbrace{a+b}^{n}\underbrace{c+d}_{m}`
 - "Imported N projects." shows in the library's notice line instead of a toast, until toasts land in M3.
 - Show in file manager opens the project folder instead of selecting it in its parent.
 - The cached TeX status that made the Svelte app's start instant (texCache.ts) is not ported yet; the splash shows while TeX is detected.
-- Recent projects and library folders lived in the webview's localStorage and are not migrated from the Tauri app yet (settings are).
+- Recent projects and library folders lived in the webview's localStorage; the first start copies them over (`src/migrate.rs`), on Linux and macOS through the system's libsqlite3. The Windows path (WebView2's LevelDB) is tested only against a database written by the same LevelDB crate.
 - PDF: selecting text works within the page the drag starts on, not across pages. Scrolling to a page, link or match animates for 0.3 s rather than the browser's smooth scroll.
 - PDF: search highlights are drawn with alpha, not `mix-blend-mode: multiply`.
 - SVG files in the project are not previewed (needs resvg, about 1 MB); other images and PDFs are.

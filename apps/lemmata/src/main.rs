@@ -9,6 +9,7 @@ mod instance;
 mod lsp;
 #[cfg(target_os = "macos")]
 mod macos;
+mod migrate;
 mod panels;
 mod pdf;
 mod screens;

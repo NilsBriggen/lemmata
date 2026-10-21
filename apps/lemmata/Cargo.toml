@@ -67,7 +67,16 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSURL",
 ] }
 
+# The Tauri app's recent projects and folders, read once from its webview's localStorage
+# (src/migrate.rs): WebKit's SQLite through the system's libsqlite3, WebView2's LevelDB.
+[target.'cfg(unix)'.dependencies]
+libloading = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+rusty-leveldb = "4"
+
 [dev-dependencies]
+rusty-leveldb = "4"
 # What eframe's `system_fonts` feature installs in the real app, for glyphs outside the bundled fonts.
 egui_system_font_provider = "0.37"
 tempfile.workspace = true

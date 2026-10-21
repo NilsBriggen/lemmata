@@ -80,7 +80,9 @@ fn now_ms() -> f64 {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        Self::with_dirs(cc, Dirs::system())
+        let dirs = Dirs::system();
+        crate::migrate::run(&dirs);
+        Self::with_dirs(cc, dirs)
     }
 
     pub fn with_dirs(cc: &eframe::CreationContext<'_>, dirs: Dirs) -> Self {

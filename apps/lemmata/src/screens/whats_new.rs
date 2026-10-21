@@ -15,6 +15,23 @@ pub struct Release {
 /// Newest first.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "3.0.0",
+        highlights: &[
+            (
+                "A native app",
+                "Lemmata no longer runs inside a web view. It is one program drawn by your graphics card, and the download is about a third smaller.",
+            ),
+            (
+                "Pinch to zoom the PDF",
+                "On a touchpad, pinching over the PDF zooms the pages on every system, and leaves the editor and the window as they are.",
+            ),
+            (
+                "Everything comes along",
+                "Your settings, recent projects, library folders and where you were in each project are all still here.",
+            ),
+        ],
+    },
+    Release {
         version: "2.0.0",
         highlights: &[
             (
@@ -229,6 +246,7 @@ mod tests {
             Ordering::Greater
         );
         assert_eq!(versions("1.4.0", "2.0.0"), ["2.0.0", "1.5.0"]);
+        assert_eq!(versions("2.1.3", "3.0.0-rc.1"), ["3.0.0"]);
         assert_eq!(versions("1.5.2", "2.0.0"), ["2.0.0"]);
         assert!(versions("2.0.0", "2.0.1").is_empty());
         assert!(versions("2.0.0", "2.0.0").is_empty());

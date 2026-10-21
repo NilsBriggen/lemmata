@@ -219,7 +219,7 @@ impl Recents {
     }
 
     /// Older versions stored plain paths; those still load. Anything damaged is skipped.
-    fn parse(v: Option<Value>) -> Self {
+    pub(crate) fn parse(v: Option<Value>) -> Self {
         let Some(Value::Array(items)) = v else {
             return Self::default();
         };
@@ -297,7 +297,7 @@ impl Groups {
         Self::parse(read_json(&dirs.config.join("groups.json")))
     }
 
-    fn parse(v: Option<Value>) -> Self {
+    pub(crate) fn parse(v: Option<Value>) -> Self {
         let Some(raw) = v else { return Self::default() };
         let groups: Vec<Group> = match raw.get("groups") {
             Some(Value::Array(a)) => a
