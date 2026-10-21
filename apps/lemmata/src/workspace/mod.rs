@@ -148,6 +148,8 @@ pub struct Workspace {
     pub headings: Vec<Heading>,
     pub total_words: u32,
     pub collapsed: HashSet<String>,
+    /// The file tree's rows as last drawn, until the tree, its order or the open folders change.
+    pub tree_rows: Option<tree::Rows>,
     pub tree_cursor: Option<String>,
     pub sel: files::TreeSel,
     pub tree_drag: Option<files::TreeDrag>,
@@ -292,6 +294,7 @@ impl Workspace {
             headings: Vec::new(),
             total_words: 0,
             collapsed: HashSet::new(),
+            tree_rows: None,
             tree_cursor: None,
             sel: Default::default(),
             tree_drag: None,
@@ -1138,6 +1141,7 @@ impl Workspace {
             }
             Msg::Info(Ok(info)) => {
                 self.info = info;
+                self.tree_rows = None;
                 self.refresh_lookups(backend, false);
                 if std::mem::take(&mut self.build.after_config) {
                     self.build_soon(false, false);

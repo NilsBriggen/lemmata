@@ -144,7 +144,7 @@ impl Pane {
             let x = progress.left() - w + t * 4.0 * w;
             let r = Rect::from_min_size(pos2(x, progress.top()), vec2(w, 2.0)).intersect(progress);
             ui.painter().rect_filled(r, 0, p.accent);
-            ctx.request_repaint();
+            ctx.request_repaint_after(crate::theme::ANIMATION_FRAME);
         }
         let mut y = progress.bottom();
 

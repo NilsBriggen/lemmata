@@ -15,43 +15,42 @@ use lemmata_bib::Entry;
 use lemmata_bib::manage::{Duplicate, Library, ManagedEntry};
 use lemmata_bib::search::Hit;
 use lemmata_bib::zotero::Status;
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 // ── bib/manager.ts ─────────────────────────────────────────────────────────────
 
-/// Entries containing every search word in `hay`.
-fn matches(hay: &str, query: &str) -> bool {
-    let hay = hay.to_lowercase();
+/// The search's words, lowercased once for all the entries it is matched against.
+fn terms(query: &str) -> Vec<String> {
     query
         .to_lowercase()
         .split_whitespace()
-        .all(|t| hay.contains(t))
+        .map(str::to_owned)
+        .collect()
 }
 
-/// Non-empty before empty, then without case.
-fn text_cmp(a: &str, b: &str) -> Ordering {
-    match (a.is_empty(), b.is_empty()) {
-        (false, true) => Ordering::Less,
-        (true, false) => Ordering::Greater,
-        _ => a.to_lowercase().cmp(&b.to_lowercase()),
-    }
+/// Entries containing every search word in `hay`.
+fn matches(hay: &str, terms: &[String]) -> bool {
+    let hay = hay.to_lowercase();
+    terms.iter().all(|t| hay.contains(t.as_str()))
 }
 
-/// Entry indices sorted by key, author or year (newest first); missing values last.
+/// Entry indices sorted by key, author or year (newest first); missing values last, case
+/// ignored. Each entry's sort key is made once, not once per comparison.
 fn sort_entries(entries: &[ManagedEntry], idx: &mut [usize], by: &str) {
-    idx.sort_by(|&a, &b| {
-        let (a, b) = (&entries[a].entry, &entries[b].entry);
+    use std::cmp::Reverse;
+    let text = |s: &str| (s.is_empty(), s.to_lowercase());
+    idx.sort_by_cached_key(|&i| {
+        let e = &entries[i].entry;
         let first = match by {
-            "author" => text_cmp(&a.authors, &b.authors),
-            "year" => match (a.year.is_empty(), b.year.is_empty()) {
-                (false, true) => Ordering::Less,
-                (true, false) => Ordering::Greater,
-                _ => b.year.cmp(&a.year),
-            },
-            _ => Ordering::Equal,
+            "author" => (
+                e.authors.is_empty(),
+                Reverse(String::new()),
+                e.authors.to_lowercase(),
+            ),
+            "year" => (e.year.is_empty(), Reverse(e.year.clone()), String::new()),
+            _ => (false, Reverse(String::new()), String::new()),
         };
-        first.then_with(|| text_cmp(&a.key, &b.key))
+        (first, text(&e.key))
     });
 }
 
@@ -124,12 +123,13 @@ enum Cite {
 
 impl CitePicker {
     fn results(&self) -> Vec<&Entry> {
+        let terms = terms(&self.query);
         self.entries
             .iter()
             .filter(|e| {
                 matches(
                     &format!("{} {} {} {}", e.key, e.authors, e.title, e.year),
-                    &self.query,
+                    &terms,
                 )
             })
             .collect()
@@ -760,6 +760,7 @@ impl BibManager {
             ui.label(RichText::new(&self.error).color(p.error));
         }
         let warnings = warnings_by_entry(&lib.duplicates);
+        let terms = terms(&self.query);
         let mut rows: Vec<usize> = (0..n)
             .filter(|&i| {
                 let e = &lib.entries[i];
@@ -768,7 +769,7 @@ impl BibManager {
                         "{} {} {} {} {}",
                         e.entry.key, e.entry.authors, e.entry.title, e.entry.year, e.doi
                     ),
-                    &self.query,
+                    &terms,
                 ) && match self.show.as_str() {
                     "duplicates" => warnings.contains_key(&i),
                     "uncited" => !e.cited,
@@ -1340,10 +1341,12 @@ mod tests {
             )
         };
         assert_eq!(
-            list.iter().filter(|x| matches(&hay(x), "abe 2020")).count(),
+            list.iter()
+                .filter(|x| matches(&hay(x), &terms("Abe 2020")))
+                .count(),
             1
         );
-        assert!(list.iter().all(|x| matches(&hay(x), "")));
+        assert!(list.iter().all(|x| matches(&hay(x), &terms(""))));
         let sorted = |by: &str| {
             let mut idx = vec![0, 1, 2];
             sort_entries(&list, &mut idx, by);

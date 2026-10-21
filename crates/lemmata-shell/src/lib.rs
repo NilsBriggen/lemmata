@@ -258,6 +258,7 @@ fn project_info(p: &Project) -> ProjectInfo {
 
 impl Shell {
     pub fn open_project(&self, path: String) -> CmdResult<ProjectInfo> {
+        lemmata_synctex::forget();
         cancel_running(self);
         let project = Project::open(&path).map_err(err)?;
         let info = project_info(&project);

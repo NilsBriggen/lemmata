@@ -623,6 +623,7 @@ impl Workspace {
             |ws, b, r| {
                 if let Ok(info) = r {
                     ws.info = info;
+                    ws.tree_rows = None;
                 }
                 let open: Vec<String> = ws
                     .editors

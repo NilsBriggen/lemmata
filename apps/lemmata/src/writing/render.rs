@@ -30,7 +30,12 @@ struct Cache {
     /// The macros as `\def`s put before every formula.
     prelude: String,
     done: HashMap<Key, Result<Math, String>>,
+    /// Pixels held by `done`'s textures, in bytes.
+    bytes: usize,
 }
+
+/// Rendered formulas kept at most: large display maths at high DPI is hundreds of KB each.
+const MAX_BYTES: usize = 16 << 20;
 
 thread_local! {
     static CACHE: RefCell<Cache> = RefCell::new(Cache::default());
@@ -57,6 +62,7 @@ pub fn set_macros(macros: BTreeMap<String, String>) {
             .collect();
         c.macros = macros;
         c.done.clear();
+        c.bytes = 0;
     });
 }
 
@@ -117,10 +123,15 @@ pub fn render(
             ),
         })
     });
+    let bytes = result
+        .as_ref()
+        .map_or(0, |m| m.texture.size().iter().product::<usize>() * 4);
     CACHE.with_borrow_mut(|c| {
-        if c.done.len() > 800 {
+        if c.done.len() > 800 || c.bytes + bytes > MAX_BYTES {
             c.done.clear();
+            c.bytes = 0;
         }
+        c.bytes += bytes;
         c.done.insert(key, result.clone());
     });
     result

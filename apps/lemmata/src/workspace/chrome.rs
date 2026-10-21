@@ -166,7 +166,7 @@ pub fn toolbar(
     // While building, the button stops the build, so it says so; its icon spins.
     let building = ws.build.building;
     let angle = if building {
-        r.ctx().request_repaint();
+        r.ctx().request_repaint_after(theme::ANIMATION_FRAME);
         (r.input(|i| i.time) as f32 * std::f32::consts::TAU).rem_euclid(std::f32::consts::TAU)
     } else {
         0.0
@@ -424,15 +424,20 @@ fn kind_icon(k: tree::Kind, p: &Palette) -> (Icon, Color32) {
 }
 
 fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, backend: &Backend) {
-    let sorted = tree::sort_entries(
-        &ws.info.tree,
-        &settings.tree_sort,
-        settings.tree_folders_first,
-    );
-    let rows: Vec<(lemmata_project::Entry, usize)> = tree::flatten(&sorted, &ws.collapsed)
-        .into_iter()
-        .map(|(e, d)| (e.clone(), d))
-        .collect();
+    // Sorting and flattening a big tree every frame costs more than drawing it.
+    let (sort, first) = (&settings.tree_sort, settings.tree_folders_first);
+    if !ws
+        .tree_rows
+        .as_ref()
+        .is_some_and(|r| r.fits(sort, first, &ws.collapsed))
+    {
+        ws.tree_rows = Some(tree::Rows::new(&ws.info.tree, sort, first, &ws.collapsed));
+    }
+    let rows = ws
+        .tree_rows
+        .as_ref()
+        .map(|r| r.rows.clone())
+        .unwrap_or_default();
     let w = ui.available_width();
     let mut open = None;
     let mut toggle = None;
@@ -448,8 +453,12 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
     });
     // What the pointer is over this frame, for the next one's highlight.
     let mut over_folder: Option<String> = None;
-    for (e, depth) in &rows {
+    for (e, depth, count) in rows.iter() {
         let (rect, r) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click_and_drag());
+        // Rows scrolled out of the panel only keep their place.
+        if !ui.is_rect_visible(rect) {
+            continue;
+        }
         // A folder takes what is dropped on it; a file's row stands for its folder.
         let folder = if e.is_dir {
             e.path.clone()
@@ -573,7 +582,7 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
             }
             if !open_dir {
                 // .count: how many files the folded folder holds.
-                let n = tree::count_files(e).to_string();
+                let n = count.to_string();
                 let g = painter.layout_no_wrap(n, FontId::proportional(11.0), p.chrome_muted);
                 let name_w = painter
                     .layout_no_wrap(e.name.clone(), FontId::proportional(13.0), ink)
@@ -704,7 +713,7 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
     }
     tree_drops(ui, p, ws, backend, settings, over_folder, os_hover, dropped);
     if let Some((path, mods)) = click {
-        let paths: Vec<String> = rows.iter().map(|(e, _)| e.path.clone()).collect();
+        let paths: Vec<String> = rows.iter().map(|(e, ..)| e.path.clone()).collect();
         ws.tree_click(&path, &paths, mods);
         // With Ctrl or Shift a click only selects.
         if mods.command || mods.shift {
@@ -1430,7 +1439,7 @@ pub fn status_bar(
                     Stroke::new(1.5, p.muted),
                 )));
                 c.add_space(8.0);
-                c.ctx().request_repaint();
+                c.ctx().request_repaint_after(theme::ANIMATION_FRAME);
             }
             crate::lsp::State::Failed(_)
                 if status_link(c, "No completion".into(), p.muted, "Why is completion off?", false).clicked() =>

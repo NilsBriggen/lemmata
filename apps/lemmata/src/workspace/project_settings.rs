@@ -146,6 +146,7 @@ impl Workspace {
                         info.config.grammar_ignore.iter().cloned().collect();
                     ws.checks.grammar.generation += 1;
                     ws.info = info;
+                    ws.tree_rows = None;
                     ws.refresh_lookups(b, false);
                     if main_changed {
                         let main = ws.info.main.clone();

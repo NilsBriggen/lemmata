@@ -766,14 +766,18 @@ pub fn show(
     let tab = style.indent.tab_size();
 
     // Highlighting starts over from the first changed line.
-    if ed.hl_version != ed.doc.version {
-        ed.hl.invalidate_from(if ed.hl_version == u64::MAX {
-            0
-        } else {
-            ed.doc.changed_from_line
+    let seen_version = ed.hl_version;
+    let edit = if ed.hl_version != ed.doc.version {
+        let edit = ed.doc.take_edit();
+        ed.hl.invalidate_from(match edit {
+            Some((from, _)) if ed.hl_version != u64::MAX => from,
+            _ => 0,
         });
         ed.hl_version = ed.doc.version;
-    }
+        edit
+    } else {
+        None
+    };
 
     // Line heights, from the cache by text; a line is laid out only when it is new.
     let key = (
@@ -787,6 +791,42 @@ pub fn show(
         ed.cache_key = key;
     }
     let hkey = (ed.doc.version, key.0, key.1, key.2, key.3);
+    // A long file's wrapped lines are guessed from their length rather than laid out: a resize
+    // would otherwise lay out every one of them. Lines on screen are corrected as they are drawn.
+    let guess = ed.doc.line_count() > 1500;
+    let measure = |cache: &mut HashMap<u64, f32>, text: &str| {
+        *cache.entry(hash(text)).or_insert_with(|| {
+            let w = text.chars().count() as f32 * cw;
+            // Short lines can't wrap: no layout needed.
+            if !style.wrap || w <= text_w * 0.9 {
+                style.line_height
+            } else if guess {
+                (w / text_w).ceil().max(1.0) * style.line_height
+            } else {
+                lay.layout(ui, text, &[]).height
+            }
+        })
+    };
+    // After an edit only the lines between the change and the untouched end are measured again;
+    // with folds (which hide lines) the whole pass below runs instead.
+    if let Some((from, tail)) = edit
+        && ed.heights_key == (seen_version, key.0, key.1, key.2, key.3)
+        && ed.heights_folds == ed.folds_gen
+        && ed.folds.0.is_empty()
+    {
+        let (n, old) = (ed.doc.line_count(), ed.heights.len());
+        if from + tail <= n.min(old) {
+            let kept = ed.heights.split_off(old - tail);
+            ed.heights.truncate(from);
+            for i in from..n - tail {
+                let h = measure(&mut ed.height_cache, &ed.doc.line(i));
+                ed.heights.push(h);
+            }
+            ed.heights.extend(kept);
+            ed.hidden = vec![false; n];
+            ed.heights_key = hkey;
+        }
+    }
     if ed.heights_key != hkey
         || ed.heights.len() != ed.doc.line_count()
         || ed.heights_folds != ed.folds_gen
@@ -800,15 +840,7 @@ pub fn show(
                 ed.heights.push(0.0);
                 continue;
             }
-            let text = ed.doc.line(i);
-            let h = *ed.height_cache.entry(hash(&text)).or_insert_with(|| {
-                // Short lines can't wrap: no layout needed.
-                if !style.wrap || text.chars().count() as f32 * cw <= text_w * 0.9 {
-                    style.line_height
-                } else {
-                    lay.layout(ui, &text, &[]).height
-                }
-            });
+            let h = measure(&mut ed.height_cache, &ed.doc.line(i));
             ed.heights.push(h);
         }
         ed.heights_key = hkey;
@@ -998,7 +1030,7 @@ pub fn show(
             if (l.height - ed.heights[n]).abs() > 0.5 {
                 // A guessed height was off; it is right from the next frame on.
                 ed.height_cache.insert(hash(&text), l.height);
-                ed.heights_key.0 = u64::MAX;
+                ed.heights[n] = l.height;
                 ui.ctx().request_repaint();
             }
             let top = tops[n];
@@ -3025,6 +3057,43 @@ mod tests {
     use crate::testing;
     use crate::theme;
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn heights_after_an_edit_match_measuring_every_line() {
+        // Short lines and lines long enough to wrap, so the heights differ.
+        let text: String = (0..200)
+            .map(|i| {
+                if i % 7 == 0 {
+                    format!("{i} {}\n", "a long line that wraps ".repeat(8))
+                } else {
+                    format!("{i}\n")
+                }
+            })
+            .collect();
+        let mut h = harness(Editor::new(&text, true), [420.0, 300.0]);
+        h.run();
+        let edit = |h: &mut egui_kittest::Harness<'static, Editor>, at: usize, s: &str| {
+            let ed = h.state_mut();
+            ed.doc.selection = Selection::cursor(ed.doc.line_start(at));
+            crate::editor::commands::insert_text(&mut ed.doc, s);
+        };
+        edit(&mut h, 50, &format!("new\n{}\n", "wraps too ".repeat(30)));
+        edit(&mut h, 120, "x");
+        h.run();
+        edit(&mut h, 10, "");
+        let ed = h.state_mut();
+        let s = ed.doc.line_start(9);
+        ed.doc.selection = Selection::single(Range::new(s, s + 4));
+        crate::editor::commands::insert_text(&mut ed.doc, "joined");
+        h.run();
+        h.state_mut().doc.undo();
+        h.run();
+        let patched = h.state().heights.clone();
+        h.state_mut().heights_key.0 = u64::MAX;
+        h.run();
+        assert_eq!(patched, h.state().heights, "same as measuring every line");
+        assert_eq!(patched.len(), h.state().doc.line_count());
+    }
 
     pub fn style() -> Style {
         Style {

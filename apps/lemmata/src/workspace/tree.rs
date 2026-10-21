@@ -13,6 +13,47 @@ fn ext(name: &str) -> String {
 
 /// A sorted copy of the tree: "name", "type", "modified" or "size". Folders always sort by name;
 /// `folders_first` keeps them above files.
+/// The tree as drawn: each entry (a folder without its children), its depth and, for a folder,
+/// how many files it holds; and what it was made from.
+pub struct Rows {
+    pub sort: String,
+    pub folders_first: bool,
+    pub collapsed: HashSet<String>,
+    pub rows: std::rc::Rc<Vec<(Entry, usize, usize)>>,
+}
+
+impl Rows {
+    pub fn new(
+        entries: &[Entry],
+        sort: &str,
+        folders_first: bool,
+        collapsed: &HashSet<String>,
+    ) -> Self {
+        let sorted = sort_entries(entries, sort, folders_first);
+        let rows = flatten(&sorted, collapsed)
+            .into_iter()
+            .map(|(e, depth)| {
+                let count = if e.is_dir { count_files(e) } else { 0 };
+                let bare = Entry {
+                    children: Vec::new(),
+                    ..e.clone()
+                };
+                (bare, depth, count)
+            })
+            .collect();
+        Self {
+            sort: sort.to_owned(),
+            folders_first,
+            collapsed: collapsed.clone(),
+            rows: std::rc::Rc::new(rows),
+        }
+    }
+
+    pub fn fits(&self, sort: &str, folders_first: bool, collapsed: &HashSet<String>) -> bool {
+        self.sort == sort && self.folders_first == folders_first && self.collapsed == *collapsed
+    }
+}
+
 pub fn sort_entries(entries: &[Entry], mode: &str, folders_first: bool) -> Vec<Entry> {
     let mut v: Vec<Entry> = entries
         .iter()

@@ -407,6 +407,10 @@ fn definitions(system: &[SystemFont]) -> FontDefinitions {
 }
 
 /// The egui style for one theme: body text 13 px, controls as `.btn` and `.input`, menus as `.menu`.
+/// Spinners and progress bars redraw about 30 times a second, not at the display's rate: a
+/// build can run for minutes, and each frame costs CPU that the build could use.
+pub const ANIMATION_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+
 pub fn apply(ctx: &egui::Context, p: &Palette) {
     let mut visuals = if p.dark {
         Visuals::dark()

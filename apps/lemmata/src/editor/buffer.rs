@@ -208,8 +208,8 @@ pub struct Doc {
     last: Option<(Instant, EditKind)>,
     /// Bumped on every change, so views know to re-highlight and re-measure.
     pub version: u64,
-    /// The first line touched by the last change, for incremental work.
-    pub changed_from_line: usize,
+    /// The lines edited since the view last looked (see `take_edit`).
+    edit: Option<(usize, usize)>,
     /// Every change since the view last looked, in order (undo and redo too), so positions it
     /// keeps (folds, snippet fields, problems) can follow the text.
     pub journal: Vec<ChangeSet>,
@@ -224,7 +224,7 @@ impl Doc {
             redo: Vec::new(),
             last: None,
             version: 0,
-            changed_from_line: 0,
+            edit: None,
             journal: Vec::new(),
         }
     }
@@ -277,7 +277,7 @@ impl Doc {
             self.selection = selection;
             return;
         }
-        self.changed_from_line = changes.0.first().map_or(0, |c| self.line_of(c.from));
+        self.note_edit(&changes);
         let inverse = changes.apply(&mut self.rope);
         self.journal.push(changes.clone());
         self.selection = selection;
@@ -342,6 +342,26 @@ impl Doc {
         }
     }
 
+    /// Notes the lines `c` touches, before it is applied: the first one, and how many at the end
+    /// it leaves alone. Several edits before the view looks add up to the span covering them all.
+    fn note_edit(&mut self, c: &ChangeSet) {
+        let (Some(first), Some(last)) = (c.0.first(), c.0.last()) else {
+            return;
+        };
+        let from = self.line_of(first.from);
+        let tail = self.line_count() - 1 - self.line_of(last.to);
+        self.edit = Some(match self.edit {
+            Some((f, t)) => (f.min(from), t.min(tail)),
+            None => (from, tail),
+        });
+    }
+
+    /// The lines changed since the last call: the first, and how many at the end are as they
+    /// were. Undo and redo count too, so highlighting and line heights redo only that span.
+    pub fn take_edit(&mut self) -> Option<(usize, usize)> {
+        self.edit.take()
+    }
+
     /// Ends the current undo group, so the next edit starts a new one.
     pub fn break_group(&mut self) {
         self.last = None;
@@ -352,10 +372,10 @@ impl Doc {
             return false;
         };
         for inv in &step.inverses {
+            self.note_edit(inv);
             inv.apply(&mut self.rope);
             self.journal.push(inv.clone());
         }
-        self.changed_from_line = 0;
         self.selection = clamp(step.before.clone(), self.len());
         self.version += 1;
         self.last = None;
@@ -368,10 +388,10 @@ impl Doc {
             return false;
         };
         for c in &step.redos {
+            self.note_edit(c);
             c.apply(&mut self.rope);
             self.journal.push(c.clone());
         }
-        self.changed_from_line = 0;
         self.selection = clamp(step.after.clone(), self.len());
         self.version += 1;
         self.last = None;
@@ -467,6 +487,28 @@ mod tests {
         type_text(&mut d, "bye");
         assert_eq!(d.text(), "bye world");
         assert_eq!(d.selection.main(), Range::cursor(3));
+    }
+
+    #[test]
+    fn undo_and_redo_say_where_the_text_changed() {
+        let mut d = Doc::new(&"line\n".repeat(50));
+        let at = d.line_start(30);
+        d.selection = Selection::cursor(at);
+        crate::editor::commands::insert_text(&mut d, "x");
+        d.break_group();
+        assert_eq!(d.take_edit(), Some((30, 20)));
+        assert!(d.undo());
+        assert_eq!(d.take_edit(), Some((30, 20)), "not from the top");
+        assert!(d.redo());
+        assert_eq!(d.take_edit(), Some((30, 20)));
+        // Two edits before the view looks: the span covers both.
+        let (a, b) = (d.line_start(2), d.line_start(40));
+        d.selection = Selection::cursor(b);
+        crate::editor::commands::insert_text(&mut d, "y\nz");
+        d.selection = Selection::cursor(a);
+        crate::editor::commands::insert_text(&mut d, "w");
+        assert_eq!(d.take_edit(), Some((2, 10)));
+        assert_eq!(d.take_edit(), None);
     }
 
     #[test]

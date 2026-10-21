@@ -103,6 +103,12 @@ fn has_data(pdf: &Path) -> bool {
 type Cache = Option<(PathBuf, SystemTime, Arc<Index>)>;
 static CACHE: Mutex<Cache> = Mutex::new(None);
 
+/// Lets go of the parsed file: a long document's index is tens of MB, and once another project is
+/// open nothing asks for it again.
+pub fn forget() {
+    *CACHE.lock().unwrap_or_else(PoisonError::into_inner) = None;
+}
+
 /// The parsed synctex file of `pdf`, re-read only when its mtime changes.
 fn load(pdf: &Path) -> Option<Arc<Index>> {
     let (path, mtime) = [
