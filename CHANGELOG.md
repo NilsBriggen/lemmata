@@ -2,6 +2,11 @@
 
 All notable changes to Lemmata.
 
+## 3.0.0-rc.3 (2026-10-21)
+
+### Fixed
+- An open project no longer wakes the app every second on Linux
+
 ## 3.0.0-rc.2 (2026-10-21)
 
 ### Fixed
