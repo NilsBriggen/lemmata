@@ -152,13 +152,11 @@ jobs:
           if [[ "$version" == *-* ]]; then echo "plain=false"; else echo "plain=true"; fi >> "$GITHUB_OUTPUT"
       - name: Rename assets, write checksums and updater manifest
         run: python3 -I scripts/finalize-release.py artifacts dist "${{ steps.meta.outputs.version }}" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
+      # This version's section of CHANGELOG.md, so notes edited there by hand are the ones published.
       - name: Release notes
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: cliff.toml
-          args: --latest --strip header
-        env:
-          OUTPUT: notes.md
+        run: |
+          awk -v v="## ${GITHUB_REF_NAME#v} " 'index($0, v) == 1 {on = 1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "::error::CHANGELOG.md has no section for ${GITHUB_REF_NAME#v}"; exit 1; }
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

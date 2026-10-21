@@ -2564,7 +2564,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "lemmata-app"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2611,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-bib"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "biblatex",
  "lemmata-project",
@@ -2626,7 +2626,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-cli"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2643,11 +2643,11 @@ dependencies = [
 
 [[package]]
 name = "lemmata-env"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 
 [[package]]
 name = "lemmata-git"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "lemmata-env",
  "serde",
@@ -2658,7 +2658,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-grammar"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "reqwest",
  "rustls",
@@ -2669,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-history"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "lemmata-env",
  "lemmata-log",
@@ -2682,7 +2682,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-log"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "regex",
  "serde",
@@ -2690,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-pkgmap"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "flate2",
  "serde",
@@ -2699,7 +2699,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-project"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "regex",
  "serde",
@@ -2714,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-shell"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "lemmata-bib",
@@ -2749,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-spell"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "encoding_rs",
  "reqwest",
@@ -2763,7 +2763,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-synctex"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "flate2",
  "lemmata-env",
@@ -2774,7 +2774,7 @@ dependencies = [
 
 [[package]]
 name = "lemmata-tex"
-version = "2.1.3"
+version = "3.0.0-rc.1"
 dependencies = [
  "lemmata-env",
  "lemmata-log",
