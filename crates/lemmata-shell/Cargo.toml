@@ -29,8 +29,9 @@ notify-debouncer-mini = "0.7"
 zip.workspace = true
 open = "5"
 url = "2"
-# The template collection: the same reqwest/rustls/ring line as lemmata-bib and lemmata-spell.
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+# The template collection: the same reqwest/rustls/ring line as lemmata-bib and lemmata-spell;
+# gzip because GitHub serves dictionaries and templates compressed (36 MB -> 14 MB for Turkish).
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy", "gzip"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 ring = "0.17"
 # The self-updater: the Tauri updater's signatures and versions.
