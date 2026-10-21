@@ -29,13 +29,20 @@ else
   cargo build --release -p lemmata-app --target "$target"
 fi
 
+# cargo-packager takes the program from target/release, whatever was built for.
+exe=lemmata-app
+[[ $target == *windows* ]] && exe=lemmata-app.exe
+mkdir -p target/release
+[[ $bin == target/release ]] || cp "$bin/$exe" target/release/
+
 packager_formats=$(echo "$formats" | tr ',' '\n' | grep -vx rpm | paste -sd, -)
 # AppImage tools are AppImages themselves; runners have no FUSE to mount them.
-APPIMAGE_EXTRACT_AND_RUN=1 cargo packager -p lemmata-app --release \
-  --binaries-dir "$bin" --formats "$packager_formats"
+APPIMAGE_EXTRACT_AND_RUN=1 cargo packager -p lemmata-app --release --formats "$packager_formats"
 
 if [[ ,$formats, == *,rpm,* ]]; then
-  cargo generate-rpm -p lemmata-app --target "$target" -o "$out/"
+  # RPM has no "-" in versions; a pre-release sorts before its release with "~".
+  version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2 | tr '-' '~')
+  cargo generate-rpm -p apps/lemmata --target "$target" -o "$out/" --set-metadata "version = \"$version\""
 fi
 
 # The updater replaces the whole bundle on macOS, from a tarball of it.

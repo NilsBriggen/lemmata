@@ -7,6 +7,7 @@
 //! LevelDB.
 
 use crate::store::{Dirs, Groups, Recents};
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 const RECENT: &str = "lemmata.recent";
@@ -274,6 +275,7 @@ mod leveldb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn dirs(root: &Path) -> Dirs {
         Dirs {
