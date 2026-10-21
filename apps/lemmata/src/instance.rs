@@ -36,7 +36,9 @@ pub fn forward(dir: &Path, args: &[String], cwd: &Path) -> bool {
         return false;
     };
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
+    // A listener on localhost answers in well under a millisecond. Windows retries a refused
+    // connection for about two seconds, so the wait for a Lemmata that is gone is kept short.
+    let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(150)) else {
         return false;
     };
     let launch = Launch {
@@ -56,9 +58,16 @@ pub fn forward(dir: &Path, args: &[String], cwd: &Path) -> bool {
     BufReader::new(s).read_line(&mut answer).is_ok() && answer.trim() == "ok"
 }
 
-/// Stops handing launches to this process: it is quitting, and the next Lemmata takes over.
+/// The token this process listens with, so quitting removes only its own file.
+static OWN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Stops handing launches to this process: it is quitting, and the next Lemmata takes over
+/// without first trying to reach this one. Leaves another instance's file alone.
 pub fn release(dir: &Path) {
-    let _ = std::fs::remove_file(file(dir));
+    let Some(own) = OWN.get() else { return };
+    if std::fs::read_to_string(file(dir)).is_ok_and(|t| t.trim().ends_with(own.as_str())) {
+        let _ = std::fs::remove_file(file(dir));
+    }
 }
 
 /// Becomes the instance others hand their launches to: `on` gets each one's arguments and folder.
@@ -71,6 +80,7 @@ pub fn listen(
     let token = token().ok_or_else(|| std::io::Error::other("no secure random source"))?;
     std::fs::create_dir_all(dir)?;
     write_private(&file(dir), &format!("{port} {token}"))?;
+    let _ = OWN.set(token.clone());
     let shared = std::sync::Arc::new((token, on));
     std::thread::Builder::new()
         .name("instance".into())
@@ -233,5 +243,11 @@ mod tests {
         std::fs::write(file(dir.path()), format!("{port} wrong")).unwrap();
         assert!(!forward(dir.path(), &["lemmata".into()], Path::new("/")));
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        // Quitting leaves another instance's file alone, and removes its own.
+        release(dir.path());
+        assert!(file(dir.path()).exists(), "not ours any more");
+        std::fs::write(file(dir.path()), format!("{port} {}", OWN.get().unwrap())).unwrap();
+        release(dir.path());
+        assert!(!file(dir.path()).exists());
     }
 }

@@ -338,27 +338,43 @@ fn draw<'a>(
 
 /// `filter: invert(0.92) hue-rotate(180deg)`, the dark-pages look of the web app, per pixel.
 fn darken(rgba: &mut [u8]) {
+    // A page is long runs of one colour (paper, ink): each run is worked out once.
+    let mut last: Option<([u8; 4], [u8; 4])> = None;
+    for px in rgba.as_chunks_mut::<4>().0 {
+        let out = match last {
+            Some((from, to)) if from == *px => to,
+            _ => {
+                let to = dark_pixel(*px);
+                last = Some((*px, to));
+                to
+            }
+        };
+        *px = out;
+    }
+}
+
+fn dark_pixel(px: [u8; 4]) -> [u8; 4] {
     // hue-rotate(180deg) as the CSS filter spec defines it.
     const M: [[f32; 3]; 3] = [
         [-0.574, 1.43, 0.144],
         [0.426, 0.43, 0.144],
         [0.426, 1.43, -0.856],
     ];
-    for px in rgba.as_chunks_mut::<4>().0 {
-        let a = px[3] as f32 / 255.0;
-        if a == 0.0 {
-            continue;
-        }
-        // Un-premultiply, invert(0.92), rotate, premultiply again.
-        let c: [f32; 3] = std::array::from_fn(|i| {
-            let v = px[i] as f32 / 255.0 / a;
-            0.92 - 0.84 * v
-        });
-        for (i, row) in M.iter().enumerate() {
-            let v = (row[0] * c[0] + row[1] * c[1] + row[2] * c[2]).clamp(0.0, 1.0);
-            px[i] = (v * a * 255.0).round() as u8;
-        }
+    let a = px[3] as f32 / 255.0;
+    if a == 0.0 {
+        return px;
     }
+    // Un-premultiply, invert(0.92), rotate, premultiply again.
+    let c: [f32; 3] = std::array::from_fn(|i| {
+        let v = px[i] as f32 / 255.0 / a;
+        0.92 - 0.84 * v
+    });
+    let mut out = px;
+    for (i, row) in M.iter().enumerate() {
+        let v = (row[0] * c[0] + row[1] * c[1] + row[2] * c[2]).clamp(0.0, 1.0);
+        out[i] = (v * a * 255.0).round() as u8;
+    }
+    out
 }
 
 /// Maps PDF user space of a page to points from its top-left corner.
@@ -669,6 +685,31 @@ mod tests {
         let (s, map) = page_text(&glyphs);
         assert_eq!(s, "ab c d");
         assert_eq!(map, [Some(0), Some(1), None, Some(2), None, Some(3)]);
+    }
+
+    #[test]
+    fn dark_pages_are_the_same_pixel_by_pixel_and_quick() {
+        // A page: paper, runs of ink, antialiased edges, transparent bits.
+        let mut page = Vec::new();
+        for i in 0..1700 * 2200u32 {
+            let v = match i % 997 {
+                0..900 => [255, 255, 255, 255],
+                900..990 => [20, 20, 20, 255],
+                n => [n as u8, (n * 7) as u8, 255 - n as u8, (n % 3 * 120) as u8],
+            };
+            page.extend(v);
+        }
+        let want: Vec<u8> = page
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|&p| dark_pixel(p))
+            .collect();
+        let start = std::time::Instant::now();
+        darken(&mut page);
+        let took = start.elapsed();
+        assert_eq!(page, want, "identical to working out every pixel");
+        eprintln!("darkened a 1700×2200 page in {took:?}");
     }
 
     #[test]

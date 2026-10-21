@@ -53,9 +53,9 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
     );
+    instance::release(&store::Dirs::system().cache);
     // An installed update: the new version (or its installer) starts once this one is gone.
     if let Some((program, args)) = app::AFTER_EXIT.lock().ok().and_then(|mut a| a.take()) {
-        instance::release(&store::Dirs::system().cache);
         let _ = std::process::Command::new(program).args(args).spawn();
     }
     result

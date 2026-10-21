@@ -698,22 +698,40 @@ impl PdfView {
             }
             let near = viewport.expand2(vec2(0.0, viewport.height() * 0.5));
             let keep = viewport.expand2(vec2(0.0, viewport.height() * 2.0));
-            let painter = ui.painter();
+            // The pages on screen are asked for first, then the ones half a screen away, and
+            // their text layers last: the engine works through its queue in order.
+            let (mut on_screen, mut around) = (Vec::new(), Vec::new());
+            let selected = self.selection.map(|(page, ..)| page);
             for i in 0..self.pages.len() {
                 let r = self.rects[i];
                 if !keep.intersects(r) {
                     self.tex.remove(&i);
-                    continue;
+                    // A search needs every page's text, a selection its own page's.
+                    if self.query.is_empty() && selected != Some(i) {
+                        self.deco.remove(&i);
+                    }
+                } else if viewport.intersects(r) {
+                    on_screen.push(i);
+                } else if near.intersects(r) {
+                    around.push(i);
                 }
-                if !near.intersects(r) {
-                    continue;
-                }
+            }
+            for &i in on_screen.iter().chain(&around) {
                 self.want(i, self.scales[i] * ppp, false, epoch);
+            }
+            for &i in on_screen.iter().chain(&around) {
                 if !self.deco.contains_key(&i) && self.decorating.insert(i) {
                     self.engine.send(Job::Decorate {
                         doc: self.shown,
                         page: i,
                     });
+                }
+            }
+            let painter = ui.painter();
+            for i in 0..self.pages.len() {
+                let r = self.rects[i];
+                if !near.intersects(r) {
+                    continue;
                 }
                 let sr = r.translate(origin.to_vec2());
                 if !ui.is_rect_visible(sr) {

@@ -57,6 +57,9 @@ struct Undo {
     at: Instant,
 }
 
+/// Thumbnails decoded off the UI thread: project path and image (None if it can't be read).
+type Decoded = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<egui::ColorImage>)>>>;
+
 #[derive(Default)]
 pub struct State {
     query: String,
@@ -73,6 +76,9 @@ pub struct State {
     pub template_note: Option<(String, Instant)>,
     /// Page 1 of each project's PDF, when there is one; None once asked and missing.
     pub thumbs: HashMap<String, Option<egui::TextureHandle>>,
+    /// Thumbnails being decoded, and the decoded ones waiting for the next frame.
+    pending: std::collections::HashSet<String>,
+    decoded: Decoded,
 }
 
 impl State {
@@ -271,6 +277,17 @@ struct Dragged(String);
 
 pub fn show(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx) -> Option<Action> {
     let mut action = None;
+    let done = std::mem::take(&mut *st.decoded.lock().unwrap_or_else(|e| e.into_inner()));
+    for (path, img) in done {
+        // Not pending any more: the cache was cleared for a newer thumbnail meanwhile.
+        if st.pending.remove(&path) {
+            let tex = img.map(|i| {
+                ui.ctx()
+                    .load_texture(format!("thumb:{path}"), i, egui::TextureOptions::LINEAR)
+            });
+            st.thumbs.insert(path, tex);
+        }
+    }
     let full = ui.max_rect();
     let rail = Rect::from_min_size(full.min, Vec2::new(248.0, full.height()));
     let main = Rect::from_min_max(pos2(rail.right(), full.top()), full.max);
@@ -972,23 +989,35 @@ fn folder_name(groups: &Groups, path: &str) -> Option<String> {
         .map(|g| g.name.clone())
 }
 
+/// The thumbnail if it is ready. Decoding takes a few ms per project, so it runs off the UI
+/// thread and the library shows at once, the pages filling in a frame later.
 fn thumb(ui: &Ui, st: &mut State, c: &Ctx, path: &str) -> Option<egui::TextureHandle> {
-    st.thumbs
-        .entry(path.into())
-        .or_insert_with(|| {
-            let bytes = (c.thumbnail)(path)?;
-            let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                .ok()?
-                .to_rgba8();
-            let size = [img.width() as usize, img.height() as usize];
-            let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-            Some(ui.ctx().load_texture(
-                format!("thumb:{path}"),
-                color,
-                egui::TextureOptions::LINEAR,
-            ))
-        })
-        .clone()
+    if let Some(t) = st.thumbs.get(path) {
+        return t.clone();
+    }
+    if !st.pending.insert(path.to_owned()) {
+        return None;
+    }
+    let Some(bytes) = (c.thumbnail)(path) else {
+        st.pending.remove(path);
+        st.thumbs.insert(path.into(), None);
+        return None;
+    };
+    let (done, ctx, path) = (st.decoded.clone(), ui.ctx().clone(), path.to_owned());
+    std::thread::spawn(move || {
+        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .ok()
+            .map(|i| {
+                let i = i.to_rgba8();
+                let size = [i.width() as usize, i.height() as usize];
+                egui::ColorImage::from_rgba_unmultiplied(size, i.as_raw())
+            });
+        done.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((path, img));
+        ctx.request_repaint();
+    });
+    None
 }
 
 /// `.mini`: a 30×38 page thumbnail, or a file icon until there is one.
@@ -1008,6 +1037,10 @@ fn thumb_mini(
         Stroke::new(1.0, p.border),
         StrokeKind::Inside,
     );
+    // Rows scrolled out of view don't load theirs.
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
     match thumb(ui, st, c, path) {
         Some(tex) => {
             // object-fit: cover; object-position: top
@@ -1114,7 +1147,11 @@ fn grid(
             Sense::click_and_drag(),
         );
         r.dnd_set_drag_payload(Dragged(rec.path.clone()));
-        let tex = thumb(ui, st, c, &rec.path);
+        let tex = if ui.is_rect_visible(rect) {
+            thumb(ui, st, c, &rec.path)
+        } else {
+            None
+        };
         let mut lift = card_frame(
             ui,
             &painter,
@@ -1745,6 +1782,43 @@ mod snapshots {
             "{title:?} runs under {rename:?}"
         );
         h.try_snapshot("library-long-folder-light").unwrap();
+    }
+
+    #[test]
+    fn every_thumbnail_arrives_after_decoding() {
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(60, 76, image::Rgba([200, 30, 30, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let recents = testing::recents(0.0);
+        let n = recents.0.len();
+        let st = std::sync::Arc::new(std::sync::Mutex::new(State::default()));
+        let shared = st.clone();
+        let mut groups = Groups::default();
+        let mut settings = Settings {
+            library_view: "grid".into(),
+            ..Settings::default()
+        };
+        let mut h = testing::harness(theme::LIGHT, move |ui| {
+            let mut c = Ctx {
+                recents: &recents,
+                groups: &mut groups,
+                settings: &mut settings,
+                error: None,
+                no_main_in: None,
+                thumbnail: &|_| Some(png.clone()),
+                now_ms: 0.0,
+            };
+            show(ui, &theme::LIGHT, &mut shared.lock().unwrap(), &mut c);
+        });
+        let start = std::time::Instant::now();
+        while st.lock().unwrap().thumbs.values().flatten().count() < n
+            && start.elapsed() < std::time::Duration::from_secs(5)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            h.step();
+        }
+        assert_eq!(st.lock().unwrap().thumbs.values().flatten().count(), n);
     }
 
     #[test]
