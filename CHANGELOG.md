@@ -2,6 +2,11 @@
 
 All notable changes to Lemmata.
 
+## 2.1.3 (2026-10-20)
+
+### Fixed
+- On Windows, saving while a build reads the file no longer fails with "Access is denied"
+
 ## 2.1.2 (2026-10-19)
 
 ### Fixed
