@@ -412,10 +412,8 @@ impl Shell {
         if let Some(m) = old {
             let _ = std::fs::set_permissions(&tmp, m.permissions());
         }
-        std::fs::rename(&tmp, &abs).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            format!("Could not save {path}: {e}")
-        })?;
+        files::put_in_place(&tmp, &abs, &content)
+            .map_err(|e| format!("Could not save {path}: {e}"))?;
         // From here on, an event for this exact content is our own doing.
         self.written
             .lock_safe()

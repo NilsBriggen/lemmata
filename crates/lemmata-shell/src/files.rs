@@ -259,13 +259,22 @@ fn write_all_atomic(writes: &[(PathBuf, String)]) -> CmdResult<()> {
             return Err(format!("Could not save {}: {e}", path.display()));
         }
     }
-    for (path, _) in writes {
-        std::fs::rename(tmp_of(path), path).map_err(|e| {
-            let _ = std::fs::remove_file(tmp_of(path));
-            format!("Could not save {}: {e}", path.display())
-        })?;
+    for (path, text) in writes {
+        put_in_place(&tmp_of(path), path, text)
+            .map_err(|e| format!("Could not save {}: {e}", path.display()))?;
     }
     Ok(())
+}
+
+/// Moves `tmp` (holding `text`) over `path`. Windows refuses to replace a file another program has open, and TeX
+/// keeps its input open for the whole build; overwriting it in place is still allowed then.
+pub(crate) fn put_in_place(tmp: &Path, path: &Path, text: &str) -> std::io::Result<()> {
+    let result = std::fs::rename(tmp, path).or_else(|e| match e.kind() {
+        std::io::ErrorKind::PermissionDenied => std::fs::write(path, text),
+        _ => Err(e),
+    });
+    let _ = std::fs::remove_file(tmp);
+    result
 }
 
 impl Shell {
@@ -1079,6 +1088,25 @@ pub fn watch(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn saves_in_place_when_the_file_cant_be_replaced() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let (tmp, path) = (
+            d.path().join(".main.tex.lemmata-tmp"),
+            d.path().join("main.tex"),
+        );
+        std::fs::write(&path, "old").unwrap();
+        std::fs::write(&tmp, "new").unwrap();
+        // A read-only folder refuses the rename, as Windows does for an open file; the file itself stays writable.
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = super::put_in_place(&tmp, &path, "new");
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        result.unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+    }
+
     #[test]
     fn content_hash_matches_the_frontend() {
         // The same vectors are checked in src/lib/contentHash.test.ts.
