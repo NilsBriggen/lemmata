@@ -36,6 +36,11 @@ lemmata-synctex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 base64 = "0.22"
+# No logger is installed: release builds drop the log and tracing calls of dependencies entirely.
+log = { version = "0.4", features = ["release_max_level_off"] }
+tracing = { version = "0.1", default-features = false, features = ["release_max_level_off"] }
+# url's international host names through the unicode-* crates instead of ICU4X's data tables.
+idna_adapter = "~1.1"
 dirs = "7"
 open = "5"
 regex.workspace = true

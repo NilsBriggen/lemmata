@@ -265,12 +265,38 @@ fn recode(aff: &[u8], dic: &[u8]) -> Result<(String, String), Error> {
         let s = |b: &[u8]| String::from_utf8(b.to_vec()).map_err(|_| bad());
         return Ok((s(aff)?, s(dic)?));
     }
-    let enc = encoding_rs::Encoding::for_label(name.as_bytes()).ok_or_else(bad)?;
-    let aff = enc
-        .decode(aff)
-        .0
-        .replacen(set.unwrap_or(""), "SET UTF-8", 1);
-    Ok((aff, enc.decode(dic).0.into_owned()))
+    let upper = upper_half(name).ok_or_else(bad)?;
+    let aff = decode(aff, &upper).replacen(set.unwrap_or(""), "SET UTF-8", 1);
+    Ok((aff, decode(dic, &upper)))
+}
+
+/// Bytes 0xA0–0xFF of the two single-byte encodings left in the dictionary list (Polish and
+/// Greek); below that both are Latin-1. Unassigned bytes read as U+FFFD, as browsers do.
+const ISO_8859_2: &str = "\u{a0}Ą˘Ł¤ĽŚ§¨ŠŞŤŹ\u{ad}ŽŻ°ą˛ł´ľśˇ¸šşťź˝žżŔÁÂĂÄĹĆÇČÉĘËĚÍÎĎĐŃŇÓÔŐÖ×ŘŮÚŰÜÝŢßŕáâăäĺćçčéęëěíîďđńňóôőö÷řůúűüýţ˙";
+const ISO_8859_7: &str = "\u{a0}‘’£€₯¦§¨©ͺ«¬\u{ad}\u{fffd}―°±²³΄΅Ά·ΈΉΊ»Ό½ΎΏΐΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡ\u{fffd}ΣΤΥΦΧΨΩΪΫάέήίΰαβγδεζηθικλμνξοπρςστυφχψωϊϋόύώ\u{fffd}";
+
+fn upper_half(label: &str) -> Option<Vec<char>> {
+    let norm: String = label
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    let table = match norm.as_str() {
+        "ISO88592" | "LATIN2" => ISO_8859_2,
+        "ISO88597" | "GREEK" => ISO_8859_7,
+        _ => return None,
+    };
+    Some(table.chars().collect())
+}
+
+fn decode(bytes: &[u8], upper: &[char]) -> String {
+    bytes
+        .iter()
+        .map(|&b| match b {
+            0..0xA0 => b as char,
+            _ => upper[(b - 0xA0) as usize],
+        })
+        .collect()
 }
 
 async fn fetch(client: &reqwest::Client, url: &str, label: &str) -> Result<Vec<u8>, Error> {
@@ -363,6 +389,22 @@ mod tests {
         let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
         assert!(verify(b"abc", abc, "x").is_ok());
         assert!(verify(b"abd", abc, "x").unwrap_err().0.contains("checksum"));
+    }
+
+    #[test]
+    fn both_legacy_encodings_read_like_encoding_rs() {
+        let all: Vec<u8> = (0..=255).collect();
+        for (label, enc) in [
+            ("ISO8859-2", encoding_rs::ISO_8859_2),
+            ("ISO8859-7", encoding_rs::ISO_8859_7),
+        ] {
+            assert_eq!(
+                decode(&all, &upper_half(label).unwrap()),
+                enc.decode(&all).0,
+                "{label}"
+            );
+        }
+        assert!(upper_half("KOI8-R").is_none());
     }
 
     #[test]

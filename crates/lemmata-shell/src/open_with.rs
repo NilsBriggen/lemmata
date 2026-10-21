@@ -242,6 +242,13 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn international_host_names_still_resolve() {
+        // idna_adapter is pinned to 1.1 (apps/lemmata/Cargo.toml) to leave ICU4X out.
+        let u = url::Url::parse("https://münchen.de/x").unwrap();
+        assert_eq!(u.host_str(), Some("xn--mnchen-3ya.de"));
+    }
     use std::fs;
 
     fn args(a: &[&str]) -> Vec<String> {

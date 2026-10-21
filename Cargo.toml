@@ -30,7 +30,8 @@ regex = "1"
 which = "8"
 walkdir = "2"
 tempfile = "3"
-zip = { version = "9", default-features = false, features = ["deflate"] }
+# Deflate through flate2 and zlib-rs only: "deflate" adds zopfli, used just for levels above 9.
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [profile.release]
 lto = "fat"
@@ -213,3 +214,28 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Tests render PDFs and images: those crates are slow unoptimised, and built once.
+[profile.dev.package.hayro]
+opt-level = 2
+
+[profile.dev.package.hayro-interpret]
+opt-level = 2
+
+[profile.dev.package.hayro-syntax]
+opt-level = 2
+
+[profile.dev.package.vello_cpu]
+opt-level = 2
+
+[profile.dev.package.vello_common]
+opt-level = 2
+
+[profile.dev.package.png]
+opt-level = 2
+
+[profile.dev.package.skrifa]
+opt-level = 2
+
+[profile.dev.package.fdeflate]
+opt-level = 2
