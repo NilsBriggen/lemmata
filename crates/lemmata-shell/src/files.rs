@@ -1026,12 +1026,18 @@ pub fn classify(root: &Path, outdir: &str, written: &Written, paths: &[PathBuf])
     out
 }
 
-/// Drops paths whose content is what this watcher saw last time: on Linux
-/// every open is an event, so reading a file or listing a folder (the app
-/// does both when handling a change) would otherwise report itself forever.
+/// What a file looked like when last seen: its size and modification time.
+type Stamp = Option<(u64, std::time::SystemTime)>;
+
+/// Drops paths that look as this watcher saw them last time: on Linux every
+/// open is an event, so reading a file or listing a folder (the app does both
+/// when handling a change) would otherwise report itself forever. Only a stat,
+/// never a read: reading to compare would itself be the next event.
+// shortcut: same size and mtime is taken as unchanged, so a same-length edit within one mtime tick
+// (seconds on FAT or some network shares) goes unseen; hash then if that ever shows up.
 fn drop_unchanged(
     root: &Path,
-    seen: &mut std::collections::HashMap<PathBuf, Option<u64>>,
+    seen: &mut std::collections::HashMap<PathBuf, Stamp>,
     changes: &mut Changes,
 ) {
     for p in &changes.removed {
@@ -1040,13 +1046,10 @@ fn drop_unchanged(
     }
     changes.changed.retain(|p| {
         let abs = root.join(p);
-        let now = if abs.is_dir() {
-            None
-        } else {
-            match std::fs::read(&abs) {
-                Ok(b) => Some(hash_bytes(&b)),
-                Err(_) => return true,
-            }
+        let now = match std::fs::metadata(&abs) {
+            Ok(m) if m.is_dir() => None,
+            Ok(m) => Some((m.len(), m.modified().unwrap_or(std::time::UNIX_EPOCH))),
+            Err(_) => return true,
         };
         seen.insert(abs, now) != Some(now)
     });
