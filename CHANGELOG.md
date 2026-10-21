@@ -2,6 +2,11 @@
 
 All notable changes to Lemmata.
 
+## 3.0.0-rc.2 (2026-10-21)
+
+### Fixed
+- Touchpad scrolling coasts and pinch zooms the PDF on Wayland, the editor toolbar stays clear of the PDF, labels and the folder header behave
+
 ## 3.0.0-rc.1 (2026-10-21)
 
 Lemmata 3 is the same editor rebuilt as one native program, without a web view. This release candidate is for trying it before 3.0.0; the updater offers it to nobody.
