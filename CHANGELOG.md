@@ -5,7 +5,16 @@ All notable changes to Lemmata.
 ## 3.0.0-rc.3 (2026-10-21)
 
 ### Fixed
-- An open project no longer wakes the app every second on Linux
+- An open project no longer wakes the app every second on Linux.
+
+### Faster
+- Lemmata starts sooner on Windows, and the start screen no longer waits for project thumbnails.
+- Dark PDF pages draw faster, and the page in view is drawn before the ones around it.
+- Dictionaries and templates download compressed: 36 MB becomes 14 MB for Turkish.
+
+### Smaller
+- The .deb is 28% smaller.
+- The macOS disk image is smaller, and an update on a Mac downloads only that Mac's architecture, about half the size.
 
 ## 3.0.0-rc.2 (2026-10-21)
 
