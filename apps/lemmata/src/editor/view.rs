@@ -3283,10 +3283,16 @@ mod tests {
             .events
             .push(egui::Event::PointerMoved(pos2(200.0, 12.0 + 21.45 * 1.5)));
         h.run();
-        std::thread::sleep(std::time::Duration::from_millis(350));
-        h.run();
-        h.run();
+        // The card comes after resting 300 ms; a loaded runner can take longer than one wait.
+        let start = std::time::Instant::now();
+        while h.state().hover.is_none() && start.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            h.run();
+        }
         assert!(h.state().hover.is_some(), "the card shows");
+        // Its first frame only measures it.
+        h.run();
+        h.run();
         h.snapshot("hover-input");
     }
 
