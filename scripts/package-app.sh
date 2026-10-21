@@ -55,11 +55,32 @@ if [[ ,$formats, == *,rpm,* ]]; then
   cargo generate-rpm -p apps/lemmata --target "$target" -o "$out/" --set-metadata "version = \"$version\""
 fi
 
-# The updater replaces the whole bundle on macOS, from a tarball of it.
+# The updater replaces the whole bundle on macOS, from a tarball of it. A Mac only needs its own
+# architecture, so the universal build (kept for the dmg) is split into one tarball per
+# architecture, each half the size.
 if [[ ,$formats, == *,app,* ]]; then
   app=$(find "$out" -maxdepth 2 -name '*.app' -type d | head -n1)
-  tar -czf "$out/Lemmata.app.tar.gz" -C "$(dirname "$app")" "$(basename "$app")"
+  if [[ $target == universal-apple-darwin ]]; then
+    for arch in aarch64 x86_64; do
+      tmp=$(mktemp -d)
+      cp -R "$app" "$tmp/"
+      thin="$tmp/$(basename "$app")/Contents/MacOS/lemmata-app"
+      cp "target/$arch-apple-darwin/release/lemmata-app" "$thin"
+      codesign --force --sign - "$thin"
+      tar -czf "$out/Lemmata.$arch.app.tar.gz" -C "$tmp" "$(basename "$app")"
+      rm -rf "$tmp"
+    done
+  else
+    tar -czf "$out/Lemmata.app.tar.gz" -C "$(dirname "$app")" "$(basename "$app")"
+  fi
 fi
+
+# create-dmg writes zlib (UDZO); LZMA (ULMO, macOS 10.15+, the minimum already) is smaller.
+for dmg in "$out"/*.dmg; do
+  [[ -e $dmg ]] || continue
+  hdiutil convert "$dmg" -format ULMO -o "$dmg.ulmo.dmg" >/dev/null
+  mv "$dmg.ulmo.dmg" "$dmg"
+done
 
 if [[ -n ${CARGO_PACKAGER_SIGN_PRIVATE_KEY:-} ]]; then
   find "$out" -maxdepth 2 -type f \( -name '*.AppImage' -o -name '*.app.tar.gz' -o -name '*-setup.exe' \) \

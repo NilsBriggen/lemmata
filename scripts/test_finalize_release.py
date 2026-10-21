@@ -17,8 +17,10 @@ PACKAGER_OUTPUT = {
     ],
     "macos_universal": [
         "Lemmata_0.3.0_universal.dmg",
-        "Lemmata.app.tar.gz",
-        "Lemmata.app.tar.gz.sig",
+        "Lemmata.aarch64.app.tar.gz",
+        "Lemmata.aarch64.app.tar.gz.sig",
+        "Lemmata.x86_64.app.tar.gz",
+        "Lemmata.x86_64.app.tar.gz.sig",
     ],
     "windows_x86_64": [
         "Lemmata_0.3.0_x64-setup.exe",
@@ -56,7 +58,8 @@ def test_stable_release() -> None:
         "Lemmata_0.3.0_linux_x86_64.deb",
         "Lemmata_0.3.0_linux_x86_64.rpm",
         "Lemmata_0.3.0_macos_universal.dmg",
-        "Lemmata_0.3.0_macos_universal.app.tar.gz",
+        "Lemmata_0.3.0_macos_universal_aarch64.app.tar.gz",
+        "Lemmata_0.3.0_macos_universal_x86_64.app.tar.gz",
         "Lemmata_0.3.0_windows_x86_64-setup.exe",
         "Lemmata_0.3.0_windows_x86_64.msi",
         "lemmata-cli_0.3.0_linux_x86_64.tar.gz",
@@ -68,6 +71,10 @@ def test_stable_release() -> None:
     manifest = json.loads((out / "latest.json").read_text())
     assert set(manifest["platforms"]) == {"linux-x86_64", "darwin-aarch64", "darwin-x86_64", "windows-x86_64"}
     assert manifest["platforms"]["windows-x86_64"]["url"].endswith("/v0.3.0/Lemmata_0.3.0_windows_x86_64-setup.exe")
+    # Each Mac downloads only its own architecture.
+    assert manifest["platforms"]["darwin-aarch64"]["url"].endswith("_macos_universal_aarch64.app.tar.gz")
+    assert manifest["platforms"]["darwin-x86_64"]["url"].endswith("_macos_universal_x86_64.app.tar.gz")
+    assert manifest["platforms"]["darwin-aarch64"]["signature"] == "sig-Lemmata.aarch64.app.tar.gz.sig"
     assert manifest["platforms"]["windows-x86_64"]["signature"] == "sig-Lemmata_0.3.0_x64-setup.exe.sig"
     sums = (out / "SHA256SUMS.txt").read_text()
     assert "Lemmata_0.3.0_linux_x86_64.deb" in sums

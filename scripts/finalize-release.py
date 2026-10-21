@@ -33,6 +33,9 @@ KINDS = [
     (".deb", ".deb"),
     (".rpm", ".rpm"),
     (".dmg", ".dmg"),
+    # Per-architecture macOS update tarballs before the plain one, so the longer suffix wins.
+    (".aarch64.app.tar.gz", "_aarch64.app.tar.gz"),
+    (".x86_64.app.tar.gz", "_x86_64.app.tar.gz"),
     (".app.tar.gz", ".app.tar.gz"),
     ("-setup.exe", "-setup.exe"),
     (".msi", ".msi"),
@@ -42,7 +45,7 @@ KINDS = [
 UPDATER = {
     "linux_x86_64": [("linux-x86_64", ".AppImage")],
     "linux_aarch64": [("linux-aarch64", ".AppImage")],
-    "macos_universal": [("darwin-aarch64", ".app.tar.gz"), ("darwin-x86_64", ".app.tar.gz")],
+    "macos_universal": [("darwin-aarch64", "_aarch64.app.tar.gz"), ("darwin-x86_64", "_x86_64.app.tar.gz")],
     "windows_x86_64": [("windows-x86_64", "-setup.exe")],
 }
 
