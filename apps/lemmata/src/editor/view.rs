@@ -2473,15 +2473,15 @@ fn key_press(
         return true;
     }
     // The search keys (searchKeymap).
-    if is("Mod-f") {
+    if is(shortcuts::keys_of("find")) {
         ed.search = Some(Search::open(ed.search.take(), &ed.selected_text(), false));
         return true;
     }
-    if is("Mod-Alt-g") {
+    if is(shortcuts::keys_of("goto-line")) {
         ed.search = Some(Search::goto_line(ed.search.take()));
         return true;
     }
-    if is("Mod-g") || is("F3") {
+    if is(shortcuts::keys_of("find-next")) || is("F3") {
         search::find_next(ed, true);
         return true;
     }
@@ -2493,7 +2493,7 @@ fn key_press(
         search::select_all_matches(ed);
         return true;
     }
-    if is("Mod-d") {
+    if is(shortcuts::keys_of("select-next")) {
         cmd::select_next_occurrence(d);
         return reveal(ed);
     }
@@ -2542,11 +2542,11 @@ fn key_press(
     }
     let d = &mut ed.doc;
     // History.
-    if is("Mod-z") {
+    if is(shortcuts::keys_of("undo")) {
         d.undo();
         return reveal(ed);
     }
-    if is("Mod-y") || is("Mod-Shift-z") {
+    if is("Mod-y") || is(shortcuts::keys_of("redo")) {
         d.redo();
         return reveal(ed);
     }
@@ -2648,7 +2648,7 @@ fn key_press(
             cmd::select_line(&mut ed.doc);
             true
         }
-        Key::K if modk && shift => {
+        _ if is(shortcuts::keys_of("delete-line")) => {
             cmd::delete_line(&mut ed.doc);
             reveal(ed)
         }

@@ -168,8 +168,100 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
 ];
 
+/// Keys the user chose instead of the default (Preferences → the shortcut sheet), by id. An
+/// empty spec turns a shortcut off.
+static CHOSEN: std::sync::RwLock<Vec<(&'static str, &'static str)>> =
+    std::sync::RwLock::new(Vec::new());
+
+/// Shortcuts whose keys come from the system (copy, cut, paste) or from arrow combinations the
+/// editor handles together: shown, not changeable.
+const FIXED: &[&str] = &[
+    "move-line-up",
+    "move-line-down",
+    "copy-line-down",
+    "tree-cut",
+    "tree-copy",
+    "tree-paste",
+];
+
+pub fn editable(s: &Shortcut) -> bool {
+    !s.keys.is_empty() && !FIXED.contains(&s.id)
+}
+
+/// Takes the user's keys from the settings. Unknown ids, specs that don't parse and fixed
+/// shortcuts are left out.
+pub fn choose(chosen: &std::collections::BTreeMap<String, String>) {
+    let list = SHORTCUTS
+        .iter()
+        .filter(|s| editable(s))
+        .filter_map(|s| {
+            let spec = chosen.get(s.id)?;
+            (spec.is_empty() || parse(spec).is_some())
+                .then(|| (s.id, &*Box::leak(spec.clone().into_boxed_str())))
+        })
+        .collect();
+    if let Ok(mut c) = CHOSEN.write() {
+        *c = list;
+    }
+}
+
+fn chosen(id: &str) -> Option<&'static str> {
+    CHOSEN
+        .read()
+        .ok()?
+        .iter()
+        .find(|(i, _)| *i == id)
+        .map(|(_, k)| *k)
+}
+
+/// The keys in effect: the user's, else the default and its second key.
+pub fn specs(s: &Shortcut) -> Vec<&'static str> {
+    match chosen(s.id) {
+        Some("") => Vec::new(),
+        Some(k) => vec![k],
+        None => [Some(s.keys), s.alt].into_iter().flatten().collect(),
+    }
+}
+
+/// The main key in effect for `id` ("" when there is none).
 pub fn keys_of(id: &str) -> &'static str {
-    SHORTCUTS.iter().find(|s| s.id == id).map_or("", |s| s.keys)
+    SHORTCUTS
+        .iter()
+        .find(|s| s.id == id)
+        .and_then(|s| specs(s).first().copied())
+        .unwrap_or("")
+}
+
+/// A key press as a spec, for recording a shortcut: "Mod-Shift-p". None for a letter, digit or
+/// sign without Ctrl, ⌘ or Alt, which would stop that key from typing.
+pub fn spec_of(mods: Modifiers, key: Key) -> Option<String> {
+    let typed =
+        key.name().chars().count() == 1 || matches!(key, Key::Space | Key::Enter | Key::Tab);
+    if typed && !(mods.command || mods.mac_cmd || mods.ctrl || mods.alt) {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if mods.command || mods.mac_cmd || (!MAC && mods.ctrl) {
+        parts.push("Mod");
+    }
+    if MAC && mods.ctrl {
+        parts.push("Ctrl");
+    }
+    if mods.alt {
+        parts.push("Alt");
+    }
+    if mods.shift {
+        parts.push("Shift");
+    }
+    let name = key.name();
+    let name = if name.chars().count() == 1 {
+        name.to_lowercase()
+    } else {
+        name.to_owned()
+    };
+    parts.push(&name);
+    let spec = parts.join("-");
+    parse(&spec).is_some().then_some(spec)
 }
 
 const MAC: bool = cfg!(target_os = "macos");
@@ -201,9 +293,8 @@ pub fn display(keys: &str) -> String {
 
 /// "Ctrl+Shift+/ / F1": both keys of an entry, as the sheet shows them.
 pub fn key_label(s: &Shortcut) -> String {
-    [Some(s.keys), s.alt]
+    specs(s)
         .into_iter()
-        .flatten()
         .filter(|k| !k.is_empty())
         .map(display)
         .collect::<Vec<_>>()
@@ -216,7 +307,7 @@ pub fn matches_query(s: &Shortcut, query: &str) -> bool {
     if q.is_empty() {
         return true;
     }
-    let keys = format!("{} {} {}", s.keys, s.alt.unwrap_or(""), key_label(s)).to_lowercase();
+    let keys = format!("{} {}", specs(s).join(" "), key_label(s)).to_lowercase();
     s.label.to_lowercase().contains(&q) || keys.contains(&q)
 }
 
@@ -307,9 +398,8 @@ pub fn consume(ctx: &egui::Context, id: &str) -> bool {
                 modifiers,
                 ..
             } if !hit
-                && [Some(s.keys), s.alt]
+                && specs(s)
                     .into_iter()
-                    .flatten()
                     .any(|spec| matches_spec(spec, *modifiers, *key)) =>
             {
                 hit = true;
@@ -326,6 +416,71 @@ mod tests {
     use super::*;
 
     // shortcuts.test.ts: shortcut search
+    #[test]
+    fn recorded_keys_read_back_and_replace_the_default() {
+        let press = |m: Modifiers, k: Key| spec_of(m, k);
+        let shift = Modifiers::SHIFT;
+        assert_eq!(
+            press(Modifiers::COMMAND | shift, Key::P).as_deref(),
+            Some("Mod-Shift-p")
+        );
+        assert_eq!(press(Modifiers::NONE, Key::F2).as_deref(), Some("F2"));
+        assert_eq!(
+            press(Modifiers::COMMAND, Key::Slash).map(|s| parse(&s).is_some()),
+            Some(true)
+        );
+        assert_eq!(
+            press(Modifiers::NONE, Key::X),
+            None,
+            "a bare letter would stop typing"
+        );
+        assert_eq!(press(shift, Key::X), None);
+
+        // A shortcut no other test presses; set back at the end.
+        let mut chosen = std::collections::BTreeMap::new();
+        chosen.insert("goto-heading".to_string(), "Mod-Alt-h".to_string());
+        chosen.insert("tree-copy".to_string(), "Mod-Alt-c".to_string());
+        chosen.insert("nonsense".to_string(), "Mod-Alt-n".to_string());
+        choose(&chosen);
+        assert_eq!(keys_of("goto-heading"), "Mod-Alt-h");
+        assert_eq!(
+            keys_of("tree-copy"),
+            "Mod-c",
+            "fixed shortcuts keep their keys"
+        );
+        let ctx = egui::Context::default();
+        let key = |k: Key, m: Modifiers| egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: m,
+        };
+        let frame = |events: Vec<egui::Event>, id: &str| {
+            let mut hit = false;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| hit = consume(ui.ctx(), id),
+            );
+            out.textures_delta.clear();
+            hit
+        };
+        let alt_cmd = Modifiers::COMMAND | Modifiers::ALT;
+        assert!(frame(vec![key(Key::H, alt_cmd)], "goto-heading"));
+        assert!(!frame(
+            vec![key(Key::O, Modifiers::COMMAND | shift)],
+            "goto-heading"
+        ));
+        chosen.insert("goto-heading".to_string(), String::new());
+        choose(&chosen);
+        assert_eq!(keys_of("goto-heading"), "", "turned off");
+        choose(&Default::default());
+        assert_eq!(keys_of("goto-heading"), "Mod-Shift-o");
+    }
+
     #[test]
     fn the_sheet_searches_labels_and_keys() {
         let find = |q: &str| {

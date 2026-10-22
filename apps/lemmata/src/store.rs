@@ -88,6 +88,8 @@ pub struct Settings {
     pub pdf_layout: String,
     /// The app version last started, for the "What's new" window after an update.
     pub last_seen_version: String,
+    /// Shortcut id → the keys the user chose instead ("Mod-Shift-b"); "" turns one off.
+    pub keybindings: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -124,6 +126,7 @@ impl Default for Settings {
             grammar_url: "http://localhost:8081".into(),
             pdf_layout: "single".into(),
             last_seen_version: String::new(),
+            keybindings: Default::default(),
         }
     }
 }
@@ -159,6 +162,10 @@ impl Settings {
 
     fn from_saved(saved: &Map<String, Value>) -> Self {
         let mut valid = valid_settings(saved);
+        // One bad entry must not cost all the settings: only text values are keys.
+        if let Some(Value::Object(k)) = valid.get_mut("keybindings") {
+            k.retain(|_, v| v.is_string());
+        }
         // Before 1.0, "compile as I type" and "save as I type" were one switch.
         if !valid.contains_key("autoCompile") && valid.get("autosaveMs") == Some(&Value::from(0)) {
             valid.insert("autoCompile".into(), Value::Bool(false));
@@ -169,10 +176,12 @@ impl Settings {
         all.extend(valid);
         let mut settings: Settings = serde_json::from_value(Value::Object(all)).unwrap_or_default();
         settings.indent = valid_indent(&settings.indent);
+        crate::shortcuts::choose(&settings.keybindings);
         settings
     }
 
     pub fn save(&self, dirs: &Dirs) {
+        crate::shortcuts::choose(&self.keybindings);
         write_json(
             &dirs.config.join("settings.json"),
             &serde_json::json!({ "settings": self }),

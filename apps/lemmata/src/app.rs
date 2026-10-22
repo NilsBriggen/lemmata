@@ -3005,6 +3005,37 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_shortcut_gets_new_keys_in_the_sheet() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.state_mut().project.as_mut().unwrap().shortcut_sheet = Some(String::new());
+        h.run_steps(2);
+        h.get_by_label("Keys for Reopen the last closed tab")
+            .click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Press keys…").is_some());
+        let mods = egui::Modifiers::COMMAND | egui::Modifiers::ALT;
+        h.input_mut().events.push(egui::Event::Key {
+            key: egui::Key::R,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: mods,
+        });
+        h.run_steps(2);
+        let chosen = h.state().settings.keybindings.get("reopen-tab").cloned();
+        // Back to the default before asserting: the keys are global to the test run.
+        crate::shortcuts::choose(&Default::default());
+        assert_eq!(chosen.as_deref(), Some("Mod-Alt-r"));
+        assert!(
+            h.state().project.as_ref().unwrap().shortcut_sheet.is_some(),
+            "the sheet stays open"
+        );
+    }
+
+    #[test]
     fn a_returning_user_lands_in_the_last_project() {
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("paper");

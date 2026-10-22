@@ -22,8 +22,10 @@ fn walks_after_a_save_on_a_big_project() {
                     "As shown in \\cref{{s:{c}:0}} and by \\cite{{k{}}}, it holds.\n",
                     (c * 50 + l) % 3000
                 ),
-                _ => "Some prose of a thesis, with words enough to count and a bit of $x^2$ maths.\n"
-                    .into(),
+                _ => {
+                    "Some prose of a thesis, with words enough to count and a bit of $x^2$ maths.\n"
+                        .into()
+                }
             });
         }
         std::fs::write(root.join(format!("chapters/c{c}.tex")), ch).unwrap();
@@ -48,12 +50,16 @@ fn walks_after_a_save_on_a_big_project() {
         }
         eprintln!("{name}: {:?}", t.elapsed() / 5);
     };
-    time("open", &|| drop(lemmata_project::Project::open(root).unwrap()));
+    time("open", &|| {
+        drop(lemmata_project::Project::open(root).unwrap())
+    });
     time("outline", &|| drop(lemmata_project::outline(&p)));
     time("labels", &|| drop(lemmata_project::extras::labels(&p)));
     time("counts", &|| drop(lemmata_project::extras::counts(&p)));
     time("symbols", &|| drop(lemmata_project::symbols::scan(&p)));
-    time("tree", &|| drop(lemmata_project::tree(root, &p.config.outdir)));
+    time("tree", &|| {
+        drop(lemmata_project::tree(root, &p.config.outdir))
+    });
     time("bib entries", &|| {
         let files = lemmata_bib::bib_files(&p);
         drop(lemmata_bib::entries(&p.root, &files));

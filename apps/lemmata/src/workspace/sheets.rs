@@ -3,6 +3,7 @@
 use super::Workspace;
 use crate::backend::Backend;
 use crate::shortcuts::{self, SHORTCUTS};
+use crate::store::Settings;
 use crate::theme::{self, Palette};
 use crate::widgets::{self, Button, Kind};
 use eframe::egui::{self, CornerRadius, FontId, Margin, RichText, Stroke, Ui, vec2};
@@ -55,7 +56,13 @@ impl Workspace {
         );
     }
 
-    pub(super) fn sheets(&mut self, ctx: &egui::Context, p: &Palette) {
+    pub(super) fn sheets(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Palette,
+        settings: &mut Settings,
+        action: &mut Option<super::Action>,
+    ) {
         if let Some(w) = &self.words {
             let mut done = false;
             let r = widgets::modal_with(
@@ -80,6 +87,32 @@ impl Workspace {
             }
         }
         if let Some(query) = &mut self.shortcut_sheet {
+            // The next key press while a shortcut is recording is its new key; Escape stops,
+            // before the dialog takes Escape for closing.
+            if let Some(id) = recording(ctx) {
+                let press = ctx.input_mut(|i| {
+                    let at = i
+                        .events
+                        .iter()
+                        .position(|e| matches!(e, egui::Event::Key { pressed: true, .. }))?;
+                    let press = match i.events.remove(at) {
+                        egui::Event::Key { key, modifiers, .. } => Some((key, modifiers)),
+                        _ => None,
+                    };
+                    // Nor does it type into the search box.
+                    i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+                    press
+                });
+                if let Some((key, mods)) = press {
+                    set_recording(ctx, None);
+                    if key != egui::Key::Escape
+                        && let Some(spec) = shortcuts::spec_of(mods, key)
+                    {
+                        assign(settings, id, &spec);
+                        *action = Some(super::Action::Settings);
+                    }
+                }
+            }
             let mut done = false;
             let r = widgets::modal_with(
                 ctx,
@@ -87,7 +120,11 @@ impl Workspace {
                 "Keyboard shortcuts",
                 None,
                 620.0,
-                |ui| shortcut_sheet(ui, p, query),
+                |ui| {
+                    if shortcut_sheet(ui, p, query, settings) {
+                        *action = Some(super::Action::Settings);
+                    }
+                },
                 Some(&mut |ui: &mut Ui| {
                     if Button::new("Done")
                         .kind(Kind::Primary)
@@ -100,6 +137,7 @@ impl Workspace {
             );
             if r.closed || done {
                 self.shortcut_sheet = None;
+                set_recording(ctx, None);
             }
         }
     }
@@ -186,7 +224,50 @@ fn word_count(ui: &mut Ui, p: &Palette, w: &Words) {
     }
 }
 
-fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String) {
+fn recording_id() -> egui::Id {
+    egui::Id::unique("shortcut-recording")
+}
+
+/// The shortcut waiting for its new key, if one is.
+fn recording(ctx: &egui::Context) -> Option<&'static str> {
+    ctx.data(|d| d.get_temp::<&'static str>(recording_id()))
+}
+
+fn set_recording(ctx: &egui::Context, id: Option<&'static str>) {
+    ctx.data_mut(|d| match id {
+        Some(id) => {
+            d.insert_temp(recording_id(), id);
+        }
+        None => d.remove::<&'static str>(recording_id()),
+    });
+}
+
+/// Gives `id` the keys `spec`. Another shortcut of its group with the same keys loses them, so
+/// one key press never means two things there.
+fn assign(settings: &mut Settings, id: &str, spec: &str) {
+    let Some(me) = SHORTCUTS.iter().find(|s| s.id == id) else {
+        return;
+    };
+    for other in SHORTCUTS
+        .iter()
+        .filter(|s| s.group == me.group && s.id != id)
+    {
+        if shortcuts::specs(other).contains(&spec) {
+            settings.keybindings.insert(other.id.into(), String::new());
+        }
+    }
+    if spec == me.keys {
+        settings.keybindings.remove(id);
+    } else {
+        settings.keybindings.insert(id.into(), spec.into());
+    }
+    shortcuts::choose(&settings.keybindings);
+}
+
+/// The sheet; true when a key was reset.
+fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String, settings: &mut Settings) -> bool {
+    let mut changed = false;
+    let recording = recording(ui.ctx());
     let r = widgets::text_input(ui, p, query, "Search shortcuts", false);
     ui.ctx()
         .accesskit_node_builder(r.id, |n| n.set_label("Search shortcuts"));
@@ -199,8 +280,14 @@ fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String) {
         .collect();
     if shown.is_empty() {
         ui.label(RichText::new("No shortcut matches").color(p.muted));
-        return;
+        return false;
     }
+    ui.label(
+        RichText::new("Click a key to change it, then press the new keys. Escape keeps it.")
+            .size(12.0)
+            .color(p.muted),
+    );
+    ui.add_space(6.0);
     // `columns: 2`: groups flow down the first column, then the second, without splitting.
     let groups: Vec<(&str, Vec<_>)> = GROUPS
         .iter()
@@ -245,25 +332,72 @@ fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String) {
                                             ui.label(
                                                 RichText::new(s.label).size(13.0).color(p.ink),
                                             );
-                                            let k = shortcuts::key_label(s);
+                                            let editable = shortcuts::editable(s);
+                                            let k = if recording == Some(s.id) {
+                                                "Press keys…".to_owned()
+                                            } else {
+                                                match shortcuts::key_label(s) {
+                                                    k if k.is_empty() && editable => "None".into(),
+                                                    k => k,
+                                                }
+                                            };
                                             if !k.is_empty() {
                                                 ui.with_layout(
                                                     egui::Layout::right_to_left(
                                                         egui::Align::Center,
                                                     ),
                                                     |ui| {
-                                                        egui::Frame::new()
+                                                        let chip = egui::Frame::new()
                                                             .fill(p.surface_2)
                                                             .stroke(Stroke::new(1.0, p.border))
                                                             .corner_radius(CornerRadius::same(4))
                                                             .inner_margin(Margin::symmetric(6, 1))
                                                             .show(ui, |ui| {
                                                                 ui.label(
-                                                                    RichText::new(k)
+                                                                    RichText::new(&k)
                                                                         .size(11.5)
                                                                         .color(p.ink_2),
                                                                 )
                                                             });
+                                                        if editable {
+                                                            let r = ui
+                                                                .interact(
+                                                                    chip.response.rect,
+                                                                    ui.scope_id().with(s.id),
+                                                                    egui::Sense::click(),
+                                                                )
+                                                                .on_hover_cursor(
+                                                                    egui::CursorIcon::PointingHand,
+                                                                )
+                                                                .on_hover_text("Change the keys");
+                                                            ui.ctx().accesskit_node_builder(
+                                                                r.id,
+                                                                |n| {
+                                                                    n.set_label(format!(
+                                                                        "Keys for {}",
+                                                                        s.label
+                                                                    ))
+                                                                },
+                                                            );
+                                                            if r.clicked() {
+                                                                set_recording(ui.ctx(), Some(s.id));
+                                                            }
+                                                        }
+                                                        if settings.keybindings.contains_key(s.id)
+                                                            && ui
+                                                                .link(
+                                                                    RichText::new("Reset")
+                                                                        .size(11.5)
+                                                                        .color(p.muted),
+                                                                )
+                                                                .clicked()
+                                                        {
+                                                            settings.keybindings.remove(s.id);
+                                                            shortcuts::choose(
+                                                                &settings.keybindings,
+                                                            );
+                                                            changed = true;
+                                                        }
                                                     },
                                                 );
                                             }
@@ -282,6 +416,7 @@ fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String) {
                 });
             });
     });
+    changed
 }
 
 #[cfg(test)]

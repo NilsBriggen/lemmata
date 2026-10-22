@@ -1530,7 +1530,7 @@ impl Workspace {
         self.rename_dialog(&ctx, p, backend, settings);
         self.file_dialogs(&ctx, p, backend, settings);
         self.project_settings_dialog(&ctx, p, backend, settings, &mut action);
-        self.sheets(&ctx, p);
+        self.sheets(&ctx, p, settings, &mut action);
         if let Some(show) = &mut self.presentation
             && !show.show(&ctx)
         {
