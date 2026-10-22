@@ -221,6 +221,9 @@ jobs:
           git config --global user.email "ci@lemmata.invalid"
       - name: Run the app's tests and scenarios
         run: cargo test -p lemmata-app
+      # Timed, so alone: typing and resizing in a 20,000-line file (editor/view.rs).
+      - name: Editor speed in a long file
+        run: cargo test -p lemmata-app -- --ignored --test-threads=1 --nocapture stay_fast
       - name: Upload the snapshots that differ
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7

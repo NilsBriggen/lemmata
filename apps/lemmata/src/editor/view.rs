@@ -712,8 +712,12 @@ pub fn show(
     let mut out = Output::default();
     let journal = std::mem::take(&mut ed.doc.journal);
     if !journal.is_empty() {
-        ed.folds.map(&journal);
-        ed.folds_gen += 1;
+        // Only folds that moved change which lines are hidden; without any, the heights are
+        // patched after the edit instead of measured again.
+        if !ed.folds.0.is_empty() {
+            ed.folds.map(&journal);
+            ed.folds_gen += 1;
+        }
         if let Some(s) = &mut ed.snippet {
             s.map(&journal);
         }
@@ -794,19 +798,21 @@ pub fn show(
     // A long file's wrapped lines are guessed from their length rather than laid out: a resize
     // would otherwise lay out every one of them. Lines on screen are corrected as they are drawn.
     let guess = ed.doc.line_count() > 1500;
-    let measure = |cache: &mut HashMap<u64, f32>, text: &str| {
-        *cache.entry(hash(text)).or_insert_with(|| {
-            let w = text.chars().count() as f32 * cw;
-            // Short lines can't wrap: no layout needed.
+    let measure =
+        |cache: &mut HashMap<u64, f32>, doc: &super::buffer::Doc, i: usize, len: usize| {
+            let w = len as f32 * cw;
+            // Short lines can't wrap: no copy of the text and no layout needed.
             if !style.wrap || w <= text_w * 0.9 {
                 style.line_height
             } else if guess {
                 (w / text_w).ceil().max(1.0) * style.line_height
             } else {
-                lay.layout(ui, text, &[]).height
+                let text = doc.line(i);
+                *cache
+                    .entry(hash(&text))
+                    .or_insert_with(|| lay.layout(ui, &text, &[]).height)
             }
-        })
-    };
+        };
     // After an edit only the lines between the change and the untouched end are measured again;
     // with folds (which hide lines) the whole pass below runs instead.
     if let Some((from, tail)) = edit
@@ -819,7 +825,7 @@ pub fn show(
             let kept = ed.heights.split_off(old - tail);
             ed.heights.truncate(from);
             for i in from..n - tail {
-                let h = measure(&mut ed.height_cache, &ed.doc.line(i));
+                let h = measure(&mut ed.height_cache, &ed.doc, i, ed.doc.line_len(i));
                 ed.heights.push(h);
             }
             ed.heights.extend(kept);
@@ -831,16 +837,15 @@ pub fn show(
         || ed.heights.len() != ed.doc.line_count()
         || ed.heights_folds != ed.folds_gen
     {
-        let n = ed.doc.line_count();
         ed.hidden = ed.folds.hidden(&ed.doc);
         ed.heights_folds = ed.folds_gen;
         ed.heights.clear();
-        for i in 0..n {
-            if ed.hidden[i] {
-                ed.heights.push(0.0);
-                continue;
-            }
-            let h = measure(&mut ed.height_cache, &ed.doc.line(i));
+        for (i, len) in ed.doc.line_lens().enumerate() {
+            let h = if ed.hidden[i] {
+                0.0
+            } else {
+                measure(&mut ed.height_cache, &ed.doc, i, len)
+            };
             ed.heights.push(h);
         }
         ed.heights_key = hkey;
@@ -3239,6 +3244,69 @@ mod tests {
                 },
                 ed,
             )
+    }
+
+    /// Here about 10 ms and 80 ms; measuring every line again on each keystroke took 180 ms.
+    const TYPING_MS: f64 = 50.0;
+    const RESIZING_MS: f64 = 300.0;
+
+    /// A thesis-sized file: typing in its middle and resizing the window stay quick. The limits
+    /// are for an unoptimised test build on a slow CI machine; a release build is ~10 times faster.
+    /// Timed, so it runs alone (ci.yml), not beside the other tests:
+    /// `cargo test -p lemmata-app -- --ignored --test-threads=1 stay_fast`
+    #[test]
+    #[ignore]
+    fn typing_and_resizing_in_a_20000_line_file_stay_fast() {
+        let text: String = (0..20_000)
+            .map(|i| match i % 10 {
+                0 => format!("\\section{{Part {i}}}\\label{{s{i}}}\n"),
+                3 => format!(
+                    "{}\n",
+                    "A paragraph long enough to wrap around the editor. ".repeat(4)
+                ),
+                6 => format!("$x_{i} = \\frac{{a}}{{b}}$ % note\n"),
+                _ => format!("Line {i} of text.\n"),
+            })
+            .collect();
+        let mut ed = Editor::new(&text, true);
+        ed.center_line = Some(10_000);
+        let mut h = harness(ed, [900.0, 700.0]);
+        h.run();
+        h.get_by_label("Editor").click();
+        h.run();
+        let at = h.state().doc.line_start(10_000);
+        h.state_mut().doc.selection = Selection::cursor(at);
+        h.run();
+        let frame = |h: &mut egui_kittest::Harness<'static, Editor>| {
+            let t = std::time::Instant::now();
+            h.step();
+            t.elapsed()
+        };
+        let mut typing: Vec<_> = (0..30)
+            .map(|_| {
+                h.get_by_label("Editor").type_text("x");
+                frame(&mut h)
+            })
+            .collect();
+        typing.sort();
+        let mut resizing: Vec<_> = (0..10)
+            .map(|i| {
+                h.set_size(egui::vec2(900.0 - 20.0 * i as f32, 700.0));
+                frame(&mut h)
+            })
+            .collect();
+        resizing.sort();
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        eprintln!(
+            "20k lines: typing median {:.1} ms, max {:.1} ms; resizing median {:.1} ms, max {:.1} ms",
+            ms(typing[15]),
+            ms(typing[29]),
+            ms(resizing[5]),
+            ms(resizing[9])
+        );
+        assert!(h.state().doc.line(10_000).starts_with("xxx"));
+        assert!(ms(typing[15]) < TYPING_MS, "typing: {typing:?}");
+        assert!(ms(resizing[5]) < RESIZING_MS, "resizing: {resizing:?}");
     }
 
     #[test]

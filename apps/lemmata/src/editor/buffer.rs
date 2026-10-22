@@ -215,6 +215,14 @@ pub struct Doc {
     pub journal: Vec<ChangeSet>,
 }
 
+fn visible_len(s: ropey::RopeSlice) -> usize {
+    let mut len = s.len_chars();
+    while len > 0 && matches!(s.char(len - 1), '\n' | '\r') {
+        len -= 1;
+    }
+    len
+}
+
 impl Doc {
     pub fn new(text: &str) -> Self {
         Self {
@@ -249,6 +257,16 @@ impl Doc {
             t.pop();
         }
         t
+    }
+
+    /// Characters on line `n`, without its line break, and without copying it.
+    pub fn line_len(&self, n: usize) -> usize {
+        visible_len(self.rope.line(n))
+    }
+
+    /// `line_len` of every line in order: one walk through the text, not a lookup per line.
+    pub fn line_lens(&self) -> impl Iterator<Item = usize> + '_ {
+        self.rope.lines().map(visible_len).take(self.line_count())
     }
 
     pub fn line_start(&self, n: usize) -> usize {
