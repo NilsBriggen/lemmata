@@ -56,6 +56,7 @@ pub struct Glyph {
     pub rect: Rect,
 }
 
+#[derive(Clone)]
 pub enum Job {
     Load {
         doc: u64,
@@ -108,8 +109,14 @@ pub enum Done {
     },
 }
 
+/// Threads that draw pages: each parses the PDF for itself and takes every n-th page, so the
+/// pages on screen draw side by side after a rebuild.
+fn workers() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 3))
+}
+
 pub struct Engine {
-    tx: Sender<Job>,
+    tx: Vec<Sender<Job>>,
     pub rx: Receiver<Done>,
     /// Render jobs with an older epoch are skipped.
     pub epoch: Arc<AtomicU64>,
@@ -117,23 +124,45 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(ctx: egui::Context) -> Self {
-        let (tx, jobs) = channel();
         let (done, rx) = channel();
         let epoch = Arc::new(AtomicU64::new(0));
-        let e = epoch.clone();
-        std::thread::Builder::new()
-            .name("pdf".into())
-            .spawn(move || run(jobs, done, e, ctx))
-            .expect("the PDF thread starts");
+        let tx = (0..workers())
+            .map(|n| {
+                let (tx, jobs) = channel();
+                let (done, e, ctx) = (done.clone(), epoch.clone(), ctx.clone());
+                std::thread::Builder::new()
+                    .name(format!("pdf-{n}"))
+                    .spawn(move || run(jobs, done, e, ctx, n == 0))
+                    .expect("the PDF thread starts");
+                tx
+            })
+            .collect();
         Self { tx, rx, epoch }
     }
 
     pub fn send(&self, job: Job) {
-        let _ = self.tx.send(job);
+        let page = match &job {
+            Job::Load { .. } => {
+                for tx in &self.tx {
+                    let _ = tx.send(job.clone());
+                }
+                return;
+            }
+            Job::Render { page, .. } | Job::Decorate { page, .. } => *page,
+            Job::Png { .. } => 0,
+        };
+        let _ = self.tx[page % self.tx.len()].send(job);
     }
 }
 
-fn run(jobs: Receiver<Job>, done: Sender<Done>, epoch: Arc<AtomicU64>, ctx: egui::Context) {
+/// One worker. Only the first (`announce`) reports a load, so the view takes it once.
+fn run(
+    jobs: Receiver<Job>,
+    done: Sender<Done>,
+    epoch: Arc<AtomicU64>,
+    ctx: egui::Context,
+    announce: bool,
+) {
     let send = |d: Done| {
         let _ = done.send(d);
         ctx.request_repaint();
@@ -153,20 +182,24 @@ fn run(jobs: Receiver<Job>, done: Sender<Done>, epoch: Arc<AtomicU64>, ctx: egui
                 break (doc, bytes);
             }
         };
-        let pdf = match guard(|| Pdf::new((*bytes).clone())) {
+        let pdf = match guard(|| Pdf::new(bytes.clone())) {
             Some(Ok(p)) => p,
             Some(Err(e)) => {
-                send(Done::Loaded {
-                    doc,
-                    result: Err(format!("This PDF could not be read ({e:?}).")),
-                });
+                if announce {
+                    send(Done::Loaded {
+                        doc,
+                        result: Err(format!("This PDF could not be read ({e:?}).")),
+                    });
+                }
                 continue;
             }
             None => {
-                send(Done::Loaded {
-                    doc,
-                    result: Err("This PDF could not be read.".into()),
-                });
+                if announce {
+                    send(Done::Loaded {
+                        doc,
+                        result: Err("This PDF could not be read.".into()),
+                    });
+                }
                 continue;
             }
         };
@@ -191,11 +224,13 @@ fn run(jobs: Receiver<Job>, done: Sender<Done>, epoch: Arc<AtomicU64>, ctx: egui
             pdf: &pdf,
             index: &index,
         };
-        let outline = guard(|| dests.outline()).unwrap_or_default();
-        send(Done::Loaded {
-            doc,
-            result: Ok((sizes, outline)),
-        });
+        if announce {
+            let outline = guard(|| dests.outline()).unwrap_or_default();
+            send(Done::Loaded {
+                doc,
+                result: Ok((sizes, outline)),
+            });
+        }
 
         let cache = RenderCache::new();
         let settings = InterpreterSettings::default();
@@ -672,6 +707,58 @@ mod tests {
             text: t.into(),
             rect: Rect::from_min_size(pos2(x, y), vec2(5.0, 10.0)),
         }
+    }
+
+    /// Timing for a PDF of one's own: `LEMMATA_PDF=x.pdf cargo test -p lemmata-app -- --ignored --nocapture pdf_timing`
+    #[test]
+    #[ignore]
+    fn pdf_timing() {
+        let Some(path) = std::env::var_os("LEMMATA_PDF") else {
+            return;
+        };
+        let bytes = std::fs::read(path).unwrap();
+        let t = std::time::Instant::now();
+        let pdf = Pdf::new(bytes).unwrap();
+        let pages = pdf.pages();
+        eprintln!("load {:?}", t.elapsed());
+        let (cache, settings) = (RenderCache::new(), InterpreterSettings::default());
+        for scale in [2.0f32, 4.0] {
+            let t = std::time::Instant::now();
+            for pg in pages.iter() {
+                draw(pg, &cache, &settings, scale, false);
+            }
+            eprintln!(
+                "scale {scale}: {:?} per page",
+                t.elapsed() / pages.len() as u32
+            );
+        }
+        let t = std::time::Instant::now();
+        for pg in pages.iter() {
+            glyphs(pg);
+        }
+        eprintln!("text layer {:?} per page", t.elapsed() / pages.len() as u32);
+        // Four pages after a rebuild, through the workers.
+        let e = Engine::new(egui::Context::default());
+        let bytes = Arc::new(std::fs::read(std::env::var_os("LEMMATA_PDF").unwrap()).unwrap());
+        e.send(Job::Load { doc: 1, bytes });
+        let t = std::time::Instant::now();
+        for page in 0..4 {
+            e.send(Job::Render {
+                doc: 1,
+                page,
+                scale: 2.0,
+                dark: false,
+                epoch: None,
+                thumb: false,
+            });
+        }
+        let mut drawn = 0;
+        while drawn < 4 {
+            if let Done::Rendered { .. } = e.rx.recv().unwrap() {
+                drawn += 1;
+            }
+        }
+        eprintln!("4 pages with {} workers: {:?}", workers(), t.elapsed());
     }
 
     #[test]
