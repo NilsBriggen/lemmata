@@ -5,10 +5,12 @@
 mod bib;
 pub mod buffers;
 mod build;
+mod checks;
 mod chrome;
 pub mod files;
 mod history;
 mod insert;
+mod language;
 pub mod palette;
 pub mod panels;
 mod project_settings;
@@ -420,198 +422,6 @@ impl Workspace {
             });
             Msg::Viewed(p, r)
         });
-    }
-
-    fn lsp_send(&self, _backend: &Backend, messages: Vec<String>) {
-        if let Some(tx) = &self.lsp_tx {
-            for body in messages {
-                let _ = tx.send(body);
-            }
-        }
-    }
-
-    /// Ends texlab with the project.
-    pub fn stop_lsp(&self, backend: &Backend) {
-        if let Some(generation) = self.lsp.generation {
-            backend.spawn_async(
-                move |shell| async move { Msg::Done(shell.lsp_stop(generation).await) },
-            );
-        }
-    }
-
-    /// Tells texlab about the open files' current text.
-    fn lsp_sync(&mut self, backend: &Backend) {
-        if self.lsp.state != crate::lsp::State::Ready {
-            return;
-        }
-        let mut edits: HashMap<String, _> = self
-            .editors
-            .iter_mut()
-            .map(|(p, e)| (p.clone(), e.doc.take_lsp_edits()))
-            .collect();
-        #[allow(clippy::type_complexity)]
-        let texts: Vec<(String, u64, Box<dyn Fn() -> String + '_>)> = self
-            .editors
-            .iter()
-            .map(|(p, e)| {
-                (
-                    p.clone(),
-                    e.doc.version,
-                    Box::new(move || e.doc.text()) as Box<dyn Fn() -> String>,
-                )
-            })
-            .collect();
-        let docs: Vec<crate::lsp::SyncDoc> = texts
-            .iter()
-            .map(|(p, v, f)| (p.clone(), *v, f.as_ref(), edits.remove(p).flatten()))
-            .collect();
-        let msgs = self.lsp.sync(&docs);
-        drop(docs);
-        drop(texts);
-        self.lsp_send(backend, msgs);
-    }
-
-    fn on_lsp(&mut self, backend: &Backend, a: crate::lsp::Answer) {
-        use crate::lsp::Answer;
-        match a {
-            Answer::Ready => self.lsp_sync(backend),
-            Answer::Completion {
-                path,
-                head,
-                from,
-                items,
-            } => {
-                self.lookups.server = Some((path, head, from, items));
-                self.lookups.generation += 1;
-            }
-            Answer::Hover {
-                path,
-                line,
-                col,
-                text,
-            } => {
-                self.lookups.hover = Some((path, line, col, text));
-            }
-            // Editors take the new list with the build's (`problems_of`).
-            Answer::Diagnostics(_) => self.build.diag_gen += 1,
-            Answer::Locations {
-                references: false,
-                places,
-            } => {
-                if let Some((path, line, _)) = places.into_iter().next() {
-                    self.goto(backend, &path, line);
-                }
-            }
-            Answer::Locations {
-                references: true,
-                places,
-            } => {
-                let rows = places
-                    .into_iter()
-                    .map(|(path, line, col)| {
-                        let text = match self.editors.get(&path) {
-                            Some(e) if line >= 1 && line <= e.doc.line_count() => {
-                                e.doc.line(line - 1)
-                            }
-                            _ => std::fs::read_to_string(self.info.root.join(&path))
-                                .ok()
-                                .and_then(|t| {
-                                    t.lines().nth(line.saturating_sub(1)).map(str::to_owned)
-                                })
-                                .unwrap_or_default(),
-                        };
-                        (path, line, col, text.trim().to_owned())
-                    })
-                    .collect();
-                self.references = Some(rows);
-            }
-        }
-    }
-
-    /// The spell-check language: a `% !TeX spellcheck` comment in the open file, the project's
-    /// choice, or the app's default (guessed from babel or polyglossia for "auto").
-    pub(super) fn spell_language(&self, settings: &Settings) -> String {
-        let magic = self
-            .active
-            .as_ref()
-            .filter(|a| tree::is_tex(a))
-            .and_then(|a| self.editors.get(a))
-            .and_then(|e| {
-                let head: Vec<String> = (0..e.doc.line_count().min(30))
-                    .map(|n| e.doc.line(n))
-                    .collect();
-                crate::writing::spell::magic_language(&head.join("\n"))
-            });
-        let fallback = if settings.spell_default == "auto" {
-            self.detected.to_owned()
-        } else {
-            settings.spell_default.clone()
-        };
-        magic
-            .or_else(|| self.info.config.spellcheck.clone())
-            .unwrap_or(fallback)
-    }
-
-    /// Loads another spell-check language when the file, project or settings ask for one, and
-    /// points grammar checking at the same language.
-    fn apply_language(&mut self, backend: &Backend, settings: &Settings) {
-        let lang = self.spell_language(settings);
-        let lang = if crate::writing::spell::LANGUAGES
-            .iter()
-            .any(|(c, _)| *c == lang)
-        {
-            lang
-        } else {
-            "off".to_owned()
-        };
-        let words = self.info.config.words.clone();
-        if self.spell_asked.as_ref() != Some(&(lang.clone(), words.clone())) {
-            self.spell_asked = Some((lang.clone(), words.clone()));
-            let l = lang.clone();
-            backend.spawn(move |shell| {
-                let r = shell.spell_set_language(l.clone(), words);
-                Msg::SpellLoaded((l != "off").then_some(l), r)
-            });
-            // A language whose dictionary isn't here yet is offered, once a session.
-            if lang != "off" && self.dictionaries_offered.insert(lang.clone()) {
-                backend.spawn(move |shell| match shell.spell_available() {
-                    Ok(list) => match list.into_iter().find(|d| d.code == lang && !d.installed) {
-                        Some(d) => Msg::Dictionary(d),
-                        None => Msg::Done(Ok(())),
-                    },
-                    Err(_) => Msg::Done(Ok(())),
-                });
-            }
-        }
-        let lang = self
-            .spell_asked
-            .as_ref()
-            .map_or("off".to_owned(), |a| a.0.clone());
-        self.checks
-            .grammar
-            .configure(&settings.grammar, &settings.grammar_url, &lang);
-        self.checks
-            .grammar
-            .set_ignored(&self.info.config.grammar_ignore);
-    }
-
-    /// Sends waiting paragraphs to LanguageTool, two at a time.
-    fn pump_grammar(&mut self, backend: &Backend) {
-        let Some(target) = self.checks.grammar.target.clone() else {
-            self.grammar_queue.clear();
-            return;
-        };
-        while self.grammar_out < 2 && !self.grammar_queue.is_empty() {
-            let text = self.grammar_queue.remove(0);
-            self.grammar_out += 1;
-            let t = target.clone();
-            backend.spawn_async(move |shell| async move {
-                let r = shell
-                    .grammar_check(t.0.clone(), t.1.clone(), text.clone())
-                    .await;
-                Msg::GrammarFound(t, text, r)
-            });
-        }
     }
 
     /// Runs `work` off the UI thread, then `then` with its result on the open project.
@@ -1030,101 +840,15 @@ impl Workspace {
             // Started for a project that has closed since.
             Msg::Apply(project, _) if project != self.project => {}
             Msg::Apply(_, f) => f(self, backend),
-            Msg::LspStarted(Ok(generation)) => {
-                self.lsp.generation = Some(generation);
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-                self.lsp_tx = Some(tx);
-                backend.spawn_async(move |shell| async move {
-                    while let Some(body) = rx.recv().await {
-                        if shell.lsp_send(generation, body).await.is_err() {
-                            return Msg::LspLost(generation);
-                        }
-                    }
-                    Msg::Done(Ok(()))
-                });
-                let init = self.lsp.initialize();
-                self.lsp_send(backend, vec![init]);
-            }
-            Msg::LspStarted(Err(e)) => self.lsp.state = crate::lsp::State::Failed(e),
-            Msg::LspLost(generation) => {
-                if Some(generation) == self.lsp.generation
-                    && self.lsp.state == crate::lsp::State::Ready
-                {
-                    self.lsp.state = crate::lsp::State::Failed("texlab stopped.".into());
-                    self.notice(
-                        "The language server (texlab) stopped answering, so completion and hover may be missing. Reopen the project to restart it.",
-                        Tone::Info,
-                    );
-                }
-            }
-            Msg::Event(lemmata_shell::Event::LspMessage { generation, body }) => {
-                if Some(generation) == self.lsp.generation {
-                    let (answer, replies) = self.lsp.on_message(&body);
-                    self.lsp_send(backend, replies);
-                    if let Some(a) = answer {
-                        self.on_lsp(backend, a);
-                    }
-                }
-            }
-            Msg::Event(lemmata_shell::Event::LspExit { generation }) => {
-                if Some(generation) == self.lsp.generation {
-                    self.lsp.state = crate::lsp::State::Failed("texlab stopped.".into());
-                }
-            }
-            Msg::SpellLoaded(lang, Ok(())) => {
-                if self
-                    .spell_asked
-                    .as_ref()
-                    .map(|a| (a.0 != "off").then(|| a.0.clone()))
-                    == Some(lang.clone())
-                {
-                    self.checks.spell.set_loaded(lang);
-                }
-            }
-            Msg::SpellLoaded(_, Err(_)) => {
-                // Allow a retry; until then no word is marked.
-                self.spell_asked = None;
-                self.checks.spell.set_loaded(None);
-            }
-            Msg::Dictionary(d) => {
-                let size = (d.size_kb / 1024).max(1);
-                self.notices.push(
-                    Notice::new(
-                        format!(
-                            "Spell check in {} needs its dictionary (downloads {size} MB).",
-                            d.label
-                        ),
-                        Tone::Info,
-                    )
-                    .action(NoticeAction::Download(d.code)),
-                );
-            }
-            Msg::SpellDownloaded(code, Ok(())) => {
-                self.spell_asked = None;
-                self.notice(
-                    format!(
-                        "Spell check in {} is on.",
-                        crate::writing::spell::label(&code)
-                    ),
-                    Tone::Ok,
-                );
-            }
-            Msg::SpellDownloaded(_, Err(e)) => self.notice(e, Tone::Error),
-            Msg::GrammarFound(target, text, result) => {
-                self.grammar_out = self.grammar_out.saturating_sub(1);
-                if self.checks.grammar.target.as_ref() == Some(&target) {
-                    match result {
-                        Ok(m) => self.checks.grammar.store(text, m),
-                        Err(e) => {
-                            // Stops at the first failure; a later edit retries.
-                            self.checks.grammar.asked.remove(&text);
-                            self.checks.grammar.error = Some(e);
-                            self.grammar_queue.clear();
-                        }
-                    }
-                }
-                self.pump_grammar(backend);
-            }
+            msg @ (Msg::LspStarted(_)
+            | Msg::LspLost(_)
+            | Msg::Event(
+                lemmata_shell::Event::LspMessage { .. } | lemmata_shell::Event::LspExit { .. },
+            )) => self.on_lsp_msg(backend, msg),
+            msg @ (Msg::SpellLoaded(..)
+            | Msg::Dictionary(_)
+            | Msg::SpellDownloaded(..)
+            | Msg::GrammarFound(..)) => self.on_check_msg(backend, msg),
             Msg::Labels(Ok(l)) => {
                 self.lookups.labels = l;
                 self.lookups.generation += 1;

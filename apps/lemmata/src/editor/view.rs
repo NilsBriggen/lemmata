@@ -817,87 +817,7 @@ pub fn show(
     };
     let tab = style.indent.tab_size();
 
-    // Highlighting starts over from the first changed line.
-    let seen_version = ed.hl_version;
-    let edit = if ed.hl_version != ed.doc.version {
-        let edit = ed.doc.take_edit();
-        ed.hl.invalidate_from(match edit {
-            Some((from, _)) if ed.hl_version != u64::MAX => from,
-            _ => 0,
-        });
-        ed.hl_version = ed.doc.version;
-        edit
-    } else {
-        None
-    };
-
-    // Line heights, from the cache by text; a line is laid out only when it is new.
-    let key = (
-        text_w.to_bits(),
-        style.font.size.to_bits(),
-        style.wrap,
-        style.line_height.to_bits(),
-    );
-    if ed.cache_key != key {
-        ed.height_cache.clear();
-        ed.cache_key = key;
-    }
-    let hkey = (ed.doc.version, key.0, key.1, key.2, key.3);
-    // A long file's wrapped lines are guessed from their length rather than laid out: a resize
-    // would otherwise lay out every one of them. Lines on screen are corrected as they are drawn.
-    let guess = ed.doc.line_count() > 1500;
-    let measure =
-        |cache: &mut HashMap<u64, f32>, doc: &super::buffer::Doc, i: usize, len: usize| {
-            let w = len as f32 * cw;
-            // Short lines can't wrap: no copy of the text and no layout needed.
-            if !style.wrap || w <= text_w * 0.9 {
-                style.line_height
-            } else if guess {
-                (w / text_w).ceil().max(1.0) * style.line_height
-            } else {
-                let text = doc.line(i);
-                *cache
-                    .entry(hash(&text))
-                    .or_insert_with(|| lay.layout(ui, &text, &[]).height)
-            }
-        };
-    // After an edit only the lines between the change and the untouched end are measured again;
-    // with folds (which hide lines) the whole pass below runs instead.
-    if let Some((from, tail)) = edit
-        && ed.heights_key == (seen_version, key.0, key.1, key.2, key.3)
-        && ed.heights_folds == ed.folds_gen
-        && ed.folds.0.is_empty()
-    {
-        let (n, old) = (ed.doc.line_count(), ed.heights.len());
-        if from + tail <= n.min(old) {
-            let kept = ed.heights.split_off(old - tail);
-            ed.heights.truncate(from);
-            for i in from..n - tail {
-                let h = measure(&mut ed.height_cache, &ed.doc, i, ed.doc.line_len(i));
-                ed.heights.push(h);
-            }
-            ed.heights.extend(kept);
-            ed.hidden = vec![false; n];
-            ed.heights_key = hkey;
-        }
-    }
-    if ed.heights_key != hkey
-        || ed.heights.len() != ed.doc.line_count()
-        || ed.heights_folds != ed.folds_gen
-    {
-        ed.hidden = ed.folds.hidden(&ed.doc);
-        ed.heights_folds = ed.folds_gen;
-        ed.heights.clear();
-        for (i, len) in ed.doc.line_lens().enumerate() {
-            let h = if ed.hidden[i] {
-                0.0
-            } else {
-                measure(&mut ed.height_cache, &ed.doc, i, len)
-            };
-            ed.heights.push(h);
-        }
-        ed.heights_key = hkey;
-    }
+    update_heights(ui, ed, &lay);
     let mut tops = Vec::with_capacity(ed.heights.len());
     let mut y = PAD_TOP;
     for h in &ed.heights {
@@ -3110,6 +3030,93 @@ fn add_cursor_vertical(ed: &mut Editor, geo: &mut Geo, ui: &Ui, down: bool) {
     ranges.push(Range::cursor(h));
     let n = ranges.len() - 1;
     ed.doc.selection = Selection::normalized(ranges, n);
+}
+
+/// Highlighting and line heights after whatever changed since the last frame: an edit patches the
+/// lines it touched, anything else (a resize, folds, a new font) measures every line again.
+fn update_heights(ui: &Ui, ed: &mut Editor, lay: &Lay) {
+    let (style, cw, text_w) = (lay.style, lay.cw, lay.text_w);
+    // Highlighting starts over from the first changed line.
+    let seen_version = ed.hl_version;
+    let edit = if ed.hl_version != ed.doc.version {
+        let edit = ed.doc.take_edit();
+        ed.hl.invalidate_from(match edit {
+            Some((from, _)) if ed.hl_version != u64::MAX => from,
+            _ => 0,
+        });
+        ed.hl_version = ed.doc.version;
+        edit
+    } else {
+        None
+    };
+
+    // Line heights, from the cache by text; a line is laid out only when it is new.
+    let key = (
+        text_w.to_bits(),
+        style.font.size.to_bits(),
+        style.wrap,
+        style.line_height.to_bits(),
+    );
+    if ed.cache_key != key {
+        ed.height_cache.clear();
+        ed.cache_key = key;
+    }
+    let hkey = (ed.doc.version, key.0, key.1, key.2, key.3);
+    // A long file's wrapped lines are guessed from their length rather than laid out: a resize
+    // would otherwise lay out every one of them. Lines on screen are corrected as they are drawn.
+    let guess = ed.doc.line_count() > 1500;
+    let measure =
+        |cache: &mut HashMap<u64, f32>, doc: &super::buffer::Doc, i: usize, len: usize| {
+            let w = len as f32 * cw;
+            // Short lines can't wrap: no copy of the text and no layout needed.
+            if !style.wrap || w <= text_w * 0.9 {
+                style.line_height
+            } else if guess {
+                (w / text_w).ceil().max(1.0) * style.line_height
+            } else {
+                let text = doc.line(i);
+                *cache
+                    .entry(hash(&text))
+                    .or_insert_with(|| lay.layout(ui, &text, &[]).height)
+            }
+        };
+    // After an edit only the lines between the change and the untouched end are measured again;
+    // with folds (which hide lines) the whole pass below runs instead.
+    if let Some((from, tail)) = edit
+        && ed.heights_key == (seen_version, key.0, key.1, key.2, key.3)
+        && ed.heights_folds == ed.folds_gen
+        && ed.folds.0.is_empty()
+    {
+        let (n, old) = (ed.doc.line_count(), ed.heights.len());
+        if from + tail <= n.min(old) {
+            let kept = ed.heights.split_off(old - tail);
+            ed.heights.truncate(from);
+            for i in from..n - tail {
+                let h = measure(&mut ed.height_cache, &ed.doc, i, ed.doc.line_len(i));
+                ed.heights.push(h);
+            }
+            ed.heights.extend(kept);
+            ed.hidden = vec![false; n];
+            ed.heights_key = hkey;
+        }
+    }
+    if ed.heights_key != hkey
+        || ed.heights.len() != ed.doc.line_count()
+        || ed.heights_folds != ed.folds_gen
+    {
+        ed.hidden = ed.folds.hidden(&ed.doc);
+        ed.heights_folds = ed.folds_gen;
+        ed.heights.clear();
+        for (i, len) in ed.doc.line_lens().enumerate() {
+            let h = if ed.hidden[i] {
+                0.0
+            } else {
+                measure(&mut ed.height_cache, &ed.doc, i, len)
+            };
+            ed.heights.push(h);
+        }
+        ed.heights_key = hkey;
+    }
 }
 
 /// Marks an edit made from outside (a toolbar button) as its own undo step and shows its cursor.
