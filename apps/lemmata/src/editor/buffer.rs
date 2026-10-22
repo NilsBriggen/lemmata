@@ -474,6 +474,13 @@ mod tests {
     }
 
     #[test]
+    fn lines_break_where_tex_breaks_them() {
+        let d = Doc::new("a\u{2028}b\u{c}c\u{85}d\r\ne\nf");
+        assert_eq!(d.line_count(), 3);
+        assert_eq!(d.line(0), "a\u{2028}b\u{c}c\u{85}d");
+    }
+
+    #[test]
     fn typing_at_several_cursors_moves_each() {
         let mut d = doc("ab\ncd", &[(1, 1), (4, 4)]);
         type_text(&mut d, "XY");

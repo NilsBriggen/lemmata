@@ -1165,8 +1165,9 @@ impl Workspace {
     }
 
     /// Files or folders deleted by another program: their tabs close quietly, without saving.
+    /// A file with unsaved edits stays open as a conflict: keeping them writes it back.
     fn removed_outside(&mut self, backend: &Backend, removed: &[String]) {
-        if !self.close_gone(backend, removed) {
+        if !self.close_gone(backend, removed, true) {
             return;
         }
         let text = if removed.len() == 1 {
@@ -1180,16 +1181,27 @@ impl Workspace {
         self.notice(text, Tone::Info);
     }
 
-    /// Closes the tabs of files that are gone, without saving. False when none was open.
-    fn close_gone(&mut self, backend: &Backend, removed: &[String]) -> bool {
-        let gone = |p: &str| {
+    /// Closes the tabs of files that are gone, without saving; with `keep_dirty`, ones with
+    /// unsaved edits become conflicts instead. False when none was open.
+    fn close_gone(&mut self, backend: &Backend, removed: &[String], keep_dirty: bool) -> bool {
+        let in_removed = |p: &str| {
             removed
                 .iter()
                 .any(|r| p == r || p.starts_with(&format!("{r}/")))
         };
+        let kept: Vec<String> = self
+            .editors
+            .keys()
+            .filter(|p| keep_dirty && in_removed(p) && self.buffers.is_dirty(p))
+            .cloned()
+            .collect();
+        for p in &kept {
+            self.buffers.conflict(p);
+        }
+        let gone = |p: &str| in_removed(p) && !kept.iter().any(|k| k == p);
         let closing: Vec<String> = self.editors.keys().filter(|p| gone(p)).cloned().collect();
         if closing.is_empty() {
-            return false;
+            return !kept.is_empty();
         }
         for p in &closing {
             self.buffers.forget(p);

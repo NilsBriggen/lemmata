@@ -9,6 +9,10 @@ use std::process::Command;
 /// Gives `cmd` the user's environment: without any AppImage's paths and settings.
 /// Changes nothing when no AppImage is involved.
 pub fn host(cmd: &mut Command) -> &mut Command {
+    // Programs these start (latexmk starting pdflatex, say) would look in the current folder,
+    // the project, before PATH: a project's own pdflatex.exe would run.
+    #[cfg(windows)]
+    cmd.env("NoDefaultCurrentDirectoryInExePath", "1");
     let appdir = std::env::var_os("APPDIR");
     for (key, value) in changes(appdir.as_deref(), std::env::vars_os()) {
         match value {
@@ -54,6 +58,68 @@ pub fn changes(
         out.push((key, (!kept.is_empty()).then(|| kept.join(":").into())));
     }
     out
+}
+
+/// `-c` options for the git calls Lemmata makes unasked (status after a save, snapshots, the Git
+/// panel's view). A project folder brings its own `.git/config`, and that can make even read-only
+/// commands run programs: `core.fsmonitor` on status, clean filters when a file is re-read, gpg
+/// through `log.showSignature`. These options turn them off; filters defined outside the
+/// repository (git-lfs's, set up by the user) stay. `None` when a filter's name can't be written
+/// as a `-c` option: then the call must not run.
+pub fn git_guard(git: &std::path::Path, dir: &std::path::Path) -> Option<Vec<String>> {
+    let config = |args: &[&str]| {
+        let mut c = Command::new(git);
+        host(&mut c)
+            .arg("-C")
+            .arg(dir)
+            .arg("config")
+            .args(args)
+            .args(["--name-only", "--get-regexp", r"^filter\."]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        // Exit status 1 is "no such key": no filters.
+        c.output()
+            .ok()
+            .filter(|o| matches!(o.status.code(), Some(0 | 1)))
+    };
+    // Git before 2.26 has no --show-scope: then the repository's own file, and what it includes.
+    let (out, scoped) = match config(&["--show-scope"]) {
+        Some(o) => (o, true),
+        None => (config(&["--local", "--includes"])?, false),
+    };
+    let mut names: Vec<String> = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let key = match line.split_once('\t') {
+            Some((scope, key)) if scoped => {
+                if scope != "local" && scope != "worktree" {
+                    continue;
+                }
+                key
+            }
+            _ => line,
+        };
+        // filter.<name>.<setting>; the name may itself contain dots.
+        let name = key.strip_prefix("filter.")?.rsplit_once('.')?.0;
+        if name.contains('=') {
+            return None;
+        }
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    let mut args = Vec::new();
+    for kv in ["core.fsmonitor=false", "log.showSignature=false"] {
+        args.extend(["-c".to_string(), kv.to_string()]);
+    }
+    for name in names {
+        for kv in ["clean=", "smudge=", "process=", "required=false"] {
+            args.extend(["-c".to_string(), format!("filter.{name}.{kv}")]);
+        }
+    }
+    Some(args)
 }
 
 #[cfg(test)]

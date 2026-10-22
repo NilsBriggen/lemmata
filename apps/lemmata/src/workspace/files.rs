@@ -324,7 +324,7 @@ impl Workspace {
 
     /// Gone from disk: tabs close without saving, which would bring the file back.
     fn trashed(&mut self, backend: &Backend, paths: &[String]) {
-        self.close_gone(backend, paths);
+        self.close_gone(backend, paths, false);
         self.sel.selected.retain(|p| {
             !paths
                 .iter()

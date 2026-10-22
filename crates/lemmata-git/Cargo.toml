@@ -12,5 +12,9 @@ serde.workspace = true
 thiserror.workspace = true
 which.workspace = true
 
+# A timed-out git is stopped with what it started (ssh, a credential helper).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile.workspace = true

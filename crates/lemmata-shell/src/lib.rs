@@ -364,7 +364,14 @@ fn resolve(state: &Shell, rel: &str) -> CmdResult<PathBuf> {
 
 impl Shell {
     pub fn read_text(&self, path: String) -> CmdResult<String> {
+        // A data file of hundreds of megabytes would make the editor unusable, not editable.
+        const MAX_TEXT: u64 = 32 * 1024 * 1024;
         let abs = resolve(self, &path)?;
+        if std::fs::metadata(&abs).is_ok_and(|m| m.len() > MAX_TEXT) {
+            return Err(format!(
+                "{path} is larger than 32 MB, too large to edit here. Open it in another program."
+            ));
+        }
         std::fs::read_to_string(&abs).map_err(|e| format!("Could not open {path}: {e}"))
     }
 }
@@ -408,7 +415,8 @@ impl Shell {
         if let Some(dir) = abs.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        std::fs::write(&tmp, &content).map_err(|e| format!("Could not save {path}: {e}"))?;
+        files::write_synced(&tmp, content.as_bytes())
+            .map_err(|e| format!("Could not save {path}: {e}"))?;
         // The file keeps its permissions (an edited script stays executable).
         if let Some(m) = old {
             let _ = std::fs::set_permissions(&tmp, m.permissions());
@@ -440,6 +448,9 @@ impl Shell {
         let generation = cancel_running(self);
         // Wait for the cancelled build to kill latexmk and its children before starting another in the same folder.
         let _running = self.build_lock.lock().await;
+        // Reachable by Stop before the check below: a Stop between the two still cancels.
+        let (tx, rx) = oneshot::channel();
+        *self.cancel_build.lock_safe() = Some(tx);
         // A newer build or Stop came while this one waited: don't run it at all.
         if self
             .build_generation
@@ -454,9 +465,6 @@ impl Shell {
                 latexmk_failed: false,
             });
         }
-        let (tx, rx) = oneshot::channel();
-        *self.cancel_build.lock_safe() = Some(tx);
-
         let mut project = self
             .project
             .lock_safe()

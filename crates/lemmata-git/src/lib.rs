@@ -190,8 +190,9 @@ fn exec(git: &Path, dir: Option<&Path>, args: &[&str], timeout: Duration) -> Res
     c.args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_LITERAL_PATHSPECS", "1")
-        // English messages, so the error handling below can recognise them.
-        .env("LC_MESSAGES", "C")
+        // English messages, so the error handling below can recognise them. LC_ALL, because a
+        // user's own LC_ALL would win over LC_MESSAGES.
+        .env("LC_ALL", "C")
         .env("LANGUAGE", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -199,7 +200,12 @@ fn exec(git: &Path, dir: Option<&Path>, args: &[&str], timeout: Duration) -> Res
     // ssh would ask for a passphrase on the terminal; fail instead, unless the user chose their own command.
     let network = matches!(args.first(), Some(&("clone" | "fetch" | "pull" | "push")));
     if network && std::env::var_os("GIT_SSH_COMMAND").is_none() {
-        let own = lemmata_env::host(&mut Command::new(git))
+        // The repository's own setting (a deploy key) counts too.
+        let mut own = Command::new(git);
+        if let Some(d) = dir {
+            own.arg("-C").arg(d);
+        }
+        let own = lemmata_env::host(&mut own)
             .args(["config", "core.sshCommand"])
             .output();
         if own.is_ok_and(|o| o.stdout.is_empty()) {
@@ -207,6 +213,8 @@ fn exec(git: &Path, dir: Option<&Path>, args: &[&str], timeout: Duration) -> Res
         }
     }
     no_window(&mut c);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut c, 0);
     let mut child = c.spawn()?;
     let drain = |mut r: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
@@ -226,6 +234,11 @@ fn exec(git: &Path, dir: Option<&Path>, args: &[&str], timeout: Duration) -> Res
         }
         if start.elapsed() > timeout {
             // The reader threads are left to finish on their own: a helper process may still hold the pipes.
+            #[cfg(unix)]
+            if let Ok(group) = i32::try_from(child.id()) {
+                // Safe: a plain signal to the group git leads (process_group above).
+                unsafe { libc::kill(-group, libc::SIGKILL) };
+            }
             let _ = child.kill();
             let _ = child.wait();
             return msg(format!(
@@ -301,6 +314,9 @@ fn net_error(stderr: &str) -> Error {
 struct Repo {
     git: PathBuf,
     top: PathBuf,
+    /// See `lemmata_env::git_guard`: the panel shows status and the log unasked. What the user
+    /// asks for (stage, commit, pull) runs with the repository's own config, as in a terminal.
+    guard: Vec<String>,
 }
 
 impl Repo {
@@ -314,14 +330,24 @@ impl Repo {
                 msg(tidy(&o.stderr))
             };
         }
-        Ok(Repo {
-            git,
-            top: PathBuf::from(o.stdout.trim()),
-        })
+        let top = PathBuf::from(o.stdout.trim());
+        let Some(guard) = lemmata_env::git_guard(&git, &top) else {
+            return msg(
+                "This repository's config names a filter Lemmata can't turn off, so the Git panel is off.",
+            );
+        };
+        Ok(Repo { git, top, guard })
     }
 
     fn run(&self, args: &[&str], timeout: Duration) -> Result<Out> {
-        exec(&self.git, Some(&self.top), args, timeout)
+        let verb = args.iter().find(|a| !a.starts_with('-'));
+        let read = matches!(verb, Some(&("status" | "log" | "for-each-ref" | "remote")));
+        let mut all: Vec<&str> = Vec::new();
+        if read {
+            all.extend(self.guard.iter().map(String::as_str));
+        }
+        all.extend(args);
+        exec(&self.git, Some(&self.top), &all, timeout)
     }
 
     /// Stdout on success; git's trimmed message otherwise.
@@ -401,6 +427,16 @@ pub fn init(root: &Path) -> Result<()> {
     let ignore = root.join(".gitignore");
     if !ignore.exists() {
         std::fs::write(&ignore, ".lemmata/\n")?;
+    } else {
+        // The user's own .gitignore stays as it is; the build output and snapshots still stay out.
+        let exclude = root.join(".git/info/exclude");
+        let mut text = std::fs::read_to_string(&exclude).unwrap_or_default();
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(".lemmata/\n");
+        std::fs::create_dir_all(root.join(".git/info"))?;
+        std::fs::write(&exclude, text)?;
     }
     run(&["add", "-A"])?;
     run(&["commit", "-m", "Initial commit", "--allow-empty"])

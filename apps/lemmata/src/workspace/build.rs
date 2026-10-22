@@ -34,6 +34,9 @@ pub struct BuildState {
     pub after_config: bool,
     /// An arXiv export waits for this build (and whether it flattens).
     arxiv: Option<(u64, bool)>,
+    /// Closed files' text for the excerpts under errors, read once per build (`diag_gen`), not
+    /// on every frame.
+    sources: std::cell::RefCell<(u64, std::collections::HashMap<String, Option<String>>)>,
 }
 
 impl BuildState {
@@ -201,9 +204,27 @@ impl Workspace {
         self.pane.view.dark = settings.pdf_dark && p.dark;
         self.pane.view.layout = crate::pdf::view::Layout::from_setting(&settings.pdf_layout);
         let (editors, root) = (&self.editors, &self.info.root);
-        let source = |f: &str| match editors.get(f) {
-            Some(e) => Some(e.doc.text()),
-            None => std::fs::read_to_string(root.join(f)).ok(),
+        let (sources, generation) = (&self.build.sources, self.build.diag_gen);
+        let source = |f: &str, from: usize, to: usize| -> Vec<String> {
+            if let Some(e) = editors.get(f) {
+                let to = to.min(e.doc.line_count());
+                return (from..=to).map(|n| e.doc.line(n - 1)).collect();
+            }
+            let mut cache = sources.borrow_mut();
+            if cache.0 != generation {
+                *cache = (generation, Default::default());
+            }
+            let text = cache
+                .1
+                .entry(f.to_owned())
+                .or_insert_with(|| std::fs::read_to_string(root.join(f)).ok());
+            text.as_deref().map_or(Vec::new(), |t| {
+                t.split('\n')
+                    .skip(from - 1)
+                    .take(to + 1 - from)
+                    .map(|l| l.trim_end_matches('\r').to_owned())
+                    .collect()
+            })
         };
         let b = pane::Build {
             diagnostics: &self.build.diagnostics,

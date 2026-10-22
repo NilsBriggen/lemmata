@@ -318,9 +318,11 @@ impl Problems {
                 if d.severity == Severity::Error
                     && i < 12
                     && let (Some(f), Some(line)) = (file_of(d), d.line)
-                    && let Some(src) = (b.source)(f)
                 {
-                    indent(ui, &mut |ui| excerpt(ui, p, &src, line as usize));
+                    let line = line as usize;
+                    let from = line.saturating_sub(2).max(1);
+                    let lines = (b.source)(f, from, line + 2);
+                    indent(ui, &mut |ui| excerpt(ui, p, &lines, from, line));
                 }
                 match &d.fix {
                     Some(fix) => {
@@ -384,13 +386,12 @@ impl Problems {
 }
 
 /// Excerpt.svelte: two lines of source either side of the problem's line.
-fn excerpt(ui: &mut Ui, p: &Palette, src: &str, line: usize) {
-    let lines: Vec<&str> = src.split('\n').collect();
-    let from = line.saturating_sub(2).max(1);
-    let to = (line + 2).min(lines.len());
-    if from > to {
+/// `lines` are lines `from..` of the file, around `line`.
+fn excerpt(ui: &mut Ui, p: &Palette, lines: &[String], from: usize, line: usize) {
+    if lines.is_empty() {
         return;
     }
+    let to = from + lines.len() - 1;
     let row_h = 12.0 * 1.55;
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(
@@ -423,7 +424,7 @@ fn excerpt(ui: &mut Ui, p: &Palette, src: &str, line: usize) {
         clip.text(
             pos2(row.left() + 38.0, row.center().y),
             egui::Align2::LEFT_CENTER,
-            lines[n - 1].trim_end_matches('\r'),
+            &lines[n - from],
             FontId::monospace(12.0),
             if hit { p.ink } else { p.ink_2 },
         );

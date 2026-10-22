@@ -27,6 +27,13 @@ pub fn used_files(fls: &str, root: &Path, outdir: &str) -> BTreeSet<PathBuf> {
             let p = plain(Path::new(p));
             let abs = if p.is_absolute() { p } else { pwd.join(p) };
             let rel = abs.strip_prefix(&root).ok()?;
+            // "/project/../secret" starts with the project but is outside it.
+            if rel
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return None;
+            }
             // Normalise "./chapters/a.tex" and skip build output.
             let rel: PathBuf = rel
                 .components()
@@ -41,7 +48,17 @@ pub fn used_files(fls: &str, root: &Path, outdir: &str) -> BTreeSet<PathBuf> {
 }
 
 /// Environments whose body is printed as written, so `%` is not a comment.
-const VERBATIM_ENVS: [&str; 5] = ["verbatim", "Verbatim", "lstlisting", "minted", "alltt"];
+const VERBATIM_ENVS: [&str; 6] = [
+    "verbatim",
+    "Verbatim",
+    "lstlisting",
+    "minted",
+    "alltt",
+    "filecontents",
+];
+
+/// Commands whose argument is printed as written: `\verb|..|`, `\lstinline[opts]{..}`, …
+const VERBATIM_CMDS: [&str; 5] = ["verb", "Verb", "lstinline", "path", "mintinline"];
 
 /// Length of the braced argument at the start of `r` (after its `{`),
 /// including the closing `}`; the whole string if it never closes.
@@ -79,14 +96,29 @@ fn scan_line(line: &str) -> (Option<usize>, Option<String>, Vec<std::ops::Range<
         }
         let after = &line[i + 1..];
         let rest_start = |rest: &str| line.len() - rest.len();
-        if let Some(r) = after.strip_prefix("verb")
+        if let Some((cmd, r)) = VERBATIM_CMDS
+            .iter()
+            .find_map(|c| Some((*c, after.strip_prefix(c)?)))
             && !r.starts_with(|c: char| c.is_ascii_alphabetic())
         {
-            // \verb|..| or \verb*|..|: any delimiter, closed on the same line.
-            let r = r.strip_prefix('*').unwrap_or(r);
+            // \verb|..| or \verb*|..|: any delimiter, closed on the same line. Some also take
+            // [options], \mintinline a {language}, and the argument can be braced.
+            let mut r = r.strip_prefix('*').unwrap_or(r);
+            if let Some(o) = r.strip_prefix('[') {
+                r = o.find(']').map_or("", |k| &o[k + 1..]);
+            }
+            if cmd == "mintinline"
+                && let Some(o) = r.strip_prefix('{')
+            {
+                r = &o[braced_len(o)..];
+            }
             if let Some(d) = r.chars().next() {
                 let body = &r[d.len_utf8()..];
-                let end = body.find(d).map_or(body.len(), |k| k + d.len_utf8());
+                let end = if d == '{' && cmd != "verb" {
+                    braced_len(body)
+                } else {
+                    body.find(d).map_or(body.len(), |k| k + d.len_utf8())
+                };
                 let next = rest_start(body) + end;
                 skipped.push(i..next);
                 i = next;
@@ -577,7 +609,7 @@ mod tests {
 
     #[test]
     fn collects_project_inputs_from_fls() {
-        let fls = "PWD /p/thesis\nINPUT /usr/share/texmf/tex/latex/base/report.cls\nINPUT main.tex\nINPUT .lemmata/build/main.aux\nINPUT ./chapters/one.tex\nINPUT ./chapters/one.tex\nINPUT /p/thesis/figures/a.pdf\nOUTPUT main.pdf\n";
+        let fls = "PWD /p/thesis\nINPUT /usr/share/texmf/tex/latex/base/report.cls\nINPUT main.tex\nINPUT .lemmata/build/main.aux\nINPUT ./chapters/one.tex\nINPUT ./chapters/one.tex\nINPUT /p/thesis/figures/a.pdf\nINPUT ../secret.tex\nINPUT /p/thesis/../../home/me/.ssh/id_ed25519\nOUTPUT main.pdf\n";
         let got: Vec<_> = used_files(fls, Path::new("/p/thesis"), ".lemmata/build")
             .into_iter()
             .collect();
@@ -620,6 +652,26 @@ mod tests {
         assert_eq!(strip_comments("\\verb+a%b+ x % c\n"), "\\verb+a%b+ x %\n");
         assert_eq!(strip_comments("\\verb*!a%b! x % c\n"), "\\verb*!a%b! x %\n");
         assert_eq!(strip_comments("\\verb|a%\n"), "\\verb|a%\n");
+    }
+
+    #[test]
+    fn keeps_percent_in_other_verbatim_commands() {
+        for code in [
+            "\\Verb|50%|",
+            "\\Verb[x]|50%|",
+            "\\lstinline|50%|",
+            "\\lstinline[language=C]{printf(\"%d\")}",
+            "\\path{a%b}",
+            "\\mintinline{c}{x % y}",
+            "\\mintinline{c}|x % y|",
+        ] {
+            assert_eq!(
+                strip_comments(&format!("{code} ok % c\n")),
+                format!("{code} ok %\n")
+            );
+        }
+        let fc = "\\begin{filecontents*}{x.dat}\n50% kept\n\\end{filecontents*}\n";
+        assert_eq!(strip_comments(fc), fc);
     }
 
     #[test]

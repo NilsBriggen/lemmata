@@ -410,7 +410,13 @@ pub fn import_zip(zip_path: &Path, parent: &Path, name: &str) -> Result<Vec<Path
             continue;
         }
         let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        (&mut entry)
+            .take(MAX_UNPACKED + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_UNPACKED {
+            return Err(too_big());
+        }
         let mut inner = zip::ZipArchive::new(io::Cursor::new(bytes))
             .map_err(|e| format!("{entry_name} isn't a valid zip file: {e}"))?;
         let target = available_target(parent, &stem(&entry_name))?;
@@ -418,6 +424,13 @@ pub fn import_zip(zip_path: &Path, parent: &Path, name: &str) -> Result<Vec<Path
         out.push(target);
     }
     Ok(out)
+}
+
+/// What one project may unpack to: a zip that claims more is broken or a zip bomb.
+const MAX_UNPACKED: u64 = 4 << 30;
+
+fn too_big() -> String {
+    "This zip unpacks to more than 4 GB, so it wasn't imported.".into()
 }
 
 /// `parent/name`, or `parent/name (2)` etc. if taken.
@@ -463,6 +476,7 @@ fn extract_project<R: Read + Seek>(
     }
     let strip = common_top_folder(&paths);
 
+    let mut written = 0;
     let result = (|| {
         for (i, path) in paths.iter().enumerate() {
             let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
@@ -471,15 +485,17 @@ fn extract_project<R: Read + Seek>(
                 None => path.as_path(),
             };
             // A repository's or Lemmata's own settings can name programs to run (git's
-            // core.fsmonitor, say): those never come in from a zip.
-            if rel.as_os_str().is_empty()
-                || rel.components().any(|c| {
-                    matches!(
-                        c.as_os_str().to_str(),
-                        Some("__MACOSX" | ".git" | ".lemmata")
-                    )
-                })
-            {
+            // core.fsmonitor, say): those never come in from a zip. Windows and macOS ignore
+            // case, Windows also trailing dots and spaces, and knows `.git` as `GIT~1`.
+            let blocked = |c: std::path::Component| {
+                let c = c.as_os_str().to_string_lossy();
+                let c = c.trim_end_matches(['.', ' ']).to_ascii_lowercase();
+                matches!(
+                    c.as_str(),
+                    "__macosx" | ".git" | ".lemmata" | "git~1" | "lemmat~1"
+                )
+            };
+            if rel.as_os_str().is_empty() || rel.components().any(blocked) {
                 continue;
             }
             let dest = target.join(rel);
@@ -490,7 +506,11 @@ fn extract_project<R: Read + Seek>(
                     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 }
                 let mut out = fs::File::create(&dest).map_err(|e| e.to_string())?;
-                io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+                written += io::copy(&mut (&mut entry).take(MAX_UNPACKED + 1 - written), &mut out)
+                    .map_err(|e| e.to_string())?;
+                if written > MAX_UNPACKED {
+                    return Err(too_big());
+                }
             }
         }
         fs::create_dir_all(target).map_err(|e| e.to_string())
@@ -594,11 +614,18 @@ mod tests {
                 ("main.tex", "x"),
                 (".git/config", "[core]\n\tfsmonitor = sh -c evil"),
                 (".lemmata/history/config", "x"),
+                // What Windows or macOS would take for .git.
+                (".GIT/config", "x"),
+                ("GIT~1/config", "x"),
+                (".Git. /config", "x"),
             ],
         );
         let out = import_zip(&z, d.path(), "x").unwrap().remove(0);
-        assert!(out.join("main.tex").is_file());
-        assert!(!out.join(".git").exists() && !out.join(".lemmata").exists());
+        let names: Vec<_> = fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["main.tex"]);
     }
 
     #[test]

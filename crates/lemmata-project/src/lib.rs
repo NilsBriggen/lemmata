@@ -380,17 +380,28 @@ fn read_config(root: &Path) -> Result<Config> {
     }
 }
 
-fn is_hidden_or_build(entry: &walkdir::DirEntry, outdir: &str) -> bool {
+fn is_hidden_or_build(entry: &walkdir::DirEntry, root: &Path, outdir: &str) -> bool {
     let name = entry.file_name().to_string_lossy();
     entry.depth() > 0
-        && (name.starts_with('.') || name == "node_modules" || entry.path().ends_with(outdir))
+        && (name.starts_with('.')
+            || name == "node_modules"
+            || is_outdir(root, entry.path(), outdir))
+}
+
+/// Whether `path` is the build folder itself; `chapters/build` is not the folder `build`.
+fn is_outdir(root: &Path, path: &Path, outdir: &str) -> bool {
+    let want = Path::new(outdir)
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir));
+    path.strip_prefix(root)
+        .is_ok_and(|rel| rel.components().eq(want))
 }
 
 fn find_main_candidates(root: &Path, outdir: &str) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = WalkDir::new(root)
         .max_depth(3)
         .into_iter()
-        .filter_entry(|e| !is_hidden_or_build(e, outdir))
+        .filter_entry(|e| !is_hidden_or_build(e, root, outdir))
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "tex"))
         .filter(|e| fs::read_to_string(e.path()).is_ok_and(|t| has_documentclass(&t)))
@@ -497,7 +508,9 @@ pub fn tree(root: &Path, outdir: &str) -> Vec<Entry> {
             .filter_map(|e| e.ok())
             .filter(|e| {
                 let name = e.file_name().to_string_lossy().into_owned();
-                !name.starts_with('.') && name != "node_modules" && !e.path().ends_with(outdir)
+                !name.starts_with('.')
+                    && name != "node_modules"
+                    && !is_outdir(root, &e.path(), outdir)
             })
             .map(|e| {
                 let path = e.path();
@@ -933,6 +946,20 @@ mod tests {
         let names: Vec<_> = t.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["figures", "main.tex"]);
         assert_eq!(t[0].children[0].path, "figures/a.png");
+    }
+
+    #[test]
+    fn only_the_build_folder_itself_is_left_out() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "main.tex", "\\documentclass{article}");
+        write(d.path(), "build/main.pdf", "");
+        write(d.path(), "chapters/build/notes.tex", "");
+        for outdir in ["build", "./build", "build/"] {
+            let t = tree(d.path(), outdir);
+            let names: Vec<_> = t.iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(names, ["chapters", "main.tex"], "{outdir}");
+            assert_eq!(t[0].children[0].name, "build");
+        }
     }
 
     #[test]

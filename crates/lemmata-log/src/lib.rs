@@ -14,7 +14,7 @@ use rules::{Engine, Source};
 use serde::Serialize;
 use std::sync::LazyLock;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Error,
@@ -22,7 +22,7 @@ pub enum Severity {
     Info,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Kind {
     MissingFile { name: String },
@@ -33,7 +33,7 @@ pub enum Kind {
     Other,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct Diagnostic {
     pub severity: Severity,
     pub kind: Kind,
@@ -47,7 +47,7 @@ pub struct Diagnostic {
     pub fix: Option<Fix>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct Fix {
     pub explanation: String,
     /// A shell command the user can run, if there is one.
@@ -57,11 +57,12 @@ pub struct Fix {
     pub package: Option<String>,
 }
 
-/// TeX hard-wraps log lines at this many characters (`max_print_line`).
+/// TeX hard-wraps log lines at this many bytes (`max_print_line`); some engines count characters.
 const WRAP: usize = 79;
 
 static FILE_LINE_ERROR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(.+?\.(?:tex|sty|cls|ltx|dtx|bbl|def|cfg|clo|ins)):(\d+): (.*)$").unwrap()
+    // Any extension, in any case: errors also come from .pgf, .tikz, .bbx or .TEX files.
+    Regex::new(r"^(.+?\.[A-Za-z][A-Za-z0-9]{0,7}):(\d+): (.*)$").unwrap()
 });
 static BANG_ERROR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^! (.*)$").unwrap());
 static CONTEXT_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^l\.(\d+)").unwrap());
@@ -164,7 +165,13 @@ pub fn parse(log: &str) -> Vec<Diagnostic> {
             });
         }
 
-        files.scan(line);
+        // An error's context ("l.12 the text" and its second half below) is the document's
+        // text: its parentheses don't open or close files.
+        let context = CONTEXT_LINE.is_match(line)
+            || i > 0 && CONTEXT_LINE.is_match(&lines[i - 1]) && line.starts_with(' ');
+        if !context {
+            files.scan(line);
+        }
         i += 1;
     }
 
@@ -326,7 +333,7 @@ fn unwrap_lines(log: &str) -> Vec<String> {
         } else {
             out.push(raw.to_string());
         }
-        continuing = raw.chars().count() == WRAP;
+        continuing = raw.len() == WRAP || raw.chars().count() == WRAP;
     }
     out
 }
@@ -494,14 +501,10 @@ pub fn parse_blg(blg: &str) -> Vec<Diagnostic> {
     dedupe(out)
 }
 
-fn dedupe(diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
-    let mut out: Vec<Diagnostic> = Vec::with_capacity(diags.len());
-    for d in diags {
-        if !out.contains(&d) {
-            out.push(d);
-        }
-    }
-    out
+fn dedupe(mut diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    let mut seen = std::collections::HashSet::new();
+    diags.retain(|d| seen.insert(d.clone()));
+    diags
 }
 
 #[cfg(test)]
@@ -609,6 +612,34 @@ mod tests {
         let bad = d.iter().find(|d| d.kind == Kind::BadBox).unwrap();
         assert_eq!(bad.line, Some(20));
         assert_eq!(bad.severity, Severity::Info);
+    }
+
+    #[test]
+    fn lines_wrapped_at_79_bytes_are_joined() {
+        // pdfTeX counts the bytes of "ü", so this line is 79 bytes but 78 characters.
+        let long = format!("ü{}\nrest", "x".repeat(WRAP - 2));
+        assert_eq!(unwrap_lines(&long).len(), 1);
+    }
+
+    #[test]
+    fn errors_in_any_kind_of_file_are_found() {
+        for file in ["./fig/plot.pgf", "./fig/a.tikz", "./my.bbx", "./Main.TEX"] {
+            let log = format!("{file}:7: Undefined control sequence.\nl.7 \\foo\n");
+            let d = parse(&log);
+            assert_eq!(d[0].file.as_deref(), Some(file), "{d:?}");
+            assert_eq!(d[0].line, Some(7));
+        }
+    }
+
+    #[test]
+    fn parentheses_in_an_error_s_context_are_not_files() {
+        let log = "(./main.tex\n! Undefined control sequence.\nl.3 see (a) and (b\n                  ) and c)\n! Missing $ inserted.\nl.5 x\n";
+        let d = parse(log);
+        assert_eq!(d.len(), 2, "{d:?}");
+        assert!(
+            d.iter().all(|d| d.file.as_deref() == Some("./main.tex")),
+            "{d:?}"
+        );
     }
 
     #[test]

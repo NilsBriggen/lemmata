@@ -27,8 +27,9 @@ pub struct Build<'a> {
     /// Changes after every build, so the raw log reloads.
     pub id: u64,
     pub logs_open: bool,
-    /// The source of a project file, for the excerpts under errors.
-    pub source: &'a dyn Fn(&str) -> Option<String>,
+    /// Lines `from..=to` (1-based) of a project file, for the excerpts under errors; fewer
+    /// at its end.
+    pub source: &'a dyn Fn(&str, usize, usize) -> Vec<String>,
 }
 
 /// What the pane asks of the workspace.

@@ -18,6 +18,8 @@ pub struct Span {
     pub key_end: usize,
     /// 1-based line of the `@`.
     pub line: usize,
+    /// False when the file ends before the entry does: its span runs to the end of the file.
+    pub closed: bool,
 }
 
 /// The entries of a .bib text, without `@comment`, `@string` and `@preamble`.
@@ -84,6 +86,7 @@ pub fn scan(src: &str) -> Vec<Span> {
             start,
             end,
             line,
+            closed: k < b.len(),
         });
     }
     out
@@ -245,6 +248,18 @@ fn find<'a>(spans: &'a [Span], key: &str, line: usize) -> Result<&'a Span, Error
 pub fn remove_entry(src: &str, key: &str, line: usize) -> Result<String, Error> {
     let spans = scan(src);
     let s = find(&spans, key, line)?;
+    // A missing brace makes an entry run on over the ones after it, up to the end of the file.
+    let swallows = src[s.start + 1..s.end].lines().skip(1).any(|l| {
+        let l = l.trim_start();
+        let kind = l.strip_prefix('@').unwrap_or("");
+        let name = kind.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+        l.starts_with('@') && name.len() < kind.len() && name.trim_start().starts_with(['{', '('])
+    });
+    if !s.closed || swallows {
+        return Err(Error(format!(
+            "The entry {key} has no closing brace, so removing it would take everything after it. Fix it in the .bib file first."
+        )));
+    }
     // Take the entry's whole lines, unless other text shares them.
     let line_start = src[..s.start].rfind('\n').map_or(0, |n| n + 1);
     let a = if src[line_start..s.start].trim().is_empty() {
@@ -310,7 +325,12 @@ pub fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> 
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".lemmata-tmp");
     let tmp = std::path::PathBuf::from(tmp);
-    std::fs::write(&tmp, text)
+    // Synced before the rename, so a crash can't leave an empty .bib behind.
+    std::fs::File::create(&tmp)
+        .and_then(|mut f| {
+            std::io::Write::write_all(&mut f, text.as_ref())?;
+            f.sync_all()
+        })
         .and_then(|()| std::fs::rename(&tmp, path))
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&tmp);
@@ -351,6 +371,17 @@ mod tests {
         );
         // A stale line number must not delete anything.
         assert!(remove_entry(BIB, "b", 12).is_err());
+    }
+
+    #[test]
+    fn an_entry_without_its_closing_brace_is_not_removed() {
+        let at_end = "@misc{a, title={A}}\n@misc{b, title={B}\n";
+        assert!(remove_entry(at_end, "b", 2).is_err());
+        let before_others = "@misc{a, title={A}\n\n@misc{b, title={B}}\n@misc{c, title={C}}\n";
+        assert!(remove_entry(before_others, "a", 1).is_err());
+        // An @ inside a value, as in an address, is not an entry.
+        let email = "@misc{a, note={write to\n  me@home.org}}\n";
+        assert!(remove_entry(email, "a", 1).is_ok());
     }
 
     #[test]

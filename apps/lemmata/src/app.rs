@@ -45,6 +45,9 @@ pub struct App {
     /// When updates were last looked for.
     update_checked: Option<std::time::Instant>,
     quit: Quit,
+    /// Leaving the project (the window, the library, another project): the saving or asking
+    /// dialog's title, and what happens after.
+    leaving: Option<(&'static str, Then)>,
 }
 
 /// What runs once the window has closed: an installed update (main.rs starts it).
@@ -52,6 +55,8 @@ pub static AFTER_EXIT: std::sync::Mutex<Option<lemmata_shell::update::AfterExit>
     std::sync::Mutex::new(None);
 
 /// Automatic update checks, as often as App.svelte's.
+const LEAVE_PROJECT: &str = "Close the project?";
+
 const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 /// Closing the window with unsaved files (App.svelte onCloseRequested).
@@ -66,6 +71,9 @@ enum Quit {
     /// Closing now.
     Closing,
 }
+
+/// What follows once the open project is closed, everything saved or let go.
+type Then = Box<dyn FnOnce(&mut App)>;
 
 /// The dialog open over the welcome or the library.
 enum Dialog {
@@ -150,6 +158,7 @@ impl App {
             pinches: None,
             update_checked: None,
             quit: Quit::No,
+            leaving: None,
         }
     }
 
@@ -183,17 +192,19 @@ impl App {
                 self.open_project(target.project_root.to_string_lossy().into_owned())
             }
             // The dialogs live on the start screen: the project closes (saving) first.
-            Request::Clone { url } => {
-                self.close_project();
-                self.dialog = Some(Dialog::Clone(dialogs::Clone::new(
-                    self.default_parent(),
-                    url,
-                )))
-            }
-            Request::NewProject { template } => {
-                self.close_project();
-                self.open_new_project(template)
-            }
+            Request::Clone { url } => self.leave(
+                LEAVE_PROJECT,
+                Box::new(move |app| {
+                    app.dialog = Some(Dialog::Clone(dialogs::Clone::new(
+                        app.default_parent(),
+                        url,
+                    )))
+                }),
+            ),
+            Request::NewProject { template } => self.leave(
+                LEAVE_PROJECT,
+                Box::new(move |app| app.open_new_project(template)),
+            ),
         }
     }
 
@@ -444,26 +455,7 @@ impl App {
             Msg::Opened(path, Ok(info)) => {
                 self.recents.remember(&path, now_ms());
                 self.recents.save(&self.dirs);
-                self.close_project();
-                let ready = self.tex.as_ref().is_some_and(|t| t.detection.ready);
-                let mut ws = Workspace::open(info, &self.dirs, &self.backend, ready);
-                // A project's latexmkrc is a Perl program: it runs only once the user says so.
-                let rc = ["latexmkrc", ".latexmkrc"]
-                    .iter()
-                    .any(|f| ws.info.root.join(f).is_file());
-                if rc && !self.settings.shell_escape_projects.contains(&ws.root) {
-                    ws.notices.push(
-                        workspace::Notice::new(
-                            "This project has a latexmkrc, which can run programs on your computer, so builds leave it out. Use it only if you trust the project.",
-                            workspace::Tone::Info,
-                        )
-                        .action(workspace::NoticeAction::TrustProject),
-                    );
-                }
-                if let Some(file) = self.open_file_after.take() {
-                    ws.open_requested(&self.backend, &file);
-                }
-                self.project = Some(ws);
+                self.leave(LEAVE_PROJECT, Box::new(move |app| app.opened(info)));
             }
             Msg::Opened(path, Err(e)) => {
                 self.open_file_after = None;
@@ -788,14 +780,14 @@ impl App {
                 .unwrap_or_default();
             if !unsaved.is_empty() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                if self.settings.autosave_ms > 0.0 {
-                    if let Some(ws) = &mut self.project {
-                        ws.save_all(&self.backend, &self.settings);
-                    }
-                    self.quit = Quit::Saving;
-                } else {
-                    self.quit = Quit::Asking(unsaved, None);
-                }
+                let ctx = ctx.clone();
+                self.leave(
+                    "Close Lemmata?",
+                    Box::new(move |app| {
+                        app.quit = Quit::Closing;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }),
+                );
             } else {
                 self.close_project();
             }
@@ -812,9 +804,7 @@ impl App {
                 // Typed while the last save ran: save that too.
                 ws.save_all(&self.backend, &self.settings);
             } else if unsaved.is_empty() {
-                self.quit = Quit::Closing;
-                self.close_project();
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.finish_leaving(true);
             } else {
                 let failed = ws.buffers.failed.clone();
                 let why = if ws.buffers.conflicts.is_empty() {
@@ -829,11 +819,12 @@ impl App {
             return;
         };
         let (files, error) = (files.clone(), error.clone());
+        let title = self.leaving.as_ref().map_or(LEAVE_PROJECT, |(t, _)| *t);
         let mut choice = None;
         widgets::modal(
             ctx,
             &p,
-            "Close Lemmata?",
+            title,
             480.0,
             |ui| {
                 let text = match &error {
@@ -879,15 +870,9 @@ impl App {
                     *a = None;
                 }
                 self.quit = Quit::No;
+                self.leaving = None;
             }
-            Some(1) => {
-                // Nothing more is saved; the session is still remembered.
-                if let Some(ws) = self.project.take() {
-                    workspace::session::save(&self.dirs, &ws.root, &ws.session());
-                }
-                self.quit = Quit::Closing;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+            Some(1) => self.finish_leaving(false),
             Some(_) => {
                 if let Some(ws) = &mut self.project {
                     ws.save_all(&self.backend, &self.settings);
@@ -895,6 +880,68 @@ impl App {
                 self.quit = Quit::Saving;
             }
             None => {}
+        }
+    }
+
+    /// Shows a project that has just been opened.
+    fn opened(&mut self, info: lemmata_shell::ProjectInfo) {
+        let ready = self.tex.as_ref().is_some_and(|t| t.detection.ready);
+        let mut ws = Workspace::open(info, &self.dirs, &self.backend, ready);
+        // A project's latexmkrc is a Perl program: it runs only once the user says so.
+        let rc = ["latexmkrc", ".latexmkrc"]
+            .iter()
+            .any(|f| ws.info.root.join(f).is_file());
+        if rc && !self.settings.shell_escape_projects.contains(&ws.root) {
+            ws.notices.push(
+                workspace::Notice::new(
+                    "This project has a latexmkrc, which can run programs on your computer, so builds leave it out. Use it only if you trust the project.",
+                    workspace::Tone::Info,
+                )
+                .action(workspace::NoticeAction::TrustProject),
+            );
+        }
+        if let Some(file) = self.open_file_after.take() {
+            ws.open_requested(&self.backend, &file);
+        }
+        self.project = Some(ws);
+    }
+
+    /// Leaves the open project, then runs `then`. Unsaved files are saved first; when that can't
+    /// happen silently (autosave off, a failed save, a conflict), `closing` asks.
+    fn leave(&mut self, title: &'static str, then: Then) {
+        let unsaved = self
+            .project
+            .as_ref()
+            .map(|w| w.buffers.unsaved())
+            .unwrap_or_default();
+        if unsaved.is_empty() {
+            self.close_project();
+            then(self);
+            return;
+        }
+        self.leaving = Some((title, then));
+        if self.settings.autosave_ms > 0.0 {
+            if let Some(ws) = &mut self.project {
+                ws.save_all(&self.backend, &self.settings);
+            }
+            self.quit = Quit::Saving;
+        } else {
+            self.quit = Quit::Asking(unsaved, None);
+        }
+    }
+
+    /// Everything is saved, or the user let it go: the project closes and what waited runs.
+    fn finish_leaving(&mut self, save: bool) {
+        self.quit = Quit::No;
+        if save {
+            self.close_project();
+        } else if let Some(ws) = self.project.take() {
+            // Nothing more is saved; the session is still remembered.
+            ws.stop_lsp(&self.backend);
+            workspace::session::save(&self.dirs, &ws.root, &ws.session());
+        }
+        if let Some((_, then)) = self.leaving.take() {
+            then(self);
         }
     }
 
@@ -1099,7 +1146,7 @@ impl App {
             ws.tex_ready = tex.detection.ready;
             ws.tex_outdated = tex.detection.outdated;
             match ws.show(ui, &p, &mut self.settings, &self.backend) {
-                Some(workspace::Action::Library) => self.close_project(),
+                Some(workspace::Action::Library) => self.leave(LEAVE_PROJECT, Box::new(|_| {})),
                 Some(workspace::Action::Settings) => self.save_settings(&ctx),
                 Some(workspace::Action::Preferences) => self.open_prefs(),
                 Some(workspace::Action::Snippets) => {
@@ -2910,6 +2957,51 @@ pub(crate) mod tests {
                 .as_ref()
                 .is_some_and(|w| w.editors["main.tex"].doc.text().contains("% theirs"))
         });
+    }
+
+    #[test]
+    fn a_file_deleted_outside_keeps_its_unsaved_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.state_mut().settings.autosave_ms = 0.0;
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex").type_text("% mine");
+        h.run_steps(2);
+        std::fs::remove_file(project.join("main.tex")).unwrap();
+        wait_for(&mut h, "the conflict dialog", |h| {
+            h.query_by_label_contains("changed on disk").is_some()
+        });
+        h.get_by_label("Keep my version").click();
+        wait_for(&mut h, "the file written back", |_| {
+            std::fs::read_to_string(project.join("main.tex")).is_ok_and(|t| t.contains("% mine"))
+        });
+    }
+
+    #[test]
+    fn going_to_the_library_asks_about_unsaved_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.state_mut().settings.autosave_ms = 0.0;
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex").type_text("% mine");
+        h.run_steps(2);
+        h.get_by_label("Back to all projects").click();
+        wait_for(&mut h, "the question", |h| {
+            h.query_by_label("Close the project?").is_some()
+        });
+        assert!(h.state().project.is_some());
+        h.get_by_label("Save and close").click();
+        wait_for(&mut h, "the library", |h| {
+            h.state().project.is_none() && h.query_by_label("Your projects").is_some()
+        });
+        let text = std::fs::read_to_string(project.join("main.tex")).unwrap();
+        assert!(text.contains("% mine"), "{text}");
     }
 
     #[test]

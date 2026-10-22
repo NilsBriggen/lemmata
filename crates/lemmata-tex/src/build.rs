@@ -111,8 +111,19 @@ pub fn latexmk_args(project: &Project, miktex: bool) -> Vec<OsString> {
             args.push(rc.into());
         }
     }
-    args.push(project.main.as_os_str().to_owned());
+    args.push(main_arg(&project.main));
     args
+}
+
+/// The main file as a command-line argument. A file named `-shell-escape.tex` would be read as
+/// an option (past `-norc`), `&x.tex` as a format and `\x.tex` as TeX code: `./` keeps each a file.
+pub(crate) fn main_arg(main: &Path) -> OsString {
+    let mut arg = OsString::new();
+    if main.to_string_lossy().starts_with(['-', '&', '\\']) {
+        arg.push("./");
+    }
+    arg.push(main);
+    arg
 }
 
 /// The user's own latexmk rc files, where latexmk looks for them.
@@ -564,6 +575,26 @@ const MAX_PASSES: usize = 5;
 /// file. Its presence means the folder is in a state the direct build can continue from.
 pub(crate) const OK_STAMP: &str = ".lemmata-ok";
 
+/// Beside `OK_STAMP`: every project file's size and time at the last good build. A deleted
+/// file, or one synced or unzipped with an old time, is a change the times alone don't show.
+const FILES_STAMP: &str = ".lemmata-files";
+
+fn files_hash(project: &Project) -> String {
+    use std::hash::{Hash, Hasher};
+    fn walk(entries: &[lemmata_project::Entry], h: &mut impl Hasher) {
+        for e in entries {
+            (&e.path, e.is_dir, e.size, e.modified).hash(h);
+            walk(&e.children, h);
+        }
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    walk(
+        &lemmata_project::tree(&project.root, &project.config.outdir),
+        &mut h,
+    );
+    format!("{:x}", h.finish())
+}
+
 /// Whether the engine can be run directly instead of latexmk: the last build here
 /// succeeded, and nothing configures steps that only latexmk runs.
 fn warm_ok(project: &Project) -> bool {
@@ -605,6 +636,8 @@ pub fn up_to_date(project: &Project) -> bool {
         && project.pdf_path().is_file()
         && project.log_path().is_file()
         && !changed_since(project, &stamp)
+        && std::fs::read_to_string(project.outdir_abs().join(FILES_STAMP))
+            .is_ok_and(|s| s == files_hash(project))
 }
 
 /// True when some project file was modified after the time on `stamp`, the start of the last good build
@@ -638,11 +671,23 @@ fn changed_since(project: &Project, stamp: &Path) -> bool {
 /// Records a successful build, and what the bibliography tool read, so the next one can go direct without running it again.
 pub(crate) fn mark_ok(project: &Project, started_at: SystemTime) {
     let biber = project.config.bib == lemmata_project::Bib::Biber;
-    if let Some(fp) = bib_fingerprint(project, biber) {
-        let _ = std::fs::write(out_file(project, "lemmata-bib"), fp);
+    // A .bib saved while the build ran was maybe not what the tool read: then it runs next time.
+    let bib_edited = bib_files(project).iter().any(|e| {
+        std::fs::metadata(project.root.join(&e.path))
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t + MTIME_SLACK >= started_at)
+    });
+    match bib_fingerprint(project, biber) {
+        Some(fp) if !bib_edited => {
+            let _ = std::fs::write(out_file(project, "lemmata-bib"), fp);
+        }
+        _ => {
+            let _ = std::fs::remove_file(out_file(project, "lemmata-bib"));
+        }
     }
     let stamp = project.outdir_abs().join(OK_STAMP);
     let _ = std::fs::write(&stamp, project.main.to_string_lossy().as_bytes());
+    let _ = std::fs::write(project.outdir_abs().join(FILES_STAMP), files_hash(project));
     // Dated when the build began: a file saved while it ran was maybe not read, so it still counts as changed.
     let _ = std::fs::File::options()
         .write(true)
@@ -679,7 +724,7 @@ pub(crate) fn pass_args(
         args.push("--enable-installer".into());
     }
     args.push(format!("-output-directory={outdir}"));
-    let main = project.main.to_string_lossy().replace('\\', "/");
+    let main = main_arg(&project.main).to_string_lossy().replace('\\', "/");
     args.push(if c.draft {
         format!("\\PassOptionsToPackage{{draft}}{{graphicx}}\\input{{{main}}}")
     } else {
@@ -775,22 +820,31 @@ fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
             line.hash(&mut h);
         }
     }
-    let mut bibs = Vec::new();
-    fn walk(entries: &[lemmata_project::Entry], out: &mut Vec<String>) {
+    let bibs: Vec<String> = bib_files(project)
+        .iter()
+        .map(|e| format!("{}:{}:{}", e.path, e.size, e.modified))
+        .collect();
+    bibs.hash(&mut h);
+    Some(format!("{:x}", h.finish()))
+}
+
+/// The project's .bib files.
+fn bib_files(project: &Project) -> Vec<lemmata_project::Entry> {
+    fn walk(entries: Vec<lemmata_project::Entry>, out: &mut Vec<lemmata_project::Entry>) {
         for e in entries {
             if e.is_dir {
-                walk(&e.children, out);
+                walk(e.children, out);
             } else if e.path.ends_with(".bib") {
-                out.push(format!("{}:{}:{}", e.path, e.size, e.modified));
+                out.push(e);
             }
         }
     }
+    let mut out = Vec::new();
     walk(
-        &lemmata_project::tree(&project.root, &project.config.outdir),
-        &mut bibs,
+        lemmata_project::tree(&project.root, &project.config.outdir),
+        &mut out,
     );
-    bibs.hash(&mut h);
-    Some(format!("{:x}", h.finish()))
+    out
 }
 
 /// Runs biber or bibtex when the .bbl is missing or what the tool reads changed since it last ran.
@@ -961,6 +1015,15 @@ pub fn clean(project: &Project) -> std::io::Result<usize> {
     if !outdir.is_dir() {
         return Ok(0);
     }
+    // A project can bring `.lemmata` or the build folder as a link to somewhere else.
+    let inside = lemmata_project::canonical(&outdir).is_ok_and(|o| {
+        lemmata_project::canonical(&project.root).is_ok_and(|r| o.starts_with(&r) && o != r)
+    });
+    if !inside {
+        return Err(std::io::Error::other(
+            "the build folder links to somewhere outside the project, so it is left alone",
+        ));
+    }
     // Lemmata's own default folder is safe even when a build from before the marker existed made it.
     if !outdir.join(MARKER).is_file() && project.config.outdir != lemmata_project::DEFAULT_OUTDIR {
         return Err(std::io::Error::other(
@@ -1109,6 +1172,29 @@ mod tests {
         assert!(args.contains(&"-shell-escape".to_string()));
         assert!(args.contains(&"-f".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("-usepretex")));
+    }
+
+    #[test]
+    fn a_main_file_named_like_an_option_stays_a_file() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.main = "-shell-escape.tex".into();
+        let last = |a: Vec<OsString>| a.last().unwrap().to_string_lossy().into_owned();
+        assert_eq!(last(latexmk_args(&p, false)), "./-shell-escape.tex");
+        assert_eq!(
+            last(crate::tectonic::tectonic_args(&p)),
+            "./-shell-escape.tex"
+        );
+        assert_eq!(
+            last(
+                pass_args(&p, "out", None, false)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect()
+            ),
+            "./-shell-escape.tex"
+        );
     }
 
     #[test]
@@ -1356,6 +1442,56 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         mark_ok(&p, started);
         assert!(changed_since(&p, &stamp));
+    }
+
+    #[test]
+    fn a_deleted_or_old_dated_file_makes_the_pdf_stale() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::fs::write(d.path().join("ch.tex"), "x").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        std::fs::write(p.pdf_path(), "pdf").unwrap();
+        std::fs::write(p.log_path(), "log").unwrap();
+        mark_ok(
+            &p,
+            SystemTime::now() + MTIME_SLACK + Duration::from_millis(50),
+        );
+        assert!(up_to_date(&p));
+        std::fs::remove_file(d.path().join("ch.tex")).unwrap();
+        assert!(!up_to_date(&p), "a deleted include");
+        mark_ok(
+            &p,
+            SystemTime::now() + MTIME_SLACK + Duration::from_millis(50),
+        );
+        assert!(up_to_date(&p));
+        // Unzipped or synced in, keeping the time it had elsewhere.
+        let old = SystemTime::now() - Duration::from_secs(86_400);
+        let f = std::fs::File::create(d.path().join("ch.tex")).unwrap();
+        f.set_modified(old).unwrap();
+        assert!(!up_to_date(&p), "an old-dated new file");
+    }
+
+    #[test]
+    fn a_bib_saved_during_a_build_runs_bibtex_again() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::fs::write(d.path().join("r.bib"), "@misc{k, title={K}}").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        // What bibtex or biber read, whichever the project uses.
+        std::fs::write(out_file(&p, "aux"), "\\citation{k}\n\\bibdata{r}\n").unwrap();
+        std::fs::write(out_file(&p, "bcf"), "<bcf/>").unwrap();
+        let fp = || std::fs::read_to_string(out_file(&p, "lemmata-bib")).ok();
+        mark_ok(
+            &p,
+            SystemTime::now() + MTIME_SLACK + Duration::from_millis(50),
+        );
+        assert!(fp().is_some());
+        let started = SystemTime::now();
+        std::fs::write(d.path().join("r.bib"), "@misc{k, title={Changed}}").unwrap();
+        mark_ok(&p, started);
+        assert_eq!(fp(), None, "the next build must not skip bibtex");
     }
 
     /// latexmk dies without a log (Perl blocked); the engine is run directly, twice because the first log asks for a rerun.
@@ -1693,6 +1829,20 @@ mod tests {
         p.config.outdir = ".".into();
         assert!(clean(&p).is_err());
         assert!(d.path().join("main.tex").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clean_refuses_a_build_folder_that_links_outside() {
+        let d = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::write(elsewhere.path().join("thesis.log"), "keep me").unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::fs::create_dir(d.path().join(".lemmata")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), d.path().join(".lemmata/build")).unwrap();
+        let p = Project::open(d.path()).unwrap();
+        assert!(clean(&p).is_err());
+        assert!(elsewhere.path().join("thesis.log").exists());
     }
 
     #[test]

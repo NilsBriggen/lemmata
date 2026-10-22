@@ -12,7 +12,7 @@ name = "lemmata-app"
 path = "src/main.rs"
 
 [dependencies]
-# Only what the app draws with: no bundled egui fonts, no GLES or WebGPU backends.
+# Only what the app draws with: no bundled egui fonts, no WebGPU backend.
 eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
     "clipboard",
@@ -46,7 +46,8 @@ open = "5"
 regex.workspace = true
 url = "2"
 getrandom = "0.3"
-ropey = "1.6"
+# Lines end at \n (and \r\n) only, as TeX and SyncTeX count them: not at U+2028 or a form feed.
+ropey = { version = "1.6", default-features = false, features = ["simd", "cr_lines"] }
 unicode-segmentation = "1"
 rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "wayland", "tokio"] }
 tokio.workspace = true
@@ -59,6 +60,11 @@ skrifa = "0.46"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl"] }
+
+# OpenGL as well, for virtual machines and older graphics without Vulkan or DirectX 12 (wgpu
+# picks it only when nothing better is there). On a Mac, Metal is always there.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["gles"] }
 
 # Files and links opened from Finder arrive as Apple Events (src/macos.rs); winit already uses these.
 [target.'cfg(target_os = "macos")'.dependencies]

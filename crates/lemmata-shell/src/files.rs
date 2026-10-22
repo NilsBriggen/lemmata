@@ -252,18 +252,31 @@ fn write_all_atomic(writes: &[(PathBuf, String)]) -> CmdResult<()> {
         path.with_file_name(format!(".{}.lemmata-tmp", name.unwrap_or_default()))
     };
     for (i, (path, text)) in writes.iter().enumerate() {
-        if let Err(e) = std::fs::write(tmp_of(path), text) {
+        if let Err(e) = write_synced(&tmp_of(path), text.as_bytes()) {
             for (path, _) in &writes[..=i] {
                 let _ = std::fs::remove_file(tmp_of(path));
             }
             return Err(format!("Could not save {}: {e}", path.display()));
         }
     }
-    for (path, text) in writes {
-        put_in_place(&tmp_of(path), path, text)
-            .map_err(|e| format!("Could not save {}: {e}", path.display()))?;
+    for (i, (path, text)) in writes.iter().enumerate() {
+        if let Err(e) = put_in_place(&tmp_of(path), path, text) {
+            for (path, _) in &writes[i..] {
+                let _ = std::fs::remove_file(tmp_of(path));
+            }
+            return Err(format!("Could not save {}: {e}", path.display()));
+        }
     }
     Ok(())
+}
+
+/// Writes `bytes` and waits until they are on the disk, so the rename that follows can't
+/// leave an empty file behind after a crash or power cut.
+pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()
 }
 
 /// Moves `tmp` (holding `text`) over `path`. Windows refuses to replace a file another program has open, and TeX

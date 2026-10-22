@@ -457,7 +457,9 @@ impl Index {
                     best = Some((d, i));
                 }
             }
-            let n = &self.nodes[best?.1 as usize];
+            // A box with nothing to choose from (only echoes, say): the box itself is the answer.
+            let Some((_, i)) = best else { break };
+            let n = &self.nodes[i as usize];
             hit = Some(n);
             level = n.child;
             along_h = n.kind != Kind::VBox;

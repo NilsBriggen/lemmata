@@ -77,7 +77,7 @@ pub fn parse_status(z: &str, prefix: &str) -> Vec<FileStatus> {
         let mut chars = xy.chars();
         let (x, y) = (chars.next().unwrap_or(' '), chars.next().unwrap_or(' '));
         // A rename lists the old name as the next entry.
-        if x == 'R' || x == 'C' {
+        if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
             parts.next();
         }
         let status = match (x, y) {
@@ -178,11 +178,15 @@ pub fn working_status(root: &Path) -> Vec<FileStatus> {
     let Some(git) = find_git() else {
         return Vec::new();
     };
+    let Some(guard) = lemmata_env::git_guard(&git, root) else {
+        return Vec::new();
+    };
     let run = |args: &[&str]| {
         let mut c = Command::new(&git);
         c.arg("-C")
             .arg(root)
             .env("GIT_OPTIONAL_LOCKS", "0")
+            .args(&guard)
             .args(args);
         no_window(&mut c);
         c.output().ok().filter(|o| o.status.success())
@@ -210,6 +214,8 @@ pub struct History {
     git: PathBuf,
     root: PathBuf,
     git_dir: PathBuf,
+    /// See `lemmata_env::git_guard`: snapshots happen unasked.
+    guard: Vec<String>,
     /// The store is `STORE`, not the user's repository: git is told where both live.
     separate: bool,
 }
@@ -219,12 +225,16 @@ impl History {
     /// else the git repository the folder is (inside of).
     pub fn open(root: &Path) -> Result<History> {
         let git = find_git().ok_or(Error::NoGit)?;
+        let guard = lemmata_env::git_guard(&git, root).ok_or_else(|| {
+            Error::Git("the repository's config names a filter that can't be turned off".into())
+        })?;
         let store = root.join(STORE);
         if store.join("HEAD").is_file() {
             let h = History {
                 git,
                 root: root.to_path_buf(),
                 git_dir: store,
+                guard,
                 separate: true,
             };
             h.exclude_build_folder()?;
@@ -244,6 +254,7 @@ impl History {
             git,
             root: root.to_path_buf(),
             git_dir,
+            guard,
             separate: false,
         };
         h.exclude_build_folder()?;
@@ -308,6 +319,7 @@ impl History {
         }
         c.arg("-C")
             .arg(&self.root)
+            .args(&self.guard)
             // A private index: the user's staging area stays as it is.
             .env("GIT_INDEX_FILE", self.git_dir.join("lemmata-index"))
             .env("GIT_AUTHOR_NAME", "Lemmata")
@@ -366,11 +378,16 @@ impl History {
             return Ok(Vec::new());
         }
         let log = self.run(&[
+            // Einführung.tex as it is, not "Einf\303\274hrung.tex".
+            "-c",
+            "core.quotePath=false",
             "log",
             &format!("--max-count={limit}"),
             &format!("--notes={NOTES_REF}"),
             "--format=%x1e%H%x1f%ct%x1f%s%x1f%N",
             "--name-status",
+            // Paths from the project folder, not the repository's top.
+            "--relative",
             "--no-renames",
             "--root",
             SNAPSHOT_REF,
@@ -403,6 +420,18 @@ impl History {
                 let dest = self.root.join(path);
                 if let Some(dir) = dest.parent() {
                     std::fs::create_dir_all(dir)?;
+                    // A folder on the way can be a link out of the project.
+                    let root = std::fs::canonicalize(&self.root)?;
+                    if !std::fs::canonicalize(dir)?.starts_with(root) {
+                        return Err(Error::Git(format!("{path} is outside the project")));
+                    }
+                }
+                // A link is replaced by the file, not written through.
+                if dest
+                    .symlink_metadata()
+                    .is_ok_and(|m| m.file_type().is_symlink())
+                {
+                    std::fs::remove_file(&dest)?;
                 }
                 std::fs::write(dest, bytes)?;
             }
@@ -666,6 +695,32 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_repository_s_own_config_runs_nothing_unasked() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        git(root, &["init", "-q"]);
+        let mark = root.join("ran");
+        let cmd = format!("sh -c 'touch {}'; cat", mark.display());
+        git(root, &["config", "core.fsmonitor", &cmd]);
+        git(root, &["config", "filter.evil.clean", &cmd]);
+        git(root, &["config", "filter.evil.required", "true"]);
+        git(root, &["config", "log.showSignature", "true"]);
+        git(root, &["config", "gpg.program", &cmd]);
+        fs::write(root.join(".gitattributes"), "*.tex filter=evil\n").unwrap();
+        fs::write(root.join("main.tex"), "one").unwrap();
+
+        assert!(!working_status(root).is_empty());
+        let h = History::open(root).unwrap();
+        h.snapshot("First").unwrap().unwrap();
+        assert_eq!(h.list(10).unwrap().len(), 1);
+        assert!(!mark.exists(), "the repository's config ran a program");
+        // The check is real: git itself runs the filter when not told otherwise.
+        git(root, &["add", "main.tex"]);
+        assert!(mark.exists());
+    }
+
     #[test]
     fn snapshots_without_touching_the_users_git_state() {
         let d = tempfile::tempdir().unwrap();
@@ -775,6 +830,37 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn restore_never_writes_through_a_link() {
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(root.join("main.tex"), "draft 1").unwrap();
+        fs::create_dir(root.join("ch")).unwrap();
+        fs::write(root.join("ch/a.tex"), "a").unwrap();
+        let h = History::init(root).unwrap();
+        let first = h.snapshot("v1").unwrap().unwrap();
+        // Both are swapped for links to a file and a folder elsewhere.
+        fs::write(outside.path().join("bashrc"), "mine").unwrap();
+        fs::remove_file(root.join("main.tex")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("bashrc"), root.join("main.tex")).unwrap();
+        fs::remove_dir_all(root.join("ch")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("ch")).unwrap();
+
+        h.restore_file(&first, "main.tex").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("main.tex")).unwrap(),
+            "draft 1"
+        );
+        assert!(h.restore_file(&first, "ch/a.tex").is_err());
+        assert_eq!(
+            fs::read_to_string(outside.path().join("bashrc")).unwrap(),
+            "mine"
+        );
+        assert!(!outside.path().join("a.tex").exists());
+    }
+
     #[test]
     fn project_in_a_subfolder_of_a_repo() {
         let d = tempfile::tempdir().unwrap();
@@ -788,6 +874,16 @@ mod tests {
         assert_eq!(h.file_at(&id, "main.tex").unwrap().as_deref(), Some("x"));
         let list = h.list(5).unwrap();
         assert_eq!(list[0].changes.len(), 1, "{:?}", list[0].changes);
+        assert_eq!(list[0].changes[0].path, "main.tex");
+    }
+
+    #[test]
+    fn non_ascii_names_are_listed_as_they_are() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("Einführung.tex"), "x").unwrap();
+        let h = History::init(d.path()).unwrap();
+        h.snapshot("s").unwrap().unwrap();
+        assert_eq!(h.list(5).unwrap()[0].changes[0].path, "Einführung.tex");
     }
 
     #[test]

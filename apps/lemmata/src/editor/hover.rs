@@ -380,7 +380,12 @@ pub fn card(
                 if IMAGE_EXT.is_match(&f) {
                     image(ui, p, &root.join(&f));
                 }
-            } else if let Ok(src) = std::fs::read_to_string(root.join(&f)) {
+            } else if let Ok(file) = std::fs::File::open(root.join(&f)) {
+                // Only the start, as the card shows only that: a long chapter isn't read on every frame.
+                // shortcut: still one small read per frame while hovering; cache it if files on slow drives lag.
+                let mut head = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut std::io::Read::take(file, 4096), &mut head);
+                let src = String::from_utf8_lossy(&head);
                 let first: String = src.split('\n').take(8).collect::<Vec<_>>().join("\n");
                 ui.label(
                     egui::RichText::new(first)

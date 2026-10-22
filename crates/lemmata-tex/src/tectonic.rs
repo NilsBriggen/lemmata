@@ -156,7 +156,7 @@ pub fn tectonic_args(project: &Project) -> Vec<OsString> {
     let mut search = OsString::from("search-path=");
     search.push(&project.root);
     args.extend(["-Z".into(), search]);
-    args.push(project.main.as_os_str().to_owned());
+    args.push(crate::build::main_arg(&project.main));
     args
 }
 

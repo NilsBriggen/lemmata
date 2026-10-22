@@ -162,6 +162,22 @@ fn init_makes_an_initial_commit() {
 }
 
 #[test]
+fn init_leaves_lemmata_s_folder_out_beside_an_own_gitignore() {
+    let d = repo();
+    write(d.path(), "main.tex", "hi\n");
+    write(d.path(), ".gitignore", "*.aux\n");
+    std::fs::create_dir_all(d.path().join(".lemmata/build")).unwrap();
+    write(d.path(), ".lemmata/build/main.pdf", "pdf");
+    init(d.path()).unwrap();
+    let files = git(d.path(), &["ls-files"]);
+    assert!(!files.contains(".lemmata"), "{files}");
+    assert_eq!(
+        std::fs::read_to_string(d.path().join(".gitignore")).unwrap(),
+        "*.aux\n"
+    );
+}
+
+#[test]
 fn unset_identity_explains_the_fix() {
     isolate();
     let d = tempfile::tempdir().unwrap();
@@ -373,4 +389,19 @@ fn slow_commands_are_stopped() {
     );
     assert!(e.err().unwrap().to_string().contains("took longer"));
     assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_panel_s_view_runs_nothing_the_repository_names() {
+    let d = repo();
+    let mark = d.path().join("ran");
+    let cmd = format!("sh -c 'touch {}'; cat", mark.display());
+    git(d.path(), &["config", "core.fsmonitor", &cmd]);
+    git(d.path(), &["config", "filter.evil.clean", &cmd]);
+    write(d.path(), ".gitattributes", "*.tex filter=evil\n");
+    write(d.path(), "a.tex", "one\n");
+    assert!(!status(d.path()).untracked.is_empty());
+    assert!(log(d.path()).unwrap().is_empty());
+    assert!(!mark.exists(), "the repository's config ran a program");
 }

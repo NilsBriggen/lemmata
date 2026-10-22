@@ -2562,6 +2562,7 @@ name = "lemmata-git"
 version = "3.0.0-rc.4"
 dependencies = [
  "lemmata-env",
+ "libc",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
