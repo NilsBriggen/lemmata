@@ -1616,6 +1616,7 @@ impl Workspace {
             if Button::icon(crate::icons::X, "Dismiss")
                 .size(widgets::Size::Sm)
                 .show_icon(&mut c, p)
+                .on_hover_text("Dismiss")
                 .clicked()
             {
                 self.open_error = None;
@@ -2014,6 +2015,7 @@ impl Workspace {
                                 .size(widgets::Size::Sm)
                                 .icon_size(14.0)
                                 .show_icon(ui, p)
+                                .on_hover_text("Dismiss")
                                 .clicked()
                             {
                                 dismissed = true;
@@ -2044,6 +2046,7 @@ pub fn editor_style(ctx: &egui::Context, s: &Settings, focus: bool) -> view::Sty
         autocomplete: s.autocomplete,
         math_preview: true,
         focus,
+        line_numbers: s.line_numbers,
     }
 }
 

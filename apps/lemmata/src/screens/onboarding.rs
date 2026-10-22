@@ -51,7 +51,9 @@ impl State {
             tectonic_error: None,
             terminal_error: None,
             tectonic_supported: true,
-            tectonic_mb: 30,
+            // This computer's download, rounded: about 10 MB on Linux, 22 MB elsewhere.
+            tectonic_mb: lemmata_tex::tectonic::release()
+                .map_or(20, |r| r.size.div_ceil(1_000_000)),
         }
     }
 }

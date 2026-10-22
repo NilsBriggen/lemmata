@@ -62,6 +62,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
     s("cite", "Mod-Shift-c", "Insert citation", "Writing"),
     s("symbols", "Mod-Shift-m", "Insert symbol", "Writing"),
     s("bold", "Mod-b", "Bold", "Writing"),
+    // Not Ctrl+Alt+\: on many layouts AltGr types the backslash, and Windows reports AltGr as Ctrl+Alt.
+    s("reindent", "Mod-Shift-i", "Reindent lines", "Writing"),
     s("italic", "Mod-i", "Italic", "Writing"),
     s("comment", "Mod-/", "Comment or uncomment lines", "Writing"),
     s(
@@ -84,8 +86,37 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     s("next-problem", "F8", "Next problem", "Editing"),
     s("prev-problem", "Shift-F8", "Previous problem", "Editing"),
+    s("next-todo", "F7", "Next TODO", "Editing"),
+    s("prev-todo", "Shift-F7", "Previous TODO", "Editing"),
+    s("next-comment", "F9", "Next review comment", "Editing"),
+    s(
+        "prev-comment",
+        "Shift-F9",
+        "Previous review comment",
+        "Editing",
+    ),
     s("find", "Mod-f", "Find in file", "Editing"),
-    s("find-next", "Mod-g", "Find next", "Editing"),
+    Shortcut {
+        id: "find-next",
+        keys: "Mod-g",
+        alt: Some("F3"),
+        label: "Find next",
+        group: "Editing",
+    },
+    Shortcut {
+        id: "find-prev",
+        keys: "Mod-Shift-g",
+        alt: Some("Shift-F3"),
+        label: "Find previous",
+        group: "Editing",
+    },
+    s(
+        "select-all-matches",
+        "Mod-Shift-l",
+        "Select all matches",
+        "Editing",
+    ),
+    s("select-line", "Alt-l", "Select line", "Editing"),
     s("goto-line", "Mod-Alt-g", "Go to line", "Editing"),
     s("add-comment", "Mod-Alt-m", "Add a comment", "Editing"),
     s("move-line-up", "Alt-ArrowUp", "Move line up", "Editing"),
@@ -104,9 +135,17 @@ pub const SHORTCUTS: &[Shortcut] = &[
     s("delete-line", "Mod-Shift-k", "Delete line", "Editing"),
     s("select-next", "Mod-d", "Select next occurrence", "Editing"),
     s("undo", "Mod-z", "Undo", "Editing"),
-    s("redo", "Mod-Shift-z", "Redo", "Editing"),
+    Shortcut {
+        id: "redo",
+        keys: "Mod-Shift-z",
+        alt: Some("Mod-y"),
+        label: "Redo",
+        group: "Editing",
+    },
     s("fold", "Ctrl-Shift-[", "Fold", "Editing"),
     s("unfold", "Ctrl-Shift-]", "Unfold", "Editing"),
+    s("fold-all", "Ctrl-Alt-[", "Fold everything", "Editing"),
+    s("unfold-all", "Ctrl-Alt-]", "Unfold everything", "Editing"),
     s("sync", "Mod-j", "Show this line in the PDF", "PDF"),
     s(
         "pdf-search",
@@ -221,6 +260,15 @@ pub fn specs(s: &Shortcut) -> Vec<&'static str> {
         Some(k) => vec![k],
         None => [Some(s.keys), s.alt].into_iter().flatten().collect(),
     }
+}
+
+/// Whether a key press is shortcut `id`, by any of its keys in effect.
+pub fn pressed(id: &str, mods: Modifiers, key: Key) -> bool {
+    SHORTCUTS.iter().find(|s| s.id == id).is_some_and(|s| {
+        specs(s)
+            .into_iter()
+            .any(|spec| matches_spec(spec, mods, key))
+    })
 }
 
 /// The main key in effect for `id` ("" when there is none).

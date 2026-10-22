@@ -338,7 +338,7 @@ fn gallery_categories(ui: &mut Ui, p: &Palette, st: &mut NewProject) {
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, c));
                 let t = ui
                     .ctx()
-                    .animate_bool_with_time(r.id, r.hovered(), theme::EASE_SECS);
+                    .animate_bool_with_time(r.id, r.hovered(), theme::ease_secs());
                 let painter = ui.painter();
                 painter.rect(
                     rect,

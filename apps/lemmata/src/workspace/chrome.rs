@@ -70,6 +70,11 @@ pub fn toolbar(
         .on(settings.sidebar_open)
         .icon_size(17.0)
         .show_icon(&mut c, p)
+        .on_hover_text(if settings.sidebar_open {
+            "Hide files and outline"
+        } else {
+            "Show files and outline"
+        })
         .clicked()
     {
         settings.sidebar_open = !settings.sidebar_open;
@@ -96,7 +101,8 @@ pub fn toolbar(
     let menu = Button::icon(icons::MENU, "Menu")
         .kind(Kind::Chrome)
         .icon_size(18.0)
-        .show_icon(&mut l, p);
+        .show_icon(&mut l, p)
+        .on_hover_text("Menu");
     if menu.clicked() {
         ws.menu = if matches!(ws.menu, Some(Menu::Main(_))) {
             None
@@ -201,7 +207,8 @@ pub fn toolbar(
     let _ = Button::icon(icons::SETTINGS, "Project settings")
         .kind(Kind::Chrome)
         .icon_size(17.0)
-        .show_icon(&mut r, p);
+        .show_icon(&mut r, p)
+        .on_hover_text("Project settings");
     use super::panels::Panel;
     let open_comments = ws.comments.threads.iter().filter(|t| !t.resolved).count();
     let git_changes = ws.git.status.len();

@@ -296,6 +296,7 @@ impl Workspace {
             .icon_size(14.0)
             .ink(p.chrome_muted)
             .show_icon(&mut c, p)
+            .on_hover_text("Close search")
             .clicked()
         {
             close = true;
@@ -472,7 +473,19 @@ impl Workspace {
         if let Some(m) = &s.message {
             note(ui, m, p.ok, 12.0);
         }
-        if !s.query.is_empty() && s.error.is_none() {
+        if !s.query.is_empty() && s.error.is_none() && s.due.is_none() && total == 0 {
+            let narrowed = s.regex || s.case_sensitive || s.whole_word;
+            note(
+                ui,
+                if narrowed {
+                    "Nothing found. Turning off match case, whole word or regex may find more."
+                } else {
+                    "Nothing found in the project's files."
+                },
+                p.chrome_muted,
+                11.5,
+            );
+        } else if !s.query.is_empty() && s.error.is_none() {
             let n = s.results.len();
             note(
                 ui,

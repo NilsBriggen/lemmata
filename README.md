@@ -26,7 +26,7 @@ Your projects are ordinary folders on your disk, and they build with the TeX you
 **PDF**
 - Text selection, search, working links, the outline and page thumbnails.
 - A full-screen presentation mode for Beamer slides.
-- Zoom with Ctrl and the mouse wheel, or by pinching on a touchpad on Linux.
+- Zoom with Ctrl and the mouse wheel, or by pinching on a touchpad (on Linux under X11, Ctrl and scroll only).
 
 **References and language**
 - Add references by DOI, arXiv ID or an online search, or from Zotero.

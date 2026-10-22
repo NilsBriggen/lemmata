@@ -693,7 +693,11 @@ impl PdfView {
                 ui.scroll_to_rect_animation(
                     r,
                     Some(egui::Align::TOP),
-                    egui::style::ScrollAnimation::duration(0.3),
+                    egui::style::ScrollAnimation::duration(if crate::theme::reduced_motion() {
+                        0.0
+                    } else {
+                        0.3
+                    }),
                 );
             }
             let near = viewport.expand2(vec2(0.0, viewport.height() * 0.5));

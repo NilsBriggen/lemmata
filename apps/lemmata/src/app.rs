@@ -105,8 +105,10 @@ impl App {
     pub fn with_dirs(cc: &eframe::CreationContext<'_>, dirs: Dirs) -> Self {
         theme::install_fonts(&cc.egui_ctx);
         let settings = Settings::load(&dirs);
+        let damaged = settings.damaged;
         let palette = palette_for(&cc.egui_ctx, &settings);
         theme::apply(&cc.egui_ctx, &palette);
+        theme::reduce_motion(&cc.egui_ctx, settings.reduce_motion);
         let backend = Backend::new(cc.egui_ctx.clone(), &dirs);
         #[cfg(not(debug_assertions))]
         {
@@ -143,7 +145,9 @@ impl App {
             onboarding: None,
             without_tex: false,
             library: library::State::default(),
-            open_error: None,
+            open_error: damaged.then(|| {
+                "Your settings couldn't be read, so Lemmata started with the defaults. The old file is kept beside them as settings.json.bak.".to_owned()
+            }),
             no_main_in: None,
             project: None,
             started: false,
@@ -164,6 +168,7 @@ impl App {
 
     fn save_settings(&mut self, ctx: &egui::Context) {
         self.settings.save(&self.dirs);
+        theme::reduce_motion(ctx, self.settings.reduce_motion);
         let palette = palette_for(ctx, &self.settings);
         if palette != self.palette {
             self.palette = palette;

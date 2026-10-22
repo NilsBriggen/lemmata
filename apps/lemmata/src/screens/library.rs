@@ -356,7 +356,7 @@ fn nav(ui: &mut Ui, p: &Palette, icon: Option<Icon>, label: &str, subtle: bool) 
     r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     let t = ui
         .ctx()
-        .animate_bool_with_time(r.id, r.hovered(), theme::EASE_SECS);
+        .animate_bool_with_time(r.id, r.hovered(), theme::ease_secs());
     ui.painter().rect_filled(
         rect,
         CornerRadius::same(theme::R),
@@ -715,7 +715,8 @@ fn more_button(
     let b = Button::icon(icons::ELLIPSIS, label)
         .size(Size::Sm)
         .kind(if ghost { Kind::Ghost } else { Kind::Default })
-        .show_icon(&mut child, p);
+        .show_icon(&mut child, p)
+        .on_hover_text(label);
     (b.clicked(), b.rect)
 }
 

@@ -29,7 +29,7 @@ The 12 crates under `crates/` have no UI or Tauri dependencies and stay untouche
 - Fonts: IBM Plex Sans 400/500/600, Plex Mono 400/500 and Young Serif, latin and latin-ext subsets only (the same range the web bundle ships), converted from woff2 to ttf with a one-time `pyftsubset` script. Lazy system-font fallback through `fontdb` for non-Latin text, because the webview did this implicitly.
 - Icons: build the 88 Lucide icons used today into **one icon font** (about 20 KB) with a codepoint table in `icons.rs`. No SVG rasterizer, no `resvg` (about 1 MB saved).
 - Dependencies: audit `cargo tree -d` and `cargo bloat` after the app compiles. Candidates to trim later, measured and not guessed: `reqwest` to `ureq`, tokio feature set, `regex` features.
-- Dictionaries (3.6 MB bundled; 14 more download) and the 6 bundled templates stay as they are. texlab downloads on first use, reusing the dictionary download and checksum code path. The checksums are already pinned in `scripts/fetch-texlab.sh`.
+- Dictionaries (3.6 MB bundled; 14 more download) and the 6 bundled templates stay as they are. texlab downloads on first use, reusing the dictionary download and checksum code path. The checksums are pinned in `crates/lemmata-shell/src/lsp.rs`.
 - Expectation to report honestly at M0: wgpu is heavier than glow. The size win comes mostly from dropping the 3.8 MB bundle, texlab and the Tauri/webview runtime, not from egui being tiny.
 
 ## Design 1:1

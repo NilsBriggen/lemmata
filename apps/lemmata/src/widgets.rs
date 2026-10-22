@@ -189,7 +189,7 @@ impl<'a> Button<'a> {
             let hovered = self.enabled && response.hovered();
             let t = ui
                 .ctx()
-                .animate_bool_with_time(response.id, hovered, theme::EASE_SECS);
+                .animate_bool_with_time(response.id, hovered, theme::ease_secs());
             let lerp = |a: Color32, b: Color32| a.lerp_to_gamma(b, t);
             let (fill, stroke, ink) = match self.kind {
                 Kind::Default if self.on => (p.accent_soft, p.accent, p.accent),

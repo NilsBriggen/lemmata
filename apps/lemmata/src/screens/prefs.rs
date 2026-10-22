@@ -242,6 +242,13 @@ fn body(
             changed = true;
         }
     });
+    changed |= widgets::checkbox(
+        ui,
+        p,
+        &mut s.reduce_motion,
+        "Reduce motion: no fades or smooth scrolling",
+    )
+    .clicked();
     section_end(ui, p);
 
     heading(ui, p, "Editing");
@@ -263,6 +270,25 @@ fn body(
             changed = true;
         }
     });
+    if s.autosave_ms > 0.0 {
+        let mut delay = format!("{}", s.autosave_ms);
+        if select(
+            ui,
+            p,
+            "Save after typing stops for",
+            &mut delay,
+            &[
+                ("300", "0.3 seconds"),
+                ("600", "0.6 seconds"),
+                ("1000", "1 second"),
+                ("2000", "2 seconds"),
+                ("5000", "5 seconds"),
+            ],
+        ) {
+            s.autosave_ms = delay.parse().unwrap_or(Settings::default().autosave_ms);
+            changed = true;
+        }
+    }
     changed |= widgets::checkbox(ui, p, &mut s.auto_compile, "Compile after every save").clicked();
     changed |= widgets::checkbox(
         ui,
@@ -321,6 +347,7 @@ fn body(
         changed = true;
     }
     changed |= widgets::checkbox(ui, p, &mut s.word_wrap, "Wrap long lines").clicked();
+    changed |= widgets::checkbox(ui, p, &mut s.line_numbers, "Line numbers").clicked();
     section_end(ui, p);
 
     heading(ui, p, "Language");

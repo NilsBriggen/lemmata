@@ -821,7 +821,7 @@ fn logs_button(
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     let t = ui
         .ctx()
-        .animate_bool_with_time(resp.id, resp.hovered(), theme::EASE_SECS);
+        .animate_bool_with_time(resp.id, resp.hovered(), theme::ease_secs());
     let (fill, stroke, ink) = if on {
         (p.accent_soft, p.accent, p.accent)
     } else {

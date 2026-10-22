@@ -173,6 +173,23 @@ pub const R_LG: u8 = 10;
 /// The 0.12 s hover and pop transitions.
 pub const EASE_SECS: f32 = 0.12;
 
+/// "Reduce motion" (Preferences): transitions and smooth scrolls happen at once.
+static REDUCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn reduce_motion(ctx: &egui::Context, on: bool) {
+    REDUCED.store(on, std::sync::atomic::Ordering::Relaxed);
+    ctx.all_styles_mut(|s| s.animation_time = ease_secs());
+}
+
+pub fn reduced_motion() -> bool {
+    REDUCED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How long a transition takes: `EASE_SECS`, or none with Reduce motion on.
+pub fn ease_secs() -> f32 {
+    if reduced_motion() { 0.0 } else { EASE_SECS }
+}
+
 impl Palette {
     /// `--indent-guide` follows `--border-strong` in every theme.
     pub fn indent_guide(&self) -> Color32 {
@@ -476,7 +493,7 @@ pub fn apply(ctx: &egui::Context, p: &Palette) {
         s.spacing.interact_size.y = 30.0;
         s.spacing.menu_margin = Margin::same(5);
         s.spacing.item_spacing = egui::vec2(6.0, 6.0);
-        s.animation_time = EASE_SECS;
+        s.animation_time = ease_secs();
         // `scrollbar-width: thin`, no fading of the content at the edges.
         s.spacing.scroll = egui::style::ScrollStyle::thin();
         s.spacing.scroll.fade.strength = 0.0;

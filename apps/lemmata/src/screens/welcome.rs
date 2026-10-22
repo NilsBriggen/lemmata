@@ -472,7 +472,7 @@ fn start_tile(
     let hovered = ui.ctx().animate_bool_with_time(
         id,
         ui.ctx().read_response(id).is_some_and(|r| r.hovered()),
-        theme::EASE_SECS,
+        theme::ease_secs(),
     );
     let body_galley = ui.painter().layout(
         body.into(),

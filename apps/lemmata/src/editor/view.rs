@@ -47,6 +47,7 @@ pub struct Style {
     pub math_preview: bool,
     /// Focus mode: the text in a centred column at most 88 characters wide.
     pub focus: bool,
+    pub line_numbers: bool,
 }
 
 /// A problem from the last build, shown in the text and the lint gutter.
@@ -350,6 +351,49 @@ impl Editor {
             self.reveal = true;
         }
         true
+    }
+
+    /// Selects the next (or previous) of `ranges` after the cursor, wrapping around. False
+    /// when there are none.
+    fn jump_among(&mut self, mut ranges: Vec<(usize, usize)>, forward: bool) -> bool {
+        if ranges.is_empty() {
+            return false;
+        }
+        ranges.sort();
+        let head = self.doc.selection.main().head;
+        let pick = if forward {
+            ranges.iter().find(|r| r.0 > head).or(ranges.first())
+        } else {
+            ranges.iter().rev().find(|r| r.1 < head).or(ranges.last())
+        };
+        if let Some(&(from, to)) = pick {
+            self.doc.selection = Selection::single(Range::new(from, to));
+            self.reveal = true;
+        }
+        true
+    }
+
+    /// F7 / Shift-F7: the next (or previous) TODO, FIXME, XXX comment or \todo note.
+    fn next_todo(&mut self, forward: bool) -> bool {
+        let lines: Vec<(usize, usize)> = lemmata_shell::tools::scan_text("", &self.doc.text())
+            .into_iter()
+            .map(|t| {
+                let n = t.line - 1;
+                (self.doc.line_start(n), self.doc.line_end(n))
+            })
+            .collect();
+        self.jump_among(lines, forward)
+    }
+
+    /// F9 / Shift-F9: the next (or previous) open review comment.
+    fn next_comment(&mut self, forward: bool) -> bool {
+        let open = self
+            .comments
+            .iter()
+            .filter(|c| !c.3)
+            .map(|c| (c.1, c.2))
+            .collect();
+        self.jump_among(open, forward)
     }
 
     /// Folds the block starting on line `n` (0-based), or unfolds it when it is folded.
@@ -751,7 +795,11 @@ pub fn show(
 
     let cw = ui.fonts_mut(|f| f.glyph_width(&style.font, '0'));
     let digits = ed.doc.line_count().to_string().len();
-    let numbers_w = (24.0 + digits as f32 * cw).max(40.0);
+    let numbers_w = if style.line_numbers {
+        (24.0 + digits as f32 * cw).max(40.0)
+    } else {
+        8.0
+    };
     let em = style.font.size;
     let gutter_w = (numbers_w + LINT_EM * em + 0.6 * em + 6.0 + 1.0).round();
     let full_text_w = area.width() - gutter_w - PAD - PAD_RIGHT;
@@ -1355,13 +1403,15 @@ pub fn show(
             } else {
                 p.faint
             };
-            painter.text(
-                pos2(gutter.left() + numbers_w - 10.0, line_rect.top() + lh / 2.0),
-                egui::Align2::RIGHT_CENTER,
-                (n + 1).to_string(),
-                style.font.clone(),
-                color,
-            );
+            if style.line_numbers {
+                painter.text(
+                    pos2(gutter.left() + numbers_w - 10.0, line_rect.top() + lh / 2.0),
+                    egui::Align2::RIGHT_CENTER,
+                    (n + 1).to_string(),
+                    style.font.clone(),
+                    color,
+                );
+            }
             geo.layouts.insert(n, l);
         }
 
@@ -2367,7 +2417,7 @@ fn key_press(
 ) -> bool {
     let shift = m.shift;
     let modk = cmd_key(&m);
-    let is = |spec: &str| shortcuts::matches_spec(spec, m, key);
+    let on = |id: &str| shortcuts::pressed(id, m, key);
     // completionKeymap: the open list takes the arrows, Enter and Escape.
     if let Some(c) = &mut ed.completion
         && !modk
@@ -2435,93 +2485,105 @@ fn key_press(
     }
     // The formatting keys of TeX files come first (editor/shortcuts.ts formattingKeymap).
     if ed.tex {
-        if is(shortcuts::keys_of("bold")) {
+        if on("bold") {
             cmd::toggle_wrap(d, "textbf");
             return reveal(ed);
         }
-        if is(shortcuts::keys_of("italic")) {
+        if on("italic") {
             cmd::toggle_wrap(d, "textit");
             return reveal(ed);
         }
-        if is(shortcuts::keys_of("heading-down")) {
+        if on("heading-down") {
             return cmd::shift_heading(d, 1);
         }
-        if is(shortcuts::keys_of("heading-up")) {
+        if on("heading-up") {
             return cmd::shift_heading(d, -1);
         }
-        if is(shortcuts::keys_of("wrap-env")) {
+        if on("wrap-env") {
             out.wrap_environment = true;
             return true;
         }
-        if is(shortcuts::keys_of("next-problem")) {
+        if on("next-problem") {
             out.next_problem = Some(1);
             return ed.next_problem(true);
         }
-        if is(shortcuts::keys_of("prev-problem")) {
+        if on("prev-problem") {
             out.next_problem = Some(-1);
             return ed.next_problem(false);
         }
     }
-    if is(shortcuts::keys_of("comment")) {
+    if on("reindent") {
+        cmd::reindent_lines(&mut ed.doc, indent);
+        return reveal(ed);
+    }
+    for (id, forward) in [("next-todo", true), ("prev-todo", false)] {
+        if on(id) {
+            ed.next_todo(forward);
+            return true;
+        }
+    }
+    for (id, forward) in [("next-comment", true), ("prev-comment", false)] {
+        if on(id) {
+            ed.next_comment(forward);
+            return true;
+        }
+    }
+    if on("comment") {
         cmd::toggle_comment(d);
         return reveal(ed);
     }
-    if is(shortcuts::keys_of("sync")) {
+    if on("sync") {
         let h = d.selection.main().head;
         let n = d.line_of(h);
         out.sync = Some((n + 1, h - d.line_start(n)));
         return true;
     }
     // The search keys (searchKeymap).
-    if is(shortcuts::keys_of("find")) {
+    if on("find") {
         ed.search = Some(Search::open(ed.search.take(), &ed.selected_text(), false));
         return true;
     }
-    if is(shortcuts::keys_of("goto-line")) {
+    if on("goto-line") {
         ed.search = Some(Search::goto_line(ed.search.take()));
         return true;
     }
-    if is(shortcuts::keys_of("find-next")) || is("F3") {
+    if on("find-next") {
         search::find_next(ed, true);
         return true;
     }
-    if is("Shift-Mod-g") || is("Shift-F3") {
+    if on("find-prev") {
         search::find_next(ed, false);
         return true;
     }
-    if is("Mod-Shift-l") {
+    if on("select-all-matches") {
         search::select_all_matches(ed);
         return true;
     }
-    if is(shortcuts::keys_of("select-next")) {
+    if on("select-next") {
         cmd::select_next_occurrence(d);
         return reveal(ed);
     }
     // texlab: go to definition, find references.
-    if ed.tex && (is(shortcuts::keys_of("definition")) || is(shortcuts::keys_of("references"))) {
+    if ed.tex && (on("definition") || on("references")) {
         let h = ed.doc.selection.main().head;
         let n = ed.doc.line_of(h);
-        out.server_goto = Some((
-            n,
-            h - ed.doc.line_start(n),
-            is(shortcuts::keys_of("references")),
-        ));
+        out.server_goto = Some((n, h - ed.doc.line_start(n), on("references")));
         return true;
     }
     // foldKeymap: fold or unfold at the cursor, and everything.
     if ed.tex && style.folding {
-        if is(shortcuts::keys_of("fold")) {
+        if on("fold") {
             fold_at_cursor(ed);
             return reveal(ed);
         }
-        if is(shortcuts::keys_of("unfold")) {
+        if on("unfold") {
             let n = ed.doc.line_of(ed.doc.selection.main().head);
             if ed.folds.unfold_line(&ed.doc, n) {
                 ed.folds_gen += 1;
             }
             return true;
         }
-        if is("Ctrl-Alt-[") {
+        if on("fold-all") {
             for n in 0..ed.doc.line_count() {
                 if fold::fold_lines(&ed.doc, n).is_some() && ed.folds.starting(&ed.doc, n).is_none()
                 {
@@ -2534,7 +2596,7 @@ fn key_press(
             ed.folds_gen += 1;
             return true;
         }
-        if is("Ctrl-Alt-]") {
+        if on("unfold-all") {
             ed.folds.0.clear();
             ed.folds_gen += 1;
             return true;
@@ -2542,11 +2604,11 @@ fn key_press(
     }
     let d = &mut ed.doc;
     // History.
-    if is(shortcuts::keys_of("undo")) {
+    if on("undo") {
         d.undo();
         return reveal(ed);
     }
-    if is("Mod-y") || is(shortcuts::keys_of("redo")) {
+    if on("redo") {
         d.redo();
         return reveal(ed);
     }
@@ -2644,11 +2706,11 @@ fn key_press(
             }
             true
         }
-        Key::L if m.alt && !modk => {
+        _ if on("select-line") => {
             cmd::select_line(&mut ed.doc);
             true
         }
-        _ if is(shortcuts::keys_of("delete-line")) => {
+        _ if on("delete-line") => {
             cmd::delete_line(&mut ed.doc);
             reveal(ed)
         }
@@ -3064,6 +3126,28 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     #[test]
+    fn todos_and_comments_are_stepped_through_and_wrap_around() {
+        let mut ed = Editor::new("a\n% TODO one\nb\n\\todo{two}\nc\n", true);
+        let line = |ed: &Editor| ed.doc.line_of(ed.doc.selection.main().head);
+        assert!(ed.next_todo(true));
+        assert_eq!(line(&ed), 1);
+        ed.next_todo(true);
+        assert_eq!(line(&ed), 3);
+        ed.next_todo(true);
+        assert_eq!(line(&ed), 1, "wraps to the first");
+        ed.next_todo(false);
+        assert_eq!(line(&ed), 3, "and back to the last");
+        ed.comments = vec![("x".into(), 0, 1, false), ("y".into(), 13, 14, true)];
+        assert!(ed.next_comment(true));
+        assert_eq!(
+            ed.doc.selection.main(),
+            Range::new(0, 1),
+            "resolved ones are skipped"
+        );
+        assert!(!Editor::new("none", true).next_todo(true));
+    }
+
+    #[test]
     fn heights_after_an_edit_match_measuring_every_line() {
         // Short lines and lines long enough to wrap, so the heights differ.
         let text: String = (0..200)
@@ -3112,6 +3196,7 @@ mod tests {
             autocomplete: true,
             math_preview: true,
             focus: false,
+            line_numbers: true,
         }
     }
 

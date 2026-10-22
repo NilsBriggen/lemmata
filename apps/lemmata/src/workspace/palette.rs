@@ -93,13 +93,15 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("git", "Git", ""),
     ("todos", "TODOs", ""),
     ("format", "Format document", ""),
-    ("reindent", "Reindent lines", ""),
+    ("reindent", "Reindent lines", "reindent"),
     ("sync", "Show this line in the PDF", "sync"),
     ("focus", "Focus mode", "focus"),
+    ("toggle-wrap", "Turn line wrapping on or off", ""),
+    ("toggle-dark-pdf", "Turn dark PDF pages on or off", ""),
     ("new-file", "New file…", ""),
     ("goto-heading", "Go to a section…", "goto-heading"),
     ("goto-symbol", "Go to a label or citation…", ""),
-    ("rename-symbol", "Rename label or citation key…", ""),
+    ("rename-symbol", "Rename label or citation key…", "rename"),
     ("reopen-tab", "Reopen the last closed tab", "reopen-tab"),
     ("reveal", "Show the open file in the file tree", ""),
     ("unused", "Find unused files…", ""),
@@ -539,6 +541,14 @@ impl Workspace {
             }
             "sync" => self.sync_forward(backend),
             "focus" => self.focus_mode = !self.focus_mode,
+            "toggle-wrap" => {
+                settings.word_wrap = !settings.word_wrap;
+                return Some(Action::Settings);
+            }
+            "toggle-dark-pdf" => {
+                settings.pdf_dark = !settings.pdf_dark;
+                return Some(Action::Settings);
+            }
             "new-file" => self.new_item(false, String::new()),
             "goto-heading" => self.open_palette(Kind::Headings, settings),
             "goto-symbol" => self.open_symbols(backend),

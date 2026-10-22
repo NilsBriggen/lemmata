@@ -90,6 +90,13 @@ pub struct Settings {
     pub last_seen_version: String,
     /// Shortcut id → the keys the user chose instead ("Mod-Shift-b"); "" turns one off.
     pub keybindings: std::collections::BTreeMap<String, String>,
+    /// settings.json was there but couldn't be read: it is kept as settings.json.bak, and the
+    /// app says so instead of losing the user's choices without a word.
+    #[serde(skip)]
+    pub damaged: bool,
+    /// Transitions and smooth scrolls happen at once.
+    pub reduce_motion: bool,
+    pub line_numbers: bool,
 }
 
 impl Default for Settings {
@@ -127,6 +134,9 @@ impl Default for Settings {
             pdf_layout: "single".into(),
             last_seen_version: String::new(),
             keybindings: Default::default(),
+            damaged: false,
+            reduce_motion: false,
+            line_numbers: true,
         }
     }
 }
@@ -153,11 +163,17 @@ fn valid_settings(saved: &Map<String, Value>) -> Map<String, Value> {
 
 impl Settings {
     pub fn load(dirs: &Dirs) -> Self {
-        let saved = read_json(&dirs.config.join("settings.json"))
+        let path = dirs.config.join("settings.json");
+        let saved = read_json(&path)
             .and_then(|v| v.get("settings").cloned())
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default();
-        Self::from_saved(&saved)
+            .and_then(|v| v.as_object().cloned());
+        let damaged = saved.is_none()
+            && std::fs::metadata(&path).is_ok_and(|m| m.len() > 0)
+            && std::fs::copy(&path, path.with_extension("json.bak")).is_ok();
+        Self {
+            damaged,
+            ..Self::from_saved(&saved.unwrap_or_default())
+        }
     }
 
     fn from_saved(saved: &Map<String, Value>) -> Self {
@@ -463,6 +479,29 @@ fn write_json(path: &Path, v: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unreadable_settings_are_kept_and_said() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = Dirs {
+            config: tmp.path().into(),
+            data: tmp.path().into(),
+            cache: tmp.path().into(),
+        };
+        assert!(
+            !Settings::load(&dirs).damaged,
+            "no file yet: nothing to say"
+        );
+        std::fs::write(
+            tmp.path().join("settings.json"),
+            "{\"settings\": {\"fontSize\": 1",
+        )
+        .unwrap();
+        let s = Settings::load(&dirs);
+        assert!(s.damaged);
+        assert_eq!(s.font_size, Settings::default().font_size);
+        assert!(tmp.path().join("settings.json.bak").is_file());
+    }
     use serde_json::json;
 
     #[test]
