@@ -56,9 +56,11 @@ impl BuildState {
 
 impl Workspace {
     /// The last build's problems in `path`, for its editor: line, severity, message with hint.
+    /// texlab's live ones join them on lines the build said nothing about.
     pub fn problems_of(&self, path: &str) -> Vec<(usize, crate::editor::view::Severity, String)> {
         use crate::editor::view::Severity as S;
-        self.build
+        let mut list: Vec<(usize, S, String)> = self
+            .build
             .diagnostics
             .iter()
             .filter(|d| d.file.as_deref().map(|f| f.strip_prefix("./").unwrap_or(f)) == Some(path))
@@ -75,7 +77,19 @@ impl Workspace {
                 };
                 Some((line, sev, msg))
             })
-            .collect()
+            .collect();
+        let built: Vec<usize> = list.iter().map(|d| d.0).collect();
+        for (line, sev, msg) in self.lsp.diagnostics.get(path).into_iter().flatten() {
+            if !built.contains(line) {
+                let sev = match sev {
+                    crate::lsp::Severity::Error => S::Error,
+                    crate::lsp::Severity::Warning => S::Warning,
+                    crate::lsp::Severity::Info => S::Info,
+                };
+                list.push((*line, sev, msg.clone()));
+            }
+        }
+        list
     }
 
     /// Builds once the saves under way are done: now, or after the autosave delay.

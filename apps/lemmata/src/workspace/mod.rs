@@ -444,6 +444,11 @@ impl Workspace {
         if self.lsp.state != crate::lsp::State::Ready {
             return;
         }
+        let mut edits: HashMap<String, _> = self
+            .editors
+            .iter_mut()
+            .map(|(p, e)| (p.clone(), e.doc.take_lsp_edits()))
+            .collect();
         #[allow(clippy::type_complexity)]
         let texts: Vec<(String, u64, Box<dyn Fn() -> String + '_>)> = self
             .editors
@@ -456,9 +461,9 @@ impl Workspace {
                 )
             })
             .collect();
-        let docs: Vec<(String, u64, &dyn Fn() -> String)> = texts
+        let docs: Vec<crate::lsp::SyncDoc> = texts
             .iter()
-            .map(|(p, v, f)| (p.clone(), *v, f.as_ref()))
+            .map(|(p, v, f)| (p.clone(), *v, f.as_ref(), edits.remove(p).flatten()))
             .collect();
         let msgs = self.lsp.sync(&docs);
         drop(docs);
@@ -487,6 +492,8 @@ impl Workspace {
             } => {
                 self.lookups.hover = Some((path, line, col, text));
             }
+            // Editors take the new list with the build's (`problems_of`).
+            Answer::Diagnostics(_) => self.build.diag_gen += 1,
             Answer::Locations {
                 references: false,
                 places,

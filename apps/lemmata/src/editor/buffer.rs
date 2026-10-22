@@ -213,6 +213,49 @@ pub struct Doc {
     /// Every change since the view last looked, in order (undo and redo too), so positions it
     /// keeps (folds, snippet fields, problems) can follow the text.
     pub journal: Vec<ChangeSet>,
+    /// The changes since texlab last heard, as it wants them; `None` once too many piled up
+    /// (texlab was off), so it gets the whole text instead.
+    lsp_edits: Option<Vec<LspEdit>>,
+}
+
+/// One change in LSP terms: the replaced range, as lines and UTF-16 columns of the text before
+/// it, and the new text. In order: each applies to the text the previous ones left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LspEdit {
+    pub start: (usize, usize),
+    pub end: (usize, usize),
+    pub text: String,
+}
+
+/// More waiting than this and a full resend is cheaper.
+const MAX_LSP_EDITS: usize = 2000;
+
+/// Notes `c` as LSP edits, measured on `rope` before it is applied. Back to front, as
+/// `ChangeSet::apply` goes, so each edit's positions are those of the text at its turn.
+fn lsp_record(rope: &Rope, edits: &mut Option<Vec<LspEdit>>, c: &ChangeSet) {
+    let Some(list) = edits else { return };
+    if list.len() + c.0.len() > MAX_LSP_EDITS {
+        *edits = None;
+        return;
+    }
+    let at = |ch: usize| {
+        let line = rope.char_to_line(ch);
+        let col = ch - rope.line_to_char(line);
+        let utf16 = rope
+            .line(line)
+            .slice(..col)
+            .chars()
+            .map(char::len_utf16)
+            .sum();
+        (line, utf16)
+    };
+    for ch in c.0.iter().rev() {
+        list.push(LspEdit {
+            start: at(ch.from),
+            end: at(ch.to),
+            text: ch.insert.clone(),
+        });
+    }
 }
 
 fn visible_len(s: ropey::RopeSlice) -> usize {
@@ -234,7 +277,13 @@ impl Doc {
             version: 0,
             edit: None,
             journal: Vec::new(),
+            lsp_edits: Some(Vec::new()),
         }
+    }
+
+    /// The changes since the last call, for texlab; `None` when it needs the whole text.
+    pub fn take_lsp_edits(&mut self) -> Option<Vec<LspEdit>> {
+        self.lsp_edits.replace(Vec::new())
     }
 
     pub fn text(&self) -> String {
@@ -296,6 +345,7 @@ impl Doc {
             return;
         }
         self.note_edit(&changes);
+        lsp_record(&self.rope, &mut self.lsp_edits, &changes);
         let inverse = changes.apply(&mut self.rope);
         self.journal.push(changes.clone());
         self.selection = selection;
@@ -341,6 +391,7 @@ impl Doc {
             .map(|r| Range::new(changes.map(r.anchor, -1), changes.map(r.head, -1)))
             .collect();
         let sel = Selection::normalized(ranges, self.selection.main);
+        lsp_record(&self.rope, &mut self.lsp_edits, &changes);
         let inverse = changes.apply(&mut self.rope);
         self.journal.push(changes.clone());
         self.selection = sel;
@@ -391,6 +442,7 @@ impl Doc {
         };
         for inv in &step.inverses {
             self.note_edit(inv);
+            lsp_record(&self.rope, &mut self.lsp_edits, inv);
             inv.apply(&mut self.rope);
             self.journal.push(inv.clone());
         }
@@ -407,6 +459,7 @@ impl Doc {
         };
         for c in &step.redos {
             self.note_edit(c);
+            lsp_record(&self.rope, &mut self.lsp_edits, c);
             c.apply(&mut self.rope);
             self.journal.push(c.clone());
         }
@@ -489,6 +542,71 @@ mod tests {
             )
         });
         d.apply(c, s, EditKind::Input);
+    }
+
+    /// What an LSP server does with an edit: lines end at \n, \r\n or \r; columns are UTF-16.
+    fn apply_lsp(text: &str, e: &LspEdit) -> String {
+        let offset = |(line, col): (usize, usize)| {
+            let (mut l, mut i) = (0, 0);
+            let b = text.as_bytes();
+            while l < line {
+                match b[i] {
+                    b'\r' if b.get(i + 1) == Some(&b'\n') => i += 2,
+                    b'\r' | b'\n' => i += 1,
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                }
+                l += 1;
+            }
+            let mut units = 0;
+            for (k, c) in text[i..].char_indices() {
+                if units >= col {
+                    return i + k;
+                }
+                units += c.len_utf16();
+            }
+            text.len()
+        };
+        let (a, b) = (offset(e.start), offset(e.end));
+        format!("{}{}{}", &text[..a], e.text, &text[b..])
+    }
+
+    #[test]
+    fn the_edits_for_texlab_rebuild_the_text() {
+        let start = "a😀b\r\ncd\nef\rgh";
+        let mut d = doc(start, &[(1, 1), (5, 6), (9, 9)]);
+        let mut theirs = start.to_string();
+        let mut check = |d: &mut Doc| {
+            for e in d.take_lsp_edits().unwrap() {
+                theirs = apply_lsp(&theirs, &e);
+            }
+            assert_eq!(theirs, d.text());
+        };
+        type_text(&mut d, "X\nY");
+        check(&mut d);
+        d.break_group();
+        type_text(&mut d, "😀");
+        check(&mut d);
+        d.undo();
+        check(&mut d);
+        d.redo();
+        d.undo();
+        d.undo();
+        check(&mut d);
+        d.replace_all("new\ntext");
+        check(&mut d);
+    }
+
+    #[test]
+    fn too_many_edits_for_texlab_ask_for_the_whole_text() {
+        let mut d = doc("", &[(0, 0)]);
+        for _ in 0..MAX_LSP_EDITS + 1 {
+            type_text(&mut d, "x");
+        }
+        assert_eq!(d.take_lsp_edits(), None);
+        assert_eq!(d.take_lsp_edits(), Some(Vec::new()));
     }
 
     #[test]
