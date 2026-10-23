@@ -62,9 +62,12 @@ jobs:
           $bin = "C:\Program Files\MiKTeX\miktex\bin\x64"
           if (-not (Test-Path "$bin\pdflatex.exe")) { throw "MiKTeX was not installed where expected" }
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-          # Packages a build asks for come from the same mirror, again without asking api2.miktex.org.
-          & "$bin\mpm.exe" --admin "--set-repository=$repo"
-          & "$bin\initexmf.exe" --admin --set-config-value "[MPM]AutoInstall=1"
+          # Packages a build asks for come from the same mirror, again without asking api2.miktex.org, and
+          # install without a prompt: for the whole machine and for this user, whose settings come first.
+          foreach ($scope in @("--admin"), @()) {
+            & "$bin\mpm.exe" @scope "--set-repository=$repo"
+            & "$bin\initexmf.exe" @scope --set-config-value "[MPM]AutoInstall=1"
+          }
       # The first build on a fresh MiKTeX installs packages for over a minute; do it before the tests' timeouts start.
       - name: Warm up MiKTeX
         shell: pwsh
@@ -80,8 +83,10 @@ jobs:
         run: |
           git config --global user.name "Lemmata CI"
           git config --global user.email "ci@lemmata.invalid"
+      # One at a time with real TeX: the log then names a test that hangs, and the limit stops it.
       - name: Run the app's tests and scenarios
-        run: cargo test -p lemmata-app
+        timeout-minutes: 30
+        run: cargo test -p lemmata-app -- --test-threads=1
       # Debug build: it reuses the test build's dependencies, and the timings are TeX's anyway.
       - name: Build the command-line tool
         if: ${{ !cancelled() }}

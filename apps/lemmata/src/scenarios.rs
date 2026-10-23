@@ -369,8 +369,11 @@ fn a_resolved_comment_is_no_longer_marked() {
     wait_for(&mut h, "the mark", |h| {
         !ws(h).editors["main.tex"].comments.is_empty()
     });
-    let saved = std::fs::read_to_string(project.join(".lemmata/comments.json")).unwrap();
-    assert!(saved.contains("Is this the right title?"));
+    // Saved in the background: the mark can show first.
+    wait_for(&mut h, "the comment on disk", |_| {
+        std::fs::read_to_string(project.join(".lemmata/comments.json"))
+            .is_ok_and(|t| t.contains("Is this the right title?"))
+    });
     h.get_by_label("Resolve").click();
     wait_for(&mut h, "the mark to go", |h| {
         ws(h).editors["main.tex"].comments.is_empty()
