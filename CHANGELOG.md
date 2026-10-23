@@ -2,6 +2,37 @@
 
 All notable changes to Lemmata.
 
+## 3.0.0 (2026-10-23)
+
+Lemmata 3 is the same editor rebuilt as one native program, without a web view. Your settings, recent projects, library folders and where you were in each project carry over from 2.x.
+
+### Changed
+- Lemmata is a native app (egui on wgpu): the download is about a third smaller, and texlab downloads on first use instead of shipping with every copy.
+- Lemmata checks for and installs updates itself, from the same signed manifest. On Linux the AppImage updates itself; .deb and .rpm installs update through the package manager. On a Mac an update downloads only that Mac's architecture.
+- It runs on computers without Vulkan or DirectX 12 (virtual machines, older graphics) through OpenGL.
+
+### Added
+- Problems show as you type: an unclosed brace, a reference to a missing label or a citation key that isn't in your bibliography is marked before you build.
+- Your own keyboard shortcuts: in Keyboard shortcuts (F1), click a shortcut's keys and press new ones.
+- F7 and F9 step through TODOs and review comments; Ctrl+Shift+I reindents.
+- Preferences for line numbers, Reduce motion, and how soon after typing a save happens.
+- Touchpad scrolling coasts after you lift your fingers, and a pinch over the PDF zooms the pages (on Linux under X11, Ctrl and scroll does).
+
+### Fixed
+- A downloaded project can't run programs or delete files outside itself: not through its git settings, its main file's name, its build folder or a zip, nor through its latexmkrc until you trust it.
+- Unsaved edits survive a file deleted by another program, switching projects and a crash during a save.
+- A PDF is rebuilt when a file was deleted or synced in with an old date, and biber runs again after a .bib edit made during a build.
+- PDFs made with MiKTeX's bitmap fonts can be searched, and their text selected.
+- On Windows, reviewing changes since a snapshot no longer marks every line of a file with Windows line endings, and the library shows every project's thumbnail.
+
+### Faster
+- Typing in a 20,000-line file takes milliseconds, and resizing the window stays quick.
+- Pages after a rebuild draw side by side, and dark pages draw faster.
+- Lemmata starts sooner on Windows, and dictionaries and templates download compressed.
+
+### Removed
+- The Vim keymap. A saved Vim setting is ignored.
+
 ## 3.0.0-rc.4 (2026-10-21)
 
 ### Faster
