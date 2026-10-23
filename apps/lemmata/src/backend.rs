@@ -130,9 +130,21 @@ pub enum Pick {
     Parent,
 }
 
+impl Drop for Backend {
+    /// A runtime dropped as it is waits for every blocking job to return, and a job waiting on a
+    /// program that never ends (a stuck TeX tool) would then keep the app from quitting. Saves
+    /// are done by then (quitting waits for them); anything else gets a moment.
+    fn drop(&mut self) {
+        if let Some(rt) = self.runtime.take() {
+            rt.shutdown_timeout(std::time::Duration::from_secs(2));
+        }
+    }
+}
+
 pub struct Backend {
     pub shell: Arc<Shell>,
-    runtime: tokio::runtime::Runtime,
+    /// Always Some; taken only by `drop`.
+    runtime: Option<tokio::runtime::Runtime>,
     tx: Sender<Msg>,
     pub rx: Receiver<Msg>,
     ctx: egui::Context,
@@ -188,7 +200,7 @@ impl Backend {
             .expect("tokio runtime");
         Self {
             shell,
-            runtime,
+            runtime: Some(runtime),
             tx,
             rx,
             ctx,
@@ -202,9 +214,13 @@ impl Backend {
     }
 
     /// Runs `job` on a blocking worker and sends what it returns.
+    fn rt(&self) -> &tokio::runtime::Runtime {
+        self.runtime.as_ref().expect("the runtime lives until drop")
+    }
+
     pub fn spawn(&self, job: impl FnOnce(&Shell) -> Msg + Send + 'static) {
         let (shell, tx, ctx) = (self.shell.clone(), self.tx.clone(), self.ctx.clone());
-        self.runtime.spawn_blocking(move || {
+        self.rt().spawn_blocking(move || {
             let _ = tx.send(job(&shell));
             ctx.request_repaint();
         });
@@ -217,7 +233,7 @@ impl Backend {
         Fut: std::future::Future<Output = Msg> + Send + 'static,
     {
         let (shell, tx, ctx) = (self.shell.clone(), self.tx.clone(), self.ctx.clone());
-        self.runtime.spawn(async move {
+        self.rt().spawn(async move {
             let _ = tx.send(job(shell).await);
             ctx.request_repaint();
         });
@@ -237,7 +253,7 @@ impl Backend {
     /// A native folder or file chooser, without blocking the UI.
     pub fn pick(&self, what: Pick) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-        self.runtime.spawn(async move {
+        self.rt().spawn(async move {
             let dialog = rfd::AsyncFileDialog::new();
             let picked = match what {
                 Pick::ProjectFolder => {
@@ -274,7 +290,7 @@ impl Backend {
     /// A native save dialog for an export, without blocking the UI.
     pub fn save(&self, what: Save, name: String) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-        self.runtime.spawn(async move {
+        self.rt().spawn(async move {
             let (title, filter, ext) = match what {
                 Save::Pdf => ("Export PDF", "PDF", "pdf"),
                 Save::Zip => ("Export the project as a zip", "Zip", "zip"),
@@ -293,5 +309,30 @@ impl Backend {
 
     pub fn ctx(&self) -> &egui::Context {
         &self.ctx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_job_that_never_ends_does_not_hold_up_quitting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::store::Dirs {
+            config: tmp.path().join("config"),
+            data: tmp.path().join("data"),
+            cache: tmp.path().join("cache"),
+        };
+        let b = super::Backend::new(eframe::egui::Context::default(), &dirs);
+        b.spawn(|_| {
+            std::thread::sleep(std::time::Duration::from_secs(600));
+            super::Msg::Done(Ok(()))
+        });
+        let t = std::time::Instant::now();
+        drop(b);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            t.elapsed()
+        );
     }
 }
