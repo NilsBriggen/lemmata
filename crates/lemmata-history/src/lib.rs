@@ -320,6 +320,10 @@ impl History {
         c.arg("-C")
             .arg(&self.root)
             .args(&self.guard)
+            // A snapshot keeps a file's exact bytes: Git for Windows turns autocrlf on by default,
+            // and a CRLF file stored as LF would differ from itself in every line.
+            // shortcut: a .gitattributes `eol` or `text` rule still converts; override it if one shows up.
+            .args(["-c", "core.autocrlf=false", "-c", "core.safecrlf=false"])
             // A private index: the user's staging area stays as it is.
             .env("GIT_INDEX_FILE", self.git_dir.join("lemmata-index"))
             .env("GIT_AUTHOR_NAME", "Lemmata")
@@ -806,6 +810,18 @@ mod tests {
                 .flat_map(|s| &s.changes)
                 .all(|c| !c.path.starts_with(".lemmata"))
         );
+    }
+
+    #[test]
+    fn a_crlf_file_comes_back_byte_for_byte_with_autocrlf_on() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "core.autocrlf", "true"]);
+        fs::write(root.join("main.tex"), "one\r\ntwo\r\n").unwrap();
+        let h = History::open(root).unwrap();
+        let id = h.snapshot("s").unwrap().unwrap();
+        assert_eq!(h.file_at(&id, "main.tex").unwrap().as_deref(), Some("one\r\ntwo\r\n"));
     }
 
     #[test]

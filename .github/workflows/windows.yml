@@ -102,3 +102,13 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: pwsh scripts/windows-smoke.ps1 target/debug/lemmata.exe
+      # MiKTeX's PDFs, to try the PDF view on them elsewhere (pdf::engine's pdf_timing test).
+      - name: Upload the PDFs MiKTeX built
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: miktex-pdfs
+          path: |
+            ${{ runner.temp }}/warmup/main.pdf
+            ${{ runner.temp }}/smoke/**/main.pdf
+          if-no-files-found: ignore
