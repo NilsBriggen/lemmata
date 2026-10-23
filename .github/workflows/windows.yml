@@ -36,17 +36,33 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
-      # Not cached: the choco install writes to Program Files, ProgramData and the registry, so restoring only
+      # Not cached: the install writes to Program Files, ProgramData and the registry, so restoring only
       # the install dir would give a broken MiKTeX. The install is also not the slow part worth risking that for.
+      # MiKTeX's own setup with a fixed CTAN mirror, not Chocolatey's package: left to choose a mirror, MiKTeX
+      # asks api2.miktex.org, which has timed out from GitHub's runners since 2026-10-21.
       - name: Install MiKTeX
         shell: pwsh
         run: |
-          # MiKTeX's servers and Chocolatey's feed time out now and then; try a few times. choco exits 0
-          # even when the feed failed and nothing was installed, so the check is the file itself.
+          $repo = "https://mirrors.ctan.org/systems/win32/miktex/tm/packages/"
+          $setup = "https://mirrors.ctan.org/systems/win32/miktex/setup/windows-x64/"
+          $name = (Invoke-WebRequest $setup).Links.href | Where-Object { $_ -match '^miktexsetup-.*-x64\.zip$' } | Select-Object -First 1
+          if (-not $name) { throw "No miktexsetup zip at $setup" }
+          Invoke-WebRequest "$setup$name" -OutFile "$env:RUNNER_TEMP\miktexsetup.zip"
+          Expand-Archive "$env:RUNNER_TEMP\miktexsetup.zip" "$env:RUNNER_TEMP\miktexsetup"
+          $exe = "$env:RUNNER_TEMP\miktexsetup\miktexsetup_standalone.exe"
+          $local = "$env:RUNNER_TEMP\miktex-repository"
+          # Mirrors time out now and then; try a few times.
+          foreach ($i in 1..3) {
+            & $exe --verbose "--remote-package-repository=$repo" "--local-package-repository=$local" --package-set=basic download
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep 30
+          }
+          & $exe --verbose "--local-package-repository=$local" --package-set=basic --shared=yes "--common-install=C:\Program Files\MiKTeX" install
           $bin = "C:\Program Files\MiKTeX\miktex\bin\x64"
-          foreach ($i in 1..4) { choco install miktex --no-progress -y; if (Test-Path "$bin\pdflatex.exe") { break }; Start-Sleep 60 }
           if (-not (Test-Path "$bin\pdflatex.exe")) { throw "MiKTeX was not installed where expected" }
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          # Packages a build asks for come from the same mirror, again without asking api2.miktex.org.
+          & "$bin\mpm.exe" --admin "--set-repository=$repo"
           & "$bin\initexmf.exe" --admin --set-config-value "[MPM]AutoInstall=1"
       # The first build on a fresh MiKTeX installs packages for over a minute; do it before the tests' timeouts start.
       - name: Warm up MiKTeX
