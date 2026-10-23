@@ -777,6 +777,10 @@ impl Shell {
 
 fn thumbnail_path(state: &Shell, root: &str) -> CmdResult<PathBuf> {
     use std::hash::{Hash, Hasher};
+    // The library asks with the path as it was opened, the project saves with its canonical root:
+    // on Windows a short name (RUNNER~1) or another case would otherwise miss the thumbnail.
+    let root = lemmata_project::canonical(Path::new(root))
+        .map_or_else(|_| root.to_owned(), |p| p.to_string_lossy().into_owned());
     let mut h = std::collections::hash_map::DefaultHasher::new();
     root.hash(&mut h);
     let dir = state.dirs.cache.join("thumbnails");
@@ -809,11 +813,14 @@ impl Shell {
             *self.watcher.lock_safe() = None;
             *self.project.lock_safe() = None;
         }
-        // Windows refuses while a process still has the folder open; the language server was only just told to quit.
+        // Its thumbnail's name comes from the folder, which is gone afterwards.
+        let thumb = thumbnail_path(self, &path);
+        // Windows refuses while a process still has a file in the folder open: the language server
+        // was only just told to quit, and virus scanners and the indexer open new files for a moment.
         let mut tries = 0;
         while let Err(e) = trash::delete(&dir) {
             tries += 1;
-            if tries == 5 {
+            if tries == 16 {
                 return Err(format!(
                     "Could not move {} to the trash: {e}",
                     dir.display()
@@ -821,7 +828,7 @@ impl Shell {
             }
             std::thread::sleep(std::time::Duration::from_millis(300));
         }
-        if let Ok(thumb) = thumbnail_path(self, &path) {
+        if let Ok(thumb) = thumb {
             let _ = std::fs::remove_file(thumb);
         }
         Ok(())
@@ -976,5 +983,34 @@ impl Shell {
             }
         };
         terminal::open_with_command(&command)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_thumbnail_is_found_under_any_spelling_of_its_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let project = d.path().join("paper");
+        std::fs::create_dir(&project).unwrap();
+        let dirs = crate::Dirs {
+            resources: d.path().into(),
+            data: d.path().into(),
+            cache: d.path().into(),
+            home: None,
+        };
+        let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
+        let canonical = lemmata_project::canonical(&project).unwrap();
+        shell
+            .save_thumbnail(&canonical.to_string_lossy(), b"png")
+            .unwrap();
+        // As the library may have it: not canonical (here `.` and `..` in it).
+        let other = project.join(".").join("..").join("paper");
+        assert_eq!(
+            shell
+                .load_thumbnail(other.to_string_lossy().into_owned())
+                .unwrap(),
+            b"png"
+        );
     }
 }
