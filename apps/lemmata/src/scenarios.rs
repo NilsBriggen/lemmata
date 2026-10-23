@@ -972,7 +972,17 @@ fn a_project_is_deleted_from_the_start_screen() {
     });
     h.run_steps(3);
     h.get_by_label("Move to trash").click();
-    wait_for(&mut h, "the project gone", |_| !paper.exists());
+    let refused = |h: &Harness<App>| {
+        h.state()
+            .library
+            .deleting
+            .as_ref()
+            .and_then(|d| d.error.clone())
+    };
+    wait_for(&mut h, "the project gone", |h| {
+        !paper.exists() || refused(h).is_some()
+    });
+    assert_eq!(refused(&h), None, "the trash refused");
     wait_for(&mut h, "the list without it", |h| {
         h.query_by_role_and_label(egui::accesskit::Role::Button, "paper")
             .is_none()

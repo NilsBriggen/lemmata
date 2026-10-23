@@ -2351,8 +2351,10 @@ pub(crate) mod tests {
         menu_on(&mut h, Some("introduction.tex"));
         h.run_steps(2);
         h.get_by_label("Duplicate").click();
-        wait_for(&mut h, "the copy", |_| {
+        // In the tree, not only on disk: the menu acts on the tree's row.
+        wait_for(&mut h, "the copy", |h| {
             project.join("introduction copy.tex").exists()
+                && h.query_by_label("introduction copy.tex").is_some()
         });
         menu_on(&mut h, Some("introduction copy.tex"));
         h.run_steps(2);
