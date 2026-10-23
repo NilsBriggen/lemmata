@@ -821,7 +821,10 @@ mod tests {
         fs::write(root.join("main.tex"), "one\r\ntwo\r\n").unwrap();
         let h = History::open(root).unwrap();
         let id = h.snapshot("s").unwrap().unwrap();
-        assert_eq!(h.file_at(&id, "main.tex").unwrap().as_deref(), Some("one\r\ntwo\r\n"));
+        assert_eq!(
+            h.file_at(&id, "main.tex").unwrap().as_deref(),
+            Some("one\r\ntwo\r\n")
+        );
     }
 
     #[test]
