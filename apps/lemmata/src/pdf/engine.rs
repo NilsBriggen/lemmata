@@ -630,10 +630,14 @@ impl<'a> Device<'a> for TextDevice {
     fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
     fn draw_glyph_run(&mut self, run: &GlyphRun<'_, 'a>, props: DrawProps<'a>, _: &DrawMode) {
         for g in run.glyphs() {
-            let Some(text) = g.as_unicode() else { continue };
-            let text = match text {
-                hayro::hayro_interpret::hayro_cmap::BfString::Char(c) => c.to_string(),
-                hayro::hayro_interpret::hayro_cmap::BfString::String(s) => s,
+            let text = match (g.as_unicode(), &**g) {
+                (Some(hayro::hayro_interpret::hayro_cmap::BfString::Char(c)), _) => c.to_string(),
+                (Some(hayro::hayro_interpret::hayro_cmap::BfString::String(s)), _) => s,
+                (None, HGlyph::Type3(t)) => match tex_bitmap_text(t.char_code()) {
+                    Some(s) => s.to_owned(),
+                    None => continue,
+                },
+                (None, _) => continue,
             };
             let ts: Affine = props.transform * g.transform();
             // The em box from the advance, as a text layer selects it; ink boxes leave gaps.
@@ -643,7 +647,9 @@ impl<'a> Device<'a> for TextDevice {
                     let adv = o.advance_width().map_or(ink.x1, f64::from);
                     hayro::kurbo::Rect::new(0.0, -200.0, adv, 800.0)
                 }
-                HGlyph::Type3(_) => hayro::kurbo::Rect::new(0.0, 0.0, 1.0, 1.0),
+                HGlyph::Type3(t) => {
+                    hayro::kurbo::Rect::new(0.0, -200.0, t.advance_width().into(), 800.0)
+                }
             };
             self.glyphs.push(Glyph {
                 text,
@@ -654,6 +660,27 @@ impl<'a> Device<'a> for TextDevice {
     fn draw_image(&mut self, _: Image<'a, '_>, _: ImageDrawProps<'a>) {}
     fn pop_clip(&mut self) {}
     fn pop_transparency_group(&mut self) {}
+}
+
+/// The text of a glyph in a bitmap (Type 3) font that has no `ToUnicode` map, from its code:
+/// TeX's bitmap fonts (MiKTeX without cm-super, say) name their glyphs `a65` and so on, so the
+/// code is all there is. Printable codes are ASCII; TeX's ligatures sit at 11-15 (OT1) and 27-31 (T1).
+/// shortcut: other Type 3 fonts without a map get the same reading; tell them apart if one turns up.
+fn tex_bitmap_text(code: u32) -> Option<&'static str> {
+    const LIGATURES: [&str; 5] = ["ff", "fi", "fl", "ffi", "ffl"];
+    match code {
+        11..=15 => Some(LIGATURES[code as usize - 11]),
+        27..=31 => Some(LIGATURES[code as usize - 27]),
+        0x21..=0x7e => {
+            const ASCII: &str = concat!(
+                "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                "[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+            );
+            let i = code as usize - 0x21;
+            Some(&ASCII[i..i + 1])
+        }
+        _ => None,
+    }
 }
 
 fn glyphs(page: &Page<'_>) -> Vec<Glyph> {
@@ -737,12 +764,18 @@ mod tests {
             glyphs(pg);
         }
         eprintln!("text layer {:?} per page", t.elapsed() / pages.len() as u32);
-        // Four pages after a rebuild, through the workers.
+        let (text, _) = page_text(&glyphs(&pages[0]));
+        eprintln!(
+            "page 1 text: {:?}",
+            text.chars().take(300).collect::<String>()
+        );
+        // Up to four pages after a rebuild, through the workers.
         let e = Engine::new(egui::Context::default());
         let bytes = Arc::new(std::fs::read(std::env::var_os("LEMMATA_PDF").unwrap()).unwrap());
         e.send(Job::Load { doc: 1, bytes });
         let t = std::time::Instant::now();
-        for page in 0..4 {
+        let n = pages.len().min(4);
+        for page in 0..n {
             e.send(Job::Render {
                 doc: 1,
                 page,
@@ -753,12 +786,28 @@ mod tests {
             });
         }
         let mut drawn = 0;
-        while drawn < 4 {
+        while drawn < n {
             if let Done::Rendered { .. } = e.rx.recv().unwrap() {
                 drawn += 1;
             }
         }
-        eprintln!("4 pages with {} workers: {:?}", workers(), t.elapsed());
+        eprintln!("{n} pages with {} workers: {:?}", workers(), t.elapsed());
+    }
+
+    #[test]
+    fn tex_bitmap_fonts_read_as_text() {
+        assert_eq!(tex_bitmap_text(65), Some("A"));
+        assert_eq!(tex_bitmap_text(0x7e), Some("~"));
+        assert_eq!(tex_bitmap_text(0x5c), Some("\\"));
+        assert_eq!(tex_bitmap_text(12), Some("fi"), "OT1");
+        assert_eq!(tex_bitmap_text(28), Some("fi"), "T1");
+        assert_eq!(tex_bitmap_text(32), None);
+        // A PDF MiKTeX made with bitmap fonts (fontenc T1, no cm-super).
+        let pdf =
+            Pdf::new(include_bytes!("../../tests/pdf/type3-bitmap-fonts.pdf").to_vec()).unwrap();
+        let (text, _) = page_text(&glyphs(&pdf.pages()[0]));
+        assert!(text.contains("A Small Article"), "{text}");
+        assert!(text.contains("fixture"), "the fi ligature: {text}");
     }
 
     #[test]

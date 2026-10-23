@@ -33,6 +33,10 @@ tempfile = "3"
 # Deflate through flate2 and zlib-rs only: "deflate" adds zopfli, used just for levels above 9.
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
+# One accessor added to hayro-interpret; see vendor/README.md.
+[patch.crates-io]
+hayro-interpret = { path = "vendor/hayro-interpret" }
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
