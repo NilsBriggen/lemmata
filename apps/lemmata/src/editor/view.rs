@@ -1939,6 +1939,7 @@ pub fn show(
             explicit,
             key,
             top: 0,
+            scrolled: 0.0,
         });
     }
     if let (Some(anchor), Some(c)) = (popup_anchor, &mut ed.completion) {
@@ -3399,6 +3400,48 @@ mod tests {
         assert!(h.state().doc.line(10_000).starts_with("xxx"));
         assert!(ms(typing[15]) < TYPING_MS, "typing: {typing:?}");
         assert!(ms(resizing[5]) < RESIZING_MS, "resizing: {resizing:?}");
+    }
+
+    #[test]
+    fn the_suggestions_scroll_with_the_wheel_and_their_bar() {
+        let mut h = harness(
+            Editor::new("\\begin{document}\n\n\\end{document}", true),
+            [560.0, 420.0],
+        );
+        h.run();
+        h.get_by_label("Editor").click();
+        h.run();
+        h.state_mut().doc.selection = Selection::cursor(17);
+        h.get_by_label("Editor").type_text("\\s");
+        h.run();
+        let n = h.state().completion.as_ref().map_or(0, |c| c.items.len());
+        assert!(n > 6, "enough suggestions to scroll: {n}");
+        let list = h.get_by_label("Suggestions").rect();
+        let top =
+            |h: &egui_kittest::Harness<'static, Editor>| h.state().completion.as_ref().unwrap().top;
+        // A touchpad: a few points at a time, which must add up to whole rows.
+        h.hover_at(list.center());
+        for _ in 0..12 {
+            h.input_mut().events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -6.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+                source: egui::MouseWheelSource::Trackpad,
+            });
+            h.run();
+        }
+        let after_wheel = top(&h);
+        assert!(after_wheel > 0, "the wheel scrolled the list");
+        // Dragging the bar to the bottom shows the last rows.
+        let bar = egui::pos2(list.right() - 3.5, list.top() + 4.0);
+        h.drag_at(bar);
+        h.run();
+        h.hover_at(egui::pos2(bar.x, list.bottom() + 40.0));
+        h.run();
+        h.drop_at(egui::pos2(bar.x, list.bottom() + 40.0));
+        h.run();
+        assert_eq!(top(&h), n - 6, "dragged to the end");
     }
 
     #[test]

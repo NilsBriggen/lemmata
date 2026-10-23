@@ -18,6 +18,8 @@ pub struct Completion {
     pub key: (u64, usize, u64),
     /// The first row shown.
     pub top: usize,
+    /// Wheel pixels not yet worth a whole row: smooth and touchpad scrolling come a few at a time.
+    pub scrolled: f32,
 }
 
 const ROWS: usize = 6;
@@ -162,7 +164,10 @@ pub fn show(
                 })
                 .fold(250.0f32, f32::max)
                 .min(700.0);
-            let (rect, _) = ui.allocate_exact_size(vec2(width, list_h), Sense::hover());
+            let (rect, list) = ui.allocate_exact_size(vec2(width, list_h), Sense::hover());
+            list.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::ListBox, true, "Suggestions")
+            });
             list_rect = rect;
             let painter = ui.painter();
             painter.add(p.shadow.as_shape(rect, CornerRadius::same(8)));
@@ -245,7 +250,7 @@ pub fn show(
                     );
                 }
             }
-            // A thin scrollbar when there are more rows than fit.
+            // A thin scrollbar when there are more rows than fit: clicked or dragged, the rows follow.
             if c.items.len() > rows {
                 let track = Rect::from_min_max(
                     pos2(rect.right() - 5.0, rect.top() + 2.0),
@@ -253,6 +258,18 @@ pub fn show(
                 );
                 let frac = rows as f32 / c.items.len() as f32;
                 let h = (track.height() * frac).max(12.0);
+                let grab = ui.interact(
+                    track.expand2(vec2(4.0, 0.0)),
+                    ui.scope_id().with("completion-bar"),
+                    Sense::click_and_drag(),
+                );
+                if let Some(at) = grab.interact_pointer_pos()
+                    && (grab.dragged() || grab.clicked())
+                {
+                    // The thumb's middle goes where the pointer is.
+                    let t = ((at.y - track.top() - h / 2.0) / (track.height() - h)).clamp(0.0, 1.0);
+                    c.top = (t * (c.items.len() - rows) as f32).round() as usize;
+                }
                 let y = track.top()
                     + (track.height() - h) * (c.top as f32 / (c.items.len() - rows) as f32);
                 ui.painter().rect_filled(
@@ -263,12 +280,11 @@ pub fn show(
             }
             // The wheel scrolls the rows.
             if ui.rect_contains_pointer(rect) {
-                let dy = ui.input(|i| i.smooth_scroll_delta.y);
-                if dy.abs() > 0.5 {
-                    let max = c.items.len().saturating_sub(rows);
-                    let steps = (-dy / row_h).round() as isize;
-                    c.top = (c.top as isize + steps).clamp(0, max as isize) as usize;
-                }
+                c.scrolled -= ui.input(|i| i.smooth_scroll_delta.y);
+                let steps = (c.scrolled / row_h).trunc();
+                c.scrolled -= steps * row_h;
+                let max = c.items.len().saturating_sub(rows);
+                c.top = (c.top as isize + steps as isize).clamp(0, max as isize) as usize;
             }
         });
 
