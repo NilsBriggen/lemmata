@@ -26,6 +26,14 @@ pub const RELEASES: &[Release] = &[
                 "A flick keeps the page moving and slows down after you lift your fingers, and pinching over the PDF zooms the pages, not the window. Ctrl and scroll zooms too.",
             ),
             (
+                "Mistakes show as you type",
+                "An unclosed brace, a reference to a label that doesn't exist or a citation key that isn't in your bibliography is marked in the editor right away, before you build.",
+            ),
+            (
+                "Your own shortcuts",
+                "Open Keyboard shortcuts (F1), click a shortcut's keys and press the ones you want.",
+            ),
+            (
                 "Everything comes along",
                 "Your settings, recent projects, library folders and where you were in each project are all still here.",
             ),
