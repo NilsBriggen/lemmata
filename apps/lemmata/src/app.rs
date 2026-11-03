@@ -1438,7 +1438,10 @@ pub(crate) mod tests {
             h.query_by_label("Back to all projects").is_some()
                 || h.query_by_label("Check again").is_some()
         });
-        // Without TeX the library stays behind the install guide.
+        wait_for(&mut h, "TeX detection", |h| !h.state().checking);
+        if !h.state().project.as_ref().is_some_and(|ws| ws.tex_ready) {
+            return None;
+        }
         h.query_by_label("Back to all projects")?;
         h.get_by_label("Back to all projects").click();
         wait_for(&mut h, "the library", |h| {
@@ -1649,6 +1652,10 @@ pub(crate) mod tests {
             opened(h) || h.query_by_label("Check again").is_some()
         });
         if !opened(&h) {
+            return None;
+        }
+        wait_for(&mut h, "TeX detection", |h| !h.state().checking);
+        if !h.state().project.as_ref().is_some_and(|ws| ws.tex_ready) {
             return None;
         }
         wait_for(&mut h, "the main file", |h| {
@@ -3376,7 +3383,8 @@ pub(crate) mod tests {
             h.query_by_label("Back to all projects").is_some()
                 || h.query_by_label("Check again").is_some()
         });
-        if h.query_by_label("Back to all projects").is_some() {
+        wait_for(&mut h, "TeX detection", |h| !h.state().checking);
+        if h.state().project.as_ref().is_some_and(|ws| ws.tex_ready) {
             // Back to the library, which lists it.
             h.get_by_label("Back to all projects").click();
             wait_for(&mut h, "the library", |h| {
