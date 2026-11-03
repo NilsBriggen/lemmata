@@ -17,9 +17,9 @@ impl Workspace {
     /// Ends texlab with the project.
     pub fn stop_lsp(&self, backend: &Backend) {
         if let Some(generation) = self.lsp.generation {
-            backend.spawn_async(
-                move |shell| async move { Msg::Done(shell.lsp_stop(generation).await) },
-            );
+            self.spawn_async(backend, move |shell| async move {
+                Msg::Done(shell.lsp_stop(generation).await)
+            });
         }
     }
 
@@ -119,13 +119,14 @@ impl Workspace {
                 self.lsp.generation = Some(generation);
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
                 self.lsp_tx = Some(tx);
+                let project = self.project;
                 backend.spawn_async(move |shell| async move {
                     while let Some(body) = rx.recv().await {
                         if shell.lsp_send(generation, body).await.is_err() {
-                            return Msg::LspLost(generation);
+                            return Msg::Project(project, Box::new(Msg::LspLost(generation)));
                         }
                     }
-                    Msg::Done(Ok(()))
+                    Msg::Project(project, Box::new(Msg::Done(Ok(()))))
                 });
                 let init = self.lsp.initialize();
                 self.lsp_send(backend, vec![init]);

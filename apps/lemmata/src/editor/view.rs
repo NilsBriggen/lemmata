@@ -1448,6 +1448,33 @@ pub fn show(
         }
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, true, label));
+        let text = ed.doc.text();
+        let selection = ed.doc.selection.main();
+        let run = ui
+            .new_child(
+                egui::UiBuilder::new()
+                    .id_salt("accesskit-text")
+                    .accessibility_parent(response.id),
+            )
+            .unique_id();
+        let at = |character_index| egui::accesskit::TextPosition {
+            node: run.accesskit_id(),
+            character_index,
+        };
+        ui.ctx().accesskit_node_builder(response.id, |node| {
+            node.set_value(text.clone());
+            node.set_text_selection(egui::accesskit::TextSelection {
+                anchor: at(selection.anchor),
+                focus: at(selection.head),
+            });
+        });
+        ui.ctx().accesskit_node_builder(run, |node| {
+            node.set_role(egui::accesskit::Role::TextRun);
+            node.set_character_lengths(
+                text.chars().map(|c| c.len_utf8() as u8).collect::<Vec<_>>(),
+            );
+            node.set_value(text);
+        });
         if response.hovered() {
             ui.ctx().set_cursor_icon(if mods.alt {
                 egui::CursorIcon::Crosshair
@@ -3131,7 +3158,7 @@ mod tests {
     use super::*;
     use crate::testing;
     use crate::theme;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     #[test]
     fn todos_and_comments_are_stepped_through_and_wrap_around() {
@@ -3314,6 +3341,7 @@ mod tests {
     ) -> egui_kittest::Harness<'static, Editor> {
         let p = theme::LIGHT;
         egui_kittest::Harness::builder()
+            .with_max_steps(16)
             .with_size(size)
             .with_context_setup(move |ctx| {
                 theme::install_fonts(ctx);
@@ -3514,7 +3542,17 @@ mod tests {
         h.state_mut().doc.selection = Selection::cursor(14);
         h.run();
         h.run();
+        let start = std::time::Instant::now();
+        while h.state().last_math.as_ref().is_none_or(|m| m.size.x < 80.0) {
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            h.step();
+        }
+        let blink = h.state().last_activity;
+        h.state_mut().last_activity = f64::INFINITY;
+        h.step();
         h.snapshot("math-preview");
+        h.state_mut().last_activity = blink;
         // \al in maths: \alpha first, with its glyph.
         let end = h.state().doc.len();
         h.state_mut().doc.selection = Selection::cursor(end);
@@ -3531,6 +3569,37 @@ mod tests {
             .map(|i| i.0.label.clone())
             .collect();
         assert!(top.contains(&"\\alpha".to_owned()), "{top:?}");
+        let formulas: Vec<String> = h
+            .state()
+            .completion
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .take(6)
+            .map(|item| item.0.preview.clone().unwrap())
+            .collect();
+        let start = std::time::Instant::now();
+        loop {
+            let pending = formulas.iter().any(|tex| {
+                crate::writing::render::render(
+                    &h.ctx,
+                    tex,
+                    false,
+                    15.0 * 0.95 * 1.21,
+                    theme::LIGHT.ink,
+                )
+                .is_err()
+            });
+            if !pending {
+                break;
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            h.step();
+        }
+        h.state_mut().last_activity = f64::NEG_INFINITY;
+        h.step();
         h.run();
         h.snapshot("completion-maths");
     }
@@ -3566,6 +3635,18 @@ mod tests {
         h.run();
         h.run();
         h.snapshot("hover-input");
+    }
+
+    #[test]
+    fn editor_publishes_its_value_and_main_selection() {
+        let mut h = harness(Editor::new("é\nbeta", true), [560.0, 320.0]);
+        h.state_mut().doc.selection = Selection::single(Range::new(4, 1));
+        h.run();
+        let node = h.get_by_label("Editor").accesskit_node();
+        assert_eq!(node.value(), Some("é\nbeta".to_owned()));
+        let selection = node.text_selection().expect("the selection is published");
+        assert_eq!(selection.start().to_raw().character_index, 1);
+        assert_eq!(selection.end().to_raw().character_index, 4);
     }
 
     #[test]

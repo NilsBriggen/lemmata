@@ -80,13 +80,19 @@ struct Hit {
 }
 
 /// What happened in the view that the pane acts on.
+#[derive(Debug)]
 pub enum Event {
     /// A double-click or Ctrl/Cmd-click: page (1-based) and point in PDF points from the top-left.
     SourceClick(usize, f32, f32),
+    OpenUrl(String),
 }
 
 pub struct PdfView {
-    engine: Engine,
+    engine: Option<Engine>,
+    ctx: egui::Context,
+    layout_key: Option<(u64, Fit, Layout, Vec2)>,
+    #[cfg(test)]
+    relayout_calls: usize,
     /// The newest document sent to the engine, and the one whose pages are laid out.
     sent: u64,
     shown: u64,
@@ -144,7 +150,11 @@ enum Jump {
 impl PdfView {
     pub fn new(ctx: &egui::Context, id: egui::Id) -> Self {
         Self {
-            engine: Engine::new(ctx.clone()),
+            engine: None,
+            ctx: ctx.clone(),
+            layout_key: None,
+            #[cfg(test)]
+            relayout_calls: 0,
             sent: 0,
             bytes: None,
             shown: 0,
@@ -188,15 +198,23 @@ impl PdfView {
         self.pages.len()
     }
 
+    fn engine(&mut self) -> &mut Engine {
+        self.engine
+            .get_or_insert_with(|| Engine::new(self.ctx.clone()))
+    }
+
     /// Shows a new PDF; the old one stays up until the new pages are drawn.
     pub fn load(&mut self, bytes: Vec<u8>) {
-        self.sent += 1;
+        self.sent = self.engine().next_doc();
         let bytes = Arc::new(bytes);
         self.bytes = Some(bytes.clone());
-        self.engine.send(Job::Load {
-            doc: self.sent,
-            bytes,
-        });
+        self.engine
+            .as_ref()
+            .expect("a PDF is loaded")
+            .send(Job::Load {
+                doc: self.sent,
+                bytes,
+            });
     }
 
     /// The PDF on show, for presenting: None until it has loaded.
@@ -206,9 +224,27 @@ impl PdfView {
             .flatten()
     }
 
+    fn bound_textures(&mut self) {
+        while self.tex.len() > 16 {
+            let current = self.current_page.saturating_sub(1);
+            let page = self
+                .tex
+                .keys()
+                .max_by_key(|page| page.abs_diff(current))
+                .copied();
+            let Some(page) = page else { break };
+            self.tex.remove(&page);
+            self.asked.remove(&(page, false));
+        }
+    }
+
     /// Takes what the engine finished.
     fn receive(&mut self, ctx: &egui::Context) {
-        while let Ok(d) = self.engine.rx.try_recv() {
+        loop {
+            let Some(engine) = &self.engine else { return };
+            let Ok(d) = engine.rx.try_recv() else {
+                break;
+            };
             match d {
                 Done::Loaded { doc, result } => {
                     if doc != self.sent {
@@ -227,7 +263,10 @@ impl PdfView {
                             self.decorating.clear();
                             self.selection = None;
                             if self.png_wanted {
-                                self.engine.send(Job::Png { doc, width: 360.0 });
+                                self.engine
+                                    .as_ref()
+                                    .expect("a PDF is loaded")
+                                    .send(Job::Png { doc, width: 360.0 });
                             }
                             if !self.query.is_empty() {
                                 self.search(&self.query.clone(), false);
@@ -263,6 +302,7 @@ impl PdfView {
                         self.thumbs.insert(page, t);
                     } else {
                         self.tex.insert(page, t);
+                        self.bound_textures();
                     }
                 }
                 Done::Decorated {
@@ -295,10 +335,13 @@ impl PdfView {
     /// Page 1 as a PNG, for the library; arrives in `png`.
     pub fn request_png(&mut self) {
         if self.shown > 0 {
-            self.engine.send(Job::Png {
-                doc: self.shown,
-                width: 360.0,
-            });
+            self.engine
+                .as_ref()
+                .expect("a PDF is loaded")
+                .send(Job::Png {
+                    doc: self.shown,
+                    width: 360.0,
+                });
         } else {
             self.png_wanted = true;
         }
@@ -321,6 +364,15 @@ impl PdfView {
 
     /// Where every page goes for the pane's size.
     fn relayout(&mut self) {
+        let key = (self.shown, self.fit, self.layout, self.client);
+        if self.layout_key == Some(key) {
+            return;
+        }
+        self.layout_key = Some(key);
+        #[cfg(test)]
+        {
+            self.relayout_calls += 1;
+        }
         let n = self.pages.len();
         self.scales = self.pages.iter().map(|&s| self.scale_for(s)).collect();
         let sizes: Vec<Vec2> = self
@@ -476,10 +528,13 @@ impl PdfView {
         }
         for n in 0..self.pages.len() {
             if !self.deco.contains_key(&n) && self.decorating.insert(n) {
-                self.engine.send(Job::Decorate {
-                    doc: self.shown,
-                    page: n,
-                });
+                self.engine
+                    .as_ref()
+                    .expect("a PDF is loaded")
+                    .send(Job::Decorate {
+                        doc: self.shown,
+                        page: n,
+                    });
             }
         }
         if self.decorating.is_empty() {
@@ -605,12 +660,14 @@ impl PdfView {
         if fresh || !self.asked.insert((page, thumb)) {
             return;
         }
-        self.engine.send(Job::Render {
-            doc: self.shown,
+        let (shown, dark) = (self.shown, self.dark);
+        let engine = self.engine();
+        engine.send(Job::Render {
+            doc: shown,
             page,
             scale,
-            dark: self.dark,
-            epoch: (!thumb).then_some(epoch),
+            dark,
+            epoch: (!thumb).then(|| (engine.epoch.clone(), epoch)),
             thumb,
         });
     }
@@ -669,10 +726,10 @@ impl PdfView {
         let first = self.scales[0] * ppp;
         if (first - self.epoch_scale).abs() > 1e-4 {
             self.epoch_scale = first;
-            self.engine.epoch.fetch_add(1, Ordering::Relaxed);
+            self.engine().epoch.fetch_add(1, Ordering::Relaxed);
             self.asked.retain(|(_, thumb)| *thumb);
         }
-        let epoch = self.engine.epoch.load(Ordering::Relaxed);
+        let epoch = self.engine().epoch.load(Ordering::Relaxed);
 
         let mut scroll = egui::ScrollArea::both()
             .id_salt(self.id)
@@ -725,10 +782,13 @@ impl PdfView {
             }
             for &i in on_screen.iter().chain(&around) {
                 if !self.deco.contains_key(&i) && self.decorating.insert(i) {
-                    self.engine.send(Job::Decorate {
-                        doc: self.shown,
-                        page: i,
-                    });
+                    self.engine
+                        .as_ref()
+                        .expect("a PDF is loaded")
+                        .send(Job::Decorate {
+                            doc: self.shown,
+                            page: i,
+                        });
                 }
             }
             let painter = ui.painter();
@@ -955,7 +1015,7 @@ impl PdfView {
                 && let Some(url) = self.goto_target(&t)
                 && (url.starts_with("http://") || url.starts_with("https://"))
             {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                *event = Some(Event::OpenUrl(url));
             }
         }
     }
@@ -982,5 +1042,130 @@ impl PdfView {
             return String::new();
         };
         page_text(&glyphs[a.min(b)..=a.max(b).min(glyphs.len() - 1)]).0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    fn pdf_threads() -> usize {
+        std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .filter_map(|entry| {
+                let name = std::fs::read_to_string(entry.ok()?.path().join("comm")).ok()?;
+                name.starts_with("pdf-").then_some(())
+            })
+            .count()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unloaded_views_start_no_pdf_workers() {
+        let before = pdf_threads();
+        let views: Vec<_> = (0..8)
+            .map(|i| PdfView::new(&egui::Context::default(), egui::Id::unique(i)))
+            .collect();
+        assert_eq!(pdf_threads(), before);
+        drop(views);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn loaded_viewers_share_the_bounded_pdf_pool() {
+        let mut views: Vec<_> = (0..10)
+            .map(|i| PdfView::new(&egui::Context::default(), egui::Id::unique(i)))
+            .collect();
+        for view in &mut views {
+            view.load(vec![0]);
+        }
+        assert!(pdf_threads() <= 3);
+        drop(views);
+    }
+
+    #[test]
+    fn unchanged_geometry_is_laid_out_once() {
+        let mut view = PdfView::new(&egui::Context::default(), egui::Id::unique("layout"));
+        view.pages = vec![vec2(600.0, 800.0), vec2(600.0, 800.0)];
+        view.client = vec2(900.0, 700.0);
+        view.relayout();
+        view.relayout();
+        assert_eq!(view.relayout_calls, 1);
+        view.set_fit(Fit::Zoom(2.0));
+        view.relayout();
+        assert_eq!(view.relayout_calls, 2);
+    }
+
+    #[test]
+    fn inactive_page_textures_are_bounded() {
+        let ctx = egui::Context::default();
+        let mut view = PdfView::new(&ctx, egui::Id::unique("textures"));
+        for page in 0..40 {
+            view.tex.insert(
+                page,
+                Tex {
+                    handle: ctx.load_texture(
+                        format!("test-{page}"),
+                        egui::ColorImage::filled([1, 1], Color32::WHITE),
+                        egui::TextureOptions::LINEAR,
+                    ),
+                    scale: 1.0,
+                    dark: false,
+                    doc: 0,
+                },
+            );
+        }
+        view.current_page = 20;
+        view.bound_textures();
+        assert!(view.tex.len() <= 16);
+        assert!(view.tex.contains_key(&19));
+    }
+
+    #[test]
+    fn a_pdf_web_link_emits_an_open_url_event() {
+        let mut view = PdfView::new(&egui::Context::default(), egui::Id::unique("links"));
+        view.pages = vec![vec2(100.0, 100.0)];
+        view.rects = vec![Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 100.0))];
+        view.scales = vec![1.0];
+        view.deco.insert(
+            0,
+            (
+                Vec::new(),
+                vec![Link {
+                    rect: Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 100.0)),
+                    target: Target::Url("https://example.com".into()),
+                }],
+            ),
+        );
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let emitted = seen.clone();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([100.0, 100.0])
+            .with_context_setup(crate::theme::install_fonts)
+            .build_ui_state(
+                move |ui, view: &mut PdfView| {
+                    if let Some(event) = view.show(ui, &crate::theme::LIGHT) {
+                        *emitted.lock().unwrap() = Some(event);
+                    }
+                },
+                view,
+            );
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(pos2(50.0, 50.0)));
+        h.run();
+        for pressed in [true, false] {
+            h.input_mut().events.push(egui::Event::PointerButton {
+                pos: pos2(50.0, 50.0),
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run();
+        }
+        assert!(
+            matches!(&*seen.lock().unwrap(), Some(Event::OpenUrl(url)) if url == "https://example.com")
+        );
     }
 }

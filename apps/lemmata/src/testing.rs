@@ -10,6 +10,7 @@ pub const WINDOW: [f32; 2] = [1400.0, 900.0];
 /// The closure gets the whole window, as eframe's root `Ui` does (kittest's own has a margin).
 pub fn harness<'a>(p: Palette, mut ui: impl FnMut(&mut egui::Ui) + 'a) -> Harness<'a> {
     Harness::builder()
+        .with_max_steps(256)
         .with_size(WINDOW)
         .with_context_setup(move |ctx| {
             ctx.add_font_provider(std::sync::Arc::new(
@@ -76,14 +77,19 @@ pub fn library_behind(ui: &mut egui::Ui, p: &Palette) {
     let recents = recents(now);
     let mut groups = crate::store::Groups::default();
     let mut settings = crate::store::Settings::default();
-    let mut st = library::State::default();
+    static STATE: std::sync::OnceLock<std::sync::Mutex<library::State>> =
+        std::sync::OnceLock::new();
+    let mut st = STATE
+        .get_or_init(|| std::sync::Mutex::new(library::State::default()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut c = library::Ctx {
         recents: &recents,
         groups: &mut groups,
         settings: &mut settings,
         error: None,
         no_main_in: None,
-        thumbnail: &|_| None,
+        thumbnail: std::sync::Arc::new(|_| None),
         now_ms: now,
     };
     library::show(ui, p, &mut st, &mut c);

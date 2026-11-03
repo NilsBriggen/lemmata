@@ -176,6 +176,8 @@ pub struct Workspace {
     restoring: Option<(Vec<String>, Option<String>)>,
     pub pane: crate::pdf::pane::Pane,
     pub build: build::BuildState,
+    analysis_seq: u64,
+    pub pdf_current: bool,
     /// TeX was found, so builds can run; and whether it's an old TeX Live.
     pub tex_ready: bool,
     pub tex_outdated: bool,
@@ -277,7 +279,14 @@ pub fn count_words(text: &str) -> usize {
 }
 
 impl Workspace {
-    pub fn open(info: ProjectInfo, dirs: &Dirs, backend: &Backend, tex_ready: bool) -> Self {
+    pub fn open(
+        analysis: lemmata_shell::ProjectAnalysis,
+        dirs: &Dirs,
+        backend: &Backend,
+        tex_ready: bool,
+        project: u64,
+    ) -> Self {
+        let info = analysis.info.clone();
         let root = info.root.to_string_lossy().into_owned();
         let root_for_lsp = root.clone();
         let saved = session::load(dirs, &root);
@@ -316,6 +325,8 @@ impl Workspace {
             restoring: None,
             pane: crate::pdf::pane::Pane::new(backend.ctx()),
             build: build::BuildState::default(),
+            analysis_seq: 0,
+            pdf_current: true,
             tex_ready,
             tex_outdated: false,
             no_build: HashSet::new(),
@@ -338,10 +349,7 @@ impl Workspace {
             table: None,
             after_writes: Vec::new(),
             trust_requested: false,
-            project: backend
-                .project
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                + 1,
+            project,
             checks: crate::writing::Checks::default(),
             spell_asked: None,
             dictionaries_offered: HashSet::new(),
@@ -379,12 +387,14 @@ impl Workspace {
             ws.load(backend, t);
         }
         ws.restoring = Some((tabs, active));
-        ws.refresh_outline(backend);
-        ws.refresh_lookups(backend, true);
+        ws.apply_analysis(analysis);
+        ws.spawn(backend, |shell| Msg::Packages(shell.package_names()));
         // texlab starts in the background (downloaded the first time); completion and hover
         // gain its answers once it's ready.
         ws.lsp.state = crate::lsp::State::Starting;
-        backend.spawn_async(|shell| async move { Msg::LspStarted(shell.lsp_start().await) });
+        backend.spawn_async(move |shell| async move {
+            Msg::Project(project, Box::new(Msg::LspStarted(shell.lsp_start().await)))
+        });
         if let Ok(main) = std::fs::read_to_string(ws.info.root.join(&ws.info.main)) {
             Self::set_macros(&main);
             ws.detected = crate::writing::spell::detect_language(&main);
@@ -395,13 +405,14 @@ impl Workspace {
         ws.refresh_git_status(backend);
         ws.pane.view.set_position(&ws.session_pdf);
         // The PDF on disk shows right away; it is only built again when something changed since.
-        backend.spawn(|shell| Msg::Pdf(shell.read_pdf()));
-        backend.spawn(|shell| Msg::PdfCurrent(shell.pdf_is_current().unwrap_or(false)));
+        ws.spawn(backend, |shell| Msg::Pdf(shell.read_pdf()));
         ws
     }
 
     fn read(&self, backend: &Backend, path: String) {
-        backend.spawn(move |shell| Msg::FileRead(path.clone(), shell.read_text(path)));
+        self.spawn(backend, move |shell| {
+            Msg::FileRead(path.clone(), shell.read_text(path))
+        });
     }
 
     /// Reads a file for its tab: text for the editor, or an image or PDF for a viewer.
@@ -412,7 +423,7 @@ impl Workspace {
         }
         self.viewers.insert(path.into(), viewer::Viewer::Loading);
         let p = path.to_owned();
-        backend.spawn(move |shell| {
+        self.spawn(backend, move |shell| {
             let r = shell.read_binary(p.clone()).and_then(|bytes| {
                 if p.to_lowercase().ends_with(".pdf") {
                     Ok(crate::backend::Viewed::Pdf(bytes))
@@ -431,7 +442,7 @@ impl Workspace {
         then: impl FnOnce(&mut Workspace, &Backend, T) + Send + 'static,
     ) {
         let project = backend.project();
-        backend.spawn(move |shell| {
+        backend.spawn_project(project, move |shell| {
             let r = work(shell);
             Msg::Apply(project, Box::new(move |ws, b| then(ws, b, r)))
         });
@@ -444,7 +455,7 @@ impl Workspace {
         then: impl FnOnce(&mut Workspace, &Backend, T) + Send + 'static,
     ) {
         let project = backend.project();
-        backend.spawn_async(move |shell| async move {
+        backend.spawn_async_project(project, move |shell| async move {
             let r = work(shell).await;
             Msg::Apply(
                 project,
@@ -454,10 +465,26 @@ impl Workspace {
         });
     }
 
+    fn spawn(
+        &self,
+        backend: &Backend,
+        job: impl FnOnce(&lemmata_shell::Shell) -> Msg + Send + 'static,
+    ) {
+        backend.spawn_project(self.project, job);
+    }
+
+    fn spawn_async<F, Fut>(&self, backend: &Backend, job: F)
+    where
+        F: FnOnce(std::sync::Arc<lemmata_shell::Shell>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Msg> + Send + 'static,
+    {
+        backend.spawn_async_project(self.project, job);
+    }
+
     /// Something just inserted needs `pkg`: offer to load it, once, if the document doesn't.
     pub fn needs_package(&mut self, backend: &Backend, pkg: String) {
         if self.offered.insert(pkg.clone()) {
-            backend.spawn(move |shell| {
+            self.spawn(backend, move |shell| {
                 let has = shell.has_package(pkg.clone()).unwrap_or(true);
                 Msg::HasPackage(pkg, has)
             });
@@ -470,18 +497,33 @@ impl Workspace {
         crate::writing::render::set_macros(crate::writing::math::collect_macros(preamble));
     }
 
-    pub fn refresh_outline(&self, backend: &Backend) {
-        backend.spawn(|shell| Msg::Outline(shell.outline()));
+    pub fn refresh_outline(&mut self, backend: &Backend) {
+        self.refresh_analysis(backend);
     }
 
-    /// Reads labels and citation keys again (after saves and outside changes); the package list
-    /// only once.
+    /// Reads project-derived state again; the package list only once.
     pub fn refresh_lookups(&mut self, backend: &Backend, packages: bool) {
-        backend.spawn(|shell| Msg::Labels(shell.labels()));
-        backend.spawn(|shell| Msg::Cites(shell.bib_entries().map(|b| b.entries)));
+        self.refresh_analysis(backend);
         if packages {
-            backend.spawn(|shell| Msg::Packages(shell.package_names()));
+            self.spawn(backend, |shell| Msg::Packages(shell.package_names()));
         }
+    }
+
+    pub fn refresh_analysis(&mut self, backend: &Backend) {
+        self.analysis_seq += 1;
+        let seq = self.analysis_seq;
+        self.spawn(backend, move |shell| {
+            Msg::Analysis(seq, shell.analyze_project())
+        });
+    }
+
+    fn apply_analysis(&mut self, analysis: lemmata_shell::ProjectAnalysis) {
+        self.info = analysis.info;
+        self.headings = analysis.outline.headings;
+        self.total_words = analysis.outline.total_words;
+        self.lookups.labels = analysis.labels;
+        self.lookups.cites = analysis.cites;
+        self.pdf_current = analysis.pdf_current;
         fn files(list: &[lemmata_project::Entry], out: &mut Vec<String>) {
             for e in list {
                 if e.is_dir {
@@ -496,10 +538,20 @@ impl Workspace {
         self.lookups.files = f;
         self.lookups.root = self.info.root.clone();
         self.lookups.generation += 1;
+        if !self.pdf_current {
+            self.build_soon(false, false);
+        }
     }
 
     pub fn notice(&mut self, text: impl Into<String>, tone: Tone) {
+        let text = text.into();
+        if self.notices.iter().any(|n| n.text == text) {
+            return;
+        }
         self.notices.push(Notice::new(text, tone));
+        if self.notices.len() > 8 {
+            self.notices.remove(0);
+        }
     }
 
     /// Shows a file: its tab if it's open, otherwise it's read first.
@@ -643,7 +695,7 @@ impl Workspace {
         self.in_flight.insert(path.into());
         let p = path.to_owned();
         let (root, project) = (self.info.root.clone(), self.project);
-        backend.spawn(move |shell| {
+        self.spawn(backend, move |shell| {
             let result = shell.write_text(&root, p.clone(), text.clone(), expected);
             Msg::FileWritten {
                 project,
@@ -697,6 +749,17 @@ impl Workspace {
 
     /// A message for the open project; others are handed back.
     pub fn on_msg(&mut self, backend: &Backend, settings: &Settings, msg: Msg) -> Option<Msg> {
+        let msg = match msg {
+            Msg::Project(generation, _) if generation != self.project => return None,
+            Msg::Project(_, inner) => *inner,
+            Msg::Event(lemmata_shell::Event::Project(generation, _))
+                if generation != self.project =>
+            {
+                return None;
+            }
+            Msg::Event(lemmata_shell::Event::Project(_, event)) => Msg::Event(*event),
+            other => other,
+        };
         match msg {
             // Read twice (two quick opens): the editor from the first read keeps what was typed in it.
             Msg::FileRead(path, Ok(_)) if self.editors.contains_key(&path) => {}
@@ -787,14 +850,11 @@ impl Workspace {
                             self.load_todos(backend);
                         }
                         if path.ends_with(".tex") || path.ends_with(".bib") {
-                            self.refresh_lookups(backend, false);
+                            self.refresh_analysis(backend);
                         }
                         if path == self.info.main {
                             Self::set_macros(&written);
                             self.detected = crate::writing::spell::detect_language(&written);
-                        }
-                        if path.ends_with(".tex") {
-                            self.refresh_outline(backend);
                         }
                         if self.closing_after_save.remove(&path) && !self.buffers.is_dirty(&path) {
                             self.drop_tab(backend, &path);
@@ -832,11 +892,10 @@ impl Workspace {
                 format!("{path} changed outside Lemmata but could not be read: {e}"),
                 Tone::Error,
             ),
-            Msg::Outline(Ok(o)) => {
-                self.headings = o.headings;
-                self.total_words = o.total_words;
+            Msg::Analysis(seq, Ok(analysis)) if seq == self.analysis_seq => {
+                self.apply_analysis(analysis);
             }
-            Msg::Outline(Err(_)) => {}
+            Msg::Analysis(_, _) => {}
             // Started for a project that has closed since.
             Msg::Apply(project, _) if project != self.project => {}
             Msg::Apply(_, f) => f(self, backend),
@@ -849,15 +908,6 @@ impl Workspace {
             | Msg::Dictionary(_)
             | Msg::SpellDownloaded(..)
             | Msg::GrammarFound(..)) => self.on_check_msg(backend, msg),
-            Msg::Labels(Ok(l)) => {
-                self.lookups.labels = l;
-                self.lookups.generation += 1;
-            }
-            Msg::Cites(Ok(c)) => {
-                self.lookups.cites = c;
-                self.lookups.generation += 1;
-            }
-            Msg::Labels(Err(_)) | Msg::Cites(Err(_)) => {}
             Msg::Packages(p) => {
                 self.lookups.packages = p;
                 self.lookups.generation += 1;
@@ -880,12 +930,14 @@ impl Workspace {
             }
             Msg::Info(Err(e)) => self.notice(e, Tone::Error),
             Msg::Event(lemmata_shell::Event::FilesChanged { changed, removed }) => {
-                backend.spawn(|shell| Msg::Info(shell.project_info_cmd()));
+                self.spawn(backend, |shell| Msg::Info(shell.project_info_cmd()));
                 self.removed_outside(backend, &removed);
                 for path in changed {
                     if self.editors.contains_key(&path) {
                         let p = path.clone();
-                        backend.spawn(move |shell| Msg::DiskText(p.clone(), shell.read_text(p)));
+                        self.spawn(backend, move |shell| {
+                            Msg::DiskText(p.clone(), shell.read_text(p))
+                        });
                     }
                 }
                 self.refresh_outline(backend);
@@ -1672,7 +1724,9 @@ impl Workspace {
                     // Read again; the editor takes the disk's text as one undo step.
                     self.buffers.dirty.remove(&path);
                     let pth = path.clone();
-                    backend.spawn(move |shell| Msg::DiskText(pth.clone(), shell.read_text(pth)));
+                    self.spawn(backend, move |shell| {
+                        Msg::DiskText(pth.clone(), shell.read_text(pth))
+                    });
                 }
                 None => {}
             }

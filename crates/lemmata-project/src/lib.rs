@@ -4,7 +4,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 pub mod export;
 pub mod extras;
@@ -198,6 +197,10 @@ pub struct Project {
 
 impl Project {
     pub fn open(root: impl AsRef<Path>) -> Result<Project> {
+        Self::open_with_tree(root).map(|(project, _)| project)
+    }
+
+    pub fn open_with_tree(root: impl AsRef<Path>) -> Result<(Project, Vec<Entry>)> {
         let root = root.as_ref();
         if !root.is_dir() {
             return Err(Error::NotADirectory(root.to_path_buf()));
@@ -215,7 +218,8 @@ impl Project {
         if !valid_outdir(&config.figures_dir) {
             config.figures_dir = "figures".into();
         }
-        let main_candidates = find_main_candidates(&root, &config.outdir);
+        let entries = tree(&root, &config.outdir);
+        let main_candidates = find_main_candidates(&root, &entries);
         let main = match &config.main {
             Some(m) => {
                 let m = PathBuf::from(m);
@@ -243,13 +247,16 @@ impl Project {
         {
             config.engine = engine;
         }
-        Ok(Project {
-            root,
-            config,
-            main,
-            main_candidates,
-            trusted: false,
-        })
+        Ok((
+            Project {
+                root,
+                config,
+                main,
+                main_candidates,
+                trusted: false,
+            },
+            entries,
+        ))
     }
 
     pub fn main_abs(&self) -> PathBuf {
@@ -380,14 +387,6 @@ fn read_config(root: &Path) -> Result<Config> {
     }
 }
 
-fn is_hidden_or_build(entry: &walkdir::DirEntry, root: &Path, outdir: &str) -> bool {
-    let name = entry.file_name().to_string_lossy();
-    entry.depth() > 0
-        && (name.starts_with('.')
-            || name == "node_modules"
-            || is_outdir(root, entry.path(), outdir))
-}
-
 /// Whether `path` is the build folder itself; `chapters/build` is not the folder `build`.
 fn is_outdir(root: &Path, path: &Path, outdir: &str) -> bool {
     let want = Path::new(outdir)
@@ -397,16 +396,30 @@ fn is_outdir(root: &Path, path: &Path, outdir: &str) -> bool {
         .is_ok_and(|rel| rel.components().eq(want))
 }
 
-fn find_main_candidates(root: &Path, outdir: &str) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = WalkDir::new(root)
-        .max_depth(3)
-        .into_iter()
-        .filter_entry(|e| !is_hidden_or_build(e, root, outdir))
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "tex"))
-        .filter(|e| fs::read_to_string(e.path()).is_ok_and(|t| has_documentclass(&t)))
-        .filter_map(|e| e.path().strip_prefix(root).ok().map(Path::to_path_buf))
-        .collect();
+fn find_main_candidates(root: &Path, entries: &[Entry]) -> Vec<PathBuf> {
+    fn visit(root: &Path, entries: &[Entry], found: &mut Vec<PathBuf>) {
+        use std::io::BufRead;
+        for entry in entries {
+            if entry.is_dir {
+                visit(root, &entry.children, found);
+                continue;
+            }
+            let path = PathBuf::from(&entry.path);
+            if path.components().count() > 3 || path.extension().is_none_or(|x| x != "tex") {
+                continue;
+            }
+            if fs::File::open(root.join(&path)).is_ok_and(|file| {
+                std::io::BufReader::new(file)
+                    .lines()
+                    .map_while(std::io::Result::ok)
+                    .any(|line| has_documentclass(&line))
+            }) {
+                found.push(path);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    visit(root, entries, &mut found);
     found.sort_by_key(|p| (p.components().count(), p.clone()));
     found
 }
@@ -586,6 +599,44 @@ const HEADINGS: &[(&str, u8)] = &[
     ("frametitle", 3),
 ];
 
+#[derive(Debug, Clone, Serialize)]
+pub struct Analysis {
+    pub outline: Outline,
+    pub labels: Vec<extras::Label>,
+}
+
+pub fn analyze(project: &Project, entries: &[Entry]) -> Analysis {
+    analyze_with(project, entries, |path| fs::read_to_string(path))
+}
+
+fn analyze_with(
+    project: &Project,
+    entries: &[Entry],
+    mut read: impl FnMut(&Path) -> std::io::Result<String>,
+) -> Analysis {
+    fn collect(
+        root: &Path,
+        entries: &[Entry],
+        read: &mut impl FnMut(&Path) -> std::io::Result<String>,
+        sources: &mut std::collections::HashMap<PathBuf, String>,
+    ) {
+        for entry in entries {
+            if entry.is_dir {
+                collect(root, &entry.children, read, sources);
+            } else if entry.path.ends_with(".tex")
+                && let Ok(text) = read(&root.join(&entry.path))
+            {
+                sources.insert(PathBuf::from(&entry.path), text);
+            }
+        }
+    }
+    let mut sources = std::collections::HashMap::new();
+    collect(&project.root, entries, &mut read, &mut sources);
+    let outline = outline_with(project, &sources);
+    let labels = extras::labels_with(project, entries, &sources);
+    Analysis { outline, labels }
+}
+
 /// The document's headings in reading order with word counts, following
 /// `\input`, `\include` and `\subfile` from the main file.
 pub fn outline(project: &Project) -> Outline {
@@ -594,14 +645,27 @@ pub fn outline(project: &Project) -> Outline {
     walk.out
 }
 
+fn outline_with(
+    project: &Project,
+    sources: &std::collections::HashMap<PathBuf, String>,
+) -> Outline {
+    let mut walk = Walk {
+        sources: Some(sources),
+        ..Walk::default()
+    };
+    walk.file(&project.root, &project.main, 0, true);
+    walk.out
+}
+
 #[derive(Default)]
-struct Walk {
+struct Walk<'a> {
     out: Outline,
     seen: std::collections::HashSet<PathBuf>,
     prose: prose::State,
+    sources: Option<&'a std::collections::HashMap<PathBuf, String>>,
 }
 
-impl Walk {
+impl Walk<'_> {
     fn count(&mut self, line: &str) {
         let n = prose::words(line, &mut self.prose).len() as u32;
         self.out.total_words += n;
@@ -615,9 +679,15 @@ impl Walk {
         if depth > 16 || !self.seen.insert(rel.to_path_buf()) {
             return;
         }
-        let Ok(text) = fs::read_to_string(root.join(rel)) else {
-            return;
-        };
+        let text = self
+            .sources
+            .and_then(|sources| sources.get(rel).map(std::borrow::Cow::Borrowed))
+            .or_else(|| {
+                fs::read_to_string(root.join(rel))
+                    .ok()
+                    .map(std::borrow::Cow::Owned)
+            });
+        let Some(text) = text else { return };
         let file = rel.to_string_lossy().replace('\\', "/");
         let mut in_body = !is_main || !text.contains("\\begin{document}");
         for (i, raw) in text.lines().enumerate() {
@@ -1177,5 +1247,37 @@ mod tests {
         // Heading titles count as words of their section.
         assert_eq!(counts, [("Intro", 4), ("Sub", 5)]);
         assert_eq!(o.total_words, 11);
+    }
+
+    #[test]
+    fn one_analysis_batch_reads_each_source_once() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "main.tex",
+            "\\documentclass{article}\n\\begin{document}\n\\section{Intro}\\label{sec:i}\n\\input{chapters/method}\n\\end{document}\n",
+        );
+        write(
+            d.path(),
+            "chapters/method.tex",
+            "\\section{Method}\\label{sec:m}\n",
+        );
+        let p = Project::open(d.path()).unwrap();
+        let entries = tree(&p.root, &p.config.outdir);
+        let mut reads = Vec::new();
+        let analysis = analyze_with(&p, &entries, |path| {
+            reads.push(path.to_owned());
+            fs::read_to_string(path)
+        });
+        reads.sort();
+        assert_eq!(
+            reads,
+            [
+                d.path().join("chapters/method.tex"),
+                d.path().join("main.tex")
+            ]
+        );
+        assert_eq!(analysis.outline.headings.len(), 2);
+        assert_eq!(analysis.labels.len(), 2);
     }
 }

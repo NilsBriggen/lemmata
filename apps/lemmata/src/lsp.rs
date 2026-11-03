@@ -376,6 +376,7 @@ impl Lsp {
             })
             .collect::<Vec<_>>();
         let mut list = list;
+        list.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
         list.dedup();
         self.diagnostics.insert(path.clone(), list);
         Some(Answer::Diagnostics(path))
@@ -620,6 +621,24 @@ mod tests {
         assert_eq!(l.on_message(&other).0, None);
         l.sync(&[]);
         assert!(l.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn diagnostics_are_sorted_and_deduplicated() {
+        let mut l = Lsp::new("/p");
+        l.initialize();
+        l.on_message(r#"{"id":1,"result":{}}"#);
+        let text = || "x".to_string();
+        l.sync(&[("main.tex".into(), 1, &text, None)]);
+        let (answer, _) = l.on_message(r#"{"method":"textDocument/publishDiagnostics","params":{"uri":"file:///p/main.tex","diagnostics":[
+            {"range":{"start":{"line":4,"character":0}},"severity":1,"message":"same"},
+            {"range":{"start":{"line":5,"character":0}},"severity":2,"message":"other"},
+            {"range":{"start":{"line":4,"character":0}},"severity":1,"message":"same"}]}}"#);
+        assert_eq!(answer, Some(Answer::Diagnostics("main.tex".into())));
+        let list = &l.diagnostics["main.tex"];
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].2, "same");
+        assert_eq!(list[1].2, "other");
     }
 
     #[test]

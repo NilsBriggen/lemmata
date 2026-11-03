@@ -252,7 +252,7 @@ fn assign(settings: &mut Settings, id: &str, spec: &str) {
         .iter()
         .filter(|s| s.group == me.group && s.id != id)
     {
-        if shortcuts::specs(other).contains(&spec) {
+        if shortcuts::specs(other).iter().any(|keys| keys == spec) {
             settings.keybindings.insert(other.id.into(), String::new());
         }
     }

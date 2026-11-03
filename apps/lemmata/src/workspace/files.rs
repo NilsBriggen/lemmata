@@ -3,7 +3,7 @@
 //! rename, move, delete, unused files, recently deleted), clipboard operations and Undo.
 
 use super::{Menu, Notice, NoticeAction, Tone, Workspace};
-use crate::backend::{Backend, Msg};
+use crate::backend::Backend;
 use crate::icons;
 use crate::store::Settings;
 use crate::theme::Palette;
@@ -272,9 +272,8 @@ impl Workspace {
         }
     }
 
-    fn refresh_tree(&self, backend: &Backend) {
-        backend.spawn(|shell| Msg::Info(shell.project_info_cmd()));
-        self.refresh_outline(backend);
+    fn refresh_tree(&mut self, backend: &Backend) {
+        self.refresh_analysis(backend);
     }
 
     /// A file or folder was renamed or moved: its tabs, editors and marks follow (onRenamed).
@@ -414,15 +413,16 @@ impl Workspace {
             return;
         }
         self.save_all_quietly(backend, settings);
+        let settings = settings.clone();
         Workspace::job(
             backend,
             move |s| {
                 let refs = Workspace::refs_of(s, &list);
                 (list, refs)
             },
-            move |ws, _, (list, refs)| {
+            move |ws, b, (list, refs)| {
                 if refs.is_empty() {
-                    ws.run_move(list, folder, false);
+                    ws.run_move(b, &settings, list, folder, false);
                 } else {
                     ws.files.dialog = Some(FileDialog::Move {
                         paths: list,
@@ -435,9 +435,16 @@ impl Workspace {
         );
     }
 
-    fn run_move(&mut self, paths: Vec<String>, folder: String, update: bool) {
+    fn run_move(
+        &mut self,
+        backend: &Backend,
+        settings: &Settings,
+        paths: Vec<String>,
+        folder: String,
+        update: bool,
+    ) {
         let asked = top_level(&paths).len();
-        self.after_writes.push(Box::new(move |_, b| {
+        self.after_saving(backend, settings, move |_, b| {
             let f = folder.clone();
             Workspace::job(
                 b,
@@ -475,7 +482,7 @@ impl Workspace {
                     Err(e) => ws.file_failure(e),
                 },
             );
-        }));
+        });
     }
 
     /// Deletes entries. The project's own trash can be undone; the system trash cannot.
@@ -578,8 +585,7 @@ impl Workspace {
         if pairs.is_empty() {
             return;
         }
-        self.save_all_quietly(backend, settings);
-        self.after_writes.push(Box::new(move |_, b| {
+        self.after_saving(backend, settings, move |_, b| {
             Workspace::job(
                 b,
                 move |s| {
@@ -622,7 +628,7 @@ impl Workspace {
                     }
                 },
             );
-        }));
+        });
     }
 
     /// Ctrl+C and Ctrl+X in the tree. The paths also go on the system clipboard, so Ctrl+V,
@@ -1515,8 +1521,7 @@ impl Workspace {
                     refs,
                     update,
                 });
-                self.save_all_quietly(backend, settings);
-                self.after_writes.push(Box::new(move |_, b| {
+                self.after_saving(backend, settings, move |_, b| {
                     Workspace::job(
                         b,
                         move |s| {
@@ -1546,7 +1551,7 @@ impl Workspace {
                             Err(e) => ws.files.error = Some(e),
                         },
                     );
-                }));
+                });
             }
             FileDialog::Move {
                 paths,
@@ -1555,7 +1560,7 @@ impl Workspace {
                 ..
             } => {
                 self.save_all_quietly(backend, settings);
-                self.run_move(paths, folder, update);
+                self.run_move(backend, settings, paths, folder, update);
             }
             FileDialog::Trash { paths, .. } => self.run_trash(backend, paths, system),
             FileDialog::Unused { picked, .. } => self.run_trash(backend, picked, system),

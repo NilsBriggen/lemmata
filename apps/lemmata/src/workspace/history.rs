@@ -24,6 +24,8 @@ pub struct ReviewFile {
     pub hunks: Vec<hunks::Hunk>,
 }
 
+type DiffRows = Vec<(Option<usize>, String, u8)>;
+
 pub struct History {
     pub status: Option<HistoryStatus>,
     pub snapshots: Vec<Snapshot>,
@@ -34,6 +36,9 @@ pub struct History {
     compared: Vec<Change>,
     /// A file's diff: snapshot id, path, the other snapshot (None: the current text), the texts.
     diff: Option<(String, String, Option<String>, String, String)>,
+    diff_cache: Option<(String, String, Option<String>, DiffRows)>,
+    #[cfg(test)]
+    diff_computes: usize,
     confirm_restore: bool,
     editing: Option<(String, String)>,
     confirm_all: Option<String>,
@@ -61,6 +66,9 @@ impl Default for History {
             compare: None,
             compared: Vec::new(),
             diff: None,
+            diff_cache: None,
+            #[cfg(test)]
+            diff_computes: 0,
             confirm_restore: false,
             editing: None,
             confirm_all: None,
@@ -73,6 +81,71 @@ impl Default for History {
             last: None,
             edited: false,
         }
+    }
+}
+
+fn diff_rows(then: &str, now: &str) -> DiffRows {
+    let hs = hunks::compute(then, now);
+    let lines: Vec<&str> = now.split_inclusive('\n').collect();
+    let mut rows = Vec::new();
+    let mut line = 0usize;
+    let push_same = |rows: &mut DiffRows, from: usize, to: usize, first: bool, last: bool| {
+        let n = to - from;
+        let keep_head = if first { 0 } else { 3 };
+        let keep_tail = if last { 0 } else { 3 };
+        if n >= keep_head + keep_tail + 6 {
+            for (k, l) in lines.iter().enumerate().take(from + keep_head).skip(from) {
+                rows.push((Some(k + 1), l.trim_end_matches('\n').to_owned(), 0));
+            }
+            rows.push((
+                None,
+                format!("{} unchanged lines", n - keep_head - keep_tail),
+                3,
+            ));
+            for (k, l) in lines.iter().enumerate().take(to).skip(to - keep_tail) {
+                rows.push((Some(k + 1), l.trim_end_matches('\n').to_owned(), 0));
+            }
+        } else {
+            for (k, l) in lines.iter().enumerate().take(to).skip(from) {
+                rows.push((Some(k + 1), l.trim_end_matches('\n').to_owned(), 0));
+            }
+        }
+    };
+    for (i, h) in hs.iter().enumerate() {
+        let start = now[..h.new_from].matches('\n').count();
+        push_same(&mut rows, line, start, i == 0, false);
+        for l in h.old_text.split_inclusive('\n') {
+            rows.push((None, l.trim_end_matches('\n').to_owned(), 1));
+        }
+        let n = h.new_text.split_inclusive('\n').count();
+        for (k, l) in lines.iter().enumerate().take(start + n).skip(start) {
+            rows.push((Some(k + 1), l.trim_end_matches('\n').to_owned(), 2));
+        }
+        line = start + n;
+    }
+    push_same(&mut rows, line, lines.len(), hs.is_empty(), true);
+    rows
+}
+
+impl History {
+    fn diff_rows_cached(&mut self) -> &DiffRows {
+        let Some((id, path, other, then, now)) = self.diff.as_ref() else {
+            static EMPTY: DiffRows = Vec::new();
+            return &EMPTY;
+        };
+        let changed = self
+            .diff_cache
+            .as_ref()
+            .is_none_or(|(i, p, o, _)| i != id || p != path || o != other);
+        if changed {
+            let rows = diff_rows(then, now);
+            self.diff_cache = Some((id.clone(), path.clone(), other.clone(), rows));
+            #[cfg(test)]
+            {
+                self.diff_computes += 1;
+            }
+        }
+        &self.diff_cache.as_ref().unwrap().3
     }
 }
 
@@ -221,34 +294,14 @@ impl Workspace {
         }
     }
 
-    /// A restore runs once everything is saved (so it's in the safety snapshot); if something
-    /// couldn't be saved, nothing is restored.
-    fn after_saving(
-        &mut self,
-        backend: &Backend,
-        settings: &crate::store::Settings,
-        restore: impl FnOnce(&mut Workspace, &Backend) + 'static,
-    ) {
-        self.save_all_quietly(backend, settings);
-        self.after_writes.push(Box::new(move |ws, b| {
-            let left = ws.buffers.unsaved();
-            if left.is_empty() {
-                restore(ws, b);
-            } else {
-                ws.history.error = Some(format!(
-                    "{} could not be saved, so nothing was restored.",
-                    left.join(", ")
-                ));
-            }
-        }));
-    }
-
     /// Reads a file again from disk after a restore, a replace or a rename changed it. Edits made
     /// since stay unsaved, so the disk text then asks which version to keep instead of replacing them.
     pub(crate) fn reload(&mut self, backend: &Backend, path: &str) {
         if self.editors.contains_key(path) {
             let p = path.to_owned();
-            backend.spawn(move |shell| Msg::DiskText(p.clone(), shell.read_text(p)));
+            self.spawn(backend, move |shell| {
+                Msg::DiskText(p.clone(), shell.read_text(p))
+            });
         }
     }
 
@@ -417,7 +470,7 @@ impl Workspace {
                     && base.as_ref().is_some_and(|b| b.id == id)
                     && Button::new("Open PDF of the changes").kind(Kind::Primary).size(Size::Sm).show(ui, p).clicked()
                 {
-                    backend.spawn(move |shell| Msg::Done(shell.open_project_file(path)));
+                    self.spawn(backend, move |shell| Msg::Done(shell.open_project_file(path)));
                 }
                 if Button::new("Mark as reviewed")
                     .with_icon(icons::CHECK)
@@ -593,6 +646,7 @@ impl Workspace {
                 },
                 |ws, _, d| {
                     ws.history.diff = Some(d);
+                    ws.history.diff_cache = None;
                     ws.history.confirm_restore = false;
                 },
             );
@@ -607,7 +661,12 @@ impl Workspace {
         backend: &Backend,
         settings: &mut crate::store::Settings,
     ) {
-        let Some((id, path, other, then, now)) = self.history.diff.clone() else {
+        let Some((id, path, other)) = self
+            .history
+            .diff
+            .as_ref()
+            .map(|(id, path, other, _, _)| (id.clone(), path.clone(), other.clone()))
+        else {
             return;
         };
         let mut back = false;
@@ -678,51 +737,7 @@ impl Workspace {
         }
         let rest = ui.available_rect_before_wrap();
         ui.painter().rect_filled(rest, 0, p.code_bg);
-        let hs = hunks::compute(&then, &now);
-        let lines: Vec<&str> = now.split_inclusive('\n').collect();
-        // Rows: (line number in the new text or None, text, kind) with kind 0 same, 1 removed, 2 added, 3 folded.
-        let mut rows: Vec<(Option<usize>, String, u8)> = Vec::new();
-        let mut line = 0usize; // index into `lines`
-        let push_same = |rows: &mut Vec<(Option<usize>, String, u8)>,
-                         from: usize,
-                         to: usize,
-                         first: bool,
-                         last: bool| {
-            let n = to - from;
-            // collapseUnchanged: { margin: 3, minSize: 6 }
-            let keep_head = if first { 0 } else { 3 };
-            let keep_tail = if last { 0 } else { 3 };
-            if n >= keep_head + keep_tail + 6 {
-                for (k, l) in lines.iter().enumerate().take(from + keep_head).skip(from) {
-                    rows.push((Some(k + 1), l.trim_end_matches('\n').to_owned(), 0));
-                }
-                rows.push((
-                    None,
-                    format!("{} unchanged lines", n - keep_head - keep_tail),
-                    3,
-                ));
-                for (k, l) in lines.iter().enumerate().take(to).skip(to - keep_tail) {
-                    rows.push((Some(k + 1), l.trim_end_matches('\n').to_owned(), 0));
-                }
-            } else {
-                for (k, l) in lines.iter().enumerate().take(to).skip(from) {
-                    rows.push((Some(k + 1), l.trim_end_matches('\n').to_owned(), 0));
-                }
-            }
-        };
-        for (i, h) in hs.iter().enumerate() {
-            let start = now[..h.new_from].matches('\n').count();
-            push_same(&mut rows, line, start, i == 0, false);
-            for l in h.old_text.split_inclusive('\n') {
-                rows.push((None, l.trim_end_matches('\n').to_owned(), 1));
-            }
-            let n = h.new_text.split_inclusive('\n').count();
-            for (k, l) in lines.iter().enumerate().take(start + n).skip(start) {
-                rows.push((Some(k + 1), l.trim_end_matches('\n').to_owned(), 2));
-            }
-            line = start + n;
-        }
-        push_same(&mut rows, line, lines.len(), hs.is_empty(), true);
+        let rows = self.history.diff_rows_cached();
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(rest));
         egui::ScrollArea::vertical()
             .id_salt("history-diff")
@@ -756,7 +771,7 @@ impl Workspace {
                             p.muted,
                         );
                     }
-                    if kind == 3 {
+                    if *kind == 3 {
                         ui.painter().text(
                             r.center(),
                             egui::Align2::CENTER_CENTER,
@@ -777,115 +792,118 @@ impl Workspace {
         };
         self.history.error = None;
         self.history.busy = Some("review");
-        self.save_all_quietly(backend, settings);
         let snapshots = self.history.snapshots.clone();
-        // The open files' text, so unsaved edits count.
         let texts: Vec<(String, String)> = self
             .editors
             .iter()
             .map(|(p, e)| (p.clone(), e.doc.text()))
             .collect();
         let root = self.info.root.clone();
-        Self::job(
-            backend,
-            move |sh| {
-                // The work since the last snapshot counts too.
-                let _ = sh.history_snapshot("Before review".into());
-                let list = sh.history_list().unwrap_or(snapshots);
-                let idx = list.iter().position(|s| s.id == base.id).unwrap_or(0);
-                let mut paths: Vec<String> = list[..idx]
-                    .iter()
-                    .flat_map(|s| s.changes.iter().map(|c| c.path.clone()))
-                    .filter(|p| hunks::is_text_path(p))
-                    .collect();
-                paths.sort();
-                paths.dedup();
-                let mut files = Vec::new();
-                for path in paths {
-                    let old = sh
-                        .history_file(base.id.clone(), path.clone())
-                        .ok()
-                        .flatten()
-                        .unwrap_or_default();
-                    let now = texts
+        self.after_saving(backend, settings, move |_, b| {
+            Self::job(
+                b,
+                move |sh| {
+                    // The work since the last snapshot counts too.
+                    let _ = sh.history_snapshot("Before review".into());
+                    let list = sh.history_list().unwrap_or(snapshots);
+                    let idx = list.iter().position(|s| s.id == base.id).unwrap_or(0);
+                    let mut paths: Vec<String> = list[..idx]
                         .iter()
-                        .find(|t| t.0 == path)
-                        .map(|t| t.1.clone())
-                        .or_else(|| std::fs::read_to_string(root.join(&path)).ok())
-                        .unwrap_or_default();
-                    let h = hunks::compute(&old, &now);
-                    if !h.is_empty() {
-                        files.push(ReviewFile {
-                            path,
-                            old,
-                            hunks: h,
-                        });
+                        .flat_map(|s| s.changes.iter().map(|c| c.path.clone()))
+                        .filter(|p| hunks::is_text_path(p))
+                        .collect();
+                    paths.sort();
+                    paths.dedup();
+                    let mut files = Vec::new();
+                    for path in paths {
+                        let old = sh
+                            .history_file(base.id.clone(), path.clone())
+                            .ok()
+                            .flatten()
+                            .unwrap_or_default();
+                        let now = texts
+                            .iter()
+                            .find(|t| t.0 == path)
+                            .map(|t| t.1.clone())
+                            .or_else(|| std::fs::read_to_string(root.join(&path)).ok())
+                            .unwrap_or_default();
+                        let h = hunks::compute(&old, &now);
+                        if !h.is_empty() {
+                            files.push(ReviewFile {
+                                path,
+                                old,
+                                hunks: h,
+                            });
+                        }
                     }
-                }
-                (base, list, files)
-            },
-            |ws, _, (base, list, files)| {
-                ws.history.busy = None;
-                ws.history.snapshots = list;
-                ws.history.accepted.clear();
-                ws.history.review = Some((base, files));
-            },
-        );
+                    (base, list, files)
+                },
+                |ws, _, (base, list, files)| {
+                    ws.history.busy = None;
+                    ws.history.snapshots = list;
+                    ws.history.accepted.clear();
+                    ws.history.review = Some((base, files));
+                },
+            );
+        });
     }
-
     fn make_pdf(&mut self, backend: &Backend, settings: &crate::store::Settings) {
         let Some(base) = self.base_snapshot() else {
             return;
         };
         self.history.error = None;
         self.history.busy = Some("pdf");
-        self.save_all_quietly(backend, settings);
         let id = base.id.clone();
-        Self::job(
-            backend,
-            move |sh| sh.history_latexdiff(id.clone()).map(|p| (id, p)),
-            |ws, _, r| {
-                ws.history.busy = None;
-                match r {
-                    Ok((id, p)) => ws.history.pdf = Some((id, p.to_string_lossy().into_owned())),
-                    Err(e) => ws.history.error = Some(e),
-                }
-            },
-        );
+        self.after_saving(backend, settings, move |_, b| {
+            Self::job(
+                b,
+                move |sh| sh.history_latexdiff(id.clone()).map(|p| (id, p)),
+                |ws, _, r| {
+                    ws.history.busy = None;
+                    match r {
+                        Ok((id, p)) => {
+                            ws.history.pdf = Some((id, p.to_string_lossy().into_owned()))
+                        }
+                        Err(e) => ws.history.error = Some(e),
+                    }
+                },
+            );
+        });
     }
 
     fn mark_reviewed(&mut self, backend: &Backend, settings: &crate::store::Settings) {
         self.history.error = None;
         self.history.busy = Some("mark");
-        self.save_all_quietly(backend, settings);
         let latest = self.history.snapshots.first().cloned();
-        Self::job(
-            backend,
-            move |sh| {
-                if sh.history_snapshot(REVIEWED.into())?.is_none()
-                    && let Some(l) = latest
-                    && !l.label.starts_with(REVIEWED)
-                {
-                    // Nothing changed since the newest snapshot: it is the reviewed state.
-                    let label = if l.label == "Snapshot" || l.label == "Automatic snapshot" {
-                        REVIEWED.to_owned()
-                    } else {
-                        format!("{REVIEWED}: {}", l.label)
-                    };
-                    sh.history_relabel(l.id, label)?;
-                }
-                Ok::<_, String>(())
-            },
-            |ws, b, r| {
-                ws.history.busy = None;
-                ws.history.since.clear();
-                ws.history.review = None;
-                if let Err(e) = r {
-                    ws.history.error = Some(e);
-                }
-                ws.load_history(b);
-            },
-        );
+        self.after_saving(backend, settings, move |_, b| {
+            Self::job(
+                b,
+                move |sh| {
+                    if sh.history_snapshot(REVIEWED.into())?.is_none()
+                        && let Some(l) = latest
+                        && !l.label.starts_with(REVIEWED)
+                    {
+                        // Nothing changed since the newest snapshot: it is the reviewed state.
+                        let label = if l.label == "Snapshot" || l.label == "Automatic snapshot" {
+                            REVIEWED.to_owned()
+                        } else {
+                            format!("{REVIEWED}: {}", l.label)
+                        };
+                        sh.history_relabel(l.id, label)?;
+                    }
+                    Ok::<_, String>(())
+                },
+                |ws, b, r| {
+                    ws.history.busy = None;
+                    ws.history.since.clear();
+                    ws.history.review = None;
+                    if let Err(e) = r {
+                        ws.history.error = Some(e);
+                    }
+                    ws.load_history(b);
+                },
+            );
+        });
     }
 
     fn restore_all(&mut self, backend: &Backend, settings: &crate::store::Settings, id: String) {
@@ -1204,8 +1222,35 @@ impl Workspace {
             }
             None => {
                 let (p, t, root) = (path.to_owned(), text.to_owned(), self.info.root.clone());
-                backend.spawn(move |shell| Msg::Done(shell.write_text(&root, p, t, None)));
+                self.spawn(backend, move |shell| {
+                    Msg::Done(shell.write_text(&root, p, t, None))
+                });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_rows_are_cached_until_the_diff_identity_changes() {
+        let mut history = History {
+            diff: Some((
+                "a".into(),
+                "main.tex".into(),
+                None,
+                "old\n".into(),
+                "old\nnew\n".into(),
+            )),
+            ..Default::default()
+        };
+        assert_eq!(history.diff_rows_cached().len(), 2);
+        assert_eq!(history.diff_rows_cached().len(), 2);
+        assert_eq!(history.diff_computes, 1);
+        history.diff.as_mut().unwrap().0 = "b".into();
+        assert_eq!(history.diff_rows_cached().len(), 2);
+        assert_eq!(history.diff_computes, 2);
     }
 }

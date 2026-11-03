@@ -59,6 +59,8 @@ pub struct Dirs {
 /// What the backend tells the UI without being asked.
 #[derive(Debug, Clone)]
 pub enum Event {
+    /// An event from one project generation.
+    Project(u64, Box<Event>),
     BuildStarted,
     /// What the build status says now (Tectonic fetching packages).
     BuildProgress(String),
@@ -109,6 +111,9 @@ pub struct Shell {
     written: files::Written,
     /// The open request from the command line or a second launch, until the UI takes it.
     open_request: open_with::OpenRequest,
+    /// Project jobs share a read guard; opening another project takes the write guard.
+    operation: tokio::sync::RwLock<()>,
+    generation: std::sync::atomic::AtomicU64,
 }
 
 impl Shell {
@@ -132,6 +137,8 @@ impl Shell {
             watcher: Default::default(),
             written: Default::default(),
             open_request: open_with::OpenRequest::from_command_line(),
+            operation: Default::default(),
+            generation: Default::default(),
         };
         tectonic::init(&shell);
         shell
@@ -139,6 +146,22 @@ impl Shell {
 
     fn emit(&self, event: Event) {
         (self.sink)(event)
+    }
+
+    fn emit_project(&self, generation: u64, event: Event) {
+        self.emit(Event::Project(generation, Box::new(event)));
+    }
+
+    pub fn current_project(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn project_blocking_read(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {
+        self.operation.blocking_read()
+    }
+
+    pub async fn project_read(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {
+        self.operation.read().await
     }
 
     /// Starts detecting in the background at launch, so it's done or under way
@@ -227,7 +250,7 @@ impl Shell {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct ProjectInfo {
     pub root: PathBuf,
     pub name: String,
@@ -237,11 +260,24 @@ pub struct ProjectInfo {
     pub tree: Vec<Entry>,
 }
 
+#[derive(Serialize)]
+pub struct ProjectAnalysis {
+    pub info: ProjectInfo,
+    pub outline: lemmata_project::Outline,
+    pub labels: Vec<lemmata_project::extras::Label>,
+    pub cites: Vec<lemmata_bib::Entry>,
+    pub pdf_current: bool,
+}
+
 fn rel_string(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
 fn project_info(p: &Project) -> ProjectInfo {
+    project_info_with_tree(p, lemmata_project::tree(&p.root, &p.config.outdir))
+}
+
+fn project_info_with_tree(p: &Project, tree: Vec<Entry>) -> ProjectInfo {
     ProjectInfo {
         root: p.root.clone(),
         name: p
@@ -252,26 +288,59 @@ fn project_info(p: &Project) -> ProjectInfo {
         main: rel_string(&p.main),
         main_candidates: p.main_candidates.iter().map(|c| rel_string(c)).collect(),
         config: p.config.clone(),
-        tree: lemmata_project::tree(&p.root, &p.config.outdir),
+        tree,
+    }
+}
+
+fn analysis_of(p: &Project, tree: Vec<Entry>) -> ProjectAnalysis {
+    let analysis = lemmata_project::analyze(p, &tree);
+    let files = lemmata_bib::bib_files_with_tree(p, &tree);
+    let cites = lemmata_bib::entries(&p.root, &files);
+    let pdf_current = lemmata_tex::up_to_date_with_tree(p, &tree);
+    ProjectAnalysis {
+        info: project_info_with_tree(p, tree),
+        outline: analysis.outline,
+        labels: analysis.labels,
+        cites,
+        pdf_current,
     }
 }
 
 impl Shell {
-    pub fn open_project(&self, path: String) -> CmdResult<ProjectInfo> {
+    pub fn analyze_project(&self) -> CmdResult<ProjectAnalysis> {
+        let p = project(self)?;
+        let tree = lemmata_project::tree(&p.root, &p.config.outdir);
+        Ok(analysis_of(&p, tree))
+    }
+
+    pub fn open_project(&self, generation: u64, path: String) -> CmdResult<ProjectAnalysis> {
+        self.generation
+            .fetch_max(generation, std::sync::atomic::Ordering::Relaxed);
+        let _opening = self.operation.blocking_write();
+        if self.current_project() != generation {
+            return Err("A newer project open superseded this one.".into());
+        }
         lemmata_synctex::forget();
         cancel_running(self);
-        let project = Project::open(&path).map_err(err)?;
-        let info = project_info(&project);
+        let (project, tree) = Project::open_with_tree(&path).map_err(err)?;
+        let analysis = analysis_of(&project, tree);
+        if self.current_project() != generation {
+            return Err("A newer project open superseded this one.".into());
+        }
+        let sink = self.sink.clone();
+        let watcher_sink: Sink = Arc::new(move |event| {
+            sink(Event::Project(generation, Box::new(event)));
+        });
         // Without a watcher the app still works; it just won't notice outside edits.
         *self.watcher.lock_safe() = files::watch(
-            self.sink.clone(),
+            watcher_sink,
             project.root.clone(),
             project.config.outdir.clone(),
             self.written.clone(),
         )
         .ok();
         *self.project.lock_safe() = Some(project);
-        Ok(info)
+        Ok(analysis)
     }
 }
 
@@ -486,9 +555,12 @@ impl Shell {
             let exe = detection.tectonic.as_deref().ok_or(
             "Tectonic is not installed. Install it from the start screen, or choose another compiler in the project settings.",
         )?;
-            self.emit(Event::BuildStarted);
+            self.emit_project(self.current_project(), Event::BuildStarted);
             return lemmata_tex::tectonic::build(&project, exe, rx, force, &|n| {
-                self.emit(Event::BuildProgress(tectonic::fetch_message(n)));
+                self.emit_project(
+                    self.current_project(),
+                    Event::BuildProgress(tectonic::fetch_message(n)),
+                );
             })
             .await
             .map_err(err);
@@ -497,7 +569,7 @@ impl Shell {
             .tool("latexmk")
             .ok_or("latexmk was not found. Install TeX Live first.")?;
 
-        self.emit(Event::BuildStarted);
+        self.emit_project(self.current_project(), Event::BuildStarted);
         let opts = BuildOptions {
             latexmk,
             bin_dir: detection.bin_dir.as_deref(),
@@ -892,6 +964,7 @@ impl Shell {
     /// Starts (or restarts) texlab for the open project. Returns the server's
     /// generation, which tags every `lsp-message` event it sends.
     pub async fn lsp_start(&self) -> CmdResult<u64> {
+        let project = self.current_project();
         let root = self
             .project
             .lock_safe()
@@ -907,20 +980,23 @@ impl Shell {
             .lsp_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             + 1;
-        let mut slot = self.lsp.lock().await;
-        if let Some(old) = slot.take() {
+        if let Some(old) = self.lsp.lock().await.take() {
             old.stop().await;
         }
-        *slot = Some(
-            lsp::start(
-                self.sink.clone(),
-                &root,
-                &self.dirs.data,
-                bin.as_deref(),
-                generation,
-            )
-            .await?,
-        );
+        if self.current_project() != project {
+            return Err("The project was closed.".into());
+        }
+        let sink = self.sink.clone();
+        let lsp_sink: Sink = Arc::new(move |event| {
+            sink(Event::Project(project, Box::new(event)));
+        });
+        let server =
+            lsp::start(lsp_sink, &root, &self.dirs.data, bin.as_deref(), generation).await?;
+        if self.current_project() != project {
+            drop(server);
+            return Err("The project was closed.".into());
+        }
+        *self.lsp.lock().await = Some(server);
         Ok(generation)
     }
 
@@ -1011,6 +1087,36 @@ mod tests {
                 .load_thumbnail(other.to_string_lossy().into_owned())
                 .unwrap(),
             b"png"
+        );
+    }
+
+    #[test]
+    fn an_older_open_cannot_replace_a_newer_project() {
+        let d = tempfile::tempdir().unwrap();
+        for name in ["a", "b"] {
+            let root = d.path().join(name);
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("main.tex"), "\\documentclass{article}").unwrap();
+        }
+        let dirs = crate::Dirs {
+            resources: d.path().into(),
+            data: d.path().into(),
+            cache: d.path().into(),
+            home: None,
+        };
+        let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
+        shell
+            .open_project(2, d.path().join("b").to_string_lossy().into_owned())
+            .unwrap();
+        assert!(
+            shell
+                .open_project(1, d.path().join("a").to_string_lossy().into_owned())
+                .is_err()
+        );
+        assert_eq!(shell.current_project(), 2);
+        assert_eq!(
+            crate::project(&shell).unwrap().root,
+            lemmata_project::canonical(&d.path().join("b")).unwrap()
         );
     }
 }

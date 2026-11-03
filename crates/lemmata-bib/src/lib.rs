@@ -31,8 +31,18 @@ static BIB_COMMAND: LazyLock<Regex> = LazyLock::new(|| {
 /// The .bib files the document names (`\addbibresource`, `\bibliography`),
 /// or every .bib file in the project when it names none.
 pub fn bib_files(project: &lemmata_project::Project) -> Vec<String> {
+    bib_files_with_tree(
+        project,
+        &lemmata_project::tree(&project.root, &project.config.outdir),
+    )
+}
+
+pub fn bib_files_with_tree(
+    project: &lemmata_project::Project,
+    entries: &[lemmata_project::Entry],
+) -> Vec<String> {
     let mut named = Vec::new();
-    for rel in project_tex_files(project) {
+    for rel in project_tex_files(entries) {
         let Ok(text) = std::fs::read_to_string(project.root.join(&rel)) else {
             continue;
         };
@@ -50,19 +60,13 @@ pub fn bib_files(project: &lemmata_project::Project) -> Vec<String> {
         }
     }
     if named.is_empty() {
-        named = all_files(
-            &lemmata_project::tree(&project.root, &project.config.outdir),
-            "bib",
-        );
+        named = all_files(entries, "bib");
     }
     named
 }
 
-fn project_tex_files(project: &lemmata_project::Project) -> Vec<String> {
-    all_files(
-        &lemmata_project::tree(&project.root, &project.config.outdir),
-        "tex",
-    )
+fn project_tex_files(entries: &[lemmata_project::Entry]) -> Vec<String> {
+    all_files(entries, "tex")
 }
 
 fn all_files(entries: &[lemmata_project::Entry], ext: &str) -> Vec<String> {
@@ -84,7 +88,10 @@ static CITE: LazyLock<Regex> = LazyLock::new(|| {
 /// Every citation key the project's .tex files use, in first-use order.
 pub fn cited_keys(project: &lemmata_project::Project) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
-    for rel in project_tex_files(project) {
+    for rel in project_tex_files(&lemmata_project::tree(
+        &project.root,
+        &project.config.outdir,
+    )) {
         let Ok(text) = std::fs::read_to_string(project.root.join(&rel)) else {
             continue;
         };

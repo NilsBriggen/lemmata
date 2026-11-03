@@ -59,6 +59,47 @@ struct Undo {
 
 /// Thumbnails decoded off the UI thread: project path and image (None if it can't be read).
 type Decoded = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<egui::ColorImage>)>>>;
+type ThumbnailRead = std::sync::Arc<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
+
+struct ThumbnailJob {
+    path: String,
+    read: ThumbnailRead,
+    decoded: Decoded,
+    ctx: egui::Context,
+}
+
+fn thumbnail_workers() -> &'static std::sync::mpsc::SyncSender<ThumbnailJob> {
+    static WORKERS: std::sync::OnceLock<std::sync::mpsc::SyncSender<ThumbnailJob>> =
+        std::sync::OnceLock::new();
+    WORKERS.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ThumbnailJob>(32);
+        let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+        for _ in 0..2 {
+            let rx = rx.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let job = rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
+                    let Ok(job) = job else { break };
+                    let img = (job.read)(&job.path).and_then(|bytes| {
+                        image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                            .ok()
+                            .map(|i| {
+                                let i = i.to_rgba8();
+                                let size = [i.width() as usize, i.height() as usize];
+                                egui::ColorImage::from_rgba_unmultiplied(size, i.as_raw())
+                            })
+                    });
+                    job.decoded
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((job.path, img));
+                    job.ctx.request_repaint();
+                }
+            });
+        }
+        tx
+    })
+}
 
 #[derive(Default)]
 pub struct State {
@@ -101,8 +142,8 @@ pub struct Ctx<'a> {
     pub error: Option<&'a str>,
     /// The folder that failed to open because it has no main document; offers to create one.
     pub no_main_in: Option<&'a str>,
-    /// Reads a project's cached page-1 PNG.
-    pub thumbnail: &'a dyn Fn(&str) -> Option<Vec<u8>>,
+    /// Reads a project's cached page-1 PNG on a bounded worker.
+    pub thumbnail: ThumbnailRead,
     pub now_ms: f64,
 }
 
@@ -999,25 +1040,15 @@ fn thumb(ui: &Ui, st: &mut State, c: &Ctx, path: &str) -> Option<egui::TextureHa
     if !st.pending.insert(path.to_owned()) {
         return None;
     }
-    let Some(bytes) = (c.thumbnail)(path) else {
-        st.pending.remove(path);
-        st.thumbs.insert(path.into(), None);
-        return None;
+    let job = ThumbnailJob {
+        path: path.to_owned(),
+        read: c.thumbnail.clone(),
+        decoded: st.decoded.clone(),
+        ctx: ui.ctx().clone(),
     };
-    let (done, ctx, path) = (st.decoded.clone(), ui.ctx().clone(), path.to_owned());
-    std::thread::spawn(move || {
-        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-            .ok()
-            .map(|i| {
-                let i = i.to_rgba8();
-                let size = [i.width() as usize, i.height() as usize];
-                egui::ColorImage::from_rgba_unmultiplied(size, i.as_raw())
-            });
-        done.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push((path, img));
-        ctx.request_repaint();
-    });
+    if thumbnail_workers().try_send(job).is_err() {
+        st.pending.remove(path);
+    }
     None
 }
 
@@ -1743,7 +1774,7 @@ mod snapshots {
                 settings: &mut settings,
                 error: None,
                 no_main_in: None,
-                thumbnail: &|_| None,
+                thumbnail: std::sync::Arc::new(|_| None),
                 now_ms: now,
             };
             show(ui, &p, &mut st, &mut c);
@@ -1770,7 +1801,7 @@ mod snapshots {
                 settings: &mut settings,
                 error: None,
                 no_main_in: None,
-                thumbnail: &|_| None,
+                thumbnail: std::sync::Arc::new(|_| None),
                 now_ms: 0.0,
             };
             show(ui, &theme::LIGHT, &mut st, &mut c);
@@ -1800,14 +1831,22 @@ mod snapshots {
             library_view: "grid".into(),
             ..Settings::default()
         };
+        let caller = std::thread::current().id();
+        let read_threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reads = read_threads.clone();
         let mut h = testing::harness(theme::LIGHT, move |ui| {
+            let reads = reads.clone();
+            let png = png.clone();
             let mut c = Ctx {
                 recents: &recents,
                 groups: &mut groups,
                 settings: &mut settings,
                 error: None,
                 no_main_in: None,
-                thumbnail: &|_| Some(png.clone()),
+                thumbnail: std::sync::Arc::new(move |_| {
+                    reads.lock().unwrap().push(std::thread::current().id());
+                    Some(png.clone())
+                }),
                 now_ms: 0.0,
             };
             show(ui, &theme::LIGHT, &mut shared.lock().unwrap(), &mut c);
@@ -1820,6 +1859,9 @@ mod snapshots {
             h.step();
         }
         assert_eq!(st.lock().unwrap().thumbs.values().flatten().count(), n);
+        let threads = read_threads.lock().unwrap();
+        assert!(!threads.is_empty());
+        assert!(threads.iter().all(|thread| *thread != caller));
     }
 
     #[test]

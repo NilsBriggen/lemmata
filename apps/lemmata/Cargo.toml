@@ -35,7 +35,7 @@ lemmata-history.workspace = true
 lemmata-synctex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 # No logger is installed: release builds drop the log and tracing calls of dependencies entirely.
 log = { version = "0.4", features = ["release_max_level_off"] }
 tracing = { version = "0.1", default-features = false, features = ["release_max_level_off"] }

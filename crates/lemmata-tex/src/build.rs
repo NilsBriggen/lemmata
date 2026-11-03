@@ -178,6 +178,7 @@ pub async fn build_with(
     // writes a log (no Perl, a MiKTeX prompt), so keep it in a file.
     let output_path = project.outdir_abs().join("latexmk-output.txt");
     let limit = time_limit(project);
+    let deadline = started + limit;
     let mut cancel = cancel;
     let engine = tool(opts, project.config.engine.binary());
     let can_go_direct = engine.is_some();
@@ -198,7 +199,16 @@ pub async fn build_with(
     };
     // On skipping, the earlier failure's output file stays to explain the note below.
     let mut status = Status::Failed;
-    if warm && let Ok(s) = direct_build(project, opts, limit, &mut cancel, fmt.as_deref()).await {
+    if warm
+        && let Ok(s) = direct_build(
+            project,
+            opts,
+            deadline.saturating_duration_since(Instant::now()),
+            &mut cancel,
+            fmt.as_deref(),
+        )
+        .await
+    {
         status = s;
     }
     let fmt_failed = fmt.is_some() && status == Status::Failed;
@@ -221,7 +231,13 @@ pub async fn build_with(
             .stdout(out)
             .stderr(err);
         set_path(&mut cmd, opts);
-        status = match run_step(cmd, limit, &mut cancel).await {
+        status = match run_step(
+            cmd,
+            deadline.saturating_duration_since(Instant::now()),
+            &mut cancel,
+        )
+        .await
+        {
             Ok(s) => s.ok_or(Error::Spawn(std::io::Error::other("could not start")))?,
             // Blocked from starting (a Windows policy): the direct build below can still work.
             Err(Error::Spawn(e)) if can_go_direct => {
@@ -238,7 +254,15 @@ pub async fn build_with(
     let log_fresh = written_since(&project.log_path(), started_at);
     let mut fell_back = false;
     if status == Status::Failed && !log_fresh && can_go_direct {
-        match direct_build(project, opts, limit, &mut cancel, None).await {
+        match direct_build(
+            project,
+            opts,
+            deadline.saturating_duration_since(Instant::now()),
+            &mut cancel,
+            None,
+        )
+        .await
+        {
             Ok(s) => {
                 status = s;
                 fell_back = true;
@@ -580,18 +604,29 @@ pub(crate) const OK_STAMP: &str = ".lemmata-ok";
 const FILES_STAMP: &str = ".lemmata-files";
 
 fn files_hash(project: &Project) -> String {
+    files_hash_with_tree(
+        project,
+        &lemmata_project::tree(&project.root, &project.config.outdir),
+    )
+}
+
+fn files_hash_with_tree(project: &Project, entries: &[lemmata_project::Entry]) -> String {
     use std::hash::{Hash, Hasher};
-    fn walk(entries: &[lemmata_project::Entry], h: &mut impl Hasher) {
+    fn walk(root: &Path, entries: &[lemmata_project::Entry], h: &mut impl Hasher) {
         for e in entries {
             (&e.path, e.is_dir, e.size, e.modified).hash(h);
-            walk(&e.children, h);
+            if e.is_dir {
+                walk(root, &e.children, h);
+            } else {
+                match std::fs::read(root.join(&e.path)) {
+                    Ok(bytes) => bytes.hash(h),
+                    Err(e) => e.to_string().hash(h),
+                }
+            }
         }
     }
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    walk(
-        &lemmata_project::tree(&project.root, &project.config.outdir),
-        &mut h,
-    );
+    walk(&project.root, entries, &mut h);
     format!("{:x}", h.finish())
 }
 
@@ -630,19 +665,38 @@ fn warm_ok(project: &Project) -> bool {
 
 /// The last build succeeded, its PDF and log are there, and no project file changed since it began.
 pub fn up_to_date(project: &Project) -> bool {
+    up_to_date_with_tree(
+        project,
+        &lemmata_project::tree(&project.root, &project.config.outdir),
+    )
+}
+
+pub fn up_to_date_with_tree(project: &Project, entries: &[lemmata_project::Entry]) -> bool {
     let stamp = project.outdir_abs().join(OK_STAMP);
     let main = project.main.to_string_lossy();
     std::fs::read_to_string(&stamp).is_ok_and(|s| s == main)
         && project.pdf_path().is_file()
         && project.log_path().is_file()
-        && !changed_since(project, &stamp)
+        && !changed_since_with_tree(project, &stamp, entries)
         && std::fs::read_to_string(project.outdir_abs().join(FILES_STAMP))
-            .is_ok_and(|s| s == files_hash(project))
+            .is_ok_and(|s| s == files_hash_with_tree(project, entries))
 }
 
 /// True when some project file was modified after the time on `stamp`, the start of the last good build
 /// (or up to `MTIME_SLACK` before it: at worst one build too many, never an edit left out).
 fn changed_since(project: &Project, stamp: &Path) -> bool {
+    changed_since_with_tree(
+        project,
+        stamp,
+        &lemmata_project::tree(&project.root, &project.config.outdir),
+    )
+}
+
+fn changed_since_with_tree(
+    project: &Project,
+    stamp: &Path,
+    entries: &[lemmata_project::Entry],
+) -> bool {
     let Ok(since) = std::fs::metadata(stamp).and_then(|m| m.modified()) else {
         return true;
     };
@@ -661,11 +715,7 @@ fn changed_since(project: &Project, stamp: &Path) -> bool {
             }
         })
     }
-    any_newer(
-        &project.root,
-        &lemmata_project::tree(&project.root, &project.config.outdir),
-        since,
-    )
+    any_newer(&project.root, entries, since)
 }
 
 /// Records a successful build, and what the bibliography tool read, so the next one can go direct without running it again.
@@ -746,6 +796,7 @@ async fn direct_build(
     let engine = project.config.engine.binary();
     let engine_path = tool(opts, engine)
         .ok_or_else(|| Error::SpawnTool(engine.into(), std::io::Error::other("not found")))?;
+    let deadline = Instant::now() + limit;
     let mut bib_checked = false;
     let mut status = Status::Failed;
     // This writes over latexmk's outputs without latexmk knowing: its record would later call a
@@ -760,9 +811,13 @@ async fn direct_build(
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         set_path(&mut cmd, opts);
-        status = run_step(cmd, limit, cancel)
-            .await?
-            .unwrap_or(Status::Failed);
+        status = run_step(
+            cmd,
+            deadline.saturating_duration_since(Instant::now()),
+            cancel,
+        )
+        .await?
+        .unwrap_or(Status::Failed);
         if status != Status::Success {
             return Ok(status);
         }
@@ -780,7 +835,14 @@ async fn direct_build(
         let mut again = rerun;
         if !bib_checked && pass < MAX_PASSES - 1 {
             bib_checked = true;
-            match run_bibliography(project, opts, limit, cancel).await? {
+            match run_bibliography(
+                project,
+                opts,
+                deadline.saturating_duration_since(Instant::now()),
+                cancel,
+            )
+            .await?
+            {
                 Bib::Stopped(s) => return Ok(s),
                 // The new .bbl only matters if it differs from the one the last pass used.
                 Bib::Ran { changed } => again |= changed,
@@ -893,12 +955,16 @@ async fn run_bibliography(
         .stderr(Stdio::null());
     set_path(&mut cmd, opts);
     // A failing bibliography run shows up in the .blg; the next pass still matters.
-    if let Some(s @ (Status::Cancelled | Status::Timeout)) = run_step(cmd, limit, cancel).await? {
+    let status = run_step(cmd, limit, cancel).await?;
+    if let Some(s @ (Status::Cancelled | Status::Timeout)) = status {
         return Ok(Bib::Stopped(s));
     }
-    let _ = std::fs::write(&stamp, &fingerprint);
+    let succeeded = matches!(status, Some(Status::Success));
+    if succeeded {
+        let _ = std::fs::write(&stamp, &fingerprint);
+    }
     Ok(Bib::Ran {
-        changed: std::fs::read(&bbl).ok() != before,
+        changed: !succeeded || std::fs::read(&bbl).ok() != before,
     })
 }
 
@@ -1080,7 +1146,7 @@ async fn stop(child: &mut tokio::process::Child) {
 }
 
 /// latexmk spawns the engine and biber as children; signal them all.
-fn kill_tree(pid: Option<u32>, force: bool) {
+pub(crate) fn kill_tree(pid: Option<u32>, force: bool) {
     let Some(pid) = pid else { return };
     #[cfg(unix)]
     {
@@ -1143,6 +1209,45 @@ mod tests {
         );
         p.trusted = true;
         assert_eq!(time_limit(&p), Duration::from_secs(60 * 60 * 24));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_timeout_covers_all_engine_passes() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let tools = d.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = tools.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let latexmk = script("latexmk", "exit 0\n");
+        script(
+            "pdflatex",
+            "sleep 0.4\nout=.lemmata/build\nfor a in \"$@\"; do case $a in -output-directory=*) out=${a#-output-directory=};; esac; done\necho 'Label(s) may have changed. Rerun to get cross-references right.' > $out/main.log\necho pdf > $out/main.pdf\n",
+        );
+        let mut p = Project::open(d.path()).unwrap();
+        p.config.timeout_secs = 1;
+        let (_cancel, rx) = oneshot::channel();
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: Some(&tools),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let started = Instant::now();
+        let out = build_with(&p, &opts, rx, true, false).await.unwrap();
+        assert_eq!(
+            out.status,
+            Status::Timeout,
+            "the whole build must stop at one second"
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     #[test]
@@ -1473,6 +1578,30 @@ mod tests {
     }
 
     #[test]
+    fn same_size_and_timestamp_content_is_still_stale() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("main.tex");
+        std::fs::write(&file, "\\documentclass{article}").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        std::fs::write(p.pdf_path(), "pdf").unwrap();
+        std::fs::write(p.log_path(), "log").unwrap();
+        mark_ok(
+            &p,
+            SystemTime::now() + MTIME_SLACK + Duration::from_millis(50),
+        );
+        let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
+        std::fs::write(&file, "\\documentclass{articlX}").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert!(!up_to_date(&p), "different bytes were accepted as current");
+    }
+
+    #[test]
     fn a_bib_saved_during_a_build_runs_bibtex_again() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
@@ -1772,6 +1901,47 @@ mod tests {
         assert_eq!(tail_of("abcdef", 3), "def");
         assert_eq!(tail_of("aéé", 3), "é");
         assert_eq!(tail_of("ab", 10), "ab");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_bibliography_run_is_not_cached() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        std::fs::write(out_file(&p, "bcf"), "<bcf/>").unwrap();
+        std::fs::write(out_file(&p, "bbl"), "old").unwrap();
+        let tools = d.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let biber = tools.join("biber");
+        std::fs::write(&biber, "#!/bin/sh\necho x >> calls\nexit 1\n").unwrap();
+        std::fs::set_permissions(&biber, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let opts = BuildOptions {
+            latexmk: &tools,
+            bin_dir: Some(&tools),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let (_keep, mut rx) = oneshot::channel();
+        for _ in 0..2 {
+            let _ = run_bibliography(&p, &opts, Duration::from_secs(1), &mut rx)
+                .await
+                .unwrap();
+        }
+        assert!(
+            !out_file(&p, "lemmata-bib").exists(),
+            "failure was stamped as success"
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
     }
 
     /// latexmk exits 1 without ever writing a log: the build must say why.

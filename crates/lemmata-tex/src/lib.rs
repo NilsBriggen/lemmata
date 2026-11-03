@@ -7,5 +7,7 @@ mod format;
 pub mod os;
 pub mod tectonic;
 
-pub use build::{BuildOptions, Outcome, Status, build, build_with, clean, up_to_date};
+pub use build::{
+    BuildOptions, Outcome, Status, build, build_with, clean, up_to_date, up_to_date_with_tree,
+};
 pub use detect::{Detection, Distribution, detect};

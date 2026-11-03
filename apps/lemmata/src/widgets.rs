@@ -943,6 +943,25 @@ pub fn text_area(
     out
 }
 
+#[derive(Default)]
+struct ModalFocus(Vec<(u8, egui::Id)>);
+
+impl egui::Plugin for ModalFocus {
+    fn debug_name(&self) -> &'static str {
+        "restore modal focus"
+    }
+
+    fn output_hook(&mut self, ctx: &egui::Context, _output: &mut egui::FullOutput) {
+        for (delay, id) in std::mem::take(&mut self.0) {
+            if delay == 0 {
+                ctx.memory_mut(|m| m.request_focus(id));
+            } else {
+                self.0.push((delay - 1, id));
+            }
+        }
+    }
+}
+
 /// What a modal reports back each frame.
 pub struct ModalResponse {
     /// Esc, the × button or a click on the backdrop.
@@ -989,7 +1008,24 @@ pub fn modal_placed<R>(
     footer: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> ModalResponse {
     let screen = ctx.content_rect();
-    let mut closed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let any_popup_open = egui::Popup::is_any_open(ctx);
+    let entered_id = egui::Id::unique(("modal-entered", title));
+    let restore_id = egui::Id::unique(("modal-restore", title));
+    let entered = ctx.data_mut(|d| d.get_temp::<bool>(entered_id).unwrap_or(false));
+    let previous_focus = if entered {
+        ctx.data_mut(|d| {
+            d.get_temp::<Option<egui::Id>>(restore_id)
+                .unwrap_or_default()
+        })
+    } else {
+        let focused = ctx.memory(|m| m.focused());
+        ctx.data_mut(|d| {
+            d.insert_temp(entered_id, true);
+            d.insert_temp(restore_id, focused);
+        });
+        focused
+    };
+    let mut closed = false;
     // The backdrop: rgba(12, 17, 22, .42) over everything, swallowing clicks.
     let backdrop = egui::Area::new(egui::Id::unique(("modal-backdrop", title)))
         .order(egui::Order::Foreground)
@@ -1001,7 +1037,8 @@ pub fn modal_placed<R>(
             r
         });
     let width = width.min(screen.width() - 48.0);
-    let panel = egui::Area::new(egui::Id::unique(("modal", title)))
+    let area = egui::Area::new(egui::Id::unique(("modal", title)))
+        .kind(egui::UiKind::Modal)
         .order(egui::Order::Foreground)
         .pivot(if top {
             egui::Align2::CENTER_TOP
@@ -1012,104 +1049,105 @@ pub fn modal_placed<R>(
             egui::pos2(screen.center().x, screen.top() + screen.height() * 0.11)
         } else {
             screen.center()
-        })
-        .show(ctx, |ui| {
-            ui.set_width(width);
-            egui::Frame::new()
-                .fill(p.surface)
-                .stroke(Stroke::new(1.0, p.border))
-                .corner_radius(12)
-                .shadow(p.shadow_lg)
-                .show(ui, |ui| {
-                    // Inside the 1 px border; the header, body and footer frames add their own padding.
-                    ui.set_width(width - 2.0);
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin {
-                            left: 20,
-                            right: 20,
-                            top: 18,
-                            bottom: 4,
-                        })
-                        .show(ui, |ui| {
-                            ui.horizontal_top(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.set_width(ui.available_width() - 26.0 - 12.0);
-                                    ui.label(
-                                        egui::RichText::new(title)
-                                            .font(FontId::new(16.0, theme::font::sans_600()))
-                                            .color(p.ink),
-                                    );
-                                    if let Some(sub) = subtitle {
-                                        ui.add_space(3.0);
-                                        paragraph(
-                                            ui,
-                                            sub,
-                                            FontId::proportional(13.0),
-                                            p.muted,
-                                            1.45,
-                                            ui.available_width(),
-                                        );
-                                    }
-                                });
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Min),
-                                    |ui| {
-                                        if Button::icon(icons::X, "Close")
-                                            .size(Size::Sm)
-                                            .show_icon(ui, p)
-                                            .clicked()
-                                        {
-                                            closed = true;
-                                        }
-                                    },
+        });
+    let layer = area.layer();
+    ctx.memory_mut(|m| m.set_modal_layer(layer));
+    let panel = area.show(ctx, |ui| {
+        ui.set_width(width);
+        egui::Frame::new()
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0, p.border))
+            .corner_radius(12)
+            .shadow(p.shadow_lg)
+            .show(ui, |ui| {
+                // Inside the 1 px border; the header, body and footer frames add their own padding.
+                ui.set_width(width - 2.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 20,
+                        right: 20,
+                        top: 18,
+                        bottom: 4,
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            ui.vertical(|ui| {
+                                ui.set_width(ui.available_width() - 26.0 - 12.0);
+                                ui.label(
+                                    egui::RichText::new(title)
+                                        .font(FontId::new(16.0, theme::font::sans_600()))
+                                        .color(p.ink),
                                 );
+                                if let Some(sub) = subtitle {
+                                    ui.add_space(3.0);
+                                    paragraph(
+                                        ui,
+                                        sub,
+                                        FontId::proportional(13.0),
+                                        p.muted,
+                                        1.45,
+                                        ui.available_width(),
+                                    );
+                                }
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                let close = Button::icon(icons::X, "Close")
+                                    .size(Size::Sm)
+                                    .show_icon(ui, p);
+                                if !entered {
+                                    close.request_focus();
+                                }
+                                if close.clicked() {
+                                    closed = true;
+                                }
                             });
                         });
-                    let inner = egui::Frame::new()
-                        .inner_margin(egui::Margin {
-                            left: 20,
-                            right: 20,
-                            top: 12,
-                            bottom: 18,
+                    });
+                let inner = egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 20,
+                        right: 20,
+                        top: 12,
+                        bottom: 18,
+                    })
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 14.0;
+                        body(ui)
+                    })
+                    .inner;
+                if let Some(footer) = footer {
+                    let r = egui::Frame::new()
+                        .fill(p.surface_2)
+                        // Inside the panel's 12 px corners.
+                        .corner_radius(CornerRadius {
+                            nw: 0,
+                            ne: 0,
+                            sw: 11,
+                            se: 11,
                         })
+                        .inner_margin(egui::Margin::symmetric(20, 12))
                         .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.y = 14.0;
-                            body(ui)
-                        })
-                        .inner;
-                    if let Some(footer) = footer {
-                        let r = egui::Frame::new()
-                            .fill(p.surface_2)
-                            // Inside the panel's 12 px corners.
-                            .corner_radius(CornerRadius {
-                                nw: 0,
-                                ne: 0,
-                                sw: 11,
-                                se: 11,
-                            })
-                            .inner_margin(egui::Margin::symmetric(20, 12))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.spacing_mut().item_spacing.x = 8.0;
-                                        footer(ui);
-                                    },
-                                );
-                            });
-                        let top = r.response.rect.top();
-                        ui.painter().hline(
-                            r.response.rect.x_range(),
-                            top,
-                            Stroke::new(1.0, p.border),
-                        );
-                    }
-                    inner
-                })
-                .inner
-        });
+                            ui.set_width(ui.available_width());
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    footer(ui);
+                                },
+                            );
+                        });
+                    let top = r.response.rect.top();
+                    ui.painter()
+                        .hline(r.response.rect.x_range(), top, Stroke::new(1.0, p.border));
+                }
+                inner
+            })
+            .inner
+    });
+    panel
+        .response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Dialog, true, title));
     if backdrop.inner.clicked()
         && !panel
             .response
@@ -1117,6 +1155,19 @@ pub fn modal_placed<R>(
             .contains(backdrop.inner.interact_pointer_pos().unwrap_or_default())
     {
         closed = true;
+    }
+    if ctx.memory(|m| m.top_modal_layer() == Some(layer))
+        && !any_popup_open
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
+        closed = true;
+    }
+    if closed {
+        ctx.data_mut(|d| d.insert_temp(entered_id, false));
+        if let Some(id) = previous_focus {
+            ctx.add_plugin(ModalFocus::default());
+            ctx.with_plugin(|plugin: &mut ModalFocus| plugin.0.push((1, id)));
+        }
     }
     ModalResponse { closed }
 }
@@ -1542,6 +1593,94 @@ mod tests {
         for split in harness.get_all_by_label("Split") {
             assert_eq!(split.accesskit_node().toggled(), Some(Toggled::True));
         }
+    }
+
+    #[test]
+    fn modal_has_dialog_semantics_and_restores_focus() {
+        let p = theme::LIGHT;
+        let mut open = false;
+        let mut initially_focused = false;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([640.0, 480.0])
+            .with_context_setup(move |ctx| {
+                theme::install_fonts(ctx);
+                theme::apply(ctx, &p);
+            })
+            .build_ui(move |ui| {
+                let background = Button::new("Background").show(ui, &p);
+                if !initially_focused {
+                    background.request_focus();
+                    initially_focused = true;
+                }
+                if background.clicked() {
+                    open = true;
+                }
+                if open {
+                    let response = modal(
+                        ui.ctx(),
+                        &p,
+                        "Example dialog",
+                        400.0,
+                        |ui| {
+                            Button::new("Inside").show(ui, &p);
+                        },
+                        None,
+                    );
+                    if response.closed {
+                        open = false;
+                    }
+                }
+            });
+        let expected_focus = h.ctx.memory(|m| m.focused());
+        h.get_by_label("Background").click();
+        h.run();
+        h.get_by_role_and_label(egui::Role::Dialog, "Example dialog");
+        for _ in 0..8 {
+            h.key_press(egui::Key::Tab);
+            h.run();
+            assert!(
+                !h.get_by_label("Background").is_focused(),
+                "Tab escaped into the background"
+            );
+        }
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.run();
+        assert_eq!(h.ctx.memory(|m| m.focused()), expected_focus);
+    }
+
+    #[test]
+    fn escape_closes_only_the_top_modal() {
+        let p = theme::LIGHT;
+        let depth = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1));
+        let shown = depth.clone();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([640.0, 480.0])
+            .with_context_setup(move |ctx| {
+                theme::install_fonts(ctx);
+                theme::apply(ctx, &p);
+            })
+            .build_ui(move |ui| {
+                for (level, title) in [(1, "Outer"), (2, "Inner")] {
+                    if shown.load(std::sync::atomic::Ordering::Relaxed) < level {
+                        continue;
+                    }
+                    let response = modal(ui.ctx(), &p, title, 400.0, |_| {}, None);
+                    if response.closed {
+                        shown.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            });
+        h.run();
+        depth.store(2, std::sync::atomic::Ordering::Relaxed);
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert_eq!(depth.load(std::sync::atomic::Ordering::Relaxed), 1);
+        h.get_by_role_and_label(egui::Role::Dialog, "Outer");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert_eq!(depth.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
     #[test]

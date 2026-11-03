@@ -107,13 +107,31 @@ struct Open {
 
 /// Every `\label{…}` in the project's .tex files.
 pub fn labels(project: &Project) -> Vec<Label> {
+    labels_with(
+        project,
+        &tree(&project.root, &project.config.outdir),
+        &std::collections::HashMap::new(),
+    )
+}
+
+pub(crate) fn labels_with(
+    project: &Project,
+    entries: &[Entry],
+    sources: &std::collections::HashMap<PathBuf, String>,
+) -> Vec<Label> {
     let mut files = Vec::new();
-    tex_files(&tree(&project.root, &project.config.outdir), &mut files);
+    tex_files(entries, &mut files);
     let mut out: Vec<Label> = Vec::new();
     for file in files {
-        let Ok(text) = fs::read_to_string(project.root.join(&file)) else {
-            continue;
-        };
+        let text = sources
+            .get(Path::new(&file))
+            .map(std::borrow::Cow::Borrowed)
+            .or_else(|| {
+                fs::read_to_string(project.root.join(&file))
+                    .ok()
+                    .map(std::borrow::Cow::Owned)
+            });
+        let Some(text) = text else { continue };
         // Comments removed, newlines kept, so offsets map to the original lines.
         let lines: Vec<&str> = text.lines().map(strip_comment).collect();
         let code = lines.join("\n");

@@ -46,13 +46,13 @@ impl Workspace {
         if self.spell_asked.as_ref() != Some(&(lang.clone(), words.clone())) {
             self.spell_asked = Some((lang.clone(), words.clone()));
             let l = lang.clone();
-            backend.spawn(move |shell| {
+            self.spawn(backend, move |shell| {
                 let r = shell.spell_set_language(l.clone(), words);
                 Msg::SpellLoaded((l != "off").then_some(l), r)
             });
             // A language whose dictionary isn't here yet is offered, once a session.
             if lang != "off" && self.dictionaries_offered.insert(lang.clone()) {
-                backend.spawn(move |shell| match shell.spell_available() {
+                self.spawn(backend, move |shell| match shell.spell_available() {
                     Ok(list) => match list.into_iter().find(|d| d.code == lang && !d.installed) {
                         Some(d) => Msg::Dictionary(d),
                         None => Msg::Done(Ok(())),
@@ -83,7 +83,7 @@ impl Workspace {
             let text = self.grammar_queue.remove(0);
             self.grammar_out += 1;
             let t = target.clone();
-            backend.spawn_async(move |shell| async move {
+            self.spawn_async(backend, move |shell| async move {
                 let r = shell
                     .grammar_check(t.0.clone(), t.1.clone(), text.clone())
                     .await;

@@ -107,6 +107,7 @@ impl Timer {
 
 pub struct Presentation {
     engine: Engine,
+    doc: u64,
     sizes: Vec<Vec2>,
     error: Option<String>,
     /// 1-based, as shown.
@@ -127,14 +128,14 @@ fn scale_key(scale: f32) -> u32 {
     (scale * 16.0).round().max(1.0) as u32
 }
 
-const DOC: u64 = 1;
-
 impl Presentation {
     pub fn new(ctx: &egui::Context, bytes: Arc<Vec<u8>>, start: usize) -> Self {
         let engine = Engine::new(ctx.clone());
-        engine.send(Job::Load { doc: DOC, bytes });
+        let doc = engine.next_doc();
+        engine.send(Job::Load { doc, bytes });
         Presentation {
             engine,
+            doc,
             sizes: Vec::new(),
             error: None,
             page: start.max(1),
@@ -218,7 +219,7 @@ impl Presentation {
         let key = (page, scale_key(scale));
         if !self.tex.contains_key(&key) && self.asked.insert(key) {
             self.engine.send(Job::Render {
-                doc: DOC,
+                doc: self.doc,
                 page,
                 scale: key.1 as f32 / 16.0,
                 dark: false,

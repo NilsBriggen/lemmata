@@ -53,6 +53,8 @@ pub struct Git {
     pub new_branch: Option<String>,
     /// Files with changes git hasn't committed, for the tree and the toolbar's count.
     pub status: Vec<(String, String)>,
+    pub status_pending: bool,
+    pub status_dirty: bool,
 }
 
 impl Workspace {
@@ -538,14 +540,23 @@ impl Workspace {
 
     /// The tree's markers and the toolbar's count, a moment after files change.
     pub fn refresh_git_status(&mut self, backend: &Backend) {
+        if self.git.status_pending {
+            self.git.status_dirty = true;
+            return;
+        }
+        self.git.status_pending = true;
         Self::job(
             backend,
             |shell| shell.git_status().unwrap_or_default(),
-            |ws, _, list| {
+            |ws, b, list| {
+                ws.git.status_pending = false;
                 ws.git.status = list
                     .into_iter()
                     .map(|f| (f.path, f.status.to_string()))
-                    .collect()
+                    .collect();
+                if std::mem::take(&mut ws.git.status_dirty) {
+                    ws.refresh_git_status(b);
+                }
             },
         );
         if self.panel == Some(Panel::Git) && self.git.busy.is_none() {
@@ -595,23 +606,23 @@ impl Workspace {
         if self.git.busy.is_some() {
             return;
         }
-        self.git.busy = Some(label);
         self.git.error = None;
         self.git.info = None;
-        // Unsaved edits are saved first, so git sees them.
-        self.save_all_quietly(backend, settings);
-        Self::job_async(backend, f, move |ws, b, r| {
-            ws.git.busy = None;
-            match r {
-                Ok(Some(out)) => ws.git.info = Some(out),
-                Ok(None) => {}
-                Err(e) => ws.git.error = Some(e),
-            }
-            if changed {
-                ws.after_git_change(b);
-            }
-            ws.load_git(b);
-            ws.refresh_git_status(b);
+        self.git.busy = Some(label);
+        self.after_saving(backend, settings, move |_, b| {
+            Self::job_async(b, f, move |ws, b, r| {
+                ws.git.busy = None;
+                match r {
+                    Ok(Some(out)) => ws.git.info = Some(out),
+                    Ok(None) => {}
+                    Err(e) => ws.git.error = Some(e),
+                }
+                if changed {
+                    ws.after_git_change(b);
+                }
+                ws.load_git(b);
+                ws.refresh_git_status(b);
+            });
         });
     }
 

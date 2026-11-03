@@ -170,6 +170,8 @@ fn safe_config_text(text: &str) -> String {
     out
 }
 
+type RepoSettings = (Vec<String>, String);
+
 pub fn working_status(root: &Path) -> Vec<FileStatus> {
     // Checked without spawning git, since this runs after every save.
     if !in_repository(root) {
@@ -178,8 +180,41 @@ pub fn working_status(root: &Path) -> Vec<FileStatus> {
     let Some(git) = find_git() else {
         return Vec::new();
     };
-    let Some(guard) = lemmata_env::git_guard(&git, root) else {
-        return Vec::new();
+    static SETTINGS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, RepoSettings>>,
+    > = std::sync::OnceLock::new();
+    let cache = SETTINGS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let cached = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(root)
+        .cloned();
+    let (guard, prefix) = match cached {
+        Some(settings) => settings,
+        None => {
+            let Some(guard) = lemmata_env::git_guard(&git, root) else {
+                return Vec::new();
+            };
+            let run = |args: &[&str]| {
+                let mut c = Command::new(&git);
+                c.arg("-C")
+                    .arg(root)
+                    .env("GIT_OPTIONAL_LOCKS", "0")
+                    .args(&guard)
+                    .args(args);
+                no_window(&mut c);
+                c.output().ok().filter(|o| o.status.success())
+            };
+            let Some(prefix) = run(&["rev-parse", "--show-prefix"]) else {
+                return Vec::new();
+            };
+            let prefix = String::from_utf8_lossy(&prefix.stdout).trim().to_string();
+            cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(root.to_path_buf(), (guard.clone(), prefix.clone()));
+            (guard, prefix)
+        }
     };
     let run = |args: &[&str]| {
         let mut c = Command::new(&git);
@@ -191,10 +226,6 @@ pub fn working_status(root: &Path) -> Vec<FileStatus> {
         no_window(&mut c);
         c.output().ok().filter(|o| o.status.success())
     };
-    let Some(prefix) = run(&["rev-parse", "--show-prefix"]) else {
-        return Vec::new();
-    };
-    let prefix = String::from_utf8_lossy(&prefix.stdout).trim().to_string();
     let Some(out) = run(&[
         "status",
         "--porcelain=v1",
@@ -458,7 +489,10 @@ impl History {
     /// current state is snapshotted first, so this can be undone.
     pub fn restore_all(&self, id: &str) -> Result<usize> {
         self.snapshot("Before restoring the project")?;
-        let wanted = self.paths(&["ls-tree", "-r", "-z", "--name-only", id, "--", "."])?;
+        let wanted: std::collections::HashSet<String> = self
+            .paths(&["ls-tree", "-r", "-z", "--name-only", id, "--", "."])?
+            .into_iter()
+            .collect();
         let current = self.paths(&["ls-files", "-z", "--", "."])?;
         let mut changed = 0;
         for path in &wanted {
@@ -468,7 +502,7 @@ impl History {
                 changed += 1;
             }
         }
-        for path in current.iter().filter(|p| !wanted.contains(p)) {
+        for path in current.iter().filter(|p| !wanted.contains(p.as_str())) {
             self.write_back(id, path)?;
             changed += 1;
         }

@@ -211,7 +211,12 @@ pub fn create_from_template(
     if !source.join(META).is_file() {
         return Err(format!("There is no template called {id}."));
     }
-    let target = fresh_target(parent, name)?;
+    let source = lemmata_project::canonical(&source).map_err(|e| e.to_string())?;
+    let parent = lemmata_project::canonical(parent).map_err(|e| e.to_string())?;
+    let target = fresh_target(&parent, name)?;
+    if target.starts_with(&source) {
+        return Err("The new project must not be inside its template.".into());
+    }
     copy_dir(&source, &target).map_err(|e| format!("Could not create the project: {e}"))?;
     let _ = fs::remove_file(target.join(META));
     if !id.starts_with(USER_PREFIX) {
@@ -394,40 +399,78 @@ pub fn inspect_zip(zip_path: &Path) -> Result<ZipInfo, String> {
 pub fn import_zip(zip_path: &Path, parent: &Path, name: &str) -> Result<Vec<PathBuf>, String> {
     let info = inspect_zip(zip_path)?;
     let mut archive = open_zip(zip_path)?;
+    let mut budget = Budget::default();
     if !info.bulk {
         let target = fresh_target(parent, name)?;
-        extract_project(&mut archive, &target)?;
+        extract_project(&mut archive, &target, &mut budget)?;
         return Ok(vec![target]);
     }
     let mut out = Vec::new();
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
-        let entry_name = entry.name().map(|n| n.to_string()).unwrap_or_default();
-        if entry.is_dir()
-            || entry_name.starts_with("__MACOSX/")
-            || !entry_name.to_lowercase().ends_with(".zip")
-        {
-            continue;
+    let result: Result<(), String> = (|| {
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+            let entry_name = entry.name().map(|n| n.to_string()).unwrap_or_default();
+            if entry.is_dir()
+                || entry_name.starts_with("__MACOSX/")
+                || !entry_name.to_lowercase().ends_with(".zip")
+            {
+                continue;
+            }
+            let spool = parent.join(format!(".lemmata-import-{}-{i}.zip", std::process::id()));
+            let copied = (|| {
+                let mut file = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&spool)
+                    .map_err(|e| e.to_string())?;
+                let n = io::copy(
+                    &mut (&mut entry).take(budget.bytes.saturating_add(1)),
+                    &mut file,
+                )
+                .map_err(|e| e.to_string())?;
+                if n > budget.bytes {
+                    return Err(too_big());
+                }
+                let mut inner = zip::ZipArchive::new(file)
+                    .map_err(|e| format!("{entry_name} isn't a valid zip file: {e}"))?;
+                let target = available_target(parent, &stem(&entry_name))?;
+                extract_project(&mut inner, &target, &mut budget)
+                    .map_err(|e| format!("{}: {e}", stem(&entry_name)))?;
+                out.push(target);
+                Ok(())
+            })();
+            let _ = fs::remove_file(&spool);
+            copied?;
         }
-        let mut bytes = Vec::new();
-        (&mut entry)
-            .take(MAX_UNPACKED + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MAX_UNPACKED {
-            return Err(too_big());
+        Ok(())
+    })();
+    if result.is_err() {
+        for path in &out {
+            let _ = fs::remove_dir_all(path);
         }
-        let mut inner = zip::ZipArchive::new(io::Cursor::new(bytes))
-            .map_err(|e| format!("{entry_name} isn't a valid zip file: {e}"))?;
-        let target = available_target(parent, &stem(&entry_name))?;
-        extract_project(&mut inner, &target).map_err(|e| format!("{}: {e}", stem(&entry_name)))?;
-        out.push(target);
     }
+    result?;
     Ok(out)
 }
 
 /// What one project may unpack to: a zip that claims more is broken or a zip bomb.
 const MAX_UNPACKED: u64 = 4 << 30;
+const MAX_FILES: usize = 100_000;
+
+struct Budget {
+    bytes: u64,
+    files: usize,
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self {
+            bytes: MAX_UNPACKED,
+            files: MAX_FILES,
+        }
+    }
+}
 
 fn too_big() -> String {
     "This zip unpacks to more than 4 GB, so it wasn't imported.".into()
@@ -456,6 +499,7 @@ fn available_target(parent: &Path, name: &str) -> Result<PathBuf, String> {
 fn extract_project<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     target: &Path,
+    budget: &mut Budget,
 ) -> Result<(), String> {
     // Entry paths are validated by enclosed_name, which rejects absolute
     // paths and `..` so nothing is written outside the target folder.
@@ -468,6 +512,10 @@ fn extract_project<R: Read + Seek>(
         })?;
         paths.push(path);
     }
+    if paths.len() > budget.files {
+        return Err("This zip has too many files, so it wasn't imported.".into());
+    }
+    budget.files -= paths.len();
     if !paths
         .iter()
         .any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("tex")))
@@ -476,7 +524,6 @@ fn extract_project<R: Read + Seek>(
     }
     let strip = common_top_folder(&paths);
 
-    let mut written = 0;
     let result = (|| {
         for (i, path) in paths.iter().enumerate() {
             let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
@@ -506,11 +553,15 @@ fn extract_project<R: Read + Seek>(
                     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 }
                 let mut out = fs::File::create(&dest).map_err(|e| e.to_string())?;
-                written += io::copy(&mut (&mut entry).take(MAX_UNPACKED + 1 - written), &mut out)
-                    .map_err(|e| e.to_string())?;
-                if written > MAX_UNPACKED {
+                let n = io::copy(
+                    &mut (&mut entry).take(budget.bytes.saturating_add(1)),
+                    &mut out,
+                )
+                .map_err(|e| e.to_string())?;
+                if n > budget.bytes {
                     return Err(too_big());
                 }
+                budget.bytes -= n;
             }
         }
         fs::create_dir_all(target).map_err(|e| e.to_string())
@@ -675,6 +726,21 @@ mod tests {
     }
 
     #[test]
+    fn template_destination_cannot_be_inside_its_source() {
+        let d = tempfile::tempdir().unwrap();
+        let templates = d.path().join("templates");
+        let source = templates.join("article");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join(META), "name = \"Article\"\n").unwrap();
+        let none = d.path().join("none");
+        let user = d.path().join("user");
+        assert!(
+            create_from_template(&templates, &none, &user, "article", &source, "copy").is_err()
+        );
+        assert!(!source.join("copy").exists());
+    }
+
+    #[test]
     fn tectonic_replaces_only_the_engine() {
         let d = tempfile::tempdir().unwrap();
         fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
@@ -797,6 +863,27 @@ mod tests {
         );
         assert!(out[1].join("images/plot.png").is_file());
         assert!(lemmata_project::Project::open(&out[0]).is_ok());
+    }
+
+    #[test]
+    fn a_failed_bulk_import_rolls_back_earlier_projects() {
+        let d = tempfile::tempdir().unwrap();
+        let good = zip_bytes(&[("main.tex", "\\documentclass{article}")]);
+        let bad = zip_bytes(&[("main.txt", "not a TeX file")]);
+        let z = d.path().join("bulk.zip");
+        let mut w = zip::ZipWriter::new(fs::File::create(&z).unwrap());
+        for (name, bytes) in [("good.zip", &good), ("bad.zip", &bad)] {
+            w.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            w.write_all(bytes).unwrap();
+        }
+        w.finish().unwrap();
+        assert!(import_zip(&z, d.path(), "ignored").is_err());
+        assert!(
+            !d.path().join("good").exists(),
+            "the first project was left behind"
+        );
+        assert!(!d.path().join("bad").exists());
     }
 
     #[test]

@@ -106,8 +106,7 @@ impl Workspace {
 
     /// Recompile: everything saved, then built even if nothing changed.
     pub fn recompile(&mut self, backend: &Backend, settings: &Settings) {
-        self.save_all_quietly(backend, settings);
-        self.build_soon(false, true);
+        self.after_saving(backend, settings, |ws, _| ws.build_soon(false, true));
     }
 
     /// Saves without the build a save would start.
@@ -116,6 +115,38 @@ impl Workspace {
             self.no_build.insert(p.clone());
             self.write(backend, &p, settings);
         }
+    }
+
+    /// Runs `then` only when every edit is safely on disk.
+    pub fn after_saving(
+        &mut self,
+        backend: &Backend,
+        settings: &Settings,
+        then: impl FnOnce(&mut Workspace, &Backend) + 'static,
+    ) {
+        self.save_all_quietly(backend, settings);
+        self.after_writes.push(Box::new(move |ws, b| {
+            let left = ws.buffers.unsaved();
+            if left.is_empty() {
+                then(ws, b);
+                return;
+            }
+            ws.history.busy = None;
+            ws.git.busy = None;
+            if let Some(d) = &mut ws.project_settings {
+                d.busy = false;
+            }
+            if let Some(d) = &mut ws.rename {
+                d.busy = false;
+            }
+            ws.notice(
+                format!(
+                    "{} could not be saved, so nothing else was changed.",
+                    left.join(", ")
+                ),
+                Tone::Error,
+            );
+        }));
     }
 
     pub fn run_build(&mut self, backend: &Backend, settings: &Settings, force: bool) {
@@ -136,7 +167,7 @@ impl Workspace {
         let seq = self.build.seq;
         // A downloaded project's lemmata.toml can't run programs on its own: the user must allow it.
         let escape = settings.shell_escape_projects.contains(&self.root);
-        backend.spawn_async(move |shell| async move {
+        self.spawn_async(backend, move |shell| async move {
             Msg::Built(seq, shell.build(escape, force).await)
         });
     }
@@ -145,14 +176,14 @@ impl Workspace {
         self.build.seq += 1;
         self.build.building = false;
         self.build.deadline = None;
-        backend.spawn(|shell| {
+        self.spawn(backend, |shell| {
             shell.stop_build();
             Msg::Done(Ok(()))
         });
     }
 
     pub fn clean(&mut self, backend: &Backend) {
-        backend.spawn(|shell| Msg::Cleaned(shell.clean_build()));
+        self.spawn(backend, |shell| Msg::Cleaned(shell.clean_build()));
     }
 
     /// Builds that were waiting for their time, and the thumbnail when it's drawn.
@@ -175,7 +206,9 @@ impl Workspace {
         }
         if let Some(png) = self.pane.view.png.take() {
             let root = self.root.clone();
-            backend.spawn(move |shell| Msg::Done(shell.save_thumbnail(&root, &png)));
+            self.spawn(backend, move |shell| {
+                Msg::Done(shell.save_thumbnail(&root, &png))
+            });
         }
     }
 
@@ -187,7 +220,9 @@ impl Workspace {
         let Some(line) = self.editors.get(&path).map(|e| e.cursor_line()) else {
             return;
         };
-        backend.spawn(move |shell| Msg::Synced(shell.synctex_forward(path, line as u32, 0)));
+        self.spawn(backend, move |shell| {
+            Msg::Synced(shell.synctex_forward(path, line as u32, 0))
+        });
     }
 
     pub fn export(&mut self, backend: &Backend, settings: &Settings, what: Save) {
@@ -195,14 +230,16 @@ impl Workspace {
         match what {
             Save::Pdf => backend.save(what, format!("{name}.pdf")),
             Save::Zip => {
-                self.save_all_quietly(backend, settings);
-                backend.save(what, format!("{name}.zip"));
+                self.after_saving(backend, settings, move |_, b| {
+                    b.save(what, format!("{name}.zip"));
+                });
             }
             Save::Arxiv { flatten } => {
                 // arXiv compiles the upload itself; a document that fails here fails there too.
-                self.save_all_quietly(backend, settings);
-                self.build_soon(false, false);
-                self.build.arxiv = Some((self.build.seq + 1, flatten));
+                self.after_saving(backend, settings, move |ws, _| {
+                    ws.build_soon(false, false);
+                    ws.build.arxiv = Some((ws.build.seq + 1, flatten));
+                });
             }
         }
     }
@@ -257,19 +294,22 @@ impl Workspace {
                 PaneAction::Logs(open) => {
                     self.build.logs_open = open;
                     if !open && !self.pane.has_pdf() {
-                        backend.spawn(|shell| Msg::Pdf(shell.read_pdf()));
+                        self.spawn(backend, |shell| Msg::Pdf(shell.read_pdf()));
                     }
                 }
                 PaneAction::SourceClick(page, x, y) => {
-                    backend.spawn(move |shell| {
+                    self.spawn(backend, move |shell| {
                         Msg::SourceHit(shell.synctex_backward(page as u32, x as f64, y as f64))
                     });
+                }
+                PaneAction::OpenUrl(url) => {
+                    self.spawn(backend, move |shell| Msg::Done(shell.open_url(url)));
                 }
                 PaneAction::Goto(file, line) => self.goto(backend, &file, line),
                 PaneAction::AddPackage(pkg) => self.add_package(backend, settings, pkg),
                 PaneAction::Export => self.export(backend, settings, Save::Pdf),
                 PaneAction::OpenExternally => {
-                    backend.spawn(|shell| Msg::Done(shell.open_pdf_externally()));
+                    self.spawn(backend, |shell| Msg::Done(shell.open_pdf_externally()));
                 }
                 PaneAction::Present => self.present(ui.ctx()),
                 PaneAction::Layout(l) => {
@@ -278,10 +318,10 @@ impl Workspace {
                 }
                 PaneAction::ReadLog => {
                     let id = self.build.seq;
-                    backend.spawn(move |shell| Msg::Log(id, shell.read_log()));
+                    self.spawn(backend, move |shell| Msg::Log(id, shell.read_log()));
                 }
                 PaneAction::OpenTerminal(file) => {
-                    backend.spawn(move |shell| {
+                    self.spawn(backend, move |shell| {
                         Msg::Done(
                             shell.open_install_terminal(lemmata_shell::InstallRequest::Package {
                                 file,
@@ -302,7 +342,9 @@ impl Workspace {
             self.write(backend, &main, settings);
             self.adding_package = Some(pkg);
         } else {
-            backend.spawn(move |shell| Msg::PackageAdded(shell.add_package(pkg)));
+            self.spawn(backend, move |shell| {
+                Msg::PackageAdded(shell.add_package(pkg))
+            });
         }
     }
 
@@ -316,7 +358,9 @@ impl Workspace {
         if *path == self.info.main
             && let Some(pkg) = self.adding_package.take()
         {
-            backend.spawn(move |shell| Msg::PackageAdded(shell.add_package(pkg)));
+            self.spawn(backend, move |shell| {
+                Msg::PackageAdded(shell.add_package(pkg))
+            });
         }
     }
 
@@ -353,7 +397,7 @@ impl Workspace {
                         let ok = o.status == Status::Success;
                         self.build.outcome = Some(o);
                         if wrote {
-                            backend.spawn(|shell| Msg::Pdf(shell.read_pdf()));
+                            self.spawn(backend, |shell| Msg::Pdf(shell.read_pdf()));
                             // The library thumbnail, at most every two minutes.
                             if self.build.last_thumbnail.is_none_or(|t| t.elapsed() >= Duration::from_secs(120)) {
                                 self.build.last_thumbnail = Some(Instant::now());
@@ -361,7 +405,7 @@ impl Workspace {
                             }
                         } else if !self.pane.has_pdf() {
                             // No new PDF (up to date, or it failed), but an older one may exist.
-                            backend.spawn(|shell| Msg::Pdf(shell.read_pdf()));
+                            self.spawn(backend, |shell| Msg::Pdf(shell.read_pdf()));
                         }
                         if let Some((_, flatten)) = arxiv {
                             if ok {
@@ -393,11 +437,6 @@ impl Workspace {
             Msg::Pdf(Ok(bytes)) => self.pane.view.load(bytes),
             // No PDF has been built yet: the pane explains that.
             Msg::Pdf(Err(_)) => {}
-            Msg::PdfCurrent(current) => {
-                if !current {
-                    self.run_build(backend, settings, false);
-                }
-            }
             Msg::Synced(Ok(boxes)) => {
                 if let Some(b) = boxes.first() {
                     self.build.logs_open = false;
@@ -416,15 +455,14 @@ impl Workspace {
             Msg::Log(id, log) => self.pane.problems.set_log(id, log),
             Msg::Cleaned(Ok(n)) => {
                 self.notice(if n > 0 { "Cleared the cached files." } else { "Nothing to clear." }, Tone::Ok);
-                self.save_all_quietly(backend, settings);
-                self.build_soon(false, false);
+                self.after_saving(backend, settings, |ws, _| ws.build_soon(false, false));
             }
             Msg::Cleaned(Err(e)) => self.notice(e, Tone::Info),
             Msg::SaveTo(_, None) => {}
             Msg::SaveTo(what, Some(dest)) => {
                 let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let dest = dest.to_string_lossy().into_owned();
-                backend.spawn(move |shell| {
+                self.spawn(backend, move |shell| {
                     let r = match what {
                         Save::Pdf => shell.export_pdf(dest).map(|_| 1),
                         Save::Zip => shell.export_zip(dest, true),
@@ -488,7 +526,7 @@ impl Workspace {
                     ),
                     Tone::Info,
                 );
-                backend.spawn_async(move |shell| async move {
+                self.spawn_async(backend, move |shell| async move {
                     let r = shell.spell_download(code.clone()).await;
                     Msg::SpellDownloaded(code, r)
                 });
@@ -506,7 +544,7 @@ impl Workspace {
         change(&mut next);
         if next != self.info.config {
             self.info.config = next.clone();
-            backend.spawn(move |shell| Msg::Info(shell.set_config(next)));
+            self.spawn(backend, move |shell| Msg::Info(shell.set_config(next)));
         }
     }
 
@@ -523,8 +561,9 @@ impl Workspace {
             return;
         }
         self.info.config = next.clone();
-        self.save_all_quietly(backend, settings);
         self.build.after_config = true;
-        backend.spawn(move |shell| Msg::Info(shell.set_config(next)));
+        self.after_saving(backend, settings, move |ws, b| {
+            ws.spawn(b, move |shell| Msg::Info(shell.set_config(next)));
+        });
     }
 }

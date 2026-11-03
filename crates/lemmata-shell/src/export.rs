@@ -8,9 +8,10 @@ use std::path::Path;
 impl Shell {
     pub fn export_pdf(&self, dest: String) -> CmdResult<()> {
         let p = project(self)?;
-        std::fs::copy(p.pdf_path(), &dest)
-            .map_err(|_| "Build the project first; there's no PDF yet.".to_string())?;
-        Ok(())
+        if !p.pdf_path().is_file() {
+            return Err("Build the project first; there's no PDF yet.".into());
+        }
+        export::atomic_copy(&p.pdf_path(), Path::new(&dest))
     }
 
     /// Zips the whole project (not hidden files or the build folder), for a

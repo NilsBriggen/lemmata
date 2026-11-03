@@ -209,8 +209,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
 
 /// Keys the user chose instead of the default (Preferences → the shortcut sheet), by id. An
 /// empty spec turns a shortcut off.
-static CHOSEN: std::sync::RwLock<Vec<(&'static str, &'static str)>> =
-    std::sync::RwLock::new(Vec::new());
+static CHOSEN: std::sync::RwLock<Vec<(&'static str, String)>> = std::sync::RwLock::new(Vec::new());
 
 /// Shortcuts whose keys come from the system (copy, cut, paste) or from arrow combinations the
 /// editor handles together: shown, not changeable.
@@ -235,8 +234,7 @@ pub fn choose(chosen: &std::collections::BTreeMap<String, String>) {
         .filter(|s| editable(s))
         .filter_map(|s| {
             let spec = chosen.get(s.id)?;
-            (spec.is_empty() || parse(spec).is_some())
-                .then(|| (s.id, &*Box::leak(spec.clone().into_boxed_str())))
+            (spec.is_empty() || parse(spec).is_some()).then(|| (s.id, spec.clone()))
         })
         .collect();
     if let Ok(mut c) = CHOSEN.write() {
@@ -244,21 +242,25 @@ pub fn choose(chosen: &std::collections::BTreeMap<String, String>) {
     }
 }
 
-fn chosen(id: &str) -> Option<&'static str> {
+fn chosen(id: &str) -> Option<String> {
     CHOSEN
         .read()
         .ok()?
         .iter()
         .find(|(i, _)| *i == id)
-        .map(|(_, k)| *k)
+        .map(|(_, k)| k.clone())
 }
 
 /// The keys in effect: the user's, else the default and its second key.
-pub fn specs(s: &Shortcut) -> Vec<&'static str> {
+pub fn specs(s: &Shortcut) -> Vec<String> {
     match chosen(s.id) {
-        Some("") => Vec::new(),
+        Some(k) if k.is_empty() => Vec::new(),
         Some(k) => vec![k],
-        None => [Some(s.keys), s.alt].into_iter().flatten().collect(),
+        None => [Some(s.keys), s.alt]
+            .into_iter()
+            .flatten()
+            .map(String::from)
+            .collect(),
     }
 }
 
@@ -267,17 +269,17 @@ pub fn pressed(id: &str, mods: Modifiers, key: Key) -> bool {
     SHORTCUTS.iter().find(|s| s.id == id).is_some_and(|s| {
         specs(s)
             .into_iter()
-            .any(|spec| matches_spec(spec, mods, key))
+            .any(|spec| matches_spec(&spec, mods, key))
     })
 }
 
 /// The main key in effect for `id` ("" when there is none).
-pub fn keys_of(id: &str) -> &'static str {
+pub fn keys_of(id: &str) -> String {
     SHORTCUTS
         .iter()
         .find(|s| s.id == id)
-        .and_then(|s| specs(s).first().copied())
-        .unwrap_or("")
+        .and_then(|s| specs(s).first().cloned())
+        .unwrap_or_default()
 }
 
 /// A key press as a spec, for recording a shortcut: "Mod-Shift-p". None for a letter, digit or
@@ -315,8 +317,8 @@ pub fn spec_of(mods: Modifiers, key: Key) -> Option<String> {
 const MAC: bool = cfg!(target_os = "macos");
 
 /// "Mod-Shift-p" → "Ctrl+Shift+P" (or ⌘⇧P on a Mac).
-pub fn display(keys: &str) -> String {
-    let parts = split(keys);
+pub fn display(keys: impl AsRef<str>) -> String {
+    let parts = split(keys.as_ref());
     let (key, mods) = parts.split_last().unwrap_or((&"", &[]));
     let mods: Vec<&str> = mods
         .iter()
@@ -448,7 +450,7 @@ pub fn consume(ctx: &egui::Context, id: &str) -> bool {
             } if !hit
                 && specs(s)
                     .into_iter()
-                    .any(|spec| matches_spec(spec, *modifiers, *key)) =>
+                    .any(|spec| matches_spec(&spec, *modifiers, *key)) =>
             {
                 hit = true;
                 false
@@ -490,7 +492,8 @@ mod tests {
         chosen.insert("tree-copy".to_string(), "Mod-Alt-c".to_string());
         chosen.insert("nonsense".to_string(), "Mod-Alt-n".to_string());
         choose(&chosen);
-        assert_eq!(keys_of("goto-heading"), "Mod-Alt-h");
+        let owned: String = keys_of("goto-heading");
+        assert_eq!(owned, "Mod-Alt-h");
         assert_eq!(
             keys_of("tree-copy"),
             "Mod-c",

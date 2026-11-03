@@ -15,7 +15,7 @@ pub struct ProjectSettings {
     timeout: String,
     words_open: bool,
     rules_open: bool,
-    busy: bool,
+    pub(super) busy: bool,
 }
 
 const ENGINES: [(Engine, &str, &str); 4] = [
@@ -49,6 +49,10 @@ fn timeout_ok(t: &str) -> Option<u64> {
         .parse::<u64>()
         .ok()
         .filter(|n| (10..=3600).contains(n))
+}
+
+fn grants_shell_escape_trust(config: &Config, trusted: bool, was_on: bool) -> bool {
+    config.shell_escape && !trusted && !was_on
 }
 
 impl Workspace {
@@ -130,43 +134,43 @@ impl Workspace {
         let mut config = d.config.clone();
         config.timeout_secs =
             timeout_ok(&d.timeout).unwrap_or(lemmata_project::DEFAULT_TIMEOUT_SECS);
-        if config.shell_escape && !trusted {
+        if grants_shell_escape_trust(&config, trusted, was_on) {
             settings.shell_escape_projects.push(self.root.clone());
             *action = Some(Action::Settings);
         }
         let main_changed = config.main.as_deref() != Some(self.info.main.as_str());
-        self.save_all_quietly(backend, settings);
-        Workspace::job(
-            backend,
-            move |s| s.set_config(config),
-            move |ws, b, r| match r {
-                Ok(info) => {
-                    ws.project_settings = None;
-                    ws.checks.grammar.ignored =
-                        info.config.grammar_ignore.iter().cloned().collect();
-                    ws.checks.grammar.generation += 1;
-                    ws.info = info;
-                    ws.tree_rows = None;
-                    ws.refresh_lookups(b, false);
-                    if main_changed {
-                        let main = ws.info.main.clone();
-                        ws.open_file(b, &main);
+        self.after_saving(backend, settings, move |_, b| {
+            Workspace::job(
+                b,
+                move |s| s.set_config(config),
+                move |ws, b, r| match r {
+                    Ok(info) => {
+                        ws.project_settings = None;
+                        ws.checks.grammar.ignored =
+                            info.config.grammar_ignore.iter().cloned().collect();
+                        ws.checks.grammar.generation += 1;
+                        ws.info = info;
+                        ws.tree_rows = None;
+                        ws.refresh_analysis(b);
+                        if main_changed {
+                            let main = ws.info.main.clone();
+                            ws.open_file(b, &main);
+                        }
+                        ws.build_soon(false, false);
                     }
-                    ws.refresh_outline(b);
-                    ws.build_soon(false, false);
-                }
-                Err(e) => {
-                    // The dialog stays open, so the choices aren't lost.
-                    if let Some(d) = &mut ws.project_settings {
-                        d.busy = false;
+                    Err(e) => {
+                        // The dialog stays open, so the choices aren't lost.
+                        if let Some(d) = &mut ws.project_settings {
+                            d.busy = false;
+                        }
+                        ws.notice(
+                            format!("Could not change the project settings: {e}"),
+                            Tone::Error,
+                        );
                     }
-                    ws.notice(
-                        format!("Could not change the project settings: {e}"),
-                        Tone::Error,
-                    );
-                }
-            },
-        );
+                },
+            );
+        });
     }
 }
 
@@ -498,6 +502,17 @@ fn chip(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_preexisting_shell_escape_config_does_not_grant_trust() {
+        let config = Config {
+            shell_escape: true,
+            ..Config::default()
+        };
+        assert!(!grants_shell_escape_trust(&config, false, true));
+        assert!(grants_shell_escape_trust(&config, false, false));
+        assert!(!grants_shell_escape_trust(&config, true, false));
+    }
 
     #[test]
     fn the_build_folder_stays_inside_the_project() {

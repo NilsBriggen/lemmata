@@ -26,6 +26,8 @@ pub enum UpdateMsg {
 }
 
 pub enum Msg {
+    /// Work and events belonging to one project generation.
+    Project(u64, Box<Msg>),
     Event(Event),
     /// A job's result, applied to the open project on the UI thread (see `Workspace::job`).
     Apply(u64, Job),
@@ -35,7 +37,7 @@ pub enum Msg {
     Update(UpdateMsg),
     /// A folder or file the user picked, for the job that asked.
     Picked(Pick, Option<PathBuf>),
-    Opened(String, Result<lemmata_shell::ProjectInfo, String>),
+    Opened(String, Result<lemmata_shell::ProjectAnalysis, String>),
     Trashed(String, Result<(), String>),
     Tectonic(Result<(), String>),
     Terminal(Result<(), String>),
@@ -62,7 +64,7 @@ pub enum Msg {
         written: String,
         result: Result<(), String>,
     },
-    Outline(Result<lemmata_project::Outline, String>),
+    Analysis(u64, Result<lemmata_shell::ProjectAnalysis, String>),
     /// The project's info again: after a config change, or new files.
     Info(Result<lemmata_shell::ProjectInfo, String>),
     /// A command's result that only matters when it failed.
@@ -71,8 +73,6 @@ pub enum Msg {
     Built(u64, Result<lemmata_tex::Outcome, String>),
     /// The project's PDF, read to show it.
     Pdf(Result<Vec<u8>, String>),
-    /// Whether the PDF on disk is up to date, when the project opens.
-    PdfCurrent(bool),
     Synced(Result<Vec<lemmata_synctex::PdfBox>, String>),
     SourceHit(Result<Option<lemmata_shell::SourceHit>, String>),
     /// The raw TeX log, read after this build.
@@ -83,9 +83,6 @@ pub enum Msg {
     /// An export finished: what, the file name, and how many files went in.
     Exported(Save, String, Result<usize, String>),
     PackageAdded(Result<(), String>),
-    /// What completion and hover cards look up: labels, citation keys, package names.
-    Labels(Result<Vec<lemmata_project::extras::Label>, String>),
-    Cites(Result<Vec<lemmata_bib::Entry>, String>),
     Packages(Vec<String>),
     /// Whether the main file loads a package something just inserted needs.
     HasPackage(String, bool),
@@ -213,6 +210,12 @@ impl Backend {
         self.project.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    pub fn next_project(&self) -> u64 {
+        self.project
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
+
     /// Runs `job` on a blocking worker and sends what it returns.
     fn rt(&self) -> &tokio::runtime::Runtime {
         self.runtime.as_ref().expect("the runtime lives until drop")
@@ -222,6 +225,34 @@ impl Backend {
         let (shell, tx, ctx) = (self.shell.clone(), self.tx.clone(), self.ctx.clone());
         self.rt().spawn_blocking(move || {
             let _ = tx.send(job(&shell));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn spawn_project(&self, project: u64, job: impl FnOnce(&Shell) -> Msg + Send + 'static) {
+        let (shell, tx, ctx) = (self.shell.clone(), self.tx.clone(), self.ctx.clone());
+        self.rt().spawn_blocking(move || {
+            let _guard = shell.project_blocking_read();
+            if shell.current_project() != project {
+                return;
+            }
+            let _ = tx.send(Msg::Project(project, Box::new(job(&shell))));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn spawn_async_project<F, Fut>(&self, project: u64, job: F)
+    where
+        F: FnOnce(Arc<Shell>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Msg> + Send + 'static,
+    {
+        let (shell, tx, ctx) = (self.shell.clone(), self.tx.clone(), self.ctx.clone());
+        self.rt().spawn(async move {
+            let _guard = shell.project_read().await;
+            if shell.current_project() != project {
+                return;
+            }
+            let _ = tx.send(Msg::Project(project, Box::new(job(shell.clone()).await)));
             ctx.request_repaint();
         });
     }
@@ -314,6 +345,39 @@ impl Backend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stale_project_jobs_never_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["a", "b"] {
+            let root = tmp.path().join(name);
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("main.tex"), "\\documentclass{article}").unwrap();
+        }
+        let dirs = crate::store::Dirs {
+            config: tmp.path().join("config"),
+            data: tmp.path().join("data"),
+            cache: tmp.path().join("cache"),
+        };
+        let b = super::Backend::new(eframe::egui::Context::default(), &dirs);
+        b.shell
+            .open_project(1, tmp.path().join("a").to_string_lossy().into_owned())
+            .unwrap();
+        b.shell
+            .open_project(2, tmp.path().join("b").to_string_lossy().into_owned())
+            .unwrap();
+        b.spawn_project(1, |_| -> super::Msg {
+            panic!("a job for the old project ran")
+        });
+        b.spawn_project(2, |_| super::Msg::Done(Ok(())));
+        let super::Msg::Project(2, msg) =
+            b.rx.recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+        else {
+            panic!("the current project's job did not report")
+        };
+        assert!(matches!(*msg, super::Msg::Done(Ok(()))));
+    }
+
     #[test]
     fn a_job_that_never_ends_does_not_hold_up_quitting() {
         let tmp = tempfile::tempdir().unwrap();

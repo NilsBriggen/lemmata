@@ -197,15 +197,14 @@ impl Workspace {
         );
     }
 
-    fn replace_all(&mut self, backend: &Backend, settings: &Settings) {
+    pub(crate) fn replace_all(&mut self, backend: &Backend, settings: &Settings) {
         let Some(s) = &self.search else { return };
         let (targets, _) = s.chosen();
         if targets.is_empty() {
             return;
         }
         let (options, replacement) = (s.options(), s.replacement.clone());
-        self.save_all_quietly(backend, settings);
-        self.after_writes.push(Box::new(move |_, b| {
+        self.after_saving(backend, settings, move |_, b| {
             let paths: Vec<String> = targets.iter().map(|t| t.path.clone()).collect();
             let files = targets.len();
             Workspace::job(
@@ -244,7 +243,7 @@ impl Workspace {
                     }
                 },
             );
-        }));
+        });
     }
 
     pub(super) fn search_panel(

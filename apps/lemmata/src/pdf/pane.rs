@@ -36,6 +36,7 @@ pub struct Build<'a> {
 pub enum Action {
     Logs(bool),
     SourceClick(usize, f32, f32),
+    OpenUrl(String),
     Goto(String, usize),
     AddPackage(String),
     Export,
@@ -179,7 +180,11 @@ impl Pane {
             let mut c = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink2(vec2(6.0, 8.0))));
             match side {
                 Side::Thumbs => self.thumbnails(&mut c, p),
-                Side::Outline => self.outline(&mut c, p),
+                Side::Outline => {
+                    if let Some(action) = self.outline(&mut c, p) {
+                        out.push(action);
+                    }
+                }
             }
             body.min.x = r.right();
         }
@@ -246,8 +251,12 @@ impl Pane {
         if b.logs_open {
             out.extend(self.problems.show(&mut c, p, b));
         } else if has_pdf {
-            if let Some(super::view::Event::SourceClick(n, x, y)) = self.view.show(&mut c, p) {
-                out.push(Action::SourceClick(n, x, y));
+            match self.view.show(&mut c, p) {
+                Some(super::view::Event::SourceClick(n, x, y)) => {
+                    out.push(Action::SourceClick(n, x, y));
+                }
+                Some(super::view::Event::OpenUrl(url)) => out.push(Action::OpenUrl(url)),
+                None => {}
             }
         } else {
             self.view.show(&mut c, p);
@@ -561,7 +570,7 @@ impl Pane {
     }
 
     /// PdfOutline.svelte: the PDF's own bookmarks as a tree.
-    fn outline(&mut self, ui: &mut Ui, p: &Palette) {
+    fn outline(&mut self, ui: &mut Ui, p: &Palette) -> Option<Action> {
         if self.view.outline.is_empty() {
             ui.add_space(6.0);
             widgets::Rich::new()
@@ -579,7 +588,7 @@ impl Pane {
                 .line_height(18.0)
                 .wrap(ui.available_width() - 12.0)
                 .show(ui);
-            return;
+            return None;
         }
         let nodes = self.view.outline.clone();
         let mut go = None;
@@ -601,8 +610,9 @@ impl Pane {
             && let Some(url) = self.view.goto_target(&t)
             && (url.starts_with("http://") || url.starts_with("https://"))
         {
-            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+            return Some(Action::OpenUrl(url));
         }
+        None
     }
 
     /// PdfThumbnails.svelte: a small render of every page, drawn as it scrolls into view.

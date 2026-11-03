@@ -1024,7 +1024,7 @@ impl Workspace {
             self.no_build.insert(p.clone());
             self.write(backend, &p, settings);
         }
-        self.after_writes.push(Box::new(then));
+        self.after_saving(backend, settings, then);
     }
 
     /// A .bib file changed on disk (onBibChanged): read it again, and the citation keys.
@@ -1032,7 +1032,7 @@ impl Workspace {
         for f in files {
             self.reload(backend, f);
         }
-        backend.spawn(|shell| Msg::Info(shell.project_info_cmd()));
+        self.spawn(backend, |shell| Msg::Info(shell.project_info_cmd()));
     }
 
     fn insert_citation(&mut self, keys: &[String]) {
@@ -1289,7 +1289,7 @@ impl Workspace {
             self.no_build.insert(main.clone());
             self.write(backend, &main, settings);
         }
-        self.after_writes.push(Box::new(move |_, b| {
+        self.after_saving(backend, settings, move |_, b| {
             Workspace::job(
                 b,
                 |s| s.zotero_link(),
@@ -1301,7 +1301,7 @@ impl Workspace {
                     Err(e) => ws.notice(e, Tone::Error),
                 },
             );
-        }));
+        });
     }
 }
 

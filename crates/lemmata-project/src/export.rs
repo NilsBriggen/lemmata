@@ -214,6 +214,40 @@ fn zip_writer(dest: &Path) -> Result<zip::ZipWriter<std::fs::File>, String> {
     ))
 }
 
+pub struct Destination {
+    pub path: PathBuf,
+    pub tmp: PathBuf,
+}
+
+impl Destination {
+    pub fn new(path: &Path) -> Self {
+        let name = path
+            .file_name()
+            .map_or_else(|| "export".into(), |n| n.to_string_lossy().into_owned());
+        let tmp = path.with_file_name(format!(".{name}.lemmata-tmp"));
+        Self {
+            path: path.to_path_buf(),
+            tmp,
+        }
+    }
+
+    pub fn finish(self) -> Result<(), String> {
+        std::fs::rename(&self.tmp, &self.path).map_err(io)
+    }
+}
+
+impl Drop for Destination {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.tmp);
+    }
+}
+
+pub fn atomic_copy(source: &Path, dest: &Path) -> Result<(), String> {
+    let destination = Destination::new(dest);
+    std::fs::copy(source, &destination.tmp).map_err(io)?;
+    destination.finish()
+}
+
 fn add(
     zip: &mut zip::ZipWriter<std::fs::File>,
     name: impl Into<String>,
@@ -229,9 +263,25 @@ fn add(
 /// backup or to share it. With `with_pdf`, the latest PDF is added too.
 /// Returns the number of files written.
 pub fn zip_project(p: &Project, dest: &Path, with_pdf: bool) -> Result<usize, String> {
-    let mut zip = zip_writer(dest)?;
+    let destination = Destination::new(dest);
+    let mut zip = zip_writer(&destination.tmp)?;
+    let dest_rel = destination
+        .path
+        .strip_prefix(&p.root)
+        .ok()
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            p.root
+                .join(&destination.path)
+                .strip_prefix(&p.root)
+                .ok()
+                .map(Path::to_path_buf)
+        });
     let mut count = 0;
     for rel in project_files(&p.root, &p.config.outdir) {
+        if dest_rel.as_ref().is_some_and(|d| d == Path::new(&rel)) {
+            continue;
+        }
         add(
             &mut zip,
             &rel,
@@ -248,6 +298,7 @@ pub fn zip_project(p: &Project, dest: &Path, with_pdf: bool) -> Result<usize, St
         count += 1;
     }
     zip.finish().map_err(io)?;
+    destination.finish()?;
     Ok(count)
 }
 
@@ -545,7 +596,8 @@ pub fn zip_arxiv(p: &Project, dest: &Path, strip: bool, flatten: bool) -> Result
         None
     };
 
-    let mut zip = zip_writer(dest)?;
+    let destination = Destination::new(dest);
+    let mut zip = zip_writer(&destination.tmp)?;
     let mut count = 0;
     for rel in &files {
         if flat.as_ref().is_some_and(|f| f.inlined.contains(rel)) {
@@ -581,6 +633,7 @@ pub fn zip_arxiv(p: &Project, dest: &Path, strip: bool, flatten: bool) -> Result
         count += 1;
     }
     zip.finish().map_err(io)?;
+    destination.finish()?;
     Ok(count)
 }
 
@@ -605,6 +658,34 @@ mod tests {
             project_files(d.path(), ".lemmata/build"),
             ["chapters/a.tex", "main.tex"]
         );
+    }
+
+    #[test]
+    fn an_archive_inside_the_project_does_not_include_itself() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let dest = d.path().join("paper.zip");
+        zip_project(&p, &dest, false).unwrap();
+        let names: Vec<String> = zip::ZipArchive::new(std::fs::File::open(&dest).unwrap())
+            .unwrap()
+            .file_names()
+            .map(|n| n.unwrap().into_owned())
+            .collect();
+        assert!(!names.iter().any(|n| n == "paper.zip"), "{names:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_export_preserves_the_existing_archive() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::os::unix::fs::symlink("missing.tex", d.path().join("bad.tex")).unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let dest = d.path().join("paper.zip");
+        std::fs::write(&dest, b"known good").unwrap();
+        assert!(zip_project(&p, &dest, false).is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"known good");
     }
 
     #[test]

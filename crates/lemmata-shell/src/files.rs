@@ -1579,7 +1579,7 @@ mod tests {
         };
         let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
         shell
-            .open_project(b.to_string_lossy().into_owned())
+            .open_project(1, b.to_string_lossy().into_owned())
             .unwrap();
         let a = lemmata_project::canonical(&a).unwrap();
         shell
@@ -1611,7 +1611,7 @@ mod tests {
         };
         let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
         shell
-            .open_project(r.to_string_lossy().into_owned())
+            .open_project(1, r.to_string_lossy().into_owned())
             .unwrap();
         // sub/ is read-only: the rewrite of sub/chap.tex can't be saved there.
         std::fs::set_permissions(r.join("sub"), std::fs::Permissions::from_mode(0o555)).unwrap();

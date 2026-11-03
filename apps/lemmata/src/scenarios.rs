@@ -885,6 +885,7 @@ fn projects_go_into_folders_by_dragging_or_from_their_menu() {
         h.query_by_label("Folder name").is_some()
     });
     h.run_steps(3);
+    h.get_by_label("Folder name").focus();
     h.get_by_label("Folder name").type_text("Course");
     h.run_steps(1);
     h.get_by_label("Create").click();

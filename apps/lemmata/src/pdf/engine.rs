@@ -69,7 +69,7 @@ pub enum Job {
         page: usize,
         scale: f32,
         dark: bool,
-        epoch: Option<u64>,
+        epoch: Option<(Arc<AtomicU64>, u64)>,
         thumb: bool,
     },
     /// The text layer and links of a page.
@@ -109,14 +109,48 @@ pub enum Done {
     },
 }
 
-/// Threads that draw pages: each parses the PDF for itself and takes every n-th page, so the
-/// pages on screen draw side by side after a rebuild.
+/// One bounded pool for every viewer; each worker owns at most one parsed document.
 fn workers() -> usize {
     std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 3))
 }
 
-pub struct Engine {
+type Routes = Arc<std::sync::Mutex<HashMap<u64, (u64, Sender<Done>)>>>;
+
+struct Pool {
     tx: Vec<Sender<Job>>,
+    routes: Routes,
+    next_owner: AtomicU64,
+    next_doc: AtomicU64,
+}
+
+fn pool(ctx: &egui::Context) -> &'static Pool {
+    static POOL: std::sync::OnceLock<&'static Pool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let routes = Routes::default();
+        let tx = (0..workers())
+            .map(|n| {
+                let (tx, jobs) = channel();
+                let (routes, ctx) = (routes.clone(), ctx.clone());
+                std::thread::Builder::new()
+                    .name(format!("pdf-{n}"))
+                    .spawn(move || run(jobs, routes, ctx, n == 0))
+                    .expect("the PDF thread starts");
+                tx
+            })
+            .collect();
+        Box::leak(Box::new(Pool {
+            tx,
+            routes,
+            next_owner: AtomicU64::new(1),
+            next_doc: AtomicU64::new(1),
+        }))
+    })
+}
+
+pub struct Engine {
+    pool: &'static Pool,
+    owner: u64,
+    done: Sender<Done>,
     pub rx: Receiver<Done>,
     /// Render jobs with an older epoch are skipped.
     pub epoch: Arc<AtomicU64>,
@@ -124,26 +158,30 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(ctx: egui::Context) -> Self {
+        let pool = pool(&ctx);
         let (done, rx) = channel();
-        let epoch = Arc::new(AtomicU64::new(0));
-        let tx = (0..workers())
-            .map(|n| {
-                let (tx, jobs) = channel();
-                let (done, e, ctx) = (done.clone(), epoch.clone(), ctx.clone());
-                std::thread::Builder::new()
-                    .name(format!("pdf-{n}"))
-                    .spawn(move || run(jobs, done, e, ctx, n == 0))
-                    .expect("the PDF thread starts");
-                tx
-            })
-            .collect();
-        Self { tx, rx, epoch }
+        Self {
+            pool,
+            owner: pool.next_owner.fetch_add(1, Ordering::Relaxed),
+            done,
+            rx,
+            epoch: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn next_doc(&self) -> u64 {
+        self.pool.next_doc.fetch_add(1, Ordering::Relaxed)
     }
 
     pub fn send(&self, job: Job) {
         let page = match &job {
-            Job::Load { .. } => {
-                for tx in &self.tx {
+            Job::Load { doc, .. } => {
+                self.pool
+                    .routes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(*doc, (self.owner, self.done.clone()));
+                for tx in &self.pool.tx {
                     let _ = tx.send(job.clone());
                 }
                 return;
@@ -151,23 +189,41 @@ impl Engine {
             Job::Render { page, .. } | Job::Decorate { page, .. } => *page,
             Job::Png { .. } => 0,
         };
-        let _ = self.tx[page % self.tx.len()].send(job);
+        let _ = self.pool.tx[page % self.pool.tx.len()].send(job);
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.pool
+            .routes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, (owner, _)| *owner != self.owner);
     }
 }
 
 /// One worker. Only the first (`announce`) reports a load, so the view takes it once.
-fn run(
-    jobs: Receiver<Job>,
-    done: Sender<Done>,
-    epoch: Arc<AtomicU64>,
-    ctx: egui::Context,
-    announce: bool,
-) {
+fn run(jobs: Receiver<Job>, routes: Routes, ctx: egui::Context, announce: bool) {
     let send = |d: Done| {
-        let _ = done.send(d);
-        ctx.request_repaint();
+        let doc = match &d {
+            Done::Loaded { doc, .. }
+            | Done::Rendered { doc, .. }
+            | Done::Decorated { doc, .. }
+            | Done::Png { doc, .. } => *doc,
+        };
+        let tx = routes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&doc)
+            .map(|(_, tx)| tx.clone());
+        if let Some(tx) = tx {
+            let _ = tx.send(d);
+            ctx.request_repaint();
+        }
     };
     let mut queue: VecDeque<Job> = VecDeque::new();
+    let mut documents = HashMap::new();
     loop {
         // Wait for a document.
         let (doc, bytes) = loop {
@@ -179,9 +235,17 @@ fn run(
                 },
             };
             if let Job::Load { doc, bytes } = job {
+                documents.insert(doc, bytes.clone());
                 break (doc, bytes);
             }
         };
+        let active: std::collections::HashSet<u64> = routes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .copied()
+            .collect();
+        documents.retain(|doc, _| active.contains(doc));
         let pdf = match guard(|| Pdf::new(bytes.clone())) {
             Some(Ok(p)) => p,
             Some(Err(e)) => {
@@ -245,25 +309,38 @@ fn run(
             while let Ok(j) = jobs.try_recv() {
                 queue.push_back(j);
             }
-            // A newer document makes everything queued before it moot.
-            if let Some(at) = queue.iter().rposition(|j| matches!(j, Job::Load { .. })) {
-                queue.drain(..at);
-                break;
-            }
             let Some(job) = queue.pop_front() else {
                 continue;
             };
+            let other_doc = match &job {
+                Job::Render { doc: d, .. }
+                | Job::Decorate { doc: d, .. }
+                | Job::Png { doc: d, .. } => (*d != doc).then_some(*d),
+                Job::Load { .. } => None,
+            };
+            if let Some(d) = other_doc {
+                let Some(bytes) = documents.get(&d).cloned() else {
+                    continue;
+                };
+                queue.push_front(job);
+                queue.push_front(Job::Load { doc: d, bytes });
+                break;
+            }
             match job {
-                Job::Load { .. } => unreachable!(),
+                Job::Load { doc, bytes } => {
+                    queue.push_front(Job::Load { doc, bytes });
+                    break;
+                }
                 Job::Render {
-                    doc: d,
+                    doc: _,
                     page,
                     scale,
                     dark,
                     epoch: e,
                     thumb,
                 } => {
-                    if d != doc || e.is_some_and(|e| e != epoch.load(Ordering::Relaxed)) {
+                    if e.is_some_and(|(epoch, expected)| expected != epoch.load(Ordering::Relaxed))
+                    {
                         continue;
                     }
                     let Some(pg) = pages.get(page) else { continue };
@@ -425,7 +502,13 @@ fn rect_of(a: Affine, r: hayro::kurbo::Rect) -> Rect {
     )
 }
 
-/// Text strings: UTF-16BE with a BOM, else PDFDocEncoding (Latin-1 is close enough here).
+const DIACRITICS: [char; 8] = ['˘', 'ˇ', 'ˆ', '˙', '˝', '˛', '˚', '˜'];
+const PDF_DOC_SPECIAL: [char; 33] = [
+    '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚', '™',
+    'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž', 'ı', 'ł', 'œ', 'š', 'ž', '\u{fffd}', '€',
+];
+
+/// Text strings: UTF-16BE with a BOM, else PDFDocEncoding.
 fn decode_text(b: &[u8]) -> String {
     if b.starts_with(&[0xfe, 0xff]) {
         let units: Vec<u16> = b[2..]
@@ -436,7 +519,14 @@ fn decode_text(b: &[u8]) -> String {
             .collect();
         String::from_utf16_lossy(&units)
     } else {
-        b.iter().map(|&c| c as char).collect()
+        b.iter()
+            .map(|&c| match c {
+                0x7f | 0x9f | 0xad => '\u{fffd}',
+                0x18..=0x1f => DIACRITICS[usize::from(c - 0x18)],
+                0x80..=0xa0 => PDF_DOC_SPECIAL[usize::from(c - 0x80)],
+                _ => c as char,
+            })
+            .collect()
     }
 }
 
@@ -792,6 +882,72 @@ mod tests {
             }
         }
         eprintln!("{n} pages with {} workers: {:?}", workers(), t.elapsed());
+    }
+
+    #[test]
+    fn every_viewer_loads_and_renders_its_document() {
+        let one = Engine::new(egui::Context::default());
+        let two = Engine::new(egui::Context::default());
+        let bytes = Arc::new(include_bytes!("../../tests/pdf/type3-bitmap-fonts.pdf").to_vec());
+        let mut expected = Vec::new();
+        for _ in 0..6 {
+            let a = one.next_doc();
+            let b = two.next_doc();
+            one.send(Job::Load {
+                doc: a,
+                bytes: bytes.clone(),
+            });
+            two.send(Job::Load {
+                doc: b,
+                bytes: bytes.clone(),
+            });
+            expected.push((a, b));
+        }
+        let expected: std::collections::HashSet<u64> =
+            expected.into_iter().flat_map(|(a, b)| [a, b]).collect();
+        let mut loaded = std::collections::HashSet::new();
+        let mut rendered = std::collections::HashSet::new();
+        while rendered.len() < expected.len() {
+            for engine in [&one, &two] {
+                let answer = engine
+                    .rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap_or_else(|_| {
+                        panic!("loaded {loaded:?}, rendered {rendered:?}, expected {expected:?}")
+                    });
+                match answer {
+                    Done::Loaded { doc, result: Ok(_) }
+                        if expected.contains(&doc) && loaded.insert(doc) =>
+                    {
+                        engine.send(Job::Render {
+                            doc,
+                            page: 0,
+                            scale: 1.0,
+                            dark: false,
+                            epoch: None,
+                            thumb: false,
+                        });
+                    }
+                    Done::Rendered { doc, .. } => {
+                        rendered.insert(doc);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decodes_pdf_doc_encoding_and_utf16() {
+        let diacritics: Vec<u8> = (0x18..=0x1f).collect();
+        assert_eq!(decode_text(&diacritics), "˘ˇˆ˙˝˛˚˜");
+        let special: Vec<u8> = (0x80..=0xa0).collect();
+        assert_eq!(
+            decode_text(&special),
+            "•†‡…—–ƒ⁄‹›−‰„“”‘’‚™ﬁﬂŁŒŠŸŽıłœšž\u{fffd}€"
+        );
+        assert_eq!(decode_text(&[0x7f, 0x9f, 0xad]), "\u{fffd}\u{fffd}\u{fffd}");
+        assert_eq!(decode_text(&[0xfe, 0xff, 0x00, 0x41]), "A");
     }
 
     #[test]

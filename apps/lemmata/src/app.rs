@@ -13,12 +13,14 @@ use lemmata_shell::{Event, InstallRequest, TexStatus};
 pub struct App {
     dirs: Dirs,
     settings: Settings,
+    settings_dirty: Option<std::time::Instant>,
     recents: Recents,
     groups: Groups,
     palette: Palette,
     backend: Backend,
     tex: Option<TexStatus>,
     checking: bool,
+    was_focused: Option<bool>,
     /// The first-run welcome, and its step.
     welcome: Option<usize>,
     onboarding: Option<onboarding::State>,
@@ -28,6 +30,8 @@ pub struct App {
     open_error: Option<String>,
     no_main_in: Option<String>,
     project: Option<Workspace>,
+    /// The latest project open request; older answers are discarded.
+    open_generation: u64,
     /// Startup has decided between the welcome, the last project and the library.
     started: bool,
     dialog: Option<Dialog>,
@@ -132,15 +136,17 @@ impl App {
         }
         let tex_dir = settings.tex_dir.clone();
         backend.spawn(move |shell| Msg::Tex(shell.tex_status(tex_dir)));
-        Self {
+        let mut app = Self {
             recents: Recents::load(&dirs),
             groups: Groups::load(&dirs),
             dirs,
             settings,
+            settings_dirty: None,
             palette,
             backend,
             tex: None,
             checking: true,
+            was_focused: None,
             welcome: None,
             onboarding: None,
             without_tex: false,
@@ -150,6 +156,7 @@ impl App {
             }),
             no_main_in: None,
             project: None,
+            open_generation: 0,
             started: false,
             dialog: None,
             prefs: None,
@@ -163,16 +170,39 @@ impl App {
             update_checked: None,
             quit: Quit::No,
             leaving: None,
-        }
+        };
+        app.started = true;
+        app.start();
+        app
     }
 
     fn save_settings(&mut self, ctx: &egui::Context) {
-        self.settings.save(&self.dirs);
+        self.settings_dirty = Some(std::time::Instant::now());
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
         theme::reduce_motion(ctx, self.settings.reduce_motion);
         let palette = palette_for(ctx, &self.settings);
         if palette != self.palette {
             self.palette = palette;
             theme::apply(ctx, &palette);
+        }
+    }
+
+    fn flush_settings(&mut self) {
+        if self.settings_dirty.take().is_some() {
+            self.settings.save(&self.dirs);
+        }
+    }
+
+    fn focus_changed(&mut self, focused: Option<bool>) {
+        if focused == Some(true)
+            && self.was_focused == Some(false)
+            && !self.tex.as_ref().is_some_and(|t| t.detection.ready)
+            && !self.checking
+        {
+            self.recheck(None);
+        }
+        if focused.is_some() {
+            self.was_focused = focused;
         }
     }
 
@@ -185,9 +215,15 @@ impl App {
     fn open_project(&mut self, path: String) {
         self.open_error = None;
         self.no_main_in = None;
+        let generation = self.backend.next_project();
+        self.open_generation = generation;
         let p = path.clone();
-        self.backend
-            .spawn(move |shell| Msg::Opened(p.clone(), shell.open_project(p)));
+        self.backend.spawn(move |shell| {
+            Msg::Project(
+                generation,
+                Box::new(Msg::Opened(p.clone(), shell.open_project(generation, p))),
+            )
+        });
     }
 
     fn handle_request(&mut self, request: Request) {
@@ -434,6 +470,15 @@ impl App {
     }
 
     fn on_msg(&mut self, ctx: &egui::Context, msg: Msg) {
+        let msg = match msg {
+            Msg::Project(generation, inner) if matches!(&*inner, Msg::Opened(..)) => {
+                if generation != self.open_generation {
+                    return;
+                }
+                *inner
+            }
+            other => other,
+        };
         let Some(msg) = self.on_dialog_msg(msg) else {
             return;
         };
@@ -452,10 +497,6 @@ impl App {
                     self.onboarding = Some(onboarding::State::new(&status));
                 }
                 self.tex = Some(status);
-                if !self.started {
-                    self.started = true;
-                    self.start();
-                }
             }
             Msg::Opened(path, Ok(info)) => {
                 self.recents.remember(&path, now_ms());
@@ -556,11 +597,10 @@ impl App {
             Msg::FileRead(..)
             | Msg::DiskText(..)
             | Msg::FileWritten { .. }
-            | Msg::Outline(_)
+            | Msg::Analysis(..)
             | Msg::Info(_)
             | Msg::Built(..)
             | Msg::Pdf(_)
-            | Msg::PdfCurrent(_)
             | Msg::Synced(_)
             | Msg::SourceHit(_)
             | Msg::Log(..)
@@ -569,8 +609,6 @@ impl App {
             | Msg::Exported(..)
             | Msg::PackageAdded(_)
             | Msg::Viewed(..)
-            | Msg::Labels(_)
-            | Msg::Cites(_)
             | Msg::Packages(_)
             | Msg::HasPackage(..)
             | Msg::LspStarted(_)
@@ -579,7 +617,8 @@ impl App {
             | Msg::Dictionary(_)
             | Msg::SpellDownloaded(..)
             | Msg::GrammarFound(..)
-            | Msg::Apply(..) => {}
+            | Msg::Apply(..)
+            | Msg::Project(..) => {}
             Msg::Prefs(m) => self.on_prefs_msg(ctx, m),
             Msg::Update(m) => self.on_update_msg(ctx, m),
         }
@@ -765,8 +804,7 @@ impl App {
                 self.settings.first_run_done = true;
                 self.settings.save(&self.dirs);
             }
-            let ready = self.tex.as_ref().is_some_and(|t| t.detection.ready);
-            if let (true, Some(last)) = (ready, self.recents.0.first()) {
+            if let Some(last) = self.recents.0.first() {
                 let path = last.path.clone();
                 self.open_project(path);
             }
@@ -889,9 +927,15 @@ impl App {
     }
 
     /// Shows a project that has just been opened.
-    fn opened(&mut self, info: lemmata_shell::ProjectInfo) {
+    fn opened(&mut self, analysis: lemmata_shell::ProjectAnalysis) {
         let ready = self.tex.as_ref().is_some_and(|t| t.detection.ready);
-        let mut ws = Workspace::open(info, &self.dirs, &self.backend, ready);
+        let mut ws = Workspace::open(
+            analysis,
+            &self.dirs,
+            &self.backend,
+            ready,
+            self.open_generation,
+        );
         // A project's latexmkrc is a Perl program: it runs only once the user says so.
         let rc = ["latexmkrc", ".latexmkrc"]
             .iter()
@@ -900,6 +944,15 @@ impl App {
             ws.notices.push(
                 workspace::Notice::new(
                     "This project has a latexmkrc, which can run programs on your computer, so builds leave it out. Use it only if you trust the project.",
+                    workspace::Tone::Info,
+                )
+                .action(workspace::NoticeAction::TrustProject),
+            );
+        }
+        if ws.info.config.shell_escape && !self.settings.shell_escape_projects.contains(&ws.root) {
+            ws.notices.push(
+                workspace::Notice::new(
+                    "This project asks to run programs during builds (shell escape). They stay off until you allow them for this project.",
                     workspace::Tone::Info,
                 )
                 .action(workspace::NoticeAction::TrustProject),
@@ -976,6 +1029,7 @@ impl App {
             A::Forget(path) => {
                 self.recents.forget(&path);
                 self.recents.save(&self.dirs);
+                self.groups.forget(&path);
                 self.groups.save(&self.dirs);
             }
             A::OpenFolder => self.backend.pick(Pick::ProjectFolder),
@@ -1036,8 +1090,15 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.focus_changed(ctx.input(|i| i.viewport().focused));
         while let Ok(msg) = self.backend.rx.try_recv() {
             self.on_msg(&ctx, msg);
+        }
+        if self
+            .settings_dirty
+            .is_some_and(|at| at.elapsed() >= std::time::Duration::from_millis(250))
+        {
+            self.flush_settings();
         }
         // The system's scheme can change while the app runs.
         let palette = palette_for(&ctx, &self.settings);
@@ -1070,6 +1131,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.flush_settings();
         #[cfg(target_os = "linux")]
         if let Some(p) = &mut self.pinches {
             p.stop();
@@ -1087,21 +1149,8 @@ impl App {
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         let ui = &mut ui;
 
-        let Some(tex) = &self.tex else {
-            // The boot splash of index.html: the wordmark in Young Serif 40 px, accent on --app.
-            ui.painter().rect_filled(rect, 0, p.app);
-            widgets::centered_text(
-                ui,
-                rect,
-                "Lemmata",
-                FontId::new(40.0, theme::font::display()),
-                p.accent,
-            );
-            return;
-        };
-
         if let Some(step) = &mut self.welcome
-            && tex.detection.ready
+            && let Some(tex) = self.tex.as_ref().filter(|t| t.detection.ready)
         {
             {
                 if let Some(a) = welcome::show(ui, &p, &tex.detection, step, &mut self.settings) {
@@ -1120,7 +1169,10 @@ impl App {
                 return;
             }
         }
-        if !tex.detection.ready && !self.without_tex {
+        if self.project.is_none()
+            && !self.without_tex
+            && let Some(tex) = self.tex.as_ref().filter(|t| !t.detection.ready)
+        {
             let st = self
                 .onboarding
                 .get_or_insert_with(|| onboarding::State::new(tex));
@@ -1148,8 +1200,13 @@ impl App {
         }
 
         if let Some(ws) = &mut self.project {
-            ws.tex_ready = tex.detection.ready;
-            ws.tex_outdated = tex.detection.outdated;
+            let ready = self.tex.as_ref().is_some_and(|t| t.detection.ready);
+            let became_ready = ready && !ws.tex_ready;
+            ws.tex_ready = ready;
+            ws.tex_outdated = self.tex.as_ref().is_some_and(|t| t.detection.outdated);
+            if became_ready && !ws.pdf_current {
+                ws.build_soon(false, false);
+            }
             match ws.show(ui, &p, &mut self.settings, &self.backend) {
                 Some(workspace::Action::Library) => self.leave(LEAVE_PROJECT, Box::new(|_| {})),
                 Some(workspace::Action::Settings) => self.save_settings(&ctx),
@@ -1183,14 +1240,15 @@ impl App {
         }
 
         let shell = self.backend.shell.clone();
-        let thumbnail = move |root: &str| shell.load_thumbnail(root.into()).ok();
+        let thumbnail =
+            std::sync::Arc::new(move |root: &str| shell.load_thumbnail(root.into()).ok());
         let mut c = library::Ctx {
             recents: &self.recents,
             groups: &mut self.groups,
             settings: &mut self.settings,
             error: self.open_error.as_deref(),
             no_main_in: self.no_main_in.as_deref(),
-            thumbnail: &thumbnail,
+            thumbnail,
             now_ms: now_ms(),
         };
         if let Some(a) = library::show(ui, &p, &mut self.library, &mut c) {
@@ -1246,6 +1304,91 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_tex_probe_does_not_delay_reopening_the_project() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("paper");
+        let tex = tmp.path().join("tex");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir(&tex).unwrap();
+        std::fs::write(
+            project.join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\nHi\n\\end{document}\n",
+        )
+        .unwrap();
+        for (name, script) in [
+            ("pdflatex", "#!/bin/sh\nsleep 10\n"),
+            ("latexmk", "#!/bin/sh\nexit 0\n"),
+        ] {
+            let path = tex.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let d = dirs(tmp.path());
+        let mut recents = Recents::default();
+        recents.remember(&project.to_string_lossy(), 1.0);
+        recents.save(&d);
+        Settings {
+            first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
+            tex_dir: Some(tex.to_string_lossy().into_owned()),
+            ..Settings::default()
+        }
+        .save(&d);
+        let mut h = app(tmp.path());
+        assert!(h.state().started, "startup must not wait for TeX detection");
+        let start = std::time::Instant::now();
+        while h.state().project.is_none() {
+            assert!(start.elapsed() < std::time::Duration::from_secs(1));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            h.step();
+        }
+    }
+
+    #[test]
+    fn returning_focus_rechecks_tex_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut h = app(tmp.path());
+        let app = h.state_mut();
+        app.tex = None;
+        app.checking = false;
+        app.focus_changed(Some(false));
+        app.focus_changed(Some(true));
+        assert!(app.checking, "focus returned without a TeX recheck");
+        app.checking = false;
+        app.focus_changed(Some(true));
+        assert!(
+            !app.checking,
+            "an unchanged focus state started another probe"
+        );
+    }
+
+    #[test]
+    fn settings_changes_coalesce_before_writing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(tmp.path());
+        Settings {
+            first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
+            ..Settings::default()
+        }
+        .save(&d);
+        let mut h = app(tmp.path());
+        let path = d.config.join("settings.json");
+        std::fs::remove_file(&path).unwrap();
+        let ctx = h.state().backend.ctx().clone();
+        for _ in 0..10 {
+            h.state_mut().save_settings(&ctx);
+        }
+        assert!(!path.exists(), "every change wrote the settings file");
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        h.run_steps(2);
+        assert!(path.exists(), "the final change was not flushed");
+    }
+
     #[test]
     fn first_run_goes_from_welcome_or_onboarding_to_the_library() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1266,7 +1409,9 @@ pub(crate) mod tests {
         wait_for(&mut h, "the empty library", |h| {
             h.query_by_label_contains("No projects yet").is_some()
         });
-        assert!(Settings::load(&dirs(tmp.path())).first_run_done);
+        wait_for(&mut h, "first-run settings to flush", |_h| {
+            Settings::load(&dirs(tmp.path())).first_run_done
+        });
     }
 
     /// A returning user with one project in `tmp`, back in the library; new projects default to `tmp`.
@@ -2365,6 +2510,7 @@ pub(crate) mod tests {
         wait_for(&mut h, "the undo button", |h| {
             h.query_by_label("Undo").is_some()
         });
+        h.run_steps(2);
         h.get_by_label("Undo").click();
         wait_for(&mut h, "the restored file", |_| {
             project.join("introduction copy.tex").exists()
@@ -2379,7 +2525,8 @@ pub(crate) mod tests {
         h.run_steps(2);
         h.key_press(egui::Key::F2);
         wait_for(&mut h, "F2's rename dialog", |h| {
-            h.query_by_label("Rename refs.bib").is_some()
+            h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Rename refs.bib")
+                .is_some()
         });
     }
 
@@ -2496,11 +2643,13 @@ pub(crate) mod tests {
             h.query_by_label("Search shortcuts").is_some()
         });
         h.run_steps(3);
+        h.get_by_label("Search shortcuts").focus();
         h.get_by_label("Search shortcuts").type_text("presenter");
         h.run_steps(2);
         assert!(
             h.query_by_label("Go to a section").is_none(),
-            "the search filters"
+            "the search filters: {:?}",
+            h.state().project.as_ref().unwrap().shortcut_sheet
         );
         h.key_press(egui::Key::Escape);
         h.run_steps(2);
@@ -2870,10 +3019,16 @@ pub(crate) mod tests {
             h.query_by_label("Use it").is_some()
         });
         assert!(h.state().settings.shell_escape_projects.is_empty());
+        h.run_steps(2);
         h.get_by_label("Use it").click();
         h.run_steps(3);
         let root = h.state().project.as_ref().unwrap().root.clone();
-        assert_eq!(h.state().settings.shell_escape_projects, [root]);
+        assert!(h.state().settings.shell_escape_projects.contains(&root));
+        wait_for(&mut h, "the trust setting to flush", |_h| {
+            Settings::load(&dirs(tmp.path()))
+                .shell_escape_projects
+                .contains(&root)
+        });
     }
 
     #[test]
@@ -2955,7 +3110,8 @@ pub(crate) mod tests {
         )
         .unwrap();
         wait_for(&mut h, "the conflict dialog", |h| {
-            h.query_by_label_contains("changed on disk").is_some()
+            h.query_by_role_and_label(egui::accesskit::Role::Dialog, "main.tex changed on disk")
+                .is_some()
         });
         h.get_by_label("Load the version on disk").click();
         wait_for(&mut h, "the disk's text", |h| {
@@ -2979,7 +3135,8 @@ pub(crate) mod tests {
         h.run_steps(2);
         std::fs::remove_file(project.join("main.tex")).unwrap();
         wait_for(&mut h, "the conflict dialog", |h| {
-            h.query_by_label_contains("changed on disk").is_some()
+            h.query_by_role_and_label(egui::accesskit::Role::Dialog, "main.tex changed on disk")
+                .is_some()
         });
         h.get_by_label("Keep my version").click();
         wait_for(&mut h, "the file written back", |_| {
@@ -3000,7 +3157,8 @@ pub(crate) mod tests {
         h.run_steps(2);
         h.get_by_label("Back to all projects").click();
         wait_for(&mut h, "the question", |h| {
-            h.query_by_label("Close the project?").is_some()
+            h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Close the project?")
+                .is_some()
         });
         assert!(h.state().project.is_some());
         h.get_by_label("Save and close").click();
@@ -3040,6 +3198,157 @@ pub(crate) mod tests {
             h.state().project.as_ref().unwrap().shortcut_sheet.is_some(),
             "the sheet stays open"
         );
+    }
+
+    #[test]
+    fn replace_stops_when_its_pre_save_conflicts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.state_mut()
+            .project
+            .as_mut()
+            .unwrap()
+            .open_search(Some("Equation~".into()));
+        wait_for(&mut h, "search results", |h| {
+            h.query_by_label_contains("chapters/method.tex:").is_some()
+        });
+        let rel = "chapters/method.tex";
+        let app = h.state_mut();
+        let ws = app.project.as_mut().unwrap();
+        ws.open_file(&app.backend, rel);
+        wait_for(&mut h, "method's saved buffer", |h| {
+            h.query_by_label("Text of method.tex").is_some()
+        });
+        let disk = project.join(rel);
+        let external = format!(
+            "{}\n% changed outside\n",
+            std::fs::read_to_string(&disk).unwrap()
+        );
+        std::fs::write(&disk, &external).unwrap();
+        let app = h.state_mut();
+        let ws = app.project.as_mut().unwrap();
+        ws.buffers.edit(rel, std::time::Instant::now(), 0);
+        let settings = app.settings.clone();
+        ws.replace_all(&app.backend, &settings);
+        assert!(!ws.after_writes.is_empty(), "the replace must be queued");
+        wait_for(&mut h, "the save conflict", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .buffers
+                .conflicts
+                .iter()
+                .any(|p| p == rel)
+        });
+        h.run_steps(5);
+        assert!(
+            !h.query_by_label_contains("Replaced ").is_some(),
+            "the replacement ran despite the save conflict"
+        );
+        assert!(
+            h.query_by_label_contains("could not be saved").is_some(),
+            "the blocked action was not explained"
+        );
+        assert!(h.state().project.as_ref().unwrap().after_writes.is_empty());
+        assert_eq!(std::fs::read_to_string(disk).unwrap(), external);
+    }
+
+    #[test]
+    fn forgetting_a_project_also_forgets_its_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut h = app(tmp.path());
+        let ctx = h.state().backend.ctx().clone();
+        let path = "/tmp/paper".to_owned();
+        h.state_mut().recents.remember(&path, 1.0);
+        h.state_mut()
+            .groups
+            .members
+            .insert(path.clone(), "group".into());
+        h.state_mut()
+            .on_library(&ctx, library::Action::Forget(path.clone()));
+        assert!(!h.state().groups.members.contains_key(&path));
+    }
+
+    #[test]
+    fn notices_are_deduplicated_and_bounded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        let app = h.state_mut();
+        let ws = app.project.as_mut().unwrap();
+        ws.notices.clear();
+        ws.notice("same", workspace::Tone::Info);
+        ws.notice("same", workspace::Tone::Info);
+        assert_eq!(ws.notices.len(), 1);
+        for i in 0..20 {
+            ws.notice(format!("notice {i}"), workspace::Tone::Info);
+        }
+        assert!(ws.notices.len() <= 8);
+    }
+
+    #[test]
+    fn git_status_refreshes_are_coalesced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        let app = h.state_mut();
+        let ws = app.project.as_mut().unwrap();
+        ws.git.status_pending = true;
+        ws.refresh_git_status(&app.backend);
+        assert!(ws.git.status_pending);
+        assert!(ws.git.status_dirty);
+    }
+
+    #[test]
+    fn stale_project_messages_cannot_replace_current_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        let stale = h.state().project.as_ref().unwrap().project - 1;
+        let seq = h.state().project.as_ref().unwrap().build.seq;
+        let app = h.state_mut();
+        let ws = app.project.as_mut().unwrap();
+        ws.on_msg(
+            &app.backend,
+            &app.settings,
+            Msg::Project(
+                stale,
+                Box::new(Msg::FileRead("old.tex".into(), Ok("from A".into()))),
+            ),
+        );
+        assert!(!ws.editors.contains_key("old.tex"));
+        ws.on_msg(
+            &app.backend,
+            &app.settings,
+            Msg::Project(
+                stale,
+                Box::new(Msg::Built(
+                    seq,
+                    Ok(lemmata_tex::Outcome {
+                        status: lemmata_tex::Status::Success,
+                        duration_ms: 0,
+                        pdf: None,
+                        diagnostics: vec![lemmata_log::Diagnostic {
+                            severity: lemmata_log::Severity::Error,
+                            kind: lemmata_log::Kind::Other,
+                            file: None,
+                            line: None,
+                            message: "from A".into(),
+                            hint: None,
+                            fix: None,
+                        }],
+                        latexmk_failed: false,
+                    }),
+                )),
+            ),
+        );
+        assert!(ws.build.diagnostics.iter().all(|d| d.message != "from A"));
     }
 
     #[test]

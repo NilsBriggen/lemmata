@@ -86,7 +86,7 @@ pub struct RenameSymbol {
     looked_up: Option<(SymbolKind, String)>,
     known: Vec<String>,
     error: Option<String>,
-    busy: bool,
+    pub(super) busy: bool,
     focus: bool,
 }
 
@@ -162,8 +162,7 @@ impl Workspace {
         d.busy = true;
         d.error = None;
         let (kind, old, new) = (d.kind, d.old.trim().to_owned(), d.new.trim().to_owned());
-        self.save_all_quietly(backend, settings);
-        self.after_writes.push(Box::new(move |_, b| {
+        self.after_saving(backend, settings, move |_, b| {
             Workspace::job(
                 b,
                 move |s| {
@@ -196,7 +195,7 @@ impl Workspace {
                     }
                 },
             );
-        }));
+        });
     }
 
     pub(super) fn rename_dialog(

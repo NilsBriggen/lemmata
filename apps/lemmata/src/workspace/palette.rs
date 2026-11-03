@@ -582,7 +582,7 @@ impl Workspace {
             "zotero-sync" => self.sync_zotero(backend, true),
             "export-pdf" => self.export(backend, settings, Save::Pdf),
             "present" => self.present(ctx),
-            "open-external" => backend.spawn(|s| Msg::Done(s.open_pdf_externally())),
+            "open-external" => self.spawn(backend, |s| Msg::Done(s.open_pdf_externally())),
             "save-template" => {
                 self.save_all_quietly(backend, settings);
                 return Some(Action::SaveTemplate(self.root.clone()));

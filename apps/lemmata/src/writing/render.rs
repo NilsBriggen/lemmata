@@ -24,12 +24,82 @@ pub struct Math {
 
 type Key = (String, bool, u32, [u8; 4], u32);
 
+struct Job {
+    owner: std::thread::ThreadId,
+    generation: u64,
+    key: Key,
+    tex: String,
+    display: bool,
+    size: f32,
+    color: Color32,
+    ppp: f32,
+    prelude: String,
+    ctx: egui::Context,
+}
+
+struct DoneJob {
+    owner: std::thread::ThreadId,
+    generation: u64,
+    key: Key,
+    result: Result<(ColorImage, Vec2), String>,
+}
+
+fn completed() -> &'static std::sync::Mutex<Vec<DoneJob>> {
+    static DONE: std::sync::OnceLock<std::sync::Mutex<Vec<DoneJob>>> = std::sync::OnceLock::new();
+    DONE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+fn math_worker() -> &'static std::sync::mpsc::SyncSender<Job> {
+    static WORKER: std::sync::OnceLock<std::sync::mpsc::SyncSender<Job>> =
+        std::sync::OnceLock::new();
+    WORKER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Job>(32);
+        std::thread::Builder::new()
+            .name("math-render".into())
+            .spawn(move || {
+                while let Ok(job) = rx.recv() {
+                    let result =
+                        layout_with(&job.tex, job.display, &job.prelude).and_then(|list| {
+                            let em = job.size * job.ppp;
+                            raster(&list, em, job.color)
+                                .map(|image| {
+                                    (
+                                        image,
+                                        vec2(
+                                            (list.width as f32 * em + 2.0 * PAD) / job.ppp,
+                                            ((list.height + list.depth) as f32 * em + 2.0 * PAD)
+                                                / job.ppp,
+                                        ),
+                                    )
+                                })
+                                .ok_or_else(|| "This formula can't be drawn.".to_owned())
+                        });
+                    completed()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(DoneJob {
+                            owner: job.owner,
+                            generation: job.generation,
+                            key: job.key,
+                            result,
+                        });
+                    job.ctx.request_repaint();
+                }
+            })
+            .expect("the math renderer starts");
+        tx
+    })
+}
+
 #[derive(Default)]
 struct Cache {
     macros: BTreeMap<String, String>,
     /// The macros as `\def`s put before every formula.
     prelude: String,
     done: HashMap<Key, Result<Math, String>>,
+    order: std::collections::VecDeque<Key>,
+    pending: std::collections::HashSet<Key>,
+    generation: u64,
     /// Pixels held by `done`'s textures, in bytes.
     bytes: usize,
 }
@@ -62,15 +132,22 @@ pub fn set_macros(macros: BTreeMap<String, String>) {
             .collect();
         c.macros = macros;
         c.done.clear();
+        c.order.clear();
+        c.pending.clear();
         c.bytes = 0;
+        c.generation += 1;
     });
 }
 
 /// Lays out `tex`; the error message when it can't be parsed.
+#[cfg(test)]
 pub fn layout(tex: &str, display: bool) -> Result<DisplayList, String> {
+    layout_with(tex, display, &CACHE.with_borrow(|c| c.prelude.clone()))
+}
+
+fn layout_with(tex: &str, display: bool, prelude: &str) -> Result<DisplayList, String> {
     use ratex_layout::{LayoutOptions, layout, to_display_list, validate_layout};
     use ratex_types::math_style::MathStyle;
-    let prelude = CACHE.with_borrow(|c| c.prelude.clone());
     let src = format!("{prelude}{tex}");
     let ast = ratex_parser::parse(&src).map_err(|e| {
         e.to_string()
@@ -87,6 +164,48 @@ pub fn layout(tex: &str, display: bool) -> Result<DisplayList, String> {
     Ok(to_display_list(&lbox))
 }
 
+fn receive(ctx: &egui::Context) {
+    let owner = std::thread::current().id();
+    let (jobs, others): (Vec<_>, Vec<_>) =
+        std::mem::take(&mut *completed().lock().unwrap_or_else(|e| e.into_inner()))
+            .into_iter()
+            .partition(|job| job.owner == owner);
+    completed()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend(others);
+    for job in jobs {
+        CACHE.with_borrow_mut(|c| {
+            if job.generation != c.generation {
+                return;
+            }
+            c.pending.remove(&job.key);
+            let result = job.result.map(|(image, size)| Math {
+                texture: ctx.load_texture(
+                    format!("math-{}", job.key.0.len()),
+                    image,
+                    egui::TextureOptions::LINEAR,
+                ),
+                size,
+            });
+            let bytes = result
+                .as_ref()
+                .map_or(0, |m| m.texture.size().iter().product::<usize>() * 4);
+            while (c.done.len() >= 800 || c.bytes + bytes > MAX_BYTES) && !c.order.is_empty() {
+                let old = c.order.pop_front().unwrap();
+                if let Some(old) = c.done.remove(&old) {
+                    c.bytes -= old
+                        .as_ref()
+                        .map_or(0, |m| m.texture.size().iter().product::<usize>() * 4);
+                }
+            }
+            c.bytes += bytes;
+            c.order.push_back(job.key.clone());
+            c.done.insert(job.key, result);
+        });
+    }
+}
+
 /// `tex` rendered `size` points per em in `color`, cached.
 pub fn render(
     ctx: &egui::Context,
@@ -95,6 +214,7 @@ pub fn render(
     size: f32,
     color: Color32,
 ) -> Result<Math, String> {
+    receive(ctx);
     let ppp = ctx.pixels_per_point();
     let key: Key = (
         tex.to_owned(),
@@ -106,35 +226,30 @@ pub fn render(
     if let Some(hit) = CACHE.with_borrow(|c| c.done.get(&key).cloned()) {
         return hit;
     }
-    let result = layout(tex, display).and_then(|list| {
-        let em = size * ppp;
-        let image =
-            raster(&list, em, color).ok_or_else(|| "This formula can't be drawn.".to_owned())?;
-        let texture = ctx.load_texture(
-            format!("math-{}", key.0.len()),
-            image,
-            egui::TextureOptions::LINEAR,
-        );
-        Ok(Math {
-            texture,
-            size: vec2(
-                (list.width as f32 * em + 2.0 * PAD) / ppp,
-                ((list.height + list.depth) as f32 * em + 2.0 * PAD) / ppp,
-            ),
+    let job = CACHE.with_borrow_mut(|c| {
+        if !c.pending.insert(key.clone()) {
+            return None;
+        }
+        Some(Job {
+            owner: std::thread::current().id(),
+            generation: c.generation,
+            key: key.clone(),
+            tex: tex.to_owned(),
+            display,
+            size,
+            color,
+            ppp,
+            prelude: c.prelude.clone(),
+            ctx: ctx.clone(),
         })
     });
-    let bytes = result
-        .as_ref()
-        .map_or(0, |m| m.texture.size().iter().product::<usize>() * 4);
-    CACHE.with_borrow_mut(|c| {
-        if c.done.len() > 800 || c.bytes + bytes > MAX_BYTES {
-            c.done.clear();
-            c.bytes = 0;
-        }
-        c.bytes += bytes;
-        c.done.insert(key, result.clone());
-    });
-    result
+    let Some(job) = job else {
+        return Err("Rendering…".into());
+    };
+    if math_worker().try_send(job).is_err() {
+        CACHE.with_borrow_mut(|c| c.pending.remove(&key));
+    }
+    Err("Rendering…".into())
 }
 
 /// Pixels around the formula, so antialiased edges aren't cut.
@@ -182,6 +297,9 @@ fn raster(list: &DisplayList, em: f32, color: Color32) -> Option<ColorImage> {
     let h = ((list.height + list.depth) as f32 * em + 2.0 * PAD)
         .ceil()
         .clamp(1.0, 4096.0) as u16;
+    if w as usize * h as usize > 4_000_000 {
+        return None;
+    }
     let em = em as f64;
     let pad = PAD as f64;
     let mut cx = RenderContext::new(w, h);
@@ -346,5 +464,35 @@ mod tests {
             img.pixels.iter().any(|p| p.a() > 200),
             "something was drawn"
         );
+    }
+
+    #[test]
+    fn uncached_math_is_rendered_by_a_worker() {
+        set_macros(BTreeMap::new());
+        let ctx = egui::Context::default();
+        let tex = "\\sum_{n=1}^{42} n^2";
+        assert!(render(&ctx, tex, true, 24.0, Color32::BLACK).is_err());
+        let start = std::time::Instant::now();
+        loop {
+            if render(&ctx, tex, true, 24.0, Color32::BLACK).is_ok() {
+                break;
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        #[cfg(target_os = "linux")]
+        assert!(std::fs::read_dir("/proc/self/task").unwrap().any(|entry| {
+            std::fs::read_to_string(entry.unwrap().path().join("comm"))
+                .is_ok_and(|name| name.starts_with("math-render"))
+        }));
+        CACHE.with_borrow(|c| assert!(c.bytes <= MAX_BYTES));
+    }
+
+    #[test]
+    fn excessive_math_images_are_rejected_before_allocation() {
+        let mut list = layout("x", true).unwrap();
+        list.width = 1_000_000_000.0;
+        list.height = 1_000_000_000.0;
+        assert!(raster(&list, 4096.0, Color32::BLACK).is_none());
     }
 }

@@ -274,27 +274,47 @@ pub fn identify_by_path(pdflatex: &Path) -> Option<Distribution> {
     })
 }
 
+fn version_output(pdflatex: &Path, limit: std::time::Duration) -> Option<std::process::Output> {
+    let mut cmd = Command::new(pdflatex);
+    lemmata_env::host(&mut cmd)
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn().ok()?;
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                crate::build::kill_tree(Some(child.id()), true);
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 fn identify(pdflatex: &Path) -> Distribution {
     if let Some(known) = identify_by_path(pdflatex) {
         return known;
     }
     // Ask the program itself, but not for long: a slow start must not hold up the app.
-    let exe = pdflatex.to_path_buf();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut cmd = Command::new(exe);
-        lemmata_env::host(&mut cmd).arg("--version");
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
-        let _ = tx.send(cmd.output());
-    });
-    match rx.recv_timeout(std::time::Duration::from_secs(4)) {
-        Ok(Ok(out)) => parse_version(&String::from_utf8_lossy(&out.stdout)),
-        _ => Distribution::Unknown,
-    }
+    version_output(pdflatex, std::time::Duration::from_secs(4))
+        .map(|out| parse_version(&String::from_utf8_lossy(&out.stdout)))
+        .unwrap_or(Distribution::Unknown)
 }
 
 pub fn parse_version(text: &str) -> Distribution {
@@ -408,6 +428,34 @@ mod tests {
         assert_eq!(
             *searched.borrow(),
             ["pdflatex", "biber", "bibtex", "lualatex"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_out_probe_is_killed_and_reaped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let d = tempfile::tempdir().unwrap();
+        let exe = d.path().join("pdflatex");
+        let pid = d.path().join("pid");
+        std::fs::write(
+            &exe,
+            format!("#!/bin/sh\necho $$ > '{}'\nsleep 30\n", pid.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(version_output(&exe, std::time::Duration::from_millis(50)).is_none());
+        let pid: i32 = std::fs::read_to_string(pid)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // SAFETY: signal 0 only checks whether this specific child still exists.
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "the probe is still running"
         );
     }
 }
