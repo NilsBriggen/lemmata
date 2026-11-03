@@ -409,7 +409,11 @@ impl Workspace {
         ws.refresh_git_status(backend);
         ws.pane.view.set_position(&ws.session_pdf);
         // The PDF on disk shows right away; it is only built again when something changed since.
-        ws.spawn(backend, |shell| Msg::Pdf(shell.read_pdf()));
+        let seq = ws.build.seq;
+        ws.spawn(backend, move |shell| Msg::Pdf {
+            seq,
+            result: shell.read_pdf(),
+        });
         ws
     }
 

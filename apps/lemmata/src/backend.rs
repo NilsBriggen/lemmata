@@ -72,8 +72,11 @@ pub enum Msg {
     Done(Result<(), String>),
     /// A build finished (the number is the workspace's build sequence).
     Built(u64, Result<lemmata_tex::Outcome, String>),
-    /// The project's PDF, read to show it.
-    Pdf(Result<Vec<u8>, String>),
+    /// The project's PDF, read to show it for one build sequence.
+    Pdf {
+        seq: u64,
+        result: Result<Vec<u8>, String>,
+    },
     Synced(Result<Vec<lemmata_synctex::PdfBox>, String>),
     SourceHit(Result<Option<lemmata_shell::SourceHit>, String>),
     /// The raw TeX log, read after this build.

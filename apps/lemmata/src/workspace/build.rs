@@ -340,7 +340,11 @@ impl Workspace {
                 PaneAction::Logs(open) => {
                     self.build.logs_open = open;
                     if !open && !self.pane.has_pdf() {
-                        self.spawn(backend, |shell| Msg::Pdf(shell.read_pdf()));
+                        let seq = self.build.seq;
+                        self.spawn(backend, move |shell| Msg::Pdf {
+                            seq,
+                            result: shell.read_pdf(),
+                        });
                     }
                 }
                 PaneAction::SourceClick(page, x, y) => {
@@ -451,7 +455,10 @@ impl Workspace {
                         let ok = o.status == Status::Success;
                         self.build.outcome = Some(o);
                         if wrote {
-                            self.spawn(backend, |shell| Msg::Pdf(shell.read_pdf()));
+                            self.spawn(backend, move |shell| Msg::Pdf {
+                                seq,
+                                result: shell.read_pdf(),
+                            });
                             // The library thumbnail, at most every two minutes.
                             if self.build.last_thumbnail.is_none_or(|t| t.elapsed() >= Duration::from_secs(120)) {
                                 self.build.last_thumbnail = Some(Instant::now());
@@ -459,7 +466,10 @@ impl Workspace {
                             }
                         } else if !self.pane.has_pdf() {
                             // No new PDF (up to date, or it failed), but an older one may exist.
-                            self.spawn(backend, |shell| Msg::Pdf(shell.read_pdf()));
+                            self.spawn(backend, move |shell| Msg::Pdf {
+                                seq,
+                                result: shell.read_pdf(),
+                            });
                         }
                         if let Some((_, flatten)) = arxiv {
                             if ok {
@@ -498,9 +508,12 @@ impl Workspace {
                     }
                 }
             }
-            Msg::Pdf(Ok(bytes)) => self.pane.view.load(bytes),
-            // No PDF has been built yet: the pane explains that.
-            Msg::Pdf(Err(_)) => {}
+            Msg::Pdf {
+                seq,
+                result: Ok(bytes),
+            } if seq == self.build.seq => self.pane.view.load(bytes),
+            // No PDF has been built yet, or an older read answered late.
+            Msg::Pdf { .. } => {}
             Msg::Synced(Ok(boxes)) => {
                 if let Some(b) = boxes.first() {
                     self.build.logs_open = false;

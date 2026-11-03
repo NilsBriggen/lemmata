@@ -628,7 +628,7 @@ impl App {
             | Msg::Analysis(..)
             | Msg::Info(_)
             | Msg::Built(..)
-            | Msg::Pdf(_)
+            | Msg::Pdf { .. }
             | Msg::Synced(_)
             | Msg::SourceHit(_)
             | Msg::Log(..)
@@ -3850,6 +3850,61 @@ pub(crate) mod tests {
         ws.refresh_git_status(&app.backend);
         assert!(ws.git.status_pending);
         assert!(ws.git.status_dirty);
+    }
+
+    #[test]
+    fn pdf_read_sequence_keeps_the_newest_document() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        wait_for(&mut h, "the initial PDF", |h| {
+            h.state().project.as_ref().unwrap().pane.view.rendered()
+        });
+        let old = std::fs::read(project.join(".lemmata/build/main.pdf")).unwrap();
+        let new = include_bytes!("../tests/pdf/type3-bitmap-fonts.pdf").to_vec();
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        let ws = app.project.as_mut().unwrap();
+        ws.build.seq = 2;
+        ws.on_build_msg(
+            backend,
+            &settings,
+            Msg::Pdf {
+                seq: 2,
+                result: Ok(new.clone()),
+            },
+        );
+        ws.on_build_msg(
+            backend,
+            &settings,
+            Msg::Pdf {
+                seq: 1,
+                result: Ok(old),
+            },
+        );
+        wait_for(&mut h, "the newer PDF", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .pane
+                .view
+                .shown_bytes()
+                .is_some_and(|bytes| bytes.as_slice() == new)
+        });
+        h.run_steps(50);
+        assert!(
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .pane
+                .view
+                .shown_bytes()
+                .is_some_and(|bytes| bytes.as_slice() == new)
+        );
     }
 
     #[test]

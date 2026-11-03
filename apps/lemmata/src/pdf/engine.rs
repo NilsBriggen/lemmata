@@ -176,11 +176,10 @@ impl Engine {
     pub fn send(&self, job: Job) {
         let page = match &job {
             Job::Load { doc, .. } => {
-                self.pool
-                    .routes
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(*doc, (self.owner, self.done.clone()));
+                let mut routes = self.pool.routes.lock().unwrap_or_else(|e| e.into_inner());
+                routes.retain(|_, (owner, _)| *owner != self.owner);
+                routes.insert(*doc, (self.owner, self.done.clone()));
+                drop(routes);
                 for tx in &self.pool.tx {
                     let _ = tx.send(job.clone());
                 }
@@ -235,8 +234,14 @@ fn run(jobs: Receiver<Job>, routes: Routes, ctx: egui::Context, announce: bool) 
                 },
             };
             if let Job::Load { doc, bytes } = job {
-                documents.insert(doc, bytes.clone());
-                break (doc, bytes);
+                let active = routes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains_key(&doc);
+                if active {
+                    documents.insert(doc, bytes.clone());
+                    break (doc, bytes);
+                }
             }
         };
         let active: std::collections::HashSet<u64> = routes
@@ -940,6 +945,39 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn superseded_pdf_routes_are_retired_per_viewer() {
+        let one = Engine::new(egui::Context::default());
+        let two = Engine::new(egui::Context::default());
+        for _ in 0..50 {
+            let doc = one.next_doc();
+            one.send(Job::Load {
+                doc,
+                bytes: Arc::new(vec![0]),
+            });
+        }
+        let other = two.next_doc();
+        two.send(Job::Load {
+            doc: other,
+            bytes: Arc::new(vec![0]),
+        });
+        let routes = one.pool.routes.lock().unwrap();
+        assert_eq!(
+            routes
+                .values()
+                .filter(|(owner, _)| *owner == one.owner)
+                .count(),
+            1
+        );
+        assert_eq!(
+            routes
+                .values()
+                .filter(|(owner, _)| *owner == two.owner)
+                .count(),
+            1
+        );
     }
 
     #[test]
