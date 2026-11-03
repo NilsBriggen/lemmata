@@ -2,6 +2,11 @@
 
 All notable changes to Lemmata.
 
+## 3.0.1-rc.3 (2026-11-03)
+
+### Fixed
+- Render every active PDF document
+
 ## 3.0.1-rc.2 (2026-11-03)
 
 ## 3.0.1-rc.1 (2026-11-03)
