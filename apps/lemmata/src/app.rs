@@ -1785,6 +1785,10 @@ pub(crate) mod tests {
                 .text()
                 .contains("notacommand")
         });
+        wait_for(&mut h, "the compiler to be idle", |h| {
+            let build = &h.state().project.as_ref().unwrap().build;
+            !build.building && build.deadline.is_none()
+        });
         h.get_by_label("Recompile").click();
         wait_for(&mut h, "the failed build", |h| {
             let b = &h.state().project.as_ref().unwrap().build;
@@ -2968,24 +2972,15 @@ pub(crate) mod tests {
         });
 
         // Dropped on the text of main.tex: a figure there.
-        let tree_right = h
-            .get_by_role_and_label(egui::accesskit::Role::TreeItem, "main.tex")
-            .rect()
-            .right();
         h.get_by_role_and_label(egui::accesskit::Role::TreeItem, "main.tex")
             .click();
         wait_for(&mut h, "main.tex", |h| {
             h.query_by_label("Text of main.tex").is_some()
         });
-        h.run_steps(2);
-        wait_for(&mut h, "main.tex to settle", |h| {
-            h.query_by_label("Text of main.tex")
-                .is_some_and(|node| node.rect().left() >= tree_right)
-        });
-        let text = h.get_by_label("Text of main.tex").rect();
-        h.event(egui::Event::PointerMoved(
-            text.left_top() + egui::vec2(120.0, 20.0),
-        ));
+        h.run_steps(10);
+        let drop_at = egui::pos2(360.0, 139.0);
+        h.hover_at(drop_at);
+        h.step();
         h.input_mut()
             .dropped_files
             .push(std::sync::Arc::new(Dropped(img)));
