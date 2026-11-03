@@ -218,15 +218,39 @@ fn doctor() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn watch_path_relevant(
+    root: &Path,
+    outdir: &Path,
+    path: &Path,
+    last_build: std::time::SystemTime,
+) -> bool {
+    let modified = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t > last_build);
+    modified
+        && path.strip_prefix(root).is_ok_and(|rel| {
+            let outdir: PathBuf = outdir
+                .components()
+                .filter(|c| matches!(c, std::path::Component::Normal(_)))
+                .collect();
+            rel.components().next().is_some()
+                && !rel.starts_with(&outdir)
+                && !rel
+                    .components()
+                    .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+                && !rel.to_string_lossy().ends_with(".lemmata-tmp")
+        })
+}
+
 /// Keeps rebuilding while the project changes. Ctrl+C stops it.
 async fn watch(dir: PathBuf, json: bool) -> anyhow::Result<()> {
     use notify::RecursiveMode;
     use notify_debouncer_mini::new_debouncer;
     use std::time::Duration;
 
-    let root = Project::open(&dir)
-        .with_context(|| format!("opening {}", dir.display()))?
-        .root;
+    let project = Project::open(&dir).with_context(|| format!("opening {}", dir.display()))?;
+    let root = project.root.clone();
+    let outdir = project.config.outdir.clone();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut debouncer = new_debouncer(Duration::from_millis(400), move |res| {
         let _ = tx.send(res);
@@ -243,22 +267,11 @@ async fn watch(dir: PathBuf, json: bool) -> anyhow::Result<()> {
     while let Some(res) = rx.recv().await {
         let Ok(events) = res else { continue };
         // Reading a file during a build also raises an event, so only files
-        // modified since the last build started count. Edits to hidden files
-        // (.git, .lemmata) and our own temp files don't count either.
-        let relevant = events.iter().any(|e| {
-            let modified = std::fs::metadata(&e.path)
-                .and_then(|m| m.modified())
-                .is_ok_and(|t| t > last_build);
-            modified
-                && e.path.strip_prefix(&root).is_ok_and(|rel| {
-                    // The folder itself (its timestamp moves when a build starts) isn't a change.
-                    rel.components().next().is_some()
-                        && !rel
-                            .components()
-                            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
-                        && !rel.to_string_lossy().ends_with(".lemmata-tmp")
-                })
-        });
+        // modified since the last build started count. Hidden files, our own
+        // output and our temp files don't count either.
+        let relevant = events
+            .iter()
+            .any(|e| watch_path_relevant(&root, Path::new(&outdir), &e.path, last_build));
         if relevant {
             eprintln!("\nChange detected, rebuilding…");
             last_build = std::time::SystemTime::now();
@@ -379,4 +392,72 @@ fn outline(dir: &Path, json: bool) -> anyhow::Result<()> {
 
 fn open(dir: &Path) -> anyhow::Result<Project> {
     Project::open(dir).with_context(|| format!("opening {}", dir.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_ignores_only_the_configured_output_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for name in [
+            "build/main.pdf",
+            "build/nested/main.log",
+            "build-notes/main.tex",
+            ".git/main.tex",
+            "main.lemmata-tmp",
+            "main.tex",
+        ] {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "x").unwrap();
+        }
+        let outdir = Path::new("./build");
+        let since = std::time::SystemTime::UNIX_EPOCH;
+        assert!(!watch_path_relevant(
+            root,
+            outdir,
+            &root.join("build/main.pdf"),
+            since
+        ));
+        assert!(!watch_path_relevant(
+            root,
+            outdir,
+            &root.join("./build/main.log"),
+            since
+        ));
+        assert!(!watch_path_relevant(
+            root,
+            outdir,
+            &root.join("build/nested/main.log"),
+            since,
+        ));
+        assert!(watch_path_relevant(
+            root,
+            outdir,
+            &root.join("build-notes/main.tex"),
+            since,
+        ));
+        assert!(!watch_path_relevant(
+            root,
+            outdir,
+            &root.join(".git/main.tex"),
+            since
+        ));
+        assert!(!watch_path_relevant(
+            root,
+            outdir,
+            &root.join("main.lemmata-tmp"),
+            since
+        ));
+        assert!(watch_path_relevant(
+            root,
+            outdir,
+            &root.join("main.tex"),
+            since
+        ));
+        assert!(!watch_path_relevant(root, outdir, root, since));
+    }
 }

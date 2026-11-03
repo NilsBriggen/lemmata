@@ -427,3 +427,79 @@ fn export_arxiv_refuses_a_document_that_does_not_build() {
     assert_eq!(code(&o), 0);
     assert!(zip.exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn watch_ignores_its_visible_build_folder() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("project");
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir(&bin).unwrap();
+    fs::write(project.join("lemmata.toml"), "outdir = \"build\"\n").unwrap();
+    fs::write(
+        project.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\nOne\n\\end{document}\n",
+    )
+    .unwrap();
+    let script = "#!/bin/sh\nmkdir -p build\nprintf '%PDF-1.4\\n' > build/main.pdf\nprintf 'Output written on main.pdf.\\n' > build/main.log\n";
+    for (name, body) in [
+        ("latexmk", script),
+        (
+            "pdflatex",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nmkdir -p build\nprintf '%PDF-1.4\\n' > build/main.pdf\nprintf 'Output written on main.pdf.\\n' > build/main.log\n",
+        ),
+    ] {
+        let tool = bin.join(name);
+        fs::write(&tool, body).unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let log = tmp.path().join("watch.log");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lemmata"))
+        .arg("watch")
+        .arg(&project)
+        .env("PATH", path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let mut file = fs::File::create(&log).unwrap();
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut stderr, &mut file);
+    });
+    let changes = || {
+        fs::read_to_string(&log)
+            .map(|text| text.matches("Change detected, rebuilding").count())
+            .unwrap_or(0)
+    };
+    let start = std::time::Instant::now();
+    while !project.join("build/main.pdf").is_file() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(changes(), 0, "build output retriggered the watcher");
+    let mut source = fs::OpenOptions::new()
+        .append(true)
+        .open(project.join("main.tex"))
+        .unwrap();
+    std::io::Write::write_all(&mut source, b"% source edit\n").unwrap();
+    source.sync_all().unwrap();
+    let start = std::time::Instant::now();
+    while changes() < 1 {
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(changes(), 1, "a source edit should rebuild exactly once");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
