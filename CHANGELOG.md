@@ -2,6 +2,8 @@
 
 All notable changes to Lemmata.
 
+## 3.0.1-rc.4 (2026-11-03)
+
 ## 3.0.1-rc.3 (2026-11-03)
 
 ### Fixed
