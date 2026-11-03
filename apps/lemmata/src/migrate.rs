@@ -15,27 +15,30 @@ const GROUPS: &str = "lemmata.groups";
 
 /// Copies the Tauri app's lists when this app has none of its own yet.
 pub fn run(dirs: &Dirs) {
+    run_with(dirs, read);
+}
+
+fn run_with(dirs: &Dirs, read: impl FnOnce(&Dirs) -> Option<Vec<(String, String)>>) {
     let (recent, groups) = (
         dirs.config.join("recent.json"),
         dirs.config.join("groups.json"),
     );
-    if recent.exists() || groups.exists() {
+    if recent.exists() && groups.exists() {
         return;
     }
-    let Some(found) = read(dirs) else { return };
+    let found = read(dirs);
     let value = |key| {
         found
             .iter()
+            .flatten()
             .find(|(k, _)| k == key)
             .and_then(|(_, v)| serde_json::from_str(v).ok())
     };
-    let r = Recents::parse(value(RECENT));
-    let g = Groups::parse(value(GROUPS));
-    if !r.0.is_empty() {
-        r.save(dirs);
+    if !recent.exists() {
+        Recents::parse(value(RECENT)).save(dirs);
     }
-    if !g.groups.is_empty() {
-        g.save(dirs);
+    if !groups.exists() {
+        Groups::parse(value(GROUPS)).save(dirs);
     }
 }
 
@@ -339,11 +342,49 @@ mod tests {
     }
 
     #[test]
-    fn nothing_to_copy_writes_nothing() {
+    fn no_legacy_data_writes_empty_defaults() {
         let tmp = tempfile::tempdir().unwrap();
         let d = dirs(tmp.path());
         run(&d);
-        assert!(!d.config.join("recent.json").exists());
+        assert!(d.config.join("recent.json").is_file());
+        assert!(d.config.join("groups.json").is_file());
+        assert!(Recents::load(&d).0.is_empty());
+        assert!(Groups::load(&d).groups.is_empty());
+    }
+
+    #[test]
+    fn empty_legacy_data_is_looked_up_only_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(tmp.path());
+        let calls = std::cell::Cell::new(0);
+        for _ in 0..2 {
+            run_with(&d, |_| {
+                calls.set(calls.get() + 1);
+                Some(Vec::new())
+            });
+        }
+        assert_eq!(calls.get(), 1);
+        assert!(Recents::load(&d).0.is_empty());
+        assert!(Groups::load(&d).groups.is_empty());
+    }
+
+    #[test]
+    fn existing_lists_are_preserved_while_the_other_is_created() {
+        for existing in ["recent.json", "groups.json"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let d = dirs(tmp.path());
+            std::fs::create_dir_all(&d.config).unwrap();
+            let path = d.config.join(existing);
+            std::fs::write(&path, "keep these bytes").unwrap();
+            run(&d);
+            assert_eq!(std::fs::read_to_string(path).unwrap(), "keep these bytes");
+            let other = if existing == "recent.json" {
+                "groups.json"
+            } else {
+                "recent.json"
+            };
+            assert!(d.config.join(other).is_file(), "missing {other}");
+        }
     }
 
     #[test]
