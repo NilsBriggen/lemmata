@@ -3765,6 +3765,135 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn retry_save_recovers_without_compiling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.state_mut().settings.auto_compile = false;
+        h.state_mut().settings.autosave_ms = 0.0;
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex").type_text("% retry save");
+        h.run_steps(2);
+        let before = h.state().project.as_ref().unwrap().build.seq;
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        let ws = app.project.as_mut().unwrap();
+        let written = ws.editors["main.tex"].doc.text();
+        ws.on_msg(
+            backend,
+            &settings,
+            Msg::FileWritten {
+                project: ws.project,
+                path: "main.tex".into(),
+                written,
+                result: Err("disk full".into()),
+            },
+        );
+        h.run_steps(2);
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Retry save")
+            .click();
+        wait_for(&mut h, "the recovered save", |h| {
+            std::fs::read_to_string(project.join("main.tex"))
+                .is_ok_and(|text| text.contains("% retry save"))
+                && h.state()
+                    .project
+                    .as_ref()
+                    .is_some_and(|ws| ws.buffers.failed.is_empty())
+        });
+        let ws = h.state().project.as_ref().unwrap();
+        assert_eq!(ws.build.seq, before);
+        assert!(ws.buffers.failed.is_empty());
+        assert!(ws.open_error.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retry_save_preserves_edits_after_repeated_failure_and_conflict() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.state_mut().settings.auto_compile = false;
+        h.state_mut().settings.autosave_ms = 0.0;
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex")
+            .type_text("% conflict retry");
+        h.run_steps(2);
+        let app = h.state_mut();
+        app.project.as_mut().unwrap().open_error = Some("unrelated package error".into());
+        h.run_steps(2);
+        assert!(h.query_by_label("Retry save").is_none());
+        let before = h.state().project.as_ref().unwrap().build.seq;
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        let ws = app.project.as_mut().unwrap();
+        ws.open_error = None;
+        let written = ws.editors["main.tex"].doc.text();
+        ws.on_msg(
+            backend,
+            &settings,
+            Msg::FileWritten {
+                project: ws.project,
+                path: "main.tex".into(),
+                written,
+                result: Err("injected failure".into()),
+            },
+        );
+        h.run_steps(2);
+
+        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o555)).unwrap();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Retry save")
+            .click();
+        wait_for(&mut h, "the repeated failure", |h| {
+            !h.state().project.as_ref().unwrap().writing()
+        });
+        let ws = h.state().project.as_ref().unwrap();
+        assert!(ws.buffers.failed.contains(&"main.tex".into()));
+        assert!(ws.buffers.dirty.contains("main.tex"));
+        assert!(
+            ws.editors["main.tex"]
+                .doc
+                .text()
+                .contains("% conflict retry")
+        );
+        assert!(ws.save_error.is_some());
+
+        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(project.join("main.tex"), "external version\n").unwrap();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Retry save")
+            .click();
+        wait_for(&mut h, "the conflict", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .buffers
+                .conflicts
+                .contains(&"main.tex".into())
+        });
+        let ws = h.state().project.as_ref().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(project.join("main.tex")).unwrap(),
+            "external version\n"
+        );
+        assert!(
+            ws.editors["main.tex"]
+                .doc
+                .text()
+                .contains("% conflict retry")
+        );
+        assert!(ws.save_error.is_none());
+        assert_eq!(ws.build.seq, before);
+    }
+
+    #[test]
     fn typing_saves_after_the_delay_and_the_file_changes_on_disk() {
         let tmp = tempfile::tempdir().unwrap();
         let Some((mut h, project)) = in_article(tmp.path()) else {

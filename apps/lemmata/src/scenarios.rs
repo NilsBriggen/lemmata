@@ -757,9 +757,11 @@ fn controls_are_where_people_look() {
     );
     // The status bar's word count opens the breakdown.
     wait_for(&mut h, "the word count", |h| {
-        h.query_by_label_contains("Words in the document body").is_some()
+        h.query_by_label_contains("Words in the document body")
+            .is_some()
     });
-    h.get_by_label_contains("Words in the document body").click();
+    h.get_by_label_contains("Words in the document body")
+        .click();
     wait_for(&mut h, "the breakdown", |h| ws(h).words.is_some());
     h.key_press(egui::Key::Escape);
     h.run_steps(3);

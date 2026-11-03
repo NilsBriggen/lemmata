@@ -165,6 +165,7 @@ pub struct Workspace {
     pub outline_open: bool,
     pub outline_folded: HashSet<String>,
     pub open_error: Option<String>,
+    pub save_error: Option<(String, String)>,
     pub selection_words: usize,
     pub focus_mode: bool,
     pub menu: Option<Menu>,
@@ -318,6 +319,7 @@ impl Workspace {
             outline_open: true,
             outline_folded: HashSet::new(),
             open_error: None,
+            save_error: None,
             selection_words: 0,
             focus_mode: false,
             menu: None,
@@ -714,6 +716,18 @@ impl Workspace {
         });
     }
 
+    pub fn retry_save(&mut self, backend: &Backend, settings: &Settings) {
+        let Some((path, _)) = &self.save_error else {
+            return;
+        };
+        if self.in_flight.contains(path) {
+            return;
+        }
+        let path = path.clone();
+        self.no_build.insert(path.clone());
+        self.write(backend, &path, settings);
+    }
+
     /// Ctrl+S: every unsaved file now.
     pub fn save_all(&mut self, backend: &Backend, settings: &Settings) {
         for p in self.buffers.unsaved() {
@@ -850,6 +864,10 @@ impl Workspace {
                     Self::autosave_ms(settings),
                 ) {
                     WriteResult::Saved => {
+                        if self.save_error.as_ref().is_some_and(|(p, _)| p == &path) {
+                            self.save_error = None;
+                            self.open_error = None;
+                        }
                         self.after_save(backend, settings, &path);
                         self.move_comments(backend, &path, &written);
                         self.snapshot_after_save(backend);
@@ -869,6 +887,8 @@ impl Workspace {
                         }
                     }
                     WriteResult::Conflict => {
+                        self.save_error = None;
+                        self.open_error = None;
                         self.no_build.remove(&path);
                         self.closing_after_save.remove(&path);
                     }
@@ -877,6 +897,7 @@ impl Workspace {
                         self.adding_package = None;
                         self.closing_after_save.remove(&path);
                         self.notice(format!("{path} was not saved: {e}"), Tone::Error);
+                        self.save_error = Some((path.clone(), e.clone()));
                         self.open_error = Some(e);
                     }
                 }
@@ -1404,6 +1425,17 @@ impl Workspace {
                     .max_rect(r.shrink2(vec2(8.0, 0.0)))
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
             );
+            if let Some((path, _)) = self.save_error.clone() {
+                let writing = self.in_flight.contains(&path);
+                if Button::new("Retry save")
+                    .size(widgets::Size::Sm)
+                    .enabled(!writing)
+                    .show(&mut c, p)
+                    .clicked()
+                {
+                    self.retry_save(backend, settings);
+                }
+            }
             if Button::icon(crate::icons::X, "Dismiss")
                 .size(widgets::Size::Sm)
                 .show_icon(&mut c, p)
@@ -1411,6 +1443,7 @@ impl Workspace {
                 .clicked()
             {
                 self.open_error = None;
+                self.save_error = None;
             }
             c.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add_space(6.0);
