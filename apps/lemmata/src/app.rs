@@ -229,8 +229,14 @@ impl App {
     fn handle_request(&mut self, request: Request) {
         match request {
             Request::Open(target) => {
-                self.open_file_after = target.file;
-                self.open_project(target.project_root.to_string_lossy().into_owned())
+                self.open_error = None;
+                self.no_main_in = None;
+                self.backend.spawn(move |_| {
+                    let result = lemmata_project::Project::open_with_tree(&target.project_root)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string());
+                    Msg::OpenPreflight(target, result)
+                });
             }
             // The dialogs live on the start screen: the project closes (saving) first.
             Request::Clone { url } => self.leave(
@@ -491,6 +497,28 @@ impl App {
             None => msg,
         };
         match msg {
+            Msg::OpenPreflight(target, Ok(())) => {
+                let path = target.project_root.to_string_lossy().into_owned();
+                let file = target.file;
+                self.leave(
+                    LEAVE_PROJECT,
+                    Box::new(move |app| {
+                        app.open_file_after = file;
+                        app.open_project(path);
+                    }),
+                );
+            }
+            Msg::OpenPreflight(target, Err(e)) => {
+                self.open_file_after = None;
+                let path = target.project_root.to_string_lossy().into_owned();
+                if e.contains("main")
+                    && target.project_root.is_dir()
+                    && !target.project_root.join("main.tex").exists()
+                {
+                    self.no_main_in = Some(path);
+                }
+                self.open_error = Some(e);
+            }
             Msg::Tex(status) => {
                 self.checking = false;
                 if !status.detection.ready && self.onboarding.is_none() {
@@ -3014,6 +3042,115 @@ pub(crate) mod tests {
                 .as_ref()
                 .is_some_and(|w| w.active.as_deref() == Some("chapters/method.tex"))
         });
+    }
+
+    #[test]
+    fn os_open_saves_dirty_project_before_activation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let other = tmp.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("main.tex"), "\\documentclass{article}\n").unwrap();
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex").type_text("% from A");
+        h.run_steps(2);
+        let target = lemmata_shell::open_with::OpenTarget {
+            project_root: other,
+            file: None,
+        };
+        h.state_mut().handle_request(Request::Open(target));
+        wait_for(&mut h, "the other project", |h| {
+            h.state().project.as_ref().map(|ws| ws.info.name.as_str()) == Some("other")
+        });
+        let text = std::fs::read_to_string(project.join("main.tex")).unwrap();
+        assert!(text.contains("% from A"), "{text}");
+        assert_eq!(
+            h.state().project.as_ref().map(|ws| ws.info.name.as_str()),
+            Some("other"),
+            "open_error={:?}, leaving={}, saving={}, open_generation={}",
+            h.state().open_error,
+            h.state().leaving.is_some(),
+            h.state().quit == Quit::Saving,
+            h.state().open_generation,
+        );
+    }
+
+    #[test]
+    fn os_open_invalid_or_cancelled_preserves_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let generation = h.state().open_generation;
+        let target = lemmata_shell::open_with::OpenTarget {
+            project_root: tmp.path().join("missing"),
+            file: None,
+        };
+        h.state_mut().handle_request(Request::Open(target));
+        wait_for(&mut h, "the invalid project error", |h| {
+            h.state().open_error.is_some()
+        });
+        assert_eq!(h.state().open_generation, generation);
+        assert_eq!(h.state().project.as_ref().unwrap().root, project);
+
+        h.state_mut().settings.autosave_ms = 0.0;
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex").type_text("% still mine");
+        h.run_steps(2);
+        let other = tmp.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("main.tex"), "\\documentclass{article}\n").unwrap();
+        let target = lemmata_shell::open_with::OpenTarget {
+            project_root: other,
+            file: None,
+        };
+        h.state_mut().handle_request(Request::Open(target));
+        wait_for(&mut h, "the close question", |h| {
+            h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Close the project?")
+                .is_some()
+        });
+        h.get_by_label("Cancel").click();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+        wait_for(&mut h, "the save after cancellation", |_| {
+            std::fs::read_to_string(project.join("main.tex"))
+                .is_ok_and(|text| text.contains("% still mine"))
+        });
+    }
+
+    #[test]
+    fn reopening_the_same_project_preserves_save_ordering() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex")
+            .type_text("% before reopen");
+        h.run_steps(2);
+        let target = lemmata_shell::open_with::OpenTarget {
+            project_root: project.clone(),
+            file: Some("main.tex".into()),
+        };
+        let generation = h.state().open_generation;
+        h.state_mut().handle_request(Request::Open(target));
+        wait_for(&mut h, "the reopened project", |h| {
+            h.state().open_generation > generation
+                && h.state().project.as_ref().is_some_and(|ws| {
+                    ws.root == project && ws.active.as_deref() == Some("main.tex")
+                })
+        });
+        let text = std::fs::read_to_string(project.join("main.tex")).unwrap();
+        assert!(text.contains("% before reopen"), "{text}");
+        assert!(
+            h.state().project.as_ref().is_some_and(|ws| {
+                ws.root == project && ws.active.as_deref() == Some("main.tex")
+            })
+        );
     }
 
     #[test]

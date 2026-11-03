@@ -38,6 +38,7 @@ pub enum Msg {
     /// A folder or file the user picked, for the job that asked.
     Picked(Pick, Option<PathBuf>),
     Opened(String, Result<lemmata_shell::ProjectAnalysis, String>),
+    OpenPreflight(lemmata_shell::open_with::OpenTarget, Result<(), String>),
     Trashed(String, Result<(), String>),
     Tectonic(Result<(), String>),
     Terminal(Result<(), String>),
