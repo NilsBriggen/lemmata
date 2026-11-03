@@ -907,33 +907,35 @@ mod tests {
             expected.into_iter().flat_map(|(a, b)| [a, b]).collect();
         let mut loaded = std::collections::HashSet::new();
         let mut rendered = std::collections::HashSet::new();
+        let start = std::time::Instant::now();
         while rendered.len() < expected.len() {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(30),
+                "loaded {loaded:?}, rendered {rendered:?}, expected {expected:?}"
+            );
             for engine in [&one, &two] {
-                let answer = engine
-                    .rx
-                    .recv_timeout(std::time::Duration::from_secs(5))
-                    .unwrap_or_else(|_| {
-                        panic!("loaded {loaded:?}, rendered {rendered:?}, expected {expected:?}")
-                    });
-                match answer {
-                    Done::Loaded { doc, result: Ok(_) }
-                        if expected.contains(&doc) && loaded.insert(doc) =>
-                    {
-                        engine.send(Job::Render {
-                            doc,
-                            page: 0,
-                            scale: 1.0,
-                            dark: false,
-                            epoch: None,
-                            thumb: false,
-                        });
+                while let Ok(answer) = engine.rx.try_recv() {
+                    match answer {
+                        Done::Loaded { doc, result: Ok(_) }
+                            if expected.contains(&doc) && loaded.insert(doc) =>
+                        {
+                            engine.send(Job::Render {
+                                doc,
+                                page: 0,
+                                scale: 1.0,
+                                dark: false,
+                                epoch: None,
+                                thumb: false,
+                            });
+                        }
+                        Done::Rendered { doc, .. } => {
+                            rendered.insert(doc);
+                        }
+                        _ => {}
                     }
-                    Done::Rendered { doc, .. } => {
-                        rendered.insert(doc);
-                    }
-                    _ => {}
                 }
             }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 

@@ -1272,10 +1272,7 @@ mod tests {
         reads.sort();
         assert_eq!(
             reads,
-            [
-                d.path().join("chapters/method.tex"),
-                d.path().join("main.tex")
-            ]
+            [p.root.join("chapters/method.tex"), p.root.join("main.tex")]
         );
         assert_eq!(analysis.outline.headings.len(), 2);
         assert_eq!(analysis.labels.len(), 2);
