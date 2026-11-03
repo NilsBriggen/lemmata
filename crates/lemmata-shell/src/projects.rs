@@ -217,12 +217,18 @@ pub fn create_from_template(
     if target.starts_with(&source) {
         return Err("The new project must not be inside its template.".into());
     }
-    copy_dir(&source, &target).map_err(|e| format!("Could not create the project: {e}"))?;
-    let _ = fs::remove_file(target.join(META));
-    if !id.starts_with(USER_PREFIX) {
-        let _ = fs::remove_file(target.join(PREVIEW));
+    let result = (|| {
+        copy_dir(&source, &target).map_err(|e| format!("Could not create the project: {e}"))?;
+        let _ = fs::remove_file(target.join(META));
+        if !id.starts_with(USER_PREFIX) {
+            let _ = fs::remove_file(target.join(PREVIEW));
+        }
+        Ok(target.clone())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&target);
     }
-    Ok(target)
+    result
 }
 
 /// Sets a new project's engine to Tectonic, keeping the rest of its lemmata.toml.
@@ -723,6 +729,28 @@ mod tests {
         assert!(
             create_from_template(&bundled, &none, &user, "online:../x", d.path(), "q").is_err()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_template_creation_rolls_back_and_allows_retry() {
+        let d = tempfile::tempdir().unwrap();
+        let none = d.path().join("none");
+        let user = d.path().join("user");
+        let bundled = d.path().join("templates");
+        let source = bundled.join("article");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join(META), "name = \"Article\"\n").unwrap();
+        fs::write(source.join("main.tex"), "\\documentclass{article}").unwrap();
+        let broken = source.join("broken.tex");
+        std::os::unix::fs::symlink(d.path().join("missing.tex"), &broken).unwrap();
+        assert!(
+            create_from_template(&bundled, &none, &user, "article", d.path(), "paper").is_err()
+        );
+        assert!(!d.path().join("paper").exists());
+        fs::remove_file(&broken).unwrap();
+        let p = create_from_template(&bundled, &none, &user, "article", d.path(), "paper").unwrap();
+        assert!(p.join("main.tex").is_file());
     }
 
     #[test]
