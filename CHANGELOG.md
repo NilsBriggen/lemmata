@@ -2,6 +2,11 @@
 
 All notable changes to Lemmata.
 
+## 3.0.1-rc.1 (2026-11-03)
+
+### Fixed
+- Harden project work and desktop performance
+
 ## 3.0.0 (2026-10-23)
 
 Lemmata 3 is the same editor rebuilt as one native program, without a web view. Your settings, recent projects, library folders and where you were in each project carry over from 2.x.
