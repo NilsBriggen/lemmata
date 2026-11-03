@@ -204,11 +204,15 @@ pub fn toolbar(
     });
     r.add_space(4.0 + 6.0);
     r.spacing_mut().item_spacing.x = 6.0;
-    let _ = Button::icon(icons::SETTINGS, "Project settings")
+    if Button::icon(icons::SETTINGS, "Project settings")
         .kind(Kind::Chrome)
         .icon_size(17.0)
         .show_icon(&mut r, p)
-        .on_hover_text("Project settings");
+        .on_hover_text("Project settings")
+        .clicked()
+    {
+        ws.open_project_settings();
+    }
     use super::panels::Panel;
     let open_comments = ws.comments.threads.iter().filter(|t| !t.resolved).count();
     let git_changes = ws.git.status.len();
@@ -1470,20 +1474,34 @@ pub fn status_bar(
     changed
 }
 
-/// `.status-link`: plain text until hovered, then underlined (`.bad` ones always are).
-fn status_link(ui: &mut Ui, text: String, color: Color32, tip: &str, bad: bool) -> egui::Response {
+struct StatusLink(egui::Response, bool);
+
+impl StatusLink {
+    fn clicked(&self) -> bool {
+        self.0.clicked() || self.1
+    }
+}
+
+/// `.status-link`: plain text until hovered or focused, then underlined (`.bad` ones always are).
+fn status_link(ui: &mut Ui, text: String, color: Color32, tip: &str, bad: bool) -> StatusLink {
     let r = ui.add(
         egui::Label::new(egui::RichText::new(text).size(12.0).color(color)).sense(Sense::click()),
     );
-    if bad || r.hovered() {
+    let keyboard = r.has_focus()
+        && ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Space));
+    if bad || r.hovered() || r.has_focus() {
         ui.painter().hline(
             r.rect.x_range(),
             r.rect.bottom() - 1.0,
             Stroke::new(1.0, color),
         );
     }
-    r.on_hover_text(tip)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
+    StatusLink(
+        r.on_hover_text(tip)
+            .on_hover_cursor(egui::CursorIcon::PointingHand),
+        keyboard,
+    )
 }
 
 // ── Menus ──────────────────────────────────────────────────────────────────

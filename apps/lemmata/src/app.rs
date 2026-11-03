@@ -1690,7 +1690,10 @@ pub(crate) mod tests {
             h.query_by_label("Text of main.tex").is_some()
         });
         wait_for(&mut h, "the outline", |h| {
-            h.query_by_label_contains("words").is_some()
+            h.state()
+                .project
+                .as_ref()
+                .is_some_and(|ws| ws.total_words > 0)
         });
         h.run_steps(3);
         Some((h, project))
@@ -2594,6 +2597,144 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn project_settings_toolbar_opens_at_wide_and_narrow_widths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        for width in [1600.0, 1200.0] {
+            h.set_size(egui::vec2(width, 900.0));
+            h.run_steps(2);
+            h.get_by_role_and_label(egui::accesskit::Role::Button, "Project settings")
+                .click();
+            h.run_steps(2);
+            assert!(
+                h.state()
+                    .project
+                    .as_ref()
+                    .unwrap()
+                    .project_settings
+                    .is_some()
+            );
+            h.state_mut().project.as_mut().unwrap().project_settings = None;
+        }
+    }
+
+    #[test]
+    fn status_bar_accessibility_activates_compiler_with_keyboard() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        for key in [egui::Key::Enter, egui::Key::Space] {
+            h.get_by_role_and_label(
+                egui::accesskit::Role::Button,
+                "Compiler: change it in Project settings",
+            )
+            .focus();
+            h.run_steps(1);
+            h.key_press(key);
+            h.run_steps(2);
+            assert!(
+                h.state()
+                    .project
+                    .as_ref()
+                    .unwrap()
+                    .project_settings
+                    .is_some(),
+                "activation with {key:?}"
+            );
+            h.key_press(egui::Key::Escape);
+            h.run_steps(2);
+            assert!(
+                h.state()
+                    .project
+                    .as_ref()
+                    .unwrap()
+                    .project_settings
+                    .is_none()
+            );
+            assert!(
+                h.get_by_role_and_label(
+                    egui::accesskit::Role::Button,
+                    "Compiler: change it in Project settings",
+                )
+                .is_focused()
+            );
+        }
+    }
+
+    #[test]
+    fn status_bar_accessibility_activates_remaining_actions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        let app = h.state_mut();
+        let ws = app.project.as_mut().unwrap();
+        ws.build.building = false;
+        ws.build.logs_open = false;
+        ws.build.outcome = Some(lemmata_tex::Outcome {
+            status: lemmata_tex::Status::Failed,
+            duration_ms: 0,
+            pdf: None,
+            diagnostics: vec![],
+            latexmk_failed: false,
+        });
+        h.run_steps(2);
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Show the logs")
+            .focus();
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert!(h.state().project.as_ref().unwrap().build.logs_open);
+
+        h.get_by_role_and_label(
+            egui::accesskit::Role::Button,
+            "Words in the document body, without commands, maths or comments. Click for the count per file.",
+        )
+        .focus();
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert!(h.state().project.as_ref().unwrap().words.is_some());
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+
+        h.get_by_role_and_label(
+            egui::accesskit::Role::Button,
+            "Spell-check language: change it in Project settings",
+        )
+        .focus();
+        h.run_steps(1);
+        h.key_press(egui::Key::Space);
+        h.run_steps(2);
+        assert!(
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .project_settings
+                .is_some()
+        );
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+
+        h.state_mut().project.as_mut().unwrap().info.config.draft = true;
+        h.run_steps(2);
+        h.get_by_role_and_label(
+            egui::accesskit::Role::Button,
+            "Figures are drawn as boxes. Click to build normally again.",
+        )
+        .focus();
+        h.run_steps(1);
+        h.key_press(egui::Key::Space);
+        wait_for(&mut h, "draft mode off", |h| {
+            !h.state().project.as_ref().unwrap().info.config.draft
+        });
+    }
+
+    #[test]
     fn preferences_snippets_and_project_settings_save() {
         let tmp = tempfile::tempdir().unwrap();
         let Some((mut h, project)) = in_article(tmp.path()) else {
@@ -2648,7 +2789,8 @@ pub(crate) mod tests {
         assert!(h.state().prefs.is_none());
 
         // Project settings from the status bar: shell escape is allowed for this computer too.
-        h.get_by_label("pdfLaTeX").click();
+        h.get_by_label("Compiler: change it in Project settings")
+            .click();
         wait_for(&mut h, "the project settings", |h| {
             h.query_by_label("Allow the document to run programs (shell escape)")
                 .is_some()
