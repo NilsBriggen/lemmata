@@ -89,6 +89,8 @@ pub enum NoticeAction {
     Download(String),
     /// Export for arXiv although the build failed (flattened or not).
     ArxivAnyway(bool),
+    BuildExport(crate::backend::Save),
+    ExportOlder(crate::backend::Save),
     /// Build normally again after a draft export.
     DraftOff,
     /// Loads zotero.bib in the main file.
@@ -107,6 +109,8 @@ impl NoticeAction {
             NoticeAction::AddPackage(_) => "Add it",
             NoticeAction::Download(_) => "Download",
             NoticeAction::ArxivAnyway(_) => "Export anyway",
+            NoticeAction::BuildExport(_) => "Build and export",
+            NoticeAction::ExportOlder(_) => "Export older PDF",
             NoticeAction::DraftOff => "Switch to Normal",
             NoticeAction::LinkZotero => "Add it",
             NoticeAction::PasteAsText(..) => "Paste as text instead",

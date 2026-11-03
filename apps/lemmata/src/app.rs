@@ -3286,6 +3286,343 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn manual_compile_export_offers_a_freshness_choice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        wait_for(&mut h, "the initial build", |h| {
+            h.query_by_label_contains("Compiled in").is_some()
+        });
+        h.state_mut().settings.auto_compile = false;
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex")
+            .type_text("% fresh export");
+        wait_for(&mut h, "the quiet autosave", |_| {
+            std::fs::read_to_string(project.join("main.tex"))
+                .is_ok_and(|text| text.contains("% fresh export"))
+        });
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        app.project
+            .as_mut()
+            .unwrap()
+            .export(backend, &settings, crate::backend::Save::Pdf);
+        h.run_steps(20);
+        let ws = h.state().project.as_ref().unwrap();
+        assert!(
+            ws.notices.iter().any(|n| n.text.contains("out of date")),
+            "stale export should require an explicit choice"
+        );
+        let action = ws
+            .notices
+            .iter()
+            .find_map(|n| match n.action {
+                Some(crate::workspace::NoticeAction::ExportOlder(_)) => n.action.clone(),
+                _ => None,
+            })
+            .expect("the explicit older-PDF choice");
+        let before = ws.build.seq;
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        app.project
+            .as_mut()
+            .unwrap()
+            .notice_action(backend, &settings, action);
+        assert_eq!(h.state().project.as_ref().unwrap().build.seq, before);
+        let dest = tmp.path().join("older.pdf");
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        app.project.as_mut().unwrap().on_build_msg(
+            backend,
+            &settings,
+            Msg::SaveTo(crate::backend::Save::Pdf, Some(dest.clone())),
+        );
+        wait_for(&mut h, "the older PDF export", |_| dest.is_file());
+        assert_eq!(
+            std::fs::read(dest).unwrap(),
+            std::fs::read(project.join(".lemmata/build/main.pdf")).unwrap()
+        );
+    }
+
+    #[test]
+    fn manual_compile_build_and_export_writes_the_fresh_pdf_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.state_mut().settings.auto_compile = false;
+        wait_for(&mut h, "the initial build queue", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            !ws.build.building && ws.build.deadline.is_none() && ws.pane.has_pdf()
+        });
+        let pdf = project.join(".lemmata/build/main.pdf");
+        let old = std::fs::read(&pdf).unwrap();
+        let ws = h.state_mut().project.as_mut().unwrap();
+        let ed = ws.editors.get_mut("main.tex").unwrap();
+        let at = ed.doc.text().find("\\begin{document}").unwrap() + "\\begin{document}".len();
+        ed.replace_range(at, at, "\nFreshExportMarker\n");
+        wait_for(&mut h, "the quiet autosave", |_| {
+            std::fs::read_to_string(project.join("main.tex"))
+                .is_ok_and(|text| text.contains("FreshExportMarker"))
+        });
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        app.project
+            .as_mut()
+            .unwrap()
+            .export(backend, &settings, crate::backend::Save::Pdf);
+        h.run_steps(20);
+        let action = h
+            .state()
+            .project
+            .as_ref()
+            .unwrap()
+            .notices
+            .iter()
+            .find_map(|n| match n.action {
+                Some(crate::workspace::NoticeAction::BuildExport(_)) => n.action.clone(),
+                _ => None,
+            })
+            .expect("the build-and-export choice");
+        let before = h.state().project.as_ref().unwrap().build.seq;
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        let ws = app.project.as_mut().unwrap();
+        ws.notice_action(backend, &settings, action.clone());
+        ws.notice_action(backend, &settings, action);
+        wait_for(&mut h, "the export build", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            ws.build.seq == before + 1 && !ws.build.building
+        });
+        let ws = h.state().project.as_ref().unwrap();
+        assert!(ws.build.export.is_none());
+        assert!(
+            ws.build
+                .outcome
+                .as_ref()
+                .is_some_and(|o| { o.status == lemmata_tex::Status::Success && o.pdf.is_some() }),
+            "export build did not write a PDF: {:?}",
+            ws.build.diagnostics,
+        );
+
+        let dest = tmp.path().join("exported.pdf");
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        app.project.as_mut().unwrap().on_build_msg(
+            backend,
+            &settings,
+            Msg::SaveTo(crate::backend::Save::Pdf, Some(dest.clone())),
+        );
+        wait_for(&mut h, "the exported PDF", |_| dest.is_file());
+        let fresh = std::fs::read(&pdf).unwrap();
+        let source = std::fs::read_to_string(project.join("main.tex")).unwrap();
+        assert!(source.contains("FreshExportMarker"), "{source}");
+        let text = std::process::Command::new("pdftotext")
+            .arg(&pdf)
+            .arg("-")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&text.stdout);
+        assert!(text.contains("FreshExportMarker"), "{text}");
+        assert_ne!(fresh, old);
+        assert_eq!(std::fs::read(dest).unwrap(), fresh);
+    }
+
+    #[test]
+    fn manual_compile_zip_export_contains_fresh_source_and_pdf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.state_mut().settings.auto_compile = false;
+        wait_for(&mut h, "the initial build queue", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            !ws.build.building && ws.build.deadline.is_none() && ws.pane.has_pdf()
+        });
+        let ws = h.state_mut().project.as_mut().unwrap();
+        let ed = ws.editors.get_mut("main.tex").unwrap();
+        let at = ed.doc.text().find("\\begin{document}").unwrap() + "\\begin{document}".len();
+        ed.replace_range(at, at, "\nFreshExportMarker\n");
+        wait_for(&mut h, "the quiet autosave", |_| {
+            std::fs::read_to_string(project.join("main.tex"))
+                .is_ok_and(|text| text.contains("FreshExportMarker"))
+        });
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        app.project
+            .as_mut()
+            .unwrap()
+            .export(backend, &settings, crate::backend::Save::Zip);
+        h.run_steps(20);
+        let action = h
+            .state()
+            .project
+            .as_ref()
+            .unwrap()
+            .notices
+            .iter()
+            .find_map(|n| match n.action {
+                Some(crate::workspace::NoticeAction::BuildExport(_)) => n.action.clone(),
+                _ => None,
+            })
+            .expect("the build-and-export choice");
+        let before = h.state().project.as_ref().unwrap().build.seq;
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        app.project
+            .as_mut()
+            .unwrap()
+            .notice_action(backend, &settings, action);
+        wait_for(&mut h, "the ZIP export build", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            ws.build.seq == before + 1 && !ws.build.building && ws.build.export.is_none()
+        });
+        let dest = tmp.path().join("exported.zip");
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        app.project.as_mut().unwrap().on_build_msg(
+            backend,
+            &settings,
+            Msg::SaveTo(crate::backend::Save::Zip, Some(dest.clone())),
+        );
+        wait_for(&mut h, "the exported ZIP", |_| dest.is_file());
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(dest).unwrap()).unwrap();
+        let mut source = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("main.tex").unwrap(), &mut source).unwrap();
+        assert!(source.contains("FreshExportMarker"));
+        let mut exported_pdf = Vec::new();
+        std::io::Read::read_to_end(&mut zip.by_name("main.pdf").unwrap(), &mut exported_pdf)
+            .unwrap();
+        assert_eq!(
+            exported_pdf,
+            std::fs::read(project.join(".lemmata/build/main.pdf")).unwrap()
+        );
+    }
+
+    #[test]
+    fn current_export_neither_rebuilds_nor_duplicates_the_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        wait_for(&mut h, "the initial build", |h| {
+            h.query_by_label_contains("Compiled in").is_some()
+        });
+        let stamp = project.join(".lemmata/build/.lemmata-ok");
+        std::fs::File::options()
+            .write(true)
+            .open(stamp)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now())
+            .unwrap();
+        h.state_mut().settings.auto_compile = false;
+        wait_for(&mut h, "a quiet current project", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            !ws.build.building
+                && ws.build.deadline.is_none()
+                && h.state().backend.shell.pdf_is_current() == Ok(true)
+        });
+        let before = h.state().project.as_ref().unwrap().build.seq;
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        let ws = app.project.as_mut().unwrap();
+        ws.export(backend, &settings, crate::backend::Save::Pdf);
+        ws.export(backend, &settings, crate::backend::Save::Pdf);
+        h.run_steps(20);
+        let ws = h.state().project.as_ref().unwrap();
+        assert_eq!(ws.build.seq, before);
+        assert!(ws.build.export.is_none());
+        assert!(ws.build.export_check.is_none());
+        assert!(!ws.notices.iter().any(|n| n.text.contains("out of date")));
+    }
+
+    #[test]
+    fn failed_export_builds_restore_the_explicit_choice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        wait_for(&mut h, "the initial build", |h| {
+            h.query_by_label_contains("Compiled in").is_some()
+        });
+        for result in [
+            Ok(lemmata_tex::Outcome {
+                status: lemmata_tex::Status::Failed,
+                duration_ms: 0,
+                pdf: None,
+                diagnostics: vec![],
+                latexmk_failed: false,
+            }),
+            Ok(lemmata_tex::Outcome {
+                status: lemmata_tex::Status::Cancelled,
+                duration_ms: 0,
+                pdf: None,
+                diagnostics: vec![],
+                latexmk_failed: false,
+            }),
+            Err("build backend failed".to_owned()),
+        ] {
+            let app = h.state_mut();
+            let settings = app.settings.clone();
+            let backend = &app.backend;
+            let ws = app.project.as_mut().unwrap();
+            ws.build.seq += 1;
+            let seq = ws.build.seq;
+            ws.build.export = Some((seq, crate::backend::Save::Pdf));
+            ws.on_build_msg(backend, &settings, Msg::Built(seq, result));
+            assert!(ws.build.export.is_none());
+            assert!(ws.notices.iter().any(|n| matches!(
+                n.action,
+                Some(crate::workspace::NoticeAction::BuildExport(_))
+            )));
+        }
+    }
+
+    #[test]
+    fn export_without_tex_does_not_stay_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        wait_for(&mut h, "the initial build", |h| {
+            h.query_by_label_contains("Compiled in").is_some()
+        });
+        let app = h.state_mut();
+        app.settings.auto_compile = false;
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        let ws = app.project.as_mut().unwrap();
+        ws.build.deadline = None;
+        ws.tex_ready = false;
+        ws.notice_action(
+            backend,
+            &settings,
+            crate::workspace::NoticeAction::BuildExport(crate::backend::Save::Pdf),
+        );
+        h.run_steps(5);
+        let ws = h.state().project.as_ref().unwrap();
+        assert!(ws.build.export.is_none());
+        assert!(ws.build.deadline.is_none());
+        assert!(
+            ws.notices
+                .iter()
+                .any(|n| n.text.contains("TeX isn't installed"))
+        );
+    }
+
+    #[test]
     fn typing_saves_after_the_delay_and_the_file_changes_on_disk() {
         let tmp = tempfile::tempdir().unwrap();
         let Some((mut h, project)) = in_article(tmp.path()) else {

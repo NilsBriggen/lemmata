@@ -34,6 +34,8 @@ pub struct BuildState {
     pub after_config: bool,
     /// An arXiv export waits for this build (and whether it flattens).
     arxiv: Option<(u64, bool)>,
+    pub(crate) export_check: Option<Save>,
+    pub(crate) export: Option<(u64, Save)>,
     /// Closed files' text for the excerpts under errors, read once per build (`diag_gen`), not
     /// on every frame.
     sources: std::cell::RefCell<(u64, std::collections::HashMap<String, Option<String>>)>,
@@ -131,6 +133,7 @@ impl Workspace {
                 then(ws, b);
                 return;
             }
+            ws.build.export_check = None;
             ws.history.busy = None;
             ws.git.busy = None;
             if let Some(d) = &mut ws.project_settings {
@@ -225,23 +228,66 @@ impl Workspace {
         });
     }
 
-    pub fn export(&mut self, backend: &Backend, settings: &Settings, what: Save) {
-        let name = self.info.name.clone();
+    fn export_name(&self, what: Save) -> String {
+        let name = &self.info.name;
         match what {
-            Save::Pdf => backend.save(what, format!("{name}.pdf")),
-            Save::Zip => {
-                self.after_saving(backend, settings, move |_, b| {
-                    b.save(what, format!("{name}.zip"));
-                });
-            }
-            Save::Arxiv { flatten } => {
-                // arXiv compiles the upload itself; a document that fails here fails there too.
-                self.after_saving(backend, settings, move |ws, _| {
-                    ws.build_soon(false, false);
-                    ws.build.arxiv = Some((ws.build.seq + 1, flatten));
-                });
-            }
+            Save::Pdf => format!("{name}.pdf"),
+            Save::Zip => format!("{name}.zip"),
+            Save::Arxiv { .. } => format!("{name}-arxiv.zip"),
         }
+    }
+
+    fn offer_stale_export(&mut self, what: Save) {
+        self.notices.push(
+            Notice::new(
+                "The PDF is out of date. Build before exporting, or choose the older PDF explicitly.",
+                Tone::Info,
+            )
+            .action(NoticeAction::BuildExport(what)),
+        );
+        if self.pane.has_pdf() {
+            self.notices.push(
+                Notice::new(
+                    "Export the older PDF without compiling your latest edits?",
+                    Tone::Info,
+                )
+                .action(NoticeAction::ExportOlder(what)),
+            );
+        }
+    }
+
+    pub fn export(&mut self, backend: &Backend, settings: &Settings, what: Save) {
+        if let Save::Arxiv { flatten } = what {
+            // arXiv compiles the upload itself; a document that fails here fails there too.
+            self.after_saving(backend, settings, move |ws, _| {
+                ws.build_soon(false, false);
+                ws.build.arxiv = Some((ws.build.seq + 1, flatten));
+            });
+            return;
+        }
+        if self.build.export_check == Some(what)
+            || self
+                .build
+                .export
+                .is_some_and(|(_, pending)| pending == what)
+        {
+            return;
+        }
+        self.build.export_check = Some(what);
+        self.after_saving(backend, settings, move |_ws, b| {
+            Self::job(
+                b,
+                |shell| shell.pdf_is_current(),
+                move |ws, b, current| {
+                    ws.build.export_check = None;
+                    match current {
+                        Ok(true) => b.save(what, ws.export_name(what)),
+                        Ok(false) => ws.offer_stale_export(what),
+                        Err(e) => ws.notice(e, Tone::Error),
+                    }
+                },
+            );
+        });
     }
 
     /// The PDF pane, and what its buttons ask for.
@@ -380,11 +426,19 @@ impl Workspace {
                 if arxiv.is_some() {
                     self.build.arxiv = None;
                 }
+                let export = self.build.export.filter(|(s, _)| *s == seq);
+                if export.is_some() {
+                    self.build.export = None;
+                }
                 if seq != self.build.seq {
                     return None;
                 }
                 match result {
-                    Ok(o) if o.status == Status::Cancelled => {}
+                    Ok(o) if o.status == Status::Cancelled => {
+                        if let Some((_, what)) = export {
+                            self.offer_stale_export(what);
+                        }
+                    }
                     Ok(o) => {
                         self.build.diagnostics = o.diagnostics.clone();
                         self.build.diag_gen += 1;
@@ -417,6 +471,13 @@ impl Workspace {
                                 ).action(NoticeAction::ArxivAnyway(flatten)));
                             }
                         }
+                        if let Some((_, what)) = export {
+                            if ok {
+                                backend.save(what, self.export_name(what));
+                            } else {
+                                self.offer_stale_export(what);
+                            }
+                        }
                     }
                     Err(e) => {
                         self.build.outcome = None;
@@ -431,6 +492,9 @@ impl Workspace {
                         }];
                         self.build.diag_gen += 1;
                         self.build.logs_open = true;
+                        if let Some((_, what)) = export {
+                            self.offer_stale_export(what);
+                        }
                     }
                 }
             }
@@ -504,6 +568,29 @@ impl Workspace {
                 Save::Arxiv { flatten },
                 format!("{}-arxiv.zip", self.info.name),
             ),
+            NoticeAction::BuildExport(what) => {
+                if !self.tex_ready {
+                    self.build.export = None;
+                    self.build.deadline = None;
+                    self.notice(
+                        "TeX isn't installed, so the document can't be built before export.",
+                        Tone::Info,
+                    );
+                    if self.pane.has_pdf() {
+                        self.notices.push(
+                            Notice::new(
+                                "Export the older PDF without compiling your latest edits?",
+                                Tone::Info,
+                            )
+                            .action(NoticeAction::ExportOlder(what)),
+                        );
+                    }
+                } else if self.build.export.is_none() {
+                    self.build.export = Some((self.build.seq + 1, what));
+                    self.build_soon(false, false);
+                }
+            }
+            NoticeAction::ExportOlder(what) => backend.save(what, self.export_name(what)),
             NoticeAction::DraftOff => self.set_config(backend, settings, |c| c.draft = false),
             NoticeAction::LinkZotero => self.link_zotero(backend, settings),
             NoticeAction::UndoFiles => self.undo_files(backend),
