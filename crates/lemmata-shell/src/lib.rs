@@ -909,19 +909,24 @@ impl Shell {
     /// Adds `\usepackage{name}` to the main file's preamble, after the last
     /// \usepackage (or after \documentclass).
     pub fn add_package(&self, package: String) -> CmdResult<()> {
+        self.add_package_with(package, |p| {
+            std::fs::read_to_string(p.main_abs()).map_err(err)
+        })
+    }
+
+    fn add_package_with(
+        &self,
+        package: String,
+        read: impl FnOnce(&lemmata_project::Project) -> CmdResult<String>,
+    ) -> CmdResult<()> {
         if !package
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-')
         {
             return Err("Not a package name.".into());
         }
-        let main = self
-            .project
-            .lock_safe()
-            .as_ref()
-            .map(|p| p.main_abs())
-            .ok_or("No project is open.")?;
-        let text = std::fs::read_to_string(&main).map_err(err)?;
+        let p = project(self)?;
+        let text = read(&p)?;
         let lines: Vec<&str> = text.lines().collect();
         let begin = lines
             .iter()
@@ -942,7 +947,12 @@ impl Shell {
         if text.ends_with('\n') {
             joined.push('\n');
         }
-        std::fs::write(&main, joined).map_err(err)
+        self.write_text(
+            &p.root,
+            rel_string(&p.main),
+            joined,
+            Some(files::content_hash(text.as_bytes())),
+        )
     }
 
     pub fn outline(&self) -> CmdResult<lemmata_project::Outline> {
@@ -1087,6 +1097,90 @@ mod tests {
                 .load_thumbnail(other.to_string_lossy().into_owned())
                 .unwrap(),
             b"png"
+        );
+    }
+
+    #[test]
+    fn add_package_conflicts_preserve_the_external_version() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}\n").unwrap();
+        let shell = crate::Shell::new(
+            crate::Dirs {
+                resources: d.path().into(),
+                data: d.path().into(),
+                cache: d.path().into(),
+                home: None,
+            },
+            std::sync::Arc::new(|_| {}),
+        );
+        shell
+            .open_project(1, d.path().to_string_lossy().into_owned())
+            .unwrap();
+        let error = shell
+            .add_package_with("amsmath".into(), |project| {
+                let main = project.main_abs();
+                let original = std::fs::read_to_string(&main).unwrap();
+                std::fs::write(&main, "external version\n").unwrap();
+                Ok(original)
+            })
+            .unwrap_err();
+        assert!(error.starts_with("conflict:"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("main.tex")).unwrap(),
+            "external version\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn add_package_write_failure_preserves_the_original_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let d = tempfile::tempdir().unwrap();
+        let original = "\\documentclass{article}\n";
+        std::fs::write(d.path().join("main.tex"), original).unwrap();
+        let shell = crate::Shell::new(
+            crate::Dirs {
+                resources: d.path().into(),
+                data: d.path().into(),
+                cache: d.path().into(),
+                home: None,
+            },
+            std::sync::Arc::new(|_| {}),
+        );
+        shell
+            .open_project(1, d.path().to_string_lossy().into_owned())
+            .unwrap();
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = shell.add_package("amsmath".into());
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("main.tex")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn add_package_inserts_after_documentclass_and_keeps_the_final_newline() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}\n").unwrap();
+        let shell = crate::Shell::new(
+            crate::Dirs {
+                resources: d.path().into(),
+                data: d.path().into(),
+                cache: d.path().into(),
+                home: None,
+            },
+            std::sync::Arc::new(|_| {}),
+        );
+        shell
+            .open_project(1, d.path().to_string_lossy().into_owned())
+            .unwrap();
+        shell.add_package("amsmath".into()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("main.tex")).unwrap(),
+            "\\documentclass{article}\n\\usepackage{amsmath}\n"
         );
     }
 
