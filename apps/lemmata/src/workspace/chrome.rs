@@ -212,6 +212,7 @@ pub fn toolbar(
     use super::panels::Panel;
     let open_comments = ws.comments.threads.iter().filter(|t| !t.resolved).count();
     let git_changes = ws.git.status.len();
+    let compact = rect.width() < 1400.0;
     for (icon, label, panel, count, tip) in [
         (
             icons::GIT_BRANCH,
@@ -237,13 +238,21 @@ pub fn toolbar(
     ] {
         // .pill: a small amber count after the label.
         let pill = (count > 0).then(|| count.to_string());
-        let b = Button::new(label)
-            .with_icon(icon)
-            .kind(Kind::Chrome)
-            .on(ws.panel == Some(panel))
-            .pill(pill.as_deref())
-            .show(&mut r, p)
-            .on_hover_text(tip);
+        let b = if compact {
+            Button::icon(icon, label)
+                .kind(Kind::Chrome)
+                .on(ws.panel == Some(panel))
+                .pill(pill.as_deref())
+                .show_icon(&mut r, p)
+        } else {
+            Button::new(label)
+                .with_icon(icon)
+                .kind(Kind::Chrome)
+                .on(ws.panel == Some(panel))
+                .pill(pill.as_deref())
+                .show(&mut r, p)
+        }
+        .on_hover_text(tip);
         if b.clicked() && ws.toggle_panel(panel, backend, settings) {
             action = Some(Action::Settings);
         }
@@ -1563,8 +1572,8 @@ pub fn menus(
             let cfg = ws.info.config.clone();
             let mut items = vec![
                 MenuItem::Heading("Compile"),
-                MenuItem::check("After every save", settings.auto_compile),
-                MenuItem::check("Only when I recompile", !settings.auto_compile),
+                MenuItem::check("As I type", settings.auto_compile),
+                MenuItem::check("With Ctrl+S", !settings.auto_compile),
                 MenuItem::Separator,
                 MenuItem::Heading("Compiler"),
             ];

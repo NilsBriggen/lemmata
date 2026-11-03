@@ -119,7 +119,10 @@ pub struct PdfView {
     scales: Vec<f32>,
     content: Vec2,
     client: Vec2,
+    scroll_x: f32,
     scroll_y: f32,
+    /// The page, point within it in PDF coordinates, and viewport point to keep together after a pinch.
+    pending_zoom: Option<(usize, egui::Pos2, egui::Pos2)>,
     /// Applied on the next frame: an exact offset, or a smooth scroll to a content rect.
     jump: Option<Jump>,
     /// A scroll ratio to restore once a PDF is laid out.
@@ -176,7 +179,9 @@ impl PdfView {
             scales: Vec::new(),
             content: Vec2::ZERO,
             client: Vec2::ZERO,
+            scroll_x: 0.0,
             scroll_y: 0.0,
+            pending_zoom: None,
             jump: None,
             pending_ratio: None,
             pending_page: None,
@@ -712,6 +717,11 @@ impl PdfView {
         if let Some(ratio) = self.pending_ratio.take() {
             self.jump = Some(Jump::Offset(vec2(0.0, ratio * self.content.y)));
         }
+        if let Some((page, local, viewport)) = self.pending_zoom.take()
+            && let (Some(rect), Some(scale)) = (self.rects.get(page), self.scales.get(page))
+        {
+            self.jump = Some(Jump::Offset(rect.min + local.to_vec2() * *scale - viewport));
+        }
         if std::mem::take(&mut self.pending_box)
             && let Some((page, r, _)) = self.highlight
             && let (Some(pr), Some(s)) = (self.rects.get(page), self.scales.get(page))
@@ -731,12 +741,13 @@ impl PdfView {
         }
         let epoch = self.engine().epoch.load(Ordering::Relaxed);
 
-        let mut scroll = egui::ScrollArea::both()
+        let scroll = egui::ScrollArea::both()
             .id_salt(self.id)
             .auto_shrink([false, false]);
+        let mut exact = None;
         let mut smooth = None;
         match self.jump.take() {
-            Some(Jump::Offset(o)) => scroll = scroll.scroll_offset(o.max(Vec2::ZERO)),
+            Some(Jump::Offset(o)) => exact = Some(o.max(Vec2::ZERO)),
             Some(Jump::Smooth(y)) => smooth = Some(y),
             None => {}
         }
@@ -745,6 +756,17 @@ impl PdfView {
             let origin = ui.max_rect().min;
             let (resp_rect, resp) = ui.allocate_exact_size(self.content, Sense::click_and_drag());
             let _ = resp_rect;
+            if let Some(offset) = exact {
+                let r = Rect::from_min_size(
+                    origin + offset + ui.spacing().item_spacing,
+                    viewport.size(),
+                );
+                ui.scroll_to_rect_animation(
+                    r,
+                    Some(egui::Align::TOP),
+                    egui::style::ScrollAnimation::duration(0.0),
+                );
+            }
             if let Some(y) = smooth {
                 let r = Rect::from_min_size(origin + vec2(viewport.left(), y), viewport.size());
                 ui.scroll_to_rect_animation(
@@ -833,7 +855,9 @@ impl PdfView {
             self.overlays(ui, p, origin, &resp, &mut event);
             resp
         });
-        self.scroll_y = out.state.clamped_offset().y;
+        let offset = out.state.clamped_offset();
+        self.scroll_x = offset.x;
+        self.scroll_y = offset.y;
         // The page in the middle of the pane.
         let mid = self.scroll_y + self.client.y / 2.0;
         if let Some(i) = self.rects.iter().position(|r| r.bottom() > mid) {
@@ -850,7 +874,29 @@ impl PdfView {
                     Fit::Zoom(f) => f,
                     _ => self.percent as f32 / 100.0,
                 };
-                self.set_fit(Fit::Zoom(now * z));
+                let next = (now * z).clamp(0.25, 4.0);
+                let at = resp.hover_pos().unwrap_or(area.center());
+                let viewport = (at - area.min).to_pos2();
+                let content = viewport + offset;
+                let page = self
+                    .rects
+                    .iter()
+                    .position(|r| r.contains(content))
+                    .unwrap_or_else(|| {
+                        self.rects
+                            .iter()
+                            .enumerate()
+                            .min_by(|(_, a), (_, b)| {
+                                a.center()
+                                    .distance_sq(content)
+                                    .total_cmp(&b.center().distance_sq(content))
+                            })
+                            .map(|(i, _)| i)
+                            .unwrap_or(0)
+                    });
+                let local = ((content - self.rects[page].min) / self.scales[page]).to_pos2();
+                self.pending_zoom = Some((page, local, viewport));
+                self.set_fit(Fit::Zoom(next));
             }
         }
         if resp.has_focus()
@@ -1120,6 +1166,49 @@ mod tests {
         view.bound_textures();
         assert!(view.tex.len() <= 16);
         assert!(view.tex.contains_key(&19));
+    }
+
+    #[test]
+    fn pinch_zoom_keeps_the_pointer_over_the_same_document_point() {
+        let mut view = PdfView::new(&egui::Context::default(), egui::Id::unique("zoom"));
+        view.pages = vec![vec2(400.0, 400.0)];
+        view.shown = 1;
+        view.fit = Fit::Zoom(1.0);
+        view.jump = Some(Jump::Offset(vec2(100.0, 100.0)));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([300.0, 300.0])
+            .build_ui_state(
+                |ui, view: &mut PdfView| {
+                    view.show(ui, &crate::theme::LIGHT);
+                },
+                view,
+            );
+        h.run();
+        assert_eq!(h.state().scroll_y, 100.0);
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(pos2(150.0, 150.0)));
+        h.input_mut().events.push(egui::Event::Zoom(2.0));
+        h.step();
+        let (_, local, viewport) = h.state().pending_zoom.unwrap();
+        h.run_steps(29);
+        let expected = h.state().rects[0].min + local.to_vec2() * h.state().scales[0] - viewport;
+        assert!(
+            (h.state().scroll_x - expected.x).abs() < 0.01,
+            "scroll {}, {}; expected {expected:?}; fit {:?}, scales {:?}",
+            h.state().scroll_x,
+            h.state().scroll_y,
+            h.state().fit,
+            h.state().scales
+        );
+        assert!((h.state().scroll_y - expected.y).abs() < 0.01);
+        h.input_mut().events.push(egui::Event::Zoom(0.5));
+        h.step();
+        let (_, local, viewport) = h.state().pending_zoom.unwrap();
+        h.run_steps(29);
+        let expected = h.state().rects[0].min + local.to_vec2() * h.state().scales[0] - viewport;
+        assert!((h.state().scroll_x - expected.x).abs() < 0.01);
+        assert!((h.state().scroll_y - expected.y).abs() < 0.01);
     }
 
     #[test]

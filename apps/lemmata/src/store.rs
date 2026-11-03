@@ -46,7 +46,7 @@ pub struct Settings {
     pub font_size: f64,
     /// Delay after the last keystroke before saving; 0 saves only on Ctrl+S.
     pub autosave_ms: f64,
-    /// Compile after every save. Off means only the Recompile button builds.
+    /// Compile after every save, or only with Ctrl+S or an explicit Recompile.
     pub auto_compile: bool,
     pub auto_close: bool,
     pub autocomplete: bool,

@@ -387,7 +387,7 @@ impl Workspace {
             ws.load(backend, t);
         }
         ws.restoring = Some((tabs, active));
-        ws.apply_analysis(analysis);
+        ws.apply_analysis(analysis, true);
         ws.spawn(backend, |shell| Msg::Packages(shell.package_names()));
         // texlab starts in the background (downloaded the first time); completion and hover
         // gain its answers once it's ready.
@@ -517,7 +517,7 @@ impl Workspace {
         });
     }
 
-    fn apply_analysis(&mut self, analysis: lemmata_shell::ProjectAnalysis) {
+    fn apply_analysis(&mut self, analysis: lemmata_shell::ProjectAnalysis, build: bool) {
         self.info = analysis.info;
         self.headings = analysis.outline.headings;
         self.total_words = analysis.outline.total_words;
@@ -538,7 +538,7 @@ impl Workspace {
         self.lookups.files = f;
         self.lookups.root = self.info.root.clone();
         self.lookups.generation += 1;
-        if !self.pdf_current {
+        if build && !self.pdf_current {
             self.build_soon(false, false);
         }
     }
@@ -893,7 +893,10 @@ impl Workspace {
                 Tone::Error,
             ),
             Msg::Analysis(seq, Ok(analysis)) if seq == self.analysis_seq => {
-                self.apply_analysis(analysis);
+                self.apply_analysis(
+                    analysis,
+                    settings.auto_compile || self.build.outcome.is_none(),
+                );
             }
             Msg::Analysis(_, _) => {}
             // Started for a project that has closed since.
@@ -1050,7 +1053,11 @@ impl Workspace {
     ) {
         let ctx = ctx.clone();
         if crate::shortcuts::consume(&ctx, "save") {
-            self.save_all(backend, settings);
+            if settings.auto_compile {
+                self.save_all(backend, settings);
+            } else {
+                self.recompile(backend, settings);
+            }
         }
         if crate::shortcuts::consume(&ctx, "close-tab")
             && let Some(a) = self.active.clone()

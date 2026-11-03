@@ -268,7 +268,7 @@ fn run(jobs: Receiver<Job>, routes: Routes, ctx: egui::Context, announce: bool) 
             }
         };
         let pages = pdf.pages();
-        let index: HashMap<(i32, i32), usize> = pages
+        let index: HashMap<(u32, i32), usize> = pages
             .iter()
             .enumerate()
             .filter_map(|(i, p)| {
@@ -533,7 +533,7 @@ fn decode_text(b: &[u8]) -> String {
 /// Resolves destinations, links and bookmarks against the page list.
 struct Dests<'a> {
     pdf: &'a Pdf,
-    index: &'a HashMap<(i32, i32), usize>,
+    index: &'a HashMap<(u32, i32), usize>,
 }
 
 impl Dests<'_> {
@@ -737,9 +737,12 @@ impl<'a> Device<'a> for TextDevice {
                     let adv = o.advance_width().map_or(ink.x1, f64::from);
                     hayro::kurbo::Rect::new(0.0, -200.0, adv, 800.0)
                 }
-                HGlyph::Type3(t) => {
-                    hayro::kurbo::Rect::new(0.0, -200.0, t.advance_width().into(), 800.0)
-                }
+                HGlyph::Type3(t) => hayro::kurbo::Rect::new(
+                    0.0,
+                    -200.0,
+                    f64::from(t.advance_width().unwrap_or(0.0)),
+                    800.0,
+                ),
             };
             self.glyphs.push(Glyph {
                 text,

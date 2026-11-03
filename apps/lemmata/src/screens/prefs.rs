@@ -289,7 +289,22 @@ fn body(
             changed = true;
         }
     }
-    changed |= widgets::checkbox(ui, p, &mut s.auto_compile, "Compile after every save").clicked();
+    ui.push_id("compile-mode", |ui| {
+        row(ui, p, "Compile", |ui| {
+            let sel = usize::from(!s.auto_compile);
+            if let Some(i) = widgets::segmented(
+                ui,
+                p,
+                &[(None, "As I type"), (None, "With Ctrl+S")],
+                sel,
+                false,
+                false,
+            ) {
+                s.auto_compile = i == 0;
+                changed = true;
+            }
+        });
+    });
     changed |= widgets::checkbox(
         ui,
         p,

@@ -1941,6 +1941,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn panel_buttons_collapse_before_they_overlap_the_layout_switch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.set_size(egui::vec2(1280.0, 900.0));
+        h.run_steps(3);
+        for label in ["Comments", "History", "Git"] {
+            assert!(
+                h.get_by_label(label).rect().width() < 60.0,
+                "{label} still has its text label"
+            );
+        }
+        h.set_size(egui::vec2(1400.0, 900.0));
+        h.run_steps(3);
+        for label in ["Comments", "History", "Git"] {
+            assert!(
+                h.get_by_label(label).rect().width() > 60.0,
+                "{label} lost its text label in the wide layout"
+            );
+        }
+    }
+
+    #[test]
     fn the_symbol_palette_inserts_what_is_clicked() {
         let tmp = tempfile::tempdir().unwrap();
         let Some((mut h, _)) = in_article(tmp.path()) else {
@@ -2557,6 +2581,11 @@ pub(crate) mod tests {
             .click();
         h.run_steps(2);
         assert_eq!(h.state().settings.folding, !folding);
+        let modes: Vec<_> = h.get_all_by_label("With Ctrl+S").collect();
+        assert_eq!(modes.len(), 2, "Save and Compile have separate controls");
+        modes.last().unwrap().click();
+        h.run_steps(2);
+        assert!(!h.state().settings.auto_compile);
         let _ = h.try_snapshot("preferences-light");
 
         // A snippet: incomplete ones are left out on Save.
@@ -3087,6 +3116,41 @@ pub(crate) mod tests {
                 .text()
                 .contains("% mine")
         );
+    }
+
+    #[test]
+    fn manual_compile_mode_builds_only_with_ctrl_s() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            auto_compile: false,
+            ..Settings::default()
+        };
+        let Some((mut h, _)) = in_article_with(tmp.path(), settings) else {
+            return;
+        };
+        wait_for(&mut h, "the initial build", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            ws.build.outcome.is_some() && !ws.build.building && ws.build.deadline.is_none()
+        });
+        let before = h.state().project.as_ref().unwrap().build.seq;
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex")
+            .type_text("% manual compile");
+        h.run_steps(2);
+        assert!(h.query_by_label("Unsaved").is_some());
+        wait_for(&mut h, "the autosave", |h| {
+            h.query_by_label("Saved").is_some()
+        });
+        h.run_steps(5);
+        let ws = h.state().project.as_ref().unwrap();
+        assert_eq!(ws.build.seq, before, "autosave started a build");
+        assert!(ws.build.deadline.is_none(), "autosave queued a build");
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+        wait_for(&mut h, "the manual build", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            ws.build.seq == before + 1 && !ws.build.building && ws.build.deadline.is_none()
+        });
     }
 
     #[test]
