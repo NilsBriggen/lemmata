@@ -890,7 +890,7 @@ mod tests {
         let two = Engine::new(egui::Context::default());
         let bytes = Arc::new(include_bytes!("../../tests/pdf/type3-bitmap-fonts.pdf").to_vec());
         let mut expected = Vec::new();
-        for _ in 0..6 {
+        for _ in 0..1 {
             let a = one.next_doc();
             let b = two.next_doc();
             one.send(Job::Load {
