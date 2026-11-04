@@ -19,6 +19,13 @@ use eframe::egui::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(test)]
+static ACCESSKIT_TEXT_CONVERSIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static ACCESSKIT_LENGTH_CONSTRUCTIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// `.cm-line` padding: 10 px left, 16 px right.
 const PAD: f32 = 10.0;
 const PAD_RIGHT: f32 = 16.0;
@@ -151,6 +158,7 @@ pub struct Editor {
     preedit: Option<String>,
     pub search: Option<Search>,
     reported_version: u64,
+    accesskit_snapshot: Option<(u64, String, Vec<u8>)>,
     last_cursor_line: usize,
     last_selection: Selection,
     /// Where the view is scrolled.
@@ -217,6 +225,7 @@ impl Editor {
             preedit: None,
             search: None,
             reported_version: 0,
+            accesskit_snapshot: None,
             last_cursor_line: 1,
             last_selection: Selection::cursor(0),
             scroll_y: 0.0,
@@ -1448,7 +1457,21 @@ pub fn show(
         }
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, true, label));
-        let text = ed.doc.text();
+        if ed
+            .accesskit_snapshot
+            .as_ref()
+            .is_none_or(|(version, _, _)| *version != ed.doc.version)
+        {
+            #[cfg(test)]
+            {
+                ACCESSKIT_TEXT_CONVERSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                ACCESSKIT_LENGTH_CONSTRUCTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            let text = ed.doc.text();
+            let lengths = text.chars().map(|c| c.len_utf8() as u8).collect();
+            ed.accesskit_snapshot = Some((ed.doc.version, text, lengths));
+        }
+        let (_, text, lengths) = ed.accesskit_snapshot.as_ref().unwrap();
         let selection = ed.doc.selection.main();
         let run = ui
             .new_child(
@@ -1470,10 +1493,8 @@ pub fn show(
         });
         ui.ctx().accesskit_node_builder(run, |node| {
             node.set_role(egui::accesskit::Role::TextRun);
-            node.set_character_lengths(
-                text.chars().map(|c| c.len_utf8() as u8).collect::<Vec<_>>(),
-            );
-            node.set_value(text);
+            node.set_character_lengths(lengths.clone());
+            node.set_value(text.clone());
         });
         if response.hovered() {
             ui.ctx().set_cursor_icon(if mods.alt {
@@ -3344,6 +3365,9 @@ mod tests {
             .with_max_steps(16)
             .with_size(size)
             .with_context_setup(move |ctx| {
+                ctx.add_font_provider(std::sync::Arc::new(
+                    egui_system_font_provider::SystemFontProvider::new(),
+                ));
                 theme::install_fonts(ctx);
                 theme::apply(ctx, &p);
             })
@@ -3647,6 +3671,82 @@ mod tests {
         let selection = node.text_selection().expect("the selection is published");
         assert_eq!(selection.start().to_raw().character_index, 1);
         assert_eq!(selection.end().to_raw().character_index, 4);
+    }
+
+    #[test]
+    fn editor_accessibility_reuses_unchanged_snapshots() {
+        let mut h = harness(Editor::new("é\nbeta", true), [560.0, 320.0]);
+        h.run();
+        ACCESSKIT_TEXT_CONVERSIONS.store(0, std::sync::atomic::Ordering::Relaxed);
+        ACCESSKIT_LENGTH_CONSTRUCTIONS.store(0, std::sync::atomic::Ordering::Relaxed);
+        for _ in 0..100 {
+            h.step();
+        }
+        assert_eq!(
+            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            ACCESSKIT_LENGTH_CONSTRUCTIONS.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+
+        h.state_mut().doc.selection = Selection::single(Range::new(4, 1));
+        h.run();
+        let node = h.get_by_label("Editor").accesskit_node();
+        let selection = node.text_selection().unwrap();
+        assert_eq!(selection.start().to_raw().character_index, 1);
+        assert_eq!(selection.end().to_raw().character_index, 4);
+        assert_eq!(
+            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+
+        h.get_by_label("Editor").click();
+        h.get_by_label("Editor").type_text("x");
+        h.run();
+        assert_eq!(
+            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            ACCESSKIT_LENGTH_CONSTRUCTIONS.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert!(h.state_mut().doc.undo());
+        h.run();
+        assert_eq!(
+            h.get_by_label("Editor").accesskit_node().value(),
+            Some("é\nbeta".into())
+        );
+        assert!(h.state_mut().doc.redo());
+        h.run();
+        assert_eq!(
+            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
+            3
+        );
+        h.state_mut().doc.replace_all("replacement λ");
+        h.run();
+        assert_eq!(
+            h.get_by_label("Editor").accesskit_node().value(),
+            Some("replacement λ".into())
+        );
+        assert_eq!(
+            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
+            4
+        );
+
+        h.state_mut().toggle_fold(0);
+        h.set_size(egui::vec2(700.0, 320.0));
+        h.run();
+        assert_eq!(
+            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
+            4
+        );
+        assert_eq!(
+            ACCESSKIT_LENGTH_CONSTRUCTIONS.load(std::sync::atomic::Ordering::Relaxed),
+            4
+        );
     }
 
     #[test]
