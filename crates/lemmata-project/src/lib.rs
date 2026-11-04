@@ -605,20 +605,26 @@ pub struct Analysis {
     pub labels: Vec<extras::Label>,
 }
 
+pub type Sources = std::collections::HashMap<PathBuf, String>;
+
 pub fn analyze(project: &Project, entries: &[Entry]) -> Analysis {
     analyze_with(project, entries, |path| fs::read_to_string(path))
 }
 
-fn analyze_with(
+pub fn source_snapshot(project: &Project, entries: &[Entry]) -> Sources {
+    source_snapshot_with(project, entries, |path| fs::read_to_string(path))
+}
+
+pub fn source_snapshot_with(
     project: &Project,
     entries: &[Entry],
     mut read: impl FnMut(&Path) -> std::io::Result<String>,
-) -> Analysis {
+) -> Sources {
     fn collect(
         root: &Path,
         entries: &[Entry],
         read: &mut impl FnMut(&Path) -> std::io::Result<String>,
-        sources: &mut std::collections::HashMap<PathBuf, String>,
+        sources: &mut Sources,
     ) {
         for entry in entries {
             if entry.is_dir {
@@ -630,10 +636,23 @@ fn analyze_with(
             }
         }
     }
-    let mut sources = std::collections::HashMap::new();
+    let mut sources = Sources::new();
     collect(&project.root, entries, &mut read, &mut sources);
-    let outline = outline_with(project, &sources);
-    let labels = extras::labels_with(project, entries, &sources);
+    sources
+}
+
+fn analyze_with(
+    project: &Project,
+    entries: &[Entry],
+    read: impl FnMut(&Path) -> std::io::Result<String>,
+) -> Analysis {
+    let sources = source_snapshot_with(project, entries, read);
+    analyze_with_sources(project, entries, &sources)
+}
+
+pub fn analyze_with_sources(project: &Project, entries: &[Entry], sources: &Sources) -> Analysis {
+    let outline = outline_with(project, sources);
+    let labels = extras::labels_with(project, entries, sources);
     Analysis { outline, labels }
 }
 

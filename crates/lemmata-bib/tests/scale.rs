@@ -64,5 +64,15 @@ fn walks_after_a_save_on_a_big_project() {
         let files = lemmata_bib::bib_files(&p);
         drop(lemmata_bib::entries(&p.root, &files));
     });
+    let tree = lemmata_project::tree(root, &p.config.outdir);
+    time("separate analysis snapshots", &|| {
+        drop(lemmata_project::analyze(&p, &tree));
+        drop(lemmata_bib::bib_files_with_tree(&p, &tree));
+    });
+    time("shared analysis snapshot", &|| {
+        let sources = lemmata_project::source_snapshot(&p, &tree);
+        drop(lemmata_project::analyze_with_sources(&p, &tree, &sources));
+        drop(lemmata_bib::bib_files_with_sources(&p, &tree, &sources));
+    });
     time("cited keys", &|| drop(lemmata_bib::cited_keys(&p)));
 }

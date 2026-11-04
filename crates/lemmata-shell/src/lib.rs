@@ -293,8 +293,17 @@ fn project_info_with_tree(p: &Project, tree: Vec<Entry>) -> ProjectInfo {
 }
 
 fn analysis_of(p: &Project, tree: Vec<Entry>) -> ProjectAnalysis {
-    let analysis = lemmata_project::analyze(p, &tree);
-    let files = lemmata_bib::bib_files_with_tree(p, &tree);
+    analysis_of_with(p, tree, |path| std::fs::read_to_string(path))
+}
+
+fn analysis_of_with(
+    p: &Project,
+    tree: Vec<Entry>,
+    read: impl FnMut(&Path) -> std::io::Result<String>,
+) -> ProjectAnalysis {
+    let sources = lemmata_project::source_snapshot_with(p, &tree, read);
+    let analysis = lemmata_project::analyze_with_sources(p, &tree, &sources);
+    let files = lemmata_bib::bib_files_with_sources(p, &tree, &sources);
     let cites = lemmata_bib::entries(&p.root, &files);
     let pdf_current = lemmata_tex::up_to_date_with_tree(p, &tree);
     ProjectAnalysis {
@@ -1074,6 +1083,50 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn analysis_reads_each_source_once_and_keeps_one_snapshot() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("chapters")).unwrap();
+        std::fs::write(
+            d.path().join("main.tex"),
+            "\\documentclass{article}\n\\addbibresource{refs.bib}\n\\begin{document}\n\\section{Intro}\\label{sec:i}\n\\input{chapters/method}\n\\end{document}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.path().join("chapters/method.tex"),
+            "\\section{Method}\\label{sec:m}\n",
+        )
+        .unwrap();
+        std::fs::write(d.path().join("broken.tex"), [0xff]).unwrap();
+        std::fs::write(d.path().join("refs.bib"), "@misc{key, title={Title}}\n").unwrap();
+        let p = lemmata_project::Project::open(d.path()).unwrap();
+        let tree = lemmata_project::tree(&p.root, &p.config.outdir);
+        let pdf_current = lemmata_tex::up_to_date_with_tree(&p, &tree);
+        let mut reads = Vec::new();
+        let analysis = crate::analysis_of_with(&p, tree, |path| {
+            reads.push(path.to_owned());
+            let text = std::fs::read_to_string(path)?;
+            if path.ends_with("main.tex") {
+                std::fs::write(path, "changed during analysis\n").unwrap();
+            }
+            Ok(text)
+        });
+        reads.sort();
+        assert_eq!(
+            reads,
+            [
+                p.root.join("broken.tex"),
+                p.root.join("chapters/method.tex"),
+                p.root.join("main.tex"),
+            ]
+        );
+        assert_eq!(analysis.outline.headings.len(), 2);
+        assert_eq!(analysis.labels.len(), 2);
+        assert_eq!(analysis.cites.len(), 1);
+        assert_eq!(analysis.cites[0].key, "key");
+        assert_eq!(analysis.pdf_current, pdf_current);
+    }
+
     #[test]
     fn a_thumbnail_is_found_under_any_spelling_of_its_folder() {
         let d = tempfile::tempdir().unwrap();

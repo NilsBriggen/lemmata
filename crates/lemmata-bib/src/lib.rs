@@ -41,12 +41,21 @@ pub fn bib_files_with_tree(
     project: &lemmata_project::Project,
     entries: &[lemmata_project::Entry],
 ) -> Vec<String> {
+    let sources = lemmata_project::source_snapshot(project, entries);
+    bib_files_with_sources(project, entries, &sources)
+}
+
+pub fn bib_files_with_sources(
+    project: &lemmata_project::Project,
+    entries: &[lemmata_project::Entry],
+    sources: &lemmata_project::Sources,
+) -> Vec<String> {
     let mut named = Vec::new();
     for rel in project_tex_files(entries) {
-        let Ok(text) = std::fs::read_to_string(project.root.join(&rel)) else {
+        let Some(text) = sources.get(Path::new(&rel)) else {
             continue;
         };
-        for c in BIB_COMMAND.captures_iter(&text) {
+        for c in BIB_COMMAND.captures_iter(text) {
             for name in c[1].split(',').map(str::trim).filter(|n| !n.is_empty()) {
                 let mut p = PathBuf::from(name);
                 if p.extension().is_none() {
@@ -402,6 +411,34 @@ mod tests {
         assert_eq!(e[0].title, "The TeXbook");
         assert_eq!(e[1].authors, "A et al.");
         assert_eq!(e[1].year, "2020");
+    }
+
+    #[test]
+    fn bibliography_discovery_matches_the_supplied_source_snapshot() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("main.tex"),
+            "\\documentclass{article}\n\\addbibresource{refs.bib}\n",
+        )
+        .unwrap();
+        std::fs::write(d.path().join("refs.bib"), "@misc{x, title={X}}\n").unwrap();
+        std::fs::write(d.path().join("snapshot.bib"), "@misc{y, title={Y}}\n").unwrap();
+        let p = lemmata_project::Project::open(d.path()).unwrap();
+        let tree = lemmata_project::tree(&p.root, &p.config.outdir);
+        let mut sources = lemmata_project::Sources::new();
+        sources.insert(
+            PathBuf::from("main.tex"),
+            "\\addbibresource{snapshot.bib}\n".into(),
+        );
+        assert_eq!(
+            bib_files_with_sources(&p, &tree, &sources),
+            ["snapshot.bib"]
+        );
+        sources.clear();
+        assert_eq!(
+            bib_files_with_sources(&p, &tree, &sources),
+            ["refs.bib", "snapshot.bib"]
+        );
     }
 
     #[test]
