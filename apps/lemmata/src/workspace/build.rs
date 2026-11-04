@@ -23,6 +23,8 @@ pub struct BuildState {
     pub diagnostics: Vec<Diagnostic>,
     /// Bumped whenever `diagnostics` is replaced, so editors show the new ones.
     pub diag_gen: u64,
+    problem: Option<(String, usize, String)>,
+    pub(crate) problem_focus: Option<String>,
     pub logs_open: bool,
     /// What the engine says it is doing (Tectonic fetching packages).
     pub note: Option<String>,
@@ -92,6 +94,67 @@ impl Workspace {
             }
         }
         list
+    }
+
+    pub fn next_build_problem(&mut self, backend: &Backend, direction: i8) {
+        let mut problems: Vec<(String, usize, String)> = self
+            .build
+            .diagnostics
+            .iter()
+            .filter_map(|d| {
+                Some((
+                    d.file
+                        .as_deref()?
+                        .strip_prefix("./")
+                        .unwrap_or(d.file.as_deref()?)
+                        .into(),
+                    d.line? as usize,
+                    d.message.clone(),
+                ))
+            })
+            .collect();
+        problems.sort();
+        problems.dedup();
+        if problems.is_empty() {
+            return;
+        }
+        let file = self.active.clone().unwrap_or_default();
+        let line = self.editors.get(&file).map_or(1, |ed| ed.cursor_line());
+        let position = self
+            .build
+            .problem
+            .as_ref()
+            .filter(|(f, l, _)| *f == file && *l == line)
+            .cloned()
+            .unwrap_or((file, line, String::new()));
+        let picked = if direction > 0 {
+            problems
+                .iter()
+                .find(|p| **p > position)
+                .or(problems.first())
+        } else {
+            problems
+                .iter()
+                .rev()
+                .find(|p| **p < position)
+                .or(problems.last())
+        };
+        let Some((file, line, message)) = picked.cloned() else {
+            return;
+        };
+        let n = problems
+            .iter()
+            .position(|p| p == &(file.clone(), line, message.clone()))
+            .unwrap()
+            + 1;
+        self.build.problem = Some((file.clone(), line, message));
+        self.build.problem_focus = Some(file.clone());
+        self.goto(backend, &file, line);
+        self.notices.retain(|n| !n.text.starts_with("Problem "));
+        self.notice(
+            format!("Problem {n} of {}: {file}:{line}", problems.len()),
+            Tone::Info,
+        );
     }
 
     /// Builds once the saves under way are done: now, or after the autosave delay.

@@ -1552,6 +1552,10 @@ impl Workspace {
                     ed.comments_key = key;
                 }
                 let ed = self.editors.get_mut(&path).unwrap();
+                if self.build.problem_focus.as_deref() == Some(path.as_str()) {
+                    ed.refocus = true;
+                    self.build.problem_focus = None;
+                }
                 let mut c = ui.new_child(egui::UiBuilder::new().max_rect(body));
                 let out = view::show(
                     &mut c,
@@ -1674,6 +1678,9 @@ impl Workspace {
                     }
                 }
                 self.lsp_send(backend, msgs);
+                if let Some(direction) = out.next_problem {
+                    self.next_build_problem(backend, direction);
+                }
             }
             None if self
                 .active

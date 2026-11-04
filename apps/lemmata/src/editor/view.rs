@@ -342,26 +342,6 @@ impl Editor {
             .collect();
     }
 
-    /// F8 / Shift-F8: selects the next (or previous) problem, wrapping around.
-    fn next_problem(&mut self, forward: bool) -> bool {
-        if self.problems.is_empty() {
-            return false;
-        }
-        let head = self.doc.selection.main().head;
-        let mut sorted: Vec<&Problem> = self.problems.iter().collect();
-        sorted.sort_by_key(|p| p.from);
-        let pick = if forward {
-            sorted.iter().find(|p| p.from > head).or(sorted.first())
-        } else {
-            sorted.iter().rev().find(|p| p.to < head).or(sorted.last())
-        };
-        if let Some(p) = pick {
-            self.doc.selection = Selection::single(Range::new(p.from, p.to));
-            self.reveal = true;
-        }
-        true
-    }
-
     /// Selects the next (or previous) of `ranges` after the cursor, wrapping around. False
     /// when there are none.
     fn jump_among(&mut self, mut ranges: Vec<(usize, usize)>, forward: bool) -> bool {
@@ -2474,11 +2454,11 @@ fn key_press(
         }
         if on("next-problem") {
             out.next_problem = Some(1);
-            return ed.next_problem(true);
+            return true;
         }
         if on("prev-problem") {
             out.next_problem = Some(-1);
-            return ed.next_problem(false);
+            return true;
         }
     }
     if on("reindent") {

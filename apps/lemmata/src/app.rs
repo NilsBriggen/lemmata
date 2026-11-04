@@ -1836,18 +1836,20 @@ pub(crate) mod tests {
         h.get_by_label("Text of main.tex").click();
         h.run_steps(2);
         // F8 steps from problem to problem (there is a warning on line 5 too).
-        let line = |h: &Harness<App>| {
-            let ed = &h.state().project.as_ref().unwrap().editors["main.tex"];
-            ed.doc.line_of(ed.doc.selection.main().head)
+        let location = |h: &Harness<App>| {
+            let ws = h.state().project.as_ref().unwrap();
+            let path = ws.active.clone().unwrap();
+            let line = ws.editors[&path].cursor_line();
+            (path, line)
         };
         let mut seen = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..6 {
             h.key_press(egui::Key::F8);
-            h.run_steps(2);
-            seen.push(line(&h));
+            h.run_steps(3);
+            seen.push(location(&h));
         }
         assert!(
-            seen.contains(&10),
+            seen.contains(&("main.tex".into(), 11)),
             "F8 reaches the error on line 11: {seen:?}"
         );
         let _ = h.try_snapshot("editor-problem-light");
@@ -1861,6 +1863,94 @@ pub(crate) mod tests {
         h.get_by_label("main.tex:11").click();
         h.run_steps(2);
         assert_eq!(h.state().project.as_ref().unwrap().cursor.1, 11);
+    }
+
+    #[test]
+    fn f8_navigates_build_problems_across_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        std::fs::create_dir_all(project.join("chapters")).unwrap();
+        std::fs::write(project.join("chapters/method.tex"), "one\ntwo\nthree\n").unwrap();
+        let diagnostic = |file: &str, line: u32, message: &str| lemmata_log::Diagnostic {
+            severity: lemmata_log::Severity::Error,
+            kind: lemmata_log::Kind::Other,
+            file: Some(file.into()),
+            line: Some(line),
+            message: message.into(),
+            hint: None,
+            fix: None,
+        };
+        let ws = h.state_mut().project.as_mut().unwrap();
+        ws.build.diagnostics = vec![
+            diagnostic("main.tex", 8, "later in main"),
+            diagnostic("chapters/method.tex", 2, "in the closed file"),
+            diagnostic("main.tex", 3, "first in main"),
+            diagnostic("main.tex", 3, "first in main"),
+        ];
+        ws.build.diag_gen += 1;
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.state_mut()
+            .project
+            .as_mut()
+            .unwrap()
+            .editors
+            .get_mut("main.tex")
+            .unwrap()
+            .goto_line(1);
+        h.run_steps(1);
+        let location = |h: &Harness<App>| {
+            let ws = h.state().project.as_ref().unwrap();
+            let path = ws.active.clone().unwrap();
+            let line = ws.editors[&path].cursor_line();
+            (path, line)
+        };
+        for (file, line, status) in [
+            ("main.tex", 3, "Problem 2 of 3"),
+            ("main.tex", 8, "Problem 3 of 3"),
+            ("chapters/method.tex", 2, "Problem 1 of 3"),
+            ("main.tex", 3, "Problem 2 of 3"),
+        ] {
+            h.key_press(egui::Key::F8);
+            wait_for(
+                &mut h,
+                &format!("the destination and status {status}"),
+                |h| {
+                    location(h) == (file.into(), line)
+                        && h.query_all_by_value(&format!("{status}: {file}:{line}"))
+                            .next()
+                            .is_some()
+                },
+            );
+            assert!(
+                h.get_by_label(&format!("Text of {}", file.rsplit('/').next().unwrap()))
+                    .is_focused()
+            );
+        }
+        for (file, line) in [("chapters/method.tex", 2), ("main.tex", 8), ("main.tex", 3)] {
+            h.input_mut().events.push(egui::Event::Key {
+                key: egui::Key::F8,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::SHIFT,
+            });
+            h.run_steps(3);
+            assert_eq!(location(&h), (file.into(), line));
+        }
+        let before = location(&h);
+        h.state_mut()
+            .project
+            .as_mut()
+            .unwrap()
+            .build
+            .diagnostics
+            .clear();
+        h.key_press(egui::Key::F8);
+        h.run_steps(3);
+        assert_eq!(location(&h), before);
     }
 
     #[test]
