@@ -22,8 +22,7 @@ pub enum Viewer {
 /// Decodes an image file, off the UI thread.
 pub fn decode(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
     if path.to_lowercase().ends_with(".svg") {
-        // shortcut: SVG needs a vector renderer (resvg, about 1 MB); not decided yet, so it isn't previewed.
-        return Err("SVG files can't be previewed here yet. Open them in another program.".into());
+        return decode_svg(path, bytes);
     }
     let img = image::load_from_memory(bytes).map_err(|e| format!("Could not open {path}: {e}"))?;
     let rgba = img.to_rgba8();
@@ -31,6 +30,33 @@ pub fn decode(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
         [rgba.width() as usize, rgba.height() as usize],
         &rgba,
     ))
+}
+
+fn decode_svg(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
+    const MAX_BYTES: usize = 8_000_000;
+    const MAX_PIXELS: usize = 4_000_000;
+    if bytes.len() > MAX_BYTES {
+        return Err(format!("Could not open {path}: SVG is too large"));
+    }
+    let mut options = resvg::usvg::Options::default();
+    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    let tree = resvg::usvg::Tree::from_data(bytes, &options)
+        .map_err(|e| format!("Could not open {path}: {e}"))?;
+    let size = tree.size().to_int_size();
+    let (w, h) = (size.width() as usize, size.height() as usize);
+    if w == 0 || h == 0 || w.checked_mul(h).is_none_or(|n| n > MAX_PIXELS) {
+        return Err(format!(
+            "Could not open {path}: SVG dimensions are too large"
+        ));
+    }
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
+        .ok_or_else(|| format!("Could not open {path}: SVG dimensions are too large"))?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::default(),
+        &mut pixmap.as_mut(),
+    );
+    Ok(ColorImage::from_rgba_premultiplied([w, h], pixmap.data()))
 }
 
 pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) {
@@ -174,5 +200,51 @@ fn checkerboard(painter: &egui::Painter, rect: Rect) {
         }
         y += 8.0;
         row += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+
+    #[test]
+    fn svg_paths_text_and_transparency_render_offline() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><path fill="#ff0000" d="M0 0h20v10H0z"/><text x="2" y="8" fill="#000000">A</text></svg>"##;
+        let img = decode("figure.svg", svg).unwrap();
+        assert_eq!(img.size, [20, 10]);
+        assert_eq!(img.pixels[0], Color32::RED);
+        let transparent = br##"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><path fill="#ff0000" d="M0 0h2v2H0z"/></svg>"##;
+        let img = decode("transparent.svg", transparent).unwrap();
+        assert_eq!(img.pixels[0], Color32::RED);
+        assert_eq!(img.pixels[15], Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn svg_embedded_png_is_allowed_but_external_hrefs_are_not_read() {
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let data = base64::engine::general_purpose::STANDARD.encode(png);
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="4" height="4"><image xlink:href="data:image/png;base64,{data}" width="4" height="4"/></svg>"#
+        );
+        let img = decode("embedded.svg", svg.as_bytes()).unwrap();
+        assert_eq!(img.pixels[0], Color32::RED);
+        for href in ["file:///etc/passwd", "https://example.com/spy.png"] {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="4" height="4"><image xlink:href="{href}" width="4" height="4"/></svg>"#
+            );
+            let img = decode("external.svg", svg.as_bytes()).unwrap();
+            assert!(img.pixels.iter().all(|p| *p == Color32::TRANSPARENT));
+        }
+    }
+
+    #[test]
+    fn svg_malformed_xml_and_excessive_dimensions_are_rejected() {
+        assert!(decode("broken.svg", b"<svg><path></svg>").is_err());
+        let huge = br#"<svg xmlns="http://www.w3.org/2000/svg" width="1000000000" height="1000000000"><path d="M0 0h1v1H0z"/></svg>"#;
+        assert!(decode("huge.svg", huge).is_err());
     }
 }

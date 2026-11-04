@@ -188,7 +188,7 @@ pub fn resolve_file(path: &str, files: &[String], exts: &[&str]) -> Option<Strin
 
 const GRAPHIC_EXTS: &[&str] = &["", ".png", ".jpg", ".jpeg", ".svg", ".pdf", ".gif", ".webp"];
 static IMAGE_EXT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\.(png|jpe?g|gif|webp)$").unwrap());
+    LazyLock::new(|| Regex::new(r"(?i)\.(png|jpe?g|gif|webp|svg)$").unwrap());
 static MATH_ENV: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(equation|displaymath|math|align|alignat|flalign|gather|multline|eqnarray)\*?$")
         .unwrap()
@@ -468,6 +468,7 @@ mod tests {
 
     #[test]
     fn reads_images_and_inputs_whole_and_ignores_the_rest() {
+        assert!(IMAGE_EXT.is_match("figure.svg"));
         assert_eq!(
             at("\\includegraphics[width=.5\\textwidth]{fi|gs/a.png}").map(|t| (t.kind, t.name)),
             Some((Kind::Graphic, "figs/a.png".into()))

@@ -1954,6 +1954,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_svg_figure_opens_in_the_viewer_tab() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        std::fs::write(
+            project.join("figure.svg"),
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><path fill="red" d="M0 0h20v10H0z"/></svg>"#,
+        )
+        .unwrap();
+        let app = h.state_mut();
+        let backend = &app.backend;
+        app.project
+            .as_mut()
+            .unwrap()
+            .open_file(backend, "figure.svg");
+        wait_for(&mut h, "the decoded SVG viewer", |h| {
+            matches!(
+                h.state().project.as_ref().unwrap().viewers.get("figure.svg"),
+                Some(crate::workspace::viewer::Viewer::Image { size, .. }) if *size == [20, 10]
+            )
+        });
+    }
+
+    #[test]
     fn images_and_pdfs_of_the_project_open_in_a_viewer_tab() {
         let tmp = tempfile::tempdir().unwrap();
         let Some((mut h, project)) = in_article(tmp.path()) else {
