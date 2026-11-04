@@ -285,10 +285,11 @@ jobs:
           VERSION: ${{ needs.publish.outputs.version }}
         run: |
           gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS.txt
-          export SHA_DMG=$(grep "_macos_universal.dmg$" SHA256SUMS.txt | cut -d' ' -f1)
+          export SHA_DMG_AARCH64=$(grep "_macos_universal_aarch64.dmg$" SHA256SUMS.txt | cut -d' ' -f1)
+          export SHA_DMG_X86_64=$(grep "_macos_universal_x86_64.dmg$" SHA256SUMS.txt | cut -d' ' -f1)
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/NilsBriggen/homebrew-tap.git" tap
           mkdir -p tap/Casks
-          envsubst '$VERSION $SHA_DMG' < packaging/homebrew/lemmata.rb.in > tap/Casks/lemmata.rb
+          envsubst '$VERSION $SHA_DMG_AARCH64 $SHA_DMG_X86_64' < packaging/homebrew/lemmata.rb.in > tap/Casks/lemmata.rb
           cd tap
           git config user.name "Nils Briggen"
           git config user.email "NilsBriggen@users.noreply.github.com"

@@ -32,6 +32,8 @@ KINDS = [
     (".AppImage", ".AppImage"),
     (".deb", ".deb"),
     (".rpm", ".rpm"),
+    (".aarch64.dmg", "_aarch64.dmg"),
+    (".x86_64.dmg", "_x86_64.dmg"),
     (".dmg", ".dmg"),
     # Per-architecture macOS update tarballs before the plain one, so the longer suffix wins.
     (".aarch64.app.tar.gz", "_aarch64.app.tar.gz"),

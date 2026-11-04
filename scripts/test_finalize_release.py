@@ -17,6 +17,8 @@ PACKAGER_OUTPUT = {
     ],
     "macos_universal": [
         "Lemmata_0.3.0_universal.dmg",
+        "Lemmata.aarch64.dmg",
+        "Lemmata.x86_64.dmg",
         "Lemmata.aarch64.app.tar.gz",
         "Lemmata.aarch64.app.tar.gz.sig",
         "Lemmata.x86_64.app.tar.gz",
@@ -58,6 +60,8 @@ def test_stable_release() -> None:
         "Lemmata_0.3.0_linux_x86_64.deb",
         "Lemmata_0.3.0_linux_x86_64.rpm",
         "Lemmata_0.3.0_macos_universal.dmg",
+        "Lemmata_0.3.0_macos_universal_aarch64.dmg",
+        "Lemmata_0.3.0_macos_universal_x86_64.dmg",
         "Lemmata_0.3.0_macos_universal_aarch64.app.tar.gz",
         "Lemmata_0.3.0_macos_universal_x86_64.app.tar.gz",
         "Lemmata_0.3.0_windows_x86_64-setup.exe",
@@ -79,6 +83,13 @@ def test_stable_release() -> None:
     sums = (out / "SHA256SUMS.txt").read_text()
     assert "Lemmata_0.3.0_linux_x86_64.deb" in sums
     assert "lemmata-cli_0.3.0_windows_x86_64.zip" in sums
+    for arch in ["aarch64", "x86_64"]:
+        assert f"Lemmata_0.3.0_macos_universal_{arch}.dmg" in sums
+    assert "Lemmata_0.3.0_macos_universal.dmg" in sums
+    cask = (Path(__file__).parent.parent / "packaging/homebrew/lemmata.rb.in").read_text()
+    assert 'on_arch_conditional arm64: "aarch64", intel: "x86_64"' in cask
+    assert "Lemmata_#{version}_macos_universal_#{arch}.dmg" in cask
+    assert "$SHA_DMG_AARCH64" in cask and "$SHA_DMG_X86_64" in cask
 
 
 def test_a_misnamed_command_line_archive_stops_the_release() -> None:

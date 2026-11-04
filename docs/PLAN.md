@@ -260,6 +260,8 @@ The weeks assume one developer working full time. The release pipeline skeleton 
    Lemmata_0.3.0_linux_aarch64.AppImage
    Lemmata_0.3.0_linux_aarch64.deb
    Lemmata_0.3.0_linux_aarch64.rpm
+   Lemmata_0.3.0_macos_universal_aarch64.dmg
+   Lemmata_0.3.0_macos_universal_x86_64.dmg
    Lemmata_0.3.0_macos_universal.dmg
    Lemmata_0.3.0_macos_universal.app.tar.gz      (+ .sig)
    Lemmata_0.3.0_windows_x86_64-setup.exe        (+ .sig)

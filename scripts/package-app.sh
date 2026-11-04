@@ -72,6 +72,11 @@ if [[ ,$formats, == *,app,* ]]; then
       cp "target/$arch-apple-darwin/release/lemmata-app" "$thin"
       codesign --force --sign - "$thin"
       tar -czf "$out/Lemmata.$arch.app.tar.gz" -C "$tmp" "$(basename "$app")"
+      if [[ ,$formats, == *,dmg,* ]]; then
+        ln -s /Applications "$tmp/Applications"
+        hdiutil create -fs HFS+ -format UDZO -volname Lemmata -srcfolder "$tmp" \
+          -ov "$out/Lemmata.$arch.dmg" >/dev/null
+      fi
       rm -rf "$tmp"
     done
   else

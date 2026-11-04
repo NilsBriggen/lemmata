@@ -41,7 +41,9 @@ Every plain `X.Y.Z` release has these assets (version `0.3.0` as an example); a 
 | `Lemmata_0.3.0_linux_x86_64.deb` | Debian, Ubuntu, Mint |
 | `Lemmata_0.3.0_linux_x86_64.rpm` | Fedora, openSUSE |
 | `Lemmata_0.3.0_linux_aarch64.AppImage` / `.deb` / `.rpm` | Linux ARM64 |
-| `Lemmata_0.3.0_macos_universal.dmg` | macOS, Apple Silicon and Intel |
+| `Lemmata_0.3.0_macos_universal_aarch64.dmg` | macOS, Apple Silicon (smaller download) |
+| `Lemmata_0.3.0_macos_universal_x86_64.dmg` | macOS, Intel (smaller download) |
+| `Lemmata_0.3.0_macos_universal.dmg` | macOS, Apple Silicon and Intel (universal alternative) |
 | `Lemmata_0.3.0_windows_x86_64-setup.exe` | Windows installer (recommended) |
 | `Lemmata_0.3.0_windows_x86_64.msi` | Windows MSI, for managed installs |
 | `lemmata-cli_0.3.0_<platform>.tar.gz` (`.zip` for `windows_x86_64`) | The command-line tool alone, for scripts and CI, for `linux_x86_64`, `linux_aarch64`, `macos_universal` and `windows_x86_64`: the `lemmata` binary and the license |
