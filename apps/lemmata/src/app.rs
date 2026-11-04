@@ -3270,14 +3270,22 @@ pub(crate) mod tests {
         });
 
         // Dropped on the text of main.tex: a figure there.
+        let tree_right = h
+            .get_by_role_and_label(egui::accesskit::Role::TreeItem, "main.tex")
+            .rect()
+            .right();
         h.get_by_role_and_label(egui::accesskit::Role::TreeItem, "main.tex")
             .click();
         wait_for(&mut h, "main.tex", |h| {
             h.query_by_label("Text of main.tex").is_some()
         });
-        h.run_steps(10);
-        let drop_at = egui::pos2(360.0, 139.0);
-        h.hover_at(drop_at);
+        h.run_steps(2);
+        wait_for(&mut h, "main.tex to settle", |h| {
+            h.query_by_label("Text of main.tex")
+                .is_some_and(|node| node.rect().left() >= tree_right)
+        });
+        let text = h.get_by_label("Text of main.tex").rect();
+        h.hover_at(text.left_top() + egui::vec2(120.0, 20.0));
         h.step();
         h.input_mut()
             .dropped_files

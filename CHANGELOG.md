@@ -2,7 +2,7 @@
 
 All notable changes to Lemmata.
 
-## 3.1.0-rc.1 (2026-11-04)
+## 3.1.0 (2026-11-04)
 
 A reliability, performance, and preview release.
 
