@@ -1669,6 +1669,7 @@ pub(crate) mod tests {
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/article"),
             &project,
         );
+        let project = lemmata_project::canonical(&project).unwrap();
         let d = dirs(tmp);
         let mut recents = Recents::default();
         recents.remember(&project.to_string_lossy(), 1.0);
@@ -1909,8 +1910,7 @@ pub(crate) mod tests {
         let location = |h: &Harness<App>| {
             let ws = h.state().project.as_ref().unwrap();
             let path = ws.active.clone().unwrap();
-            let line = ws.editors[&path].cursor_line();
-            (path, line)
+            Some((path.clone(), ws.editors.get(&path)?.cursor_line()))
         };
         for (file, line, status) in [
             ("main.tex", 3, "Problem 2 of 3"),
@@ -1923,7 +1923,7 @@ pub(crate) mod tests {
                 &mut h,
                 &format!("the destination and status {status}"),
                 |h| {
-                    location(h) == (file.into(), line)
+                    location(h) == Some((file.into(), line))
                         && h.query_all_by_value(&format!("{status}: {file}:{line}"))
                             .next()
                             .is_some()
@@ -1942,8 +1942,9 @@ pub(crate) mod tests {
                 repeat: false,
                 modifiers: egui::Modifiers::SHIFT,
             });
-            h.run_steps(3);
-            assert_eq!(location(&h), (file.into(), line));
+            wait_for(&mut h, "the previous problem", |h| {
+                location(h) == Some((file.into(), line))
+            });
         }
         let before = location(&h);
         h.state_mut()

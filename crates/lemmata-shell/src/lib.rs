@@ -901,7 +901,7 @@ impl Shell {
         let mut tries = 0;
         while let Err(e) = trash::delete(&dir) {
             tries += 1;
-            if tries == 16 {
+            if tries == 100 {
                 return Err(format!(
                     "Could not move {} to the trash: {e}",
                     dir.display()
