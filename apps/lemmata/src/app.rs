@@ -3753,12 +3753,7 @@ pub(crate) mod tests {
         let fresh = std::fs::read(&pdf).unwrap();
         let source = std::fs::read_to_string(project.join("main.tex")).unwrap();
         assert!(source.contains("FreshExportMarker"), "{source}");
-        let text = std::process::Command::new("pdftotext")
-            .arg(&pdf)
-            .arg("-")
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&text.stdout);
+        let text = crate::pdf::engine::text_of_pdf(fresh.clone());
         assert!(text.contains("FreshExportMarker"), "{text}");
         assert_ne!(fresh, old);
         assert_eq!(std::fs::read(dest).unwrap(), fresh);
@@ -3958,6 +3953,10 @@ pub(crate) mod tests {
         };
         h.state_mut().settings.auto_compile = false;
         h.state_mut().settings.autosave_ms = 0.0;
+        wait_for(&mut h, "the initial build", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            ws.build.outcome.is_some() && !ws.build.building && ws.build.deadline.is_none()
+        });
         h.get_by_label("Text of main.tex").click();
         h.run_steps(2);
         h.get_by_label("Text of main.tex").type_text("% retry save");
@@ -4006,6 +4005,10 @@ pub(crate) mod tests {
         };
         h.state_mut().settings.auto_compile = false;
         h.state_mut().settings.autosave_ms = 0.0;
+        wait_for(&mut h, "the initial build", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            ws.build.outcome.is_some() && !ws.build.building && ws.build.deadline.is_none()
+        });
         h.get_by_label("Text of main.tex").click();
         h.run_steps(2);
         h.get_by_label("Text of main.tex")

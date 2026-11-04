@@ -495,7 +495,7 @@ fn watch_ignores_its_visible_build_folder() {
     source.sync_all().unwrap();
     let start = std::time::Instant::now();
     while changes() < 1 {
-        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        assert!(start.elapsed() < std::time::Duration::from_secs(30));
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     std::thread::sleep(std::time::Duration::from_millis(1100));

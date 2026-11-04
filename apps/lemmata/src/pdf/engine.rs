@@ -835,6 +835,12 @@ pub fn page_text(glyphs: &[Glyph]) -> (String, Vec<Option<usize>>) {
 }
 
 #[cfg(test)]
+pub(crate) fn text_of_pdf(bytes: Vec<u8>) -> String {
+    let pdf = Pdf::new(bytes).unwrap();
+    page_text(&glyphs(&pdf.pages()[0])).0
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

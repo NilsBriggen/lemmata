@@ -87,6 +87,9 @@ fn read(dirs: &Dirs) -> Result<Option<Vec<(String, String)>>, String> {
         }) else {
             return Ok(None);
         };
+        if !dir.exists() {
+            return Ok(None);
+        }
         leveldb::read(&dir).map(Some)
     }
 }
