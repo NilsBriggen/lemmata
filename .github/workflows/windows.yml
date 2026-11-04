@@ -50,7 +50,9 @@ jobs:
           foreach ($m in $mirrors) {
             try {
               $setup = "$m/systems/win32/miktex/setup/windows-x64/"
-              $name = (Invoke-WebRequest $setup -MaximumRetryCount 2).Links.href | Where-Object { $_ -match '^miktexsetup-.*-x64\.zip$' } | Select-Object -First 1
+              $name = (Invoke-WebRequest $setup -MaximumRetryCount 2).Links.href | Where-Object { $_ -match 'miktexsetup-.*-x64\.zip$' } | Select-Object -First 1
+              if (-not $name) { throw "No miktexsetup zip in the index" }
+              $name = $name -replace '^.*/', ''
               Invoke-WebRequest "$setup$name" -OutFile $zip -MaximumRetryCount 2
               break
             } catch { Write-Warning "$m`: $_" }
