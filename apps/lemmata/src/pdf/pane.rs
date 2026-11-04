@@ -15,6 +15,9 @@ use lemmata_log::{Diagnostic, Severity};
 use lemmata_tex::Status;
 use std::collections::HashSet;
 
+#[cfg(test)]
+static PDF_THUMB_WIDGETS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// What the pane needs to know about the build.
 pub struct Build<'a> {
     pub diagnostics: &'a [Diagnostic],
@@ -618,7 +621,6 @@ impl Pane {
     /// PdfThumbnails.svelte: a small render of every page, drawn as it scrolls into view.
     fn thumbnails(&mut self, ui: &mut Ui, p: &Palette) {
         let ctx = ui.ctx().clone();
-        let n = self.view.page_count();
         let current = self.view.current_page;
         let follow = std::mem::replace(&mut self.thumb_page, current) != current;
         egui::ScrollArea::vertical()
@@ -627,16 +629,20 @@ impl Pane {
             .show_viewport(ui, |ui, viewport| {
                 let w = ui.available_width().min(176.0);
                 let x = ui.max_rect().left() + (ui.available_width() - w) / 2.0;
-                let mut y = ui.max_rect().top();
-                let near = viewport
-                    .translate(ui.max_rect().min.to_vec2())
-                    .expand2(vec2(0.0, viewport.height() * 0.5));
-                for i in 0..n {
-                    let size = self.view.pages[i];
-                    let h = w * size.y / size.x;
-                    let img = Rect::from_min_size(pos2(x, y), vec2(w, h));
-                    let all =
-                        Rect::from_min_max(img.min, pos2(img.right(), img.bottom() + 3.0 + 15.0));
+                let origin = ui.max_rect().min;
+                let (rects, content_y) = self.view.thumbnail_geometry(w);
+                let near = viewport.expand2(vec2(0.0, viewport.height() * 0.5));
+                let first = rects.partition_point(|r| r.bottom() <= near.min.y);
+                let last = rects.partition_point(|r| r.top() < near.max.y);
+                if follow && (1..=rects.len()).contains(&current) {
+                    let all = rects[current - 1].translate(vec2(x, origin.y));
+                    ui.scroll_to_rect(all, None);
+                }
+                for i in first..last {
+                    #[cfg(test)]
+                    PDF_THUMB_WIDGETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let all = rects[i].translate(vec2(x, origin.y));
+                    let img = Rect::from_min_size(all.min, vec2(w, all.height() - 18.0));
                     let resp = ui.interact(all, ui.scope_id().with(("thumb", i)), Sense::click());
                     resp.widget_info(|| {
                         egui::WidgetInfo::labeled(
@@ -645,53 +651,47 @@ impl Pane {
                             format!("Page {}", i + 1),
                         )
                     });
-                    if follow && i + 1 == current {
-                        ui.scroll_to_rect(all, None);
-                    }
-                    if near.intersects(all) {
-                        let painter = ui.painter();
-                        painter.add(
-                            egui::Shadow {
-                                offset: [0, 1],
-                                blur: 3,
-                                spread: 0,
-                                color: Color32::from_black_alpha(51),
-                            }
-                            .as_shape(img, 2),
-                        );
-                        painter.rect_filled(img, 2, Color32::WHITE);
-                        if let Some((tex, _)) = self.view.thumbnail(&ctx, i) {
-                            painter.image(
-                                tex,
-                                img.shrink(2.0),
-                                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                                Color32::WHITE,
-                            );
+                    let painter = ui.painter();
+                    painter.add(
+                        egui::Shadow {
+                            offset: [0, 1],
+                            blur: 3,
+                            spread: 0,
+                            color: Color32::from_black_alpha(51),
                         }
-                        let is = i + 1 == current;
-                        let border = if is {
-                            p.accent
-                        } else if resp.hovered() {
-                            p.border_strong
-                        } else {
-                            Color32::TRANSPARENT
-                        };
-                        painter.rect_stroke(img, 2, Stroke::new(2.0, border), StrokeKind::Inside);
-                        painter.text(
-                            pos2(img.center().x, img.bottom() + 3.0),
-                            egui::Align2::CENTER_TOP,
-                            (i + 1).to_string(),
-                            FontId::proportional(11.0),
-                            if is { p.accent } else { p.muted },
+                        .as_shape(img, 2),
+                    );
+                    painter.rect_filled(img, 2, Color32::WHITE);
+                    if let Some((tex, _)) = self.view.thumbnail(&ctx, i) {
+                        painter.image(
+                            tex,
+                            img.shrink(2.0),
+                            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                            Color32::WHITE,
                         );
                     }
+                    let is = i + 1 == current;
+                    let border = if is {
+                        p.accent
+                    } else if resp.hovered() {
+                        p.border_strong
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    painter.rect_stroke(img, 2, Stroke::new(2.0, border), StrokeKind::Inside);
+                    painter.text(
+                        pos2(img.center().x, img.bottom() + 3.0),
+                        egui::Align2::CENTER_TOP,
+                        (i + 1).to_string(),
+                        FontId::proportional(11.0),
+                        if is { p.accent } else { p.muted },
+                    );
                     if resp.clicked() {
                         self.view.goto_page(i + 1);
                     }
-                    y = all.bottom() + 10.0;
                 }
                 ui.allocate_rect(
-                    Rect::from_min_max(ui.max_rect().min, pos2(ui.max_rect().right(), y)),
+                    Rect::from_min_max(origin, pos2(ui.max_rect().right(), origin.y + content_y)),
                     Sense::hover(),
                 );
             });
@@ -1021,4 +1021,56 @@ fn empty_state(ui: &mut Ui, p: &Palette, b: &Build) -> bool {
         );
     }
     clicked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn thumbnail_harness() -> egui_kittest::Harness<'static, Pane> {
+        let p = crate::theme::LIGHT;
+        let mut pane = Pane::new(&egui::Context::default());
+        pane.view.pages = vec![vec2(600.0, 800.0); 1_000];
+        egui_kittest::Harness::builder()
+            .with_size([220.0, 600.0])
+            .with_context_setup(move |ctx| {
+                crate::theme::install_fonts(ctx);
+                crate::theme::apply(ctx, &p);
+            })
+            .wgpu()
+            .build_ui_state(
+                move |ui, pane: &mut Pane| {
+                    pane.thumbnails(ui, &p);
+                },
+                pane,
+            )
+    }
+
+    #[test]
+    fn unchanged_thumbnail_frames_create_only_nearby_widgets() {
+        let mut h = thumbnail_harness();
+        h.run();
+        PDF_THUMB_WIDGETS.store(0, std::sync::atomic::Ordering::Relaxed);
+        h.step();
+        assert!(PDF_THUMB_WIDGETS.load(std::sync::atomic::Ordering::Relaxed) < 100);
+    }
+
+    #[test]
+    #[ignore]
+    fn unchanged_frames_in_a_1000_page_thumbnail_list_stay_fast() {
+        let mut h = thumbnail_harness();
+        h.run();
+        let mut frames: Vec<_> = (0..50)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                h.step();
+                start.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        frames.sort_by(f64::total_cmp);
+        eprintln!(
+            "1k-page unchanged thumbnails: median {:.3} ms, p95 {:.3} ms",
+            frames[25], frames[47]
+        );
+    }
 }

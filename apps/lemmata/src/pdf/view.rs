@@ -13,7 +13,12 @@ use eframe::egui::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+
+#[cfg(test)]
+static PDF_PAGE_VISITS: AtomicUsize = AtomicUsize::new(0);
 
 /// "width" and "page" fit the pane; a number is a fixed zoom (1 = 100 %).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -108,6 +113,9 @@ pub struct PdfView {
     pub dark: bool,
     tex: HashMap<usize, Tex>,
     thumbs: HashMap<usize, Tex>,
+    thumb_key: Option<(u64, u32)>,
+    thumb_rects: Arc<Vec<Rect>>,
+    thumb_content: f32,
     /// Render jobs sent and not answered yet: page → (doc, scale, dark, thumb).
     asked: HashSet<(usize, bool)>,
     epoch_scale: f32,
@@ -172,6 +180,9 @@ impl PdfView {
             dark: false,
             tex: HashMap::new(),
             thumbs: HashMap::new(),
+            thumb_key: None,
+            thumb_rects: Arc::new(Vec::new()),
+            thumb_content: 0.0,
             asked: HashSet::new(),
             epoch_scale: 0.0,
             deco: HashMap::new(),
@@ -473,6 +484,23 @@ impl PdfView {
         self.content = vec2(width, y - GAP + PAD_BOTTOM);
     }
 
+    fn vertical_page_range(&self, area: Rect) -> std::ops::Range<usize> {
+        let columns = if self.two_up() { 2 } else { 1 };
+        let next = self.rects.partition_point(|r| r.top() < area.min.y);
+        let first = next.saturating_sub(columns);
+        let last = self.rects.partition_point(|r| r.top() < area.max.y);
+        first..last
+    }
+
+    fn page_after(&self, y: f32) -> Option<usize> {
+        let columns = if self.two_up() { 2 } else { 1 };
+        let next = self.rects.partition_point(|r| r.top() <= y);
+        let first = next.saturating_sub(columns);
+        (first..next)
+            .find(|&i| self.rects[i].bottom() > y)
+            .or((next < self.rects.len()).then_some(next))
+    }
+
     /// Changes the zoom, keeping the same part of the document in view.
     pub fn set_fit(&mut self, fit: Fit) {
         let ratio = self.scroll_y / self.content.y.max(1.0);
@@ -712,6 +740,23 @@ impl PdfView {
         });
     }
 
+    pub(super) fn thumbnail_geometry(&mut self, width: f32) -> (Arc<Vec<Rect>>, f32) {
+        let key = (self.shown, width.to_bits());
+        if self.thumb_key != Some(key) {
+            let mut rects = Vec::with_capacity(self.pages.len());
+            let mut y = 0.0;
+            for size in &self.pages {
+                let h = width * size.y / size.x;
+                rects.push(Rect::from_min_size(pos2(0.0, y), vec2(width, h + 18.0)));
+                y += h + 28.0;
+            }
+            self.thumb_rects = Arc::new(rects);
+            self.thumb_content = y;
+            self.thumb_key = Some(key);
+        }
+        (self.thumb_rects.clone(), self.thumb_content)
+    }
+
     /// A thumbnail of a page, drawing it if needed; None until the first one arrives.
     pub fn thumbnail(
         &mut self,
@@ -827,15 +872,18 @@ impl PdfView {
             // their text layers last: the engine works through its queue in order.
             let (mut on_screen, mut around) = (Vec::new(), Vec::new());
             let selected = self.selection.map(|(page, ..)| page);
-            for i in 0..self.pages.len() {
+            self.tex
+                .retain(|i, _| self.rects.get(*i).is_some_and(|r| keep.intersects(*r)));
+            if self.query.is_empty() {
+                self.deco.retain(|i, _| {
+                    selected == Some(*i) || self.rects.get(*i).is_some_and(|r| keep.intersects(*r))
+                });
+            }
+            for i in self.vertical_page_range(keep) {
+                #[cfg(test)]
+                PDF_PAGE_VISITS.fetch_add(1, Ordering::Relaxed);
                 let r = self.rects[i];
-                if !keep.intersects(r) {
-                    self.tex.remove(&i);
-                    // A search needs every page's text, a selection its own page's.
-                    if self.query.is_empty() && selected != Some(i) {
-                        self.deco.remove(&i);
-                    }
-                } else if viewport.intersects(r) {
+                if viewport.intersects(r) {
                     on_screen.push(i);
                 } else if near.intersects(r) {
                     around.push(i);
@@ -856,7 +904,7 @@ impl PdfView {
                 }
             }
             let painter = ui.painter();
-            for i in 0..self.pages.len() {
+            for i in self.vertical_page_range(near) {
                 let r = self.rects[i];
                 if !near.intersects(r) {
                     continue;
@@ -902,7 +950,7 @@ impl PdfView {
         self.scroll_y = offset.y;
         // The page in the middle of the pane.
         let mid = self.scroll_y + self.client.y / 2.0;
-        if let Some(i) = self.rects.iter().position(|r| r.bottom() > mid) {
+        if let Some(i) = self.page_after(mid) {
             self.current_page = i + 1;
         }
         let resp = out.inner;
@@ -1184,6 +1232,117 @@ mod tests {
         view.set_fit(Fit::Zoom(2.0));
         view.relayout();
         assert_eq!(view.relayout_calls, 2);
+    }
+
+    fn thousand_page_view(layout: Layout) -> PdfView {
+        let mut view = PdfView::new(&egui::Context::default(), egui::Id::unique("large-pdf"));
+        view.pages = vec![vec2(600.0, 800.0); 1_000];
+        view.layout = layout;
+        view.fit = Fit::Zoom(0.5);
+        view.shown = 1;
+        view.sent = 1;
+        view
+    }
+
+    fn pdf_harness(view: PdfView) -> egui_kittest::Harness<'static, PdfView> {
+        let p = crate::theme::LIGHT;
+        egui_kittest::Harness::builder()
+            .with_size([800.0, 600.0])
+            .with_context_setup(move |ctx| {
+                crate::theme::install_fonts(ctx);
+                crate::theme::apply(ctx, &p);
+            })
+            .wgpu()
+            .build_ui_state(
+                move |ui, view: &mut PdfView| {
+                    view.show(ui, &p);
+                },
+                view,
+            )
+    }
+
+    #[test]
+    fn virtualized_pdf_ranges_match_full_geometry_scans() {
+        for layout in [Layout::Single, Layout::Spread, Layout::SpreadFirst] {
+            let mut view = thousand_page_view(layout);
+            for (i, page) in view.pages.iter_mut().enumerate() {
+                page.y += (i % 3) as f32 * 100.0;
+            }
+            view.client = vec2(900.0, 700.0);
+            view.relayout();
+            for y in [0.0, 500.0, 20_000.0, 500_000.0, 900_000.0] {
+                let area = Rect::from_min_size(pos2(0.0, y), vec2(900.0, 373.0));
+                let expected: Vec<_> = view
+                    .rects
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.bottom() > area.min.y && r.top() < area.max.y)
+                    .map(|(i, _)| i)
+                    .collect();
+                let actual: Vec<_> = view
+                    .vertical_page_range(area)
+                    .filter(|&i| area.intersects(view.rects[i]))
+                    .collect();
+                assert_eq!(actual, expected);
+                assert_eq!(
+                    view.page_after(y - 7.0),
+                    view.rects.iter().position(|r| r.bottom() > y - 7.0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn thumbnail_geometry_preserves_scroll_extent_and_is_cached() {
+        let mut view = thousand_page_view(Layout::Single);
+        view.pages[2].y = 1_000.0;
+        let (rects, content) = view.thumbnail_geometry(176.0);
+        let expected: f32 = view
+            .pages
+            .iter()
+            .map(|size| 176.0 * size.y / size.x + 28.0)
+            .sum();
+        assert_eq!(content, expected);
+        assert_eq!(rects.len(), view.pages.len());
+        assert_eq!(rects[3].min.y, rects[2].max.y + 10.0);
+        let (cached, _) = view.thumbnail_geometry(176.0);
+        assert!(Arc::ptr_eq(&rects, &cached));
+        let (resized, resized_content) = view.thumbnail_geometry(100.0);
+        assert!(!Arc::ptr_eq(&rects, &resized));
+        assert!(resized_content < content);
+        view.shown += 1;
+        let (replacement, _) = view.thumbnail_geometry(100.0);
+        assert!(!Arc::ptr_eq(&resized, &replacement));
+    }
+
+    #[test]
+    fn unchanged_pdf_frames_visit_only_nearby_pages() {
+        for layout in [Layout::Single, Layout::Spread, Layout::SpreadFirst] {
+            let mut h = pdf_harness(thousand_page_view(layout));
+            h.run();
+            PDF_PAGE_VISITS.store(0, Ordering::Relaxed);
+            h.step();
+            assert!(PDF_PAGE_VISITS.load(Ordering::Relaxed) < 100, "{layout:?}");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn unchanged_frames_in_a_1000_page_pdf_stay_fast() {
+        let mut h = pdf_harness(thousand_page_view(Layout::Single));
+        h.run();
+        let mut frames: Vec<_> = (0..50)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                h.step();
+                start.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        frames.sort_by(f64::total_cmp);
+        eprintln!(
+            "1k-page unchanged PDF: median {:.3} ms, p95 {:.3} ms",
+            frames[25], frames[47]
+        );
     }
 
     fn decorate(view: &mut PdfView, doc: u64, page: usize, text: &str) {
