@@ -38,7 +38,11 @@ pub enum Msg {
     /// A folder or file the user picked, for the job that asked.
     Picked(Pick, Option<PathBuf>),
     Opened(String, Result<lemmata_shell::ProjectAnalysis, String>),
-    OpenPreflight(lemmata_shell::open_with::OpenTarget, Result<(), String>),
+    OpenPreflight(
+        u64,
+        lemmata_shell::open_with::OpenTarget,
+        Result<(), String>,
+    ),
     Trashed(String, Result<(), String>),
     Tectonic(Result<(), String>),
     Terminal(Result<(), String>),
@@ -83,7 +87,7 @@ pub enum Msg {
     Log(u64, Result<String, String>),
     Cleaned(Result<usize, String>),
     /// Where to save an export, or None when the dialog was cancelled.
-    SaveTo(Save, Option<PathBuf>),
+    SaveTo(u64, Save, Option<PathBuf>),
     /// An export finished: what, the file name, and how many files went in.
     Exported(Save, String, Result<usize, String>),
     PackageAdded(Result<(), String>),
@@ -323,7 +327,7 @@ impl Backend {
     }
 
     /// A native save dialog for an export, without blocking the UI.
-    pub fn save(&self, what: Save, name: String) {
+    pub fn save(&self, project: u64, what: Save, name: String) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         self.rt().spawn(async move {
             let (title, filter, ext) = match what {
@@ -337,7 +341,11 @@ impl Backend {
                 .add_filter(filter, &[ext])
                 .save_file()
                 .await;
-            let _ = tx.send(Msg::SaveTo(what, picked.map(|h| h.path().to_path_buf())));
+            let _ = tx.send(Msg::SaveTo(
+                project,
+                what,
+                picked.map(|h| h.path().to_path_buf()),
+            ));
             ctx.request_repaint();
         });
     }

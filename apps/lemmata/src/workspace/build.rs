@@ -344,7 +344,7 @@ impl Workspace {
                 move |ws, b, current| {
                     ws.build.export_check = None;
                     match current {
-                        Ok(true) => b.save(what, ws.export_name(what)),
+                        Ok(true) => b.save(ws.project, what, ws.export_name(what)),
                         Ok(false) => ws.offer_stale_export(what),
                         Err(e) => ws.notice(e, Tone::Error),
                     }
@@ -536,7 +536,7 @@ impl Workspace {
                         }
                         if let Some((_, flatten)) = arxiv {
                             if ok {
-                                backend.save(Save::Arxiv { flatten }, format!("{}-arxiv.zip", self.info.name));
+                                backend.save(self.project, Save::Arxiv { flatten }, format!("{}-arxiv.zip", self.info.name));
                             } else {
                                 self.notices.push(Notice::new(
                                     "The document doesn't build without errors, so arXiv would likely reject it. Fix the errors in Logs first.",
@@ -546,7 +546,7 @@ impl Workspace {
                         }
                         if let Some((_, what)) = export {
                             if ok {
-                                backend.save(what, self.export_name(what));
+                                backend.save(self.project, what, self.export_name(what));
                             } else {
                                 self.offer_stale_export(what);
                             }
@@ -609,8 +609,8 @@ impl Workspace {
                 self.after_saving(backend, settings, |ws, _| ws.build_soon(false, false));
             }
             Msg::Cleaned(Err(e)) => self.notice(e, Tone::Info),
-            Msg::SaveTo(_, None) => {}
-            Msg::SaveTo(what, Some(dest)) => {
+            Msg::SaveTo(project, _, None) if project == self.project => {}
+            Msg::SaveTo(project, what, Some(dest)) if project == self.project => {
                 let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let dest = dest.to_string_lossy().into_owned();
                 self.spawn(backend, move |shell| {
@@ -652,6 +652,7 @@ impl Workspace {
     pub fn notice_action(&mut self, backend: &Backend, settings: &Settings, a: NoticeAction) {
         match a {
             NoticeAction::ArxivAnyway(flatten) => backend.save(
+                self.project,
                 Save::Arxiv { flatten },
                 format!("{}-arxiv.zip", self.info.name),
             ),
@@ -677,7 +678,9 @@ impl Workspace {
                     self.build_soon(false, false);
                 }
             }
-            NoticeAction::ExportOlder(what) => backend.save(what, self.export_name(what)),
+            NoticeAction::ExportOlder(what) => {
+                backend.save(self.project, what, self.export_name(what))
+            }
             NoticeAction::DraftOff => self.set_config(backend, settings, |c| c.draft = false),
             NoticeAction::LinkZotero => self.link_zotero(backend, settings),
             NoticeAction::UndoFiles => self.undo_files(backend),

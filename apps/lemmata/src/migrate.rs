@@ -18,7 +18,10 @@ pub fn run(dirs: &Dirs) {
     run_with(dirs, read);
 }
 
-fn run_with(dirs: &Dirs, read: impl FnOnce(&Dirs) -> Option<Vec<(String, String)>>) {
+fn run_with(
+    dirs: &Dirs,
+    read: impl FnOnce(&Dirs) -> Result<Option<Vec<(String, String)>>, String>,
+) {
     let (recent, groups) = (
         dirs.config.join("recent.json"),
         dirs.config.join("groups.json"),
@@ -26,7 +29,9 @@ fn run_with(dirs: &Dirs, read: impl FnOnce(&Dirs) -> Option<Vec<(String, String)
     if recent.exists() && groups.exists() {
         return;
     }
-    let found = read(dirs);
+    let Ok(found) = read(dirs) else {
+        return;
+    };
     let value = |key| {
         found
             .iter()
@@ -43,7 +48,7 @@ fn run_with(dirs: &Dirs, read: impl FnOnce(&Dirs) -> Option<Vec<(String, String)
 }
 
 /// The `lemmata.*` keys of the newest localStorage that has them.
-fn read(dirs: &Dirs) -> Option<Vec<(String, String)>> {
+fn read(dirs: &Dirs) -> Result<Option<Vec<(String, String)>>, String> {
     #[cfg(unix)]
     {
         let mut roots = vec![dirs.data.clone()];
@@ -58,17 +63,31 @@ fn read(dirs: &Dirs) -> Option<Vec<(String, String)>> {
             find(&r, 6, &mut files);
         }
         files.sort_by_key(|f| std::cmp::Reverse(modified(f)));
-        files
-            .iter()
-            .find_map(|f| sqlite::read(f).ok().filter(|kv| !kv.is_empty()))
+        if files.is_empty() {
+            return Ok(None);
+        }
+        let mut last_error = None;
+        for file in files {
+            match sqlite::read(&file) {
+                Ok(rows) if !rows.is_empty() => return Ok(Some(rows)),
+                Ok(_) => {}
+                Err(e) => last_error = Some(e),
+            }
+        }
+        match last_error {
+            Some(e) => Err(e),
+            None => Ok(Some(Vec::new())),
+        }
     }
     #[cfg(windows)]
     {
-        let _ = dirs;
-        let dir = dirs::data_local_dir()?
-            .join(crate::store::IDENTIFIER)
-            .join("EBWebView/Default/Local Storage/leveldb");
-        leveldb::read(&dir).ok().filter(|kv| !kv.is_empty())
+        let Some(dir) = dirs::data_local_dir().map(|d| {
+            d.join(crate::store::IDENTIFIER)
+                .join("EBWebView/Default/Local Storage/leveldb")
+        }) else {
+            return Ok(None);
+        };
+        leveldb::read(&dir).map(Some)
     }
 }
 
@@ -324,7 +343,9 @@ mod tests {
     #[test]
     #[ignore]
     fn this_computers_tauri_lists() {
-        let found = read(&Dirs::system()).expect("the Tauri app's localStorage");
+        let found = read(&Dirs::system())
+            .expect("the Tauri app's localStorage")
+            .expect("no legacy data");
         for (k, v) in &found {
             println!("{k}: {} bytes", v.len());
         }
@@ -360,7 +381,7 @@ mod tests {
         for _ in 0..2 {
             run_with(&d, |_| {
                 calls.set(calls.get() + 1);
-                Some(Vec::new())
+                Ok(Some(Vec::new()))
             });
         }
         assert_eq!(calls.get(), 1);
@@ -385,6 +406,15 @@ mod tests {
             };
             assert!(d.config.join(other).is_file(), "missing {other}");
         }
+    }
+
+    #[test]
+    fn a_failed_legacy_read_does_not_write_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(tmp.path());
+        run_with(&d, |_| Err("read failed".into()));
+        assert!(!d.config.join("recent.json").exists());
+        assert!(!d.config.join("groups.json").exists());
     }
 
     #[test]

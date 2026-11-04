@@ -38,7 +38,17 @@ fn decode_svg(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
     if bytes.len() > MAX_BYTES {
         return Err(format!("Could not open {path}: SVG is too large"));
     }
-    let mut options = resvg::usvg::Options::default();
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return Err(format!(
+            "Could not open {path}: compressed SVG is not supported"
+        ));
+    }
+    let mut options = resvg::usvg::Options {
+        font_family: "IBM Plex Sans".into(),
+        ..Default::default()
+    };
+    std::sync::Arc::make_mut(&mut options.fontdb)
+        .load_font_data(include_bytes!("../../assets/fonts/ibm-plex-sans-latin-400.ttf").to_vec());
     options.image_href_resolver.resolve_string = Box::new(|_, _| None);
     let tree = resvg::usvg::Tree::from_data(bytes, &options)
         .map_err(|e| format!("Could not open {path}: {e}"))?;
@@ -218,6 +228,26 @@ mod tests {
         let img = decode("transparent.svg", transparent).unwrap();
         assert_eq!(img.pixels[0], Color32::RED);
         assert_eq!(img.pixels[15], Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn svg_text_uses_bundled_fonts() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><text x="1" y="16" font-size="16" fill="#000000">A</text></svg>"##;
+        let img = decode("text.svg", svg).unwrap();
+        assert!(img.pixels.iter().any(|p| p.a() > 0), "text did not render");
+    }
+
+    #[test]
+    fn gzip_svg_is_rejected_before_decompression() {
+        let bytes = [
+            31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 21, 204, 49, 14, 131, 48, 12, 64, 209, 171, 88, 238,
+            142, 173, 148, 9, 37, 153, 187, 244, 16, 72, 144, 56, 82, 104, 81, 99, 97, 196, 233,
+            75, 182, 63, 60, 125, 223, 142, 12, 231, 86, 63, 45, 160, 168, 238, 19, 145, 153, 13,
+            246, 28, 190, 191, 76, 142, 153, 233, 22, 8, 86, 22, 149, 128, 35, 130, 172, 37, 139,
+            246, 140, 126, 159, 85, 32, 149, 90, 3, 62, 82, 186, 49, 35, 44, 1, 223, 12, 44, 238,
+            112, 47, 190, 144, 162, 239, 135, 248, 7, 13, 82, 69, 78, 105, 0, 0, 0,
+        ];
+        assert!(decode("bomb.svg", &bytes).is_err());
     }
 
     #[test]

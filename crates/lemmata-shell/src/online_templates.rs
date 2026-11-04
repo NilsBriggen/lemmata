@@ -184,6 +184,17 @@ async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
 }
 
 fn commit(staging: &Path, cache: &Path, entries: &[Entry]) -> std::io::Result<()> {
+    commit_with(staging, cache, entries, |from, to| {
+        std::fs::rename(from, to)
+    })
+}
+
+fn commit_with(
+    staging: &Path,
+    cache: &Path,
+    entries: &[Entry],
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     for template in entries {
         let from = staging.join(&template.id);
         if !from.exists() {
@@ -195,11 +206,16 @@ fn commit(staging: &Path, cache: &Path, entries: &[Entry]) -> std::io::Result<()
             std::fs::create_dir_all(parent)?;
         }
         if dest.exists() {
-            std::fs::rename(&dest, &backup)?;
+            rename(&dest, &backup)?;
         }
-        if let Err(e) = std::fs::rename(&from, &dest) {
-            if backup.exists() {
-                let _ = std::fs::rename(&backup, &dest);
+        if let Err(e) = rename(&from, &dest) {
+            if backup.exists()
+                && let Err(restore) = rename(&backup, &dest)
+            {
+                return Err(std::io::Error::new(
+                    e.kind(),
+                    format!("{e}; restoring the old template failed: {restore}"),
+                ));
             }
             return Err(e);
         }
@@ -288,7 +304,9 @@ pub async fn refresh(cache: &Path) -> Result<usize, String> {
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let result = download(&client, &base, &entries, cache, &staging).await;
-    let _ = std::fs::remove_dir_all(staging);
+    if result.is_ok() {
+        let _ = std::fs::remove_dir_all(staging);
+    }
     result
 }
 
@@ -296,7 +314,8 @@ pub async fn refresh(cache: &Path) -> Result<usize, String> {
 mod tests {
     use super::*;
 
-    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ENV: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
     fn index(files: &str) -> String {
         format!(
@@ -361,7 +380,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_file_leaves_the_old_template_untouched() {
-        let _guard = ENV.lock().unwrap();
+        let _guard = ENV.lock().await;
         for had_old in [true, false] {
             let d = tempfile::tempdir().unwrap();
             let cache = d.path();
@@ -392,9 +411,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_failed_restore_preserves_the_backup_and_both_errors() {
+        let d = tempfile::tempdir().unwrap();
+        let cache = d.path().join("cache");
+        let staging = d.path().join("staging");
+        std::fs::create_dir_all(cache.join("ieee")).unwrap();
+        std::fs::write(cache.join("ieee/main.tex"), "old").unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(staging.join("ieee")).unwrap();
+        std::fs::write(staging.join("ieee/main.tex"), "new").unwrap();
+        let entries = parse(index(&file("main.tex", b"new")).as_bytes()).unwrap();
+        let error = commit_with(&staging, &cache, &entries, |from, to| {
+            if from == cache.join("ieee") {
+                std::fs::rename(from, to)
+            } else {
+                Err(std::io::Error::other(format!("fault {from:?}")))
+            }
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("restoring"));
+        assert!(staging.join(".backup/ieee/main.tex").exists());
+    }
+
     #[tokio::test]
     async fn verified_files_commit_the_staged_template() {
-        let _guard = ENV.lock().unwrap();
+        let _guard = ENV.lock().await;
         let d = tempfile::tempdir().unwrap();
         let cache = d.path();
         std::fs::create_dir_all(cache.join("ieee")).unwrap();

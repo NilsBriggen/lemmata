@@ -32,6 +32,7 @@ pub struct App {
     project: Option<Workspace>,
     /// The latest project open request; older answers are discarded.
     open_generation: u64,
+    open_request: u64,
     /// Startup has decided between the welcome, the last project and the library.
     started: bool,
     dialog: Option<Dialog>,
@@ -157,6 +158,7 @@ impl App {
             no_main_in: None,
             project: None,
             open_generation: 0,
+            open_request: 0,
             started: false,
             dialog: None,
             prefs: None,
@@ -229,13 +231,15 @@ impl App {
     fn handle_request(&mut self, request: Request) {
         match request {
             Request::Open(target) => {
+                self.open_request += 1;
+                let request = self.open_request;
                 self.open_error = None;
                 self.no_main_in = None;
                 self.backend.spawn(move |_| {
                     let result = lemmata_project::Project::open_with_tree(&target.project_root)
                         .map(|_| ())
                         .map_err(|e| e.to_string());
-                    Msg::OpenPreflight(target, result)
+                    Msg::OpenPreflight(request, target, result)
                 });
             }
             // The dialogs live on the start screen: the project closes (saving) first.
@@ -497,7 +501,7 @@ impl App {
             None => msg,
         };
         match msg {
-            Msg::OpenPreflight(target, Ok(())) => {
+            Msg::OpenPreflight(request, target, Ok(())) if request == self.open_request => {
                 let path = target.project_root.to_string_lossy().into_owned();
                 let file = target.file;
                 self.leave(
@@ -508,7 +512,7 @@ impl App {
                     }),
                 );
             }
-            Msg::OpenPreflight(target, Err(e)) => {
+            Msg::OpenPreflight(request, target, Err(e)) if request == self.open_request => {
                 self.open_file_after = None;
                 let path = target.project_root.to_string_lossy().into_owned();
                 if e.contains("main")
@@ -647,6 +651,7 @@ impl App {
             | Msg::GrammarFound(..)
             | Msg::Apply(..)
             | Msg::Project(..) => {}
+            Msg::OpenPreflight(..) => {}
             Msg::Prefs(m) => self.on_prefs_msg(ctx, m),
             Msg::Update(m) => self.on_update_msg(ctx, m),
         }
@@ -3379,6 +3384,72 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn stale_open_preflights_cannot_open_or_clear_the_newer_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        let make = |name: &str| {
+            let root = tmp.path().join(name);
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("main.tex"), "\\documentclass{article}\n").unwrap();
+            lemmata_shell::open_with::OpenTarget {
+                project_root: root,
+                file: None,
+            }
+        };
+        let (b, c) = (make("b"), make("c"));
+        h.state_mut().open_request = 2;
+        let ctx = h.ctx.clone();
+        h.state_mut()
+            .on_msg(&ctx, Msg::OpenPreflight(1, b.clone(), Ok(())));
+        h.run_steps(3);
+        assert_eq!(h.state().project.as_ref().unwrap().info.name, "rl-thesis");
+        h.state_mut().on_msg(&ctx, Msg::OpenPreflight(2, c, Ok(())));
+        wait_for(&mut h, "the newest preflight", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .is_some_and(|ws| ws.info.name == "c")
+        });
+        h.state_mut()
+            .on_msg(&ctx, Msg::OpenPreflight(1, b, Err("older failure".into())));
+        h.run_steps(2);
+        assert!(h.state().open_error.is_none());
+        assert_eq!(h.state().project.as_ref().unwrap().info.name, "c");
+    }
+
+    #[test]
+    fn stale_export_dialog_responses_are_discarded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        wait_for(&mut h, "the initial PDF", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            ws.build.outcome.is_some() && !ws.build.building && ws.pane.has_pdf()
+        });
+        let dest = tmp.path().join("stale.pdf");
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        let ws = app.project.as_mut().unwrap();
+        let current = ws.project;
+        ws.on_build_msg(
+            backend,
+            &settings,
+            Msg::SaveTo(current - 1, crate::backend::Save::Pdf, Some(dest.clone())),
+        );
+        assert!(!dest.exists());
+        ws.on_build_msg(
+            backend,
+            &settings,
+            Msg::SaveTo(current, crate::backend::Save::Pdf, Some(dest.clone())),
+        );
+        wait_for(&mut h, "the current export", |_| dest.is_file());
+    }
+
+    #[test]
     fn reopening_the_same_project_preserves_save_ordering() {
         let tmp = tempfile::tempdir().unwrap();
         let Some((mut h, project)) = in_article(tmp.path()) else {
@@ -3597,7 +3668,7 @@ pub(crate) mod tests {
         app.project.as_mut().unwrap().on_build_msg(
             backend,
             &settings,
-            Msg::SaveTo(crate::backend::Save::Pdf, Some(dest.clone())),
+            Msg::SaveTo(1, crate::backend::Save::Pdf, Some(dest.clone())),
         );
         wait_for(&mut h, "the older PDF export", |_| dest.is_file());
         assert_eq!(
@@ -3676,7 +3747,7 @@ pub(crate) mod tests {
         app.project.as_mut().unwrap().on_build_msg(
             backend,
             &settings,
-            Msg::SaveTo(crate::backend::Save::Pdf, Some(dest.clone())),
+            Msg::SaveTo(1, crate::backend::Save::Pdf, Some(dest.clone())),
         );
         wait_for(&mut h, "the exported PDF", |_| dest.is_file());
         let fresh = std::fs::read(&pdf).unwrap();
@@ -3751,7 +3822,7 @@ pub(crate) mod tests {
         app.project.as_mut().unwrap().on_build_msg(
             backend,
             &settings,
-            Msg::SaveTo(crate::backend::Save::Zip, Some(dest.clone())),
+            Msg::SaveTo(1, crate::backend::Save::Zip, Some(dest.clone())),
         );
         wait_for(&mut h, "the exported ZIP", |_| dest.is_file());
         let mut zip = zip::ZipArchive::new(std::fs::File::open(dest).unwrap()).unwrap();

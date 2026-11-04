@@ -207,6 +207,18 @@ pub fn create_from_template(
     parent: &Path,
     name: &str,
 ) -> Result<PathBuf, String> {
+    create_from_template_with(bundled, online, user, id, parent, name, |_| {})
+}
+
+fn create_from_template_with(
+    bundled: &Path,
+    online: &Path,
+    user: &Path,
+    id: &str,
+    parent: &Path,
+    name: &str,
+    before_copy: impl FnOnce(&Path),
+) -> Result<PathBuf, String> {
     let source = template_dir(bundled, online, user, id)?;
     if !source.join(META).is_file() {
         return Err(format!("There is no template called {id}."));
@@ -217,16 +229,26 @@ pub fn create_from_template(
     if target.starts_with(&source) {
         return Err("The new project must not be inside its template.".into());
     }
+    before_copy(&target);
+    let staging = target.with_file_name(format!(".{}.lemmata-new-{}", name, std::process::id()));
+    if staging.exists() {
+        return Err("Could not create the project: the staging directory already exists.".into());
+    }
+    fs::create_dir(&staging).map_err(|e| format!("Could not create the project: {e}"))?;
     let result = (|| {
-        copy_dir(&source, &target).map_err(|e| format!("Could not create the project: {e}"))?;
-        let _ = fs::remove_file(target.join(META));
+        copy_dir(&source, &staging).map_err(|e| format!("Could not create the project: {e}"))?;
+        let _ = fs::remove_file(staging.join(META));
         if !id.starts_with(USER_PREFIX) {
-            let _ = fs::remove_file(target.join(PREVIEW));
+            let _ = fs::remove_file(staging.join(PREVIEW));
         }
+        if target.exists() {
+            return Err("Could not create the project: the destination already exists.".into());
+        }
+        fs::rename(&staging, &target).map_err(|e| format!("Could not create the project: {e}"))?;
         Ok(target.clone())
     })();
     if result.is_err() {
-        let _ = fs::remove_dir_all(&target);
+        let _ = fs::remove_dir_all(&staging);
     }
     result
 }
@@ -751,6 +773,34 @@ mod tests {
         fs::remove_file(&broken).unwrap();
         let p = create_from_template(&bundled, &none, &user, "article", d.path(), "paper").unwrap();
         assert!(p.join("main.tex").is_file());
+    }
+
+    #[test]
+    fn template_rollback_preserves_a_destination_created_by_another_process() {
+        let d = tempfile::tempdir().unwrap();
+        let bundled = d.path().join("templates");
+        let source = bundled.join("article");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join(META), "name = \"Article\"\n").unwrap();
+        let none = d.path().join("none");
+        let user = d.path().join("user");
+        let result = create_from_template_with(
+            &bundled,
+            &none,
+            &user,
+            "article",
+            d.path(),
+            "paper",
+            |target| {
+                fs::create_dir_all(target.join("child")).unwrap();
+                fs::write(target.join("child/keep.txt"), "keep").unwrap();
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(d.path().join("paper/child/keep.txt")).unwrap(),
+            "keep"
+        );
     }
 
     #[test]

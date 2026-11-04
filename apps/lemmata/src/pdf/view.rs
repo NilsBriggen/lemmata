@@ -363,11 +363,11 @@ impl PdfView {
                         continue;
                     }
                     self.decorating.remove(&page);
-                    let (text, map) = page_text(&glyphs);
-                    self.search_text
-                        .insert(page, (text.to_lowercase().chars().collect(), map));
                     self.deco.insert(page, (glyphs, links));
-                    if self.searching {
+                    if !self.query.is_empty() {
+                        let (text, map) = page_text(&self.deco[&page].0);
+                        self.search_text
+                            .insert(page, (text.to_lowercase().chars().collect(), map));
                         self.find_page(page);
                         if self.decorating.is_empty() {
                             self.searching = false;
@@ -596,7 +596,7 @@ impl PdfView {
             return;
         }
         for n in 0..self.pages.len() {
-            if !self.deco.contains_key(&n) && self.decorating.insert(n) {
+            if !self.search_text.contains_key(&n) && self.decorating.insert(n) {
                 self.engine
                     .as_ref()
                     .expect("a PDF is loaded")
@@ -715,7 +715,7 @@ impl PdfView {
 
     // ---- Drawing --------------------------------------------------------
 
-    /// Asks for the renders a page needs at this scale; thumbnails are never dropped.
+    /// Asks for the renders a page needs at this scale, reusing a matching texture when present.
     fn want(&mut self, page: usize, scale: f32, thumb: bool, epoch: u64) {
         let have = if thumb {
             self.thumbs.get(&page)
@@ -1361,6 +1361,27 @@ mod tests {
                 links: Vec::new(),
             })
             .unwrap();
+    }
+
+    #[test]
+    fn non_search_decorations_do_not_build_or_reinsert_search_text() {
+        let ctx = egui::Context::default();
+        let mut view = PdfView::new(&ctx, egui::Id::unique("search-lifecycle"));
+        view.engine = Some(Engine::new(ctx.clone()));
+        view.pages = vec![vec2(600.0, 800.0)];
+        view.shown = 1;
+        view.sent = 1;
+        PDF_PAGE_TEXT_CALLS.store(0, Ordering::Relaxed);
+        decorate(&mut view, 1, 0, "hit");
+        view.receive(&ctx);
+        assert_eq!(PDF_PAGE_TEXT_CALLS.load(Ordering::Relaxed), 0);
+        assert!(view.search_text.is_empty());
+        view.search("hit", false);
+        view.clear_search();
+        decorate(&mut view, 1, 0, "hit");
+        view.receive(&ctx);
+        assert_eq!(PDF_PAGE_TEXT_CALLS.load(Ordering::Relaxed), 0);
+        assert!(view.search_text.is_empty());
     }
 
     #[test]

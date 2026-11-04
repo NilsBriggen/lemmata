@@ -1,8 +1,8 @@
 # Rendered by .github/workflows/release.yml into NilsBriggen/homebrew-tap.
 cask "lemmata" do
   version "$VERSION"
-  arch = on_arch_conditional arm64: "aarch64", intel: "x86_64"
-  on_arch_conditional arm64: { sha256: "$SHA_DMG_AARCH64" }, intel: { sha256: "$SHA_DMG_X86_64" }
+  arch = on_arch_conditional arm: "aarch64", intel: "x86_64"
+  sha256 on_arch_conditional arm: "$SHA_DMG_AARCH64", intel: "$SHA_DMG_X86_64"
 
   url "https://github.com/NilsBriggen/lemmata/releases/download/v#{version}/Lemmata_#{version}_macos_universal_#{arch}.dmg"
   name "Lemmata"

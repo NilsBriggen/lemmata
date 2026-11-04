@@ -87,9 +87,10 @@ def test_stable_release() -> None:
         assert f"Lemmata_0.3.0_macos_universal_{arch}.dmg" in sums
     assert "Lemmata_0.3.0_macos_universal.dmg" in sums
     cask = (Path(__file__).parent.parent / "packaging/homebrew/lemmata.rb.in").read_text()
-    assert 'on_arch_conditional arm64: "aarch64", intel: "x86_64"' in cask
+    assert 'on_arch_conditional arm: "aarch64", intel: "x86_64"' in cask
     assert "Lemmata_#{version}_macos_universal_#{arch}.dmg" in cask
     assert "$SHA_DMG_AARCH64" in cask and "$SHA_DMG_X86_64" in cask
+    assert 'sha256 on_arch_conditional arm: "$SHA_DMG_AARCH64", intel: "$SHA_DMG_X86_64"' in cask
 
 
 def test_a_misnamed_command_line_archive_stops_the_release() -> None:
