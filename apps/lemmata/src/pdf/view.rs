@@ -233,18 +233,45 @@ impl PdfView {
             .flatten()
     }
 
-    fn bound_textures(&mut self) {
-        while self.tex.len() > 16 {
-            let current = self.current_page.saturating_sub(1);
-            let page = self
-                .tex
+    fn texture_bytes(textures: &HashMap<usize, Tex>) -> usize {
+        textures
+            .values()
+            .map(|t| t.handle.size().iter().product::<usize>() * 4)
+            .sum()
+    }
+
+    fn bound_texture_map(&mut self, full: bool, budget: usize) {
+        let viewport = Rect::from_min_size(pos2(0.0, self.scroll_y), self.client);
+        let visible: HashSet<usize> = self
+            .rects
+            .iter()
+            .enumerate()
+            .filter(|(_, rect)| viewport.intersects(**rect))
+            .map(|(page, _)| page)
+            .collect();
+        let current = self.current_page.saturating_sub(1);
+        let textures = if full {
+            &mut self.tex
+        } else {
+            &mut self.thumbs
+        };
+        while Self::texture_bytes(textures) > budget {
+            let page = textures
                 .keys()
+                .filter(|page| !visible.contains(page))
                 .max_by_key(|page| page.abs_diff(current))
                 .copied();
             let Some(page) = page else { break };
-            self.tex.remove(&page);
-            self.asked.remove(&(page, false));
+            textures.remove(&page);
+            self.asked.remove(&(page, full));
         }
+    }
+
+    fn bound_textures(&mut self) {
+        const PAGE_BUDGET: usize = 256 * 1024 * 1024;
+        const THUMB_BUDGET: usize = 64 * 1024 * 1024;
+        self.bound_texture_map(true, PAGE_BUDGET);
+        self.bound_texture_map(false, THUMB_BUDGET);
     }
 
     /// Takes what the engine finished.
@@ -312,8 +339,8 @@ impl PdfView {
                         self.thumbs.insert(page, t);
                     } else {
                         self.tex.insert(page, t);
-                        self.bound_textures();
                     }
+                    self.bound_textures();
                 }
                 Done::Decorated {
                     doc,
@@ -1298,24 +1325,88 @@ mod tests {
         let ctx = egui::Context::default();
         let mut view = PdfView::new(&ctx, egui::Id::unique("textures"));
         for page in 0..40 {
-            view.tex.insert(
-                page,
-                Tex {
-                    handle: ctx.load_texture(
-                        format!("test-{page}"),
-                        egui::ColorImage::filled([1, 1], Color32::WHITE),
-                        egui::TextureOptions::LINEAR,
-                    ),
-                    scale: 1.0,
-                    dark: false,
-                    doc: 0,
-                },
-            );
+            let make = |size| Tex {
+                handle: ctx.load_texture(
+                    format!("test-{page}-{size}"),
+                    egui::ColorImage::filled([size, size], Color32::WHITE),
+                    egui::TextureOptions::LINEAR,
+                ),
+                scale: 1.0,
+                dark: false,
+                doc: 0,
+            };
+            view.tex.insert(page, make(1));
+            view.thumbs.insert(page, make(1));
+            view.asked.insert((page, false));
+            view.asked.insert((page, true));
         }
+        assert_eq!(PdfView::texture_bytes(&view.tex), 160);
+        view.rects = (0..40)
+            .map(|page| Rect::from_min_size(pos2(0.0, page as f32 * 900.0), vec2(600.0, 800.0)))
+            .collect();
+        view.client = vec2(900.0, 700.0);
+        view.scroll_y = 19.0 * 900.0;
         view.current_page = 20;
-        view.bound_textures();
-        assert!(view.tex.len() <= 16);
+        view.bound_texture_map(true, 24);
+        view.bound_texture_map(false, 24);
+        assert!(view.tex.len() <= 6);
+        assert!(view.thumbs.len() <= 6);
         assert!(view.tex.contains_key(&19));
+        assert!(view.thumbs.contains_key(&19));
+        assert!(!view.tex.contains_key(&0));
+        assert!(!view.asked.contains(&(0, false)));
+        assert!(!view.asked.contains(&(0, true)));
+
+        view.tex.insert(
+            39,
+            Tex {
+                handle: ctx.load_texture(
+                    "large-dpi",
+                    egui::ColorImage::filled([2, 2], Color32::WHITE),
+                    egui::TextureOptions::LINEAR,
+                ),
+                scale: 2.0,
+                dark: false,
+                doc: 0,
+            },
+        );
+        assert_eq!(PdfView::texture_bytes(&view.tex), 40);
+        view.bound_texture_map(true, 0);
+        assert!(
+            view.tex.contains_key(&19),
+            "the visible page is never evicted"
+        );
+    }
+
+    #[test]
+    fn thumbnail_memory_stays_bounded_during_repeated_rebuilds() {
+        let ctx = egui::Context::default();
+        let mut view = PdfView::new(&ctx, egui::Id::unique("thumb-reloads"));
+        view.rects = (0..100)
+            .map(|page| Rect::from_min_size(pos2(0.0, page as f32 * 900.0), vec2(600.0, 800.0)))
+            .collect();
+        view.client = vec2(900.0, 700.0);
+        view.scroll_y = 50.0 * 900.0;
+        view.current_page = 51;
+        for revision in 0..50 {
+            for page in 0..100 {
+                view.thumbs.insert(
+                    page,
+                    Tex {
+                        handle: ctx.load_texture(
+                            format!("thumb-{revision}-{page}"),
+                            egui::ColorImage::filled([1, 1], Color32::WHITE),
+                            egui::TextureOptions::LINEAR,
+                        ),
+                        scale: 1.0,
+                        dark: false,
+                        doc: revision,
+                    },
+                );
+            }
+            view.bound_texture_map(false, 64);
+            assert!(view.thumbs.len() <= 16);
+        }
     }
 
     #[test]
