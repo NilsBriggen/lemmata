@@ -3,6 +3,8 @@
 //! replaces the old one page by page in place, so the reader keeps their position across builds.
 //! Also the text layer (selection, search), links, and the SyncTeX highlight.
 
+#[cfg(test)]
+use super::engine::PDF_PAGE_TEXT_CALLS;
 use super::engine::{Done, Engine, Glyph, Job, Link, OutlineNode, Target, page_text};
 use crate::theme::Palette;
 use eframe::egui::{
@@ -110,6 +112,7 @@ pub struct PdfView {
     asked: HashSet<(usize, bool)>,
     epoch_scale: f32,
     deco: HashMap<usize, (Vec<Glyph>, Vec<Link>)>,
+    search_text: HashMap<usize, (Vec<char>, Vec<Option<usize>>)>,
     decorating: HashSet<usize>,
     /// 1-based, for the page box.
     pub current_page: usize,
@@ -172,6 +175,7 @@ impl PdfView {
             asked: HashSet::new(),
             epoch_scale: 0.0,
             deco: HashMap::new(),
+            search_text: HashMap::new(),
             decorating: HashSet::new(),
             current_page: 1,
             percent: 100,
@@ -265,6 +269,7 @@ impl PdfView {
                             self.thumbs.retain(|&n, _| n < self.pages.len());
                             self.asked.clear();
                             self.deco.clear();
+                            self.search_text.clear();
                             self.decorating.clear();
                             self.selection = None;
                             if self.png_wanted {
@@ -320,11 +325,15 @@ impl PdfView {
                         continue;
                     }
                     self.decorating.remove(&page);
+                    let (text, map) = page_text(&glyphs);
+                    self.search_text
+                        .insert(page, (text.to_lowercase().chars().collect(), map));
                     self.deco.insert(page, (glyphs, links));
-                    if self.searching && self.decorating.is_empty() {
-                        self.searching = false;
-                        let q = self.query.clone();
-                        self.find(&q, self.hits.is_empty());
+                    if self.searching {
+                        self.find_page(page);
+                        if self.decorating.is_empty() {
+                            self.searching = false;
+                        }
                     }
                 }
                 Done::Png { doc, png } => {
@@ -522,7 +531,7 @@ impl PdfView {
 
     // ---- Search ---------------------------------------------------------
 
-    /// Finds `query` on every page; the text layers of pages not seen yet are read first.
+    /// Finds `query` on pages whose text is ready, then merges the rest as they arrive.
     pub fn search(&mut self, query: &str, jump: bool) {
         self.query = query.to_owned();
         self.hits.clear();
@@ -542,52 +551,15 @@ impl PdfView {
                     });
             }
         }
-        if self.decorating.is_empty() {
-            self.find(query, jump);
-        } else {
-            self.searching = true;
-        }
+        self.searching = !self.decorating.is_empty();
+        self.find(query, jump);
     }
 
-    fn find(&mut self, query: &str, jump: bool) {
-        let q = query.trim().to_lowercase();
+    fn find(&mut self, _query: &str, jump: bool) {
         self.hits.clear();
         self.match_index = 0;
-        if q.is_empty() {
-            return;
-        }
         for n in 0..self.pages.len() {
-            let Some((glyphs, _)) = self.deco.get(&n) else {
-                continue;
-            };
-            let (text, map) = page_text(glyphs);
-            let hay: Vec<char> = text.to_lowercase().chars().collect();
-            let needle: Vec<char> = q.chars().collect();
-            // Lowercasing can change lengths (rare); then the map is off and the page is skipped.
-            if hay.len() != map.len() {
-                continue;
-            }
-            let mut at = 0;
-            while at + needle.len() <= hay.len() {
-                if hay[at..at + needle.len()] == needle[..] {
-                    let mut rects: Vec<Rect> = Vec::new();
-                    for gi in map[at..at + needle.len()].iter().flatten() {
-                        let r = glyphs[*gi].rect;
-                        match rects.last_mut() {
-                            Some(l) if (l.center().y - r.center().y).abs() < r.height() * 0.5 => {
-                                *l = l.union(r)
-                            }
-                            _ => rects.push(r),
-                        }
-                    }
-                    if !rects.is_empty() {
-                        self.hits.push(Hit { page: n, rects });
-                    }
-                    at += needle.len();
-                } else {
-                    at += 1;
-                }
-            }
+            self.find_page(n);
         }
         if jump && !self.hits.is_empty() {
             let first = self
@@ -597,6 +569,41 @@ impl PdfView {
                 .unwrap_or(0);
             self.step_to(first);
         }
+    }
+
+    fn find_page(&mut self, n: usize) {
+        self.hits.retain(|h| h.page != n);
+        let q = self.query.trim().to_lowercase();
+        let (Some((hay, map)), Some((glyphs, _))) = (self.search_text.get(&n), self.deco.get(&n))
+        else {
+            return;
+        };
+        let needle: Vec<char> = q.chars().collect();
+        if needle.is_empty() || hay.len() != map.len() {
+            return;
+        }
+        let mut at = 0;
+        while at + needle.len() <= hay.len() {
+            if hay[at..at + needle.len()] == needle[..] {
+                let mut rects: Vec<Rect> = Vec::new();
+                for gi in map[at..at + needle.len()].iter().flatten() {
+                    let r = glyphs[*gi].rect;
+                    match rects.last_mut() {
+                        Some(l) if (l.center().y - r.center().y).abs() < r.height() * 0.5 => {
+                            *l = l.union(r)
+                        }
+                        _ => rects.push(r),
+                    }
+                }
+                if !rects.is_empty() {
+                    self.hits.push(Hit { page: n, rects });
+                }
+                at += needle.len();
+            } else {
+                at += 1;
+            }
+        }
+        self.hits.sort_by_key(|h| h.page);
     }
 
     /// Every page in view is drawn from the current document.
@@ -646,6 +653,7 @@ impl PdfView {
     pub fn clear_search(&mut self) {
         self.query.clear();
         self.hits.clear();
+        self.search_text.clear();
         self.match_index = 0;
         self.searching = false;
     }
@@ -1149,6 +1157,106 @@ mod tests {
         view.set_fit(Fit::Zoom(2.0));
         view.relayout();
         assert_eq!(view.relayout_calls, 2);
+    }
+
+    fn decorate(view: &mut PdfView, doc: u64, page: usize, text: &str) {
+        let glyph = Glyph {
+            text: text.into(),
+            rect: Rect::from_min_size(pos2(0.0, 0.0), vec2(5.0, 10.0)),
+        };
+        view.engine
+            .as_ref()
+            .unwrap()
+            .done_sender()
+            .send(Done::Decorated {
+                doc,
+                page,
+                glyphs: vec![glyph],
+                links: Vec::new(),
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn pdf_search_returns_early_hits_and_reuses_page_text() {
+        let ctx = egui::Context::default();
+        let mut view = PdfView::new(&ctx, egui::Id::unique("search"));
+        view.engine = Some(Engine::new(ctx.clone()));
+        view.pages = vec![vec2(600.0, 800.0); 200];
+        view.shown = 1;
+        view.sent = 1;
+        view.search("hit", false);
+        decorate(&mut view, 1, 0, "hit");
+        view.receive(&ctx);
+        assert!(!view.hits.is_empty(), "page 1 must not wait for page 200");
+
+        for page in 1..200 {
+            decorate(&mut view, 1, page, "other");
+            view.receive(&ctx);
+        }
+        PDF_PAGE_TEXT_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+        view.search("hit", false);
+        view.search("hit", false);
+        assert_eq!(
+            PDF_PAGE_TEXT_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn pdf_search_handles_completion_order_queries_and_replacement() {
+        let ctx = egui::Context::default();
+        let mut view = PdfView::new(&ctx, egui::Id::unique("search-life"));
+        view.engine = Some(Engine::new(ctx.clone()));
+        view.pages = vec![vec2(600.0, 800.0); 3];
+        view.shown = 1;
+        view.sent = 1;
+        view.search("hit", false);
+        decorate(&mut view, 1, 2, "hit");
+        view.receive(&ctx);
+        decorate(&mut view, 1, 0, "hit");
+        view.receive(&ctx);
+        assert_eq!(view.hits.iter().map(|h| h.page).collect::<Vec<_>>(), [0, 2]);
+        view.search_step(1);
+        assert_eq!(view.match_index, 1);
+        view.search_step(1);
+        assert_eq!(view.match_index, 2);
+        view.search_step(1);
+        assert_eq!(view.match_index, 1, "navigation wraps to the first hit");
+        view.search_step(1);
+        assert_eq!(view.match_index, 2, "and back to the second");
+
+        view.search("other", false);
+        assert!(view.hits.is_empty());
+        view.search("İ", false);
+        decorate(&mut view, 1, 1, "İ");
+        view.receive(&ctx);
+        assert!(
+            view.hits.is_empty(),
+            "case expansion must not corrupt the glyph map"
+        );
+
+        view.clear_search();
+        view.search("hit", false);
+        decorate(&mut view, 2, 0, "hit");
+        view.receive(&ctx);
+        assert!(view.hits.is_empty(), "stale document IDs are ignored");
+        view.engine
+            .as_ref()
+            .unwrap()
+            .done_sender()
+            .send(Done::Loaded {
+                doc: 1,
+                result: Ok((view.pages.clone(), Vec::new())),
+            })
+            .unwrap();
+        view.receive(&ctx);
+        assert!(view.hits.is_empty());
+        decorate(&mut view, 1, 0, "hit");
+        view.receive(&ctx);
+        assert_eq!(view.hits.len(), 1);
+        view.clear_search();
+        assert!(view.search_text.is_empty());
     }
 
     #[test]

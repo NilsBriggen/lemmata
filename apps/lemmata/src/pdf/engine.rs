@@ -23,6 +23,10 @@ use hayro::{PixmapSettings, RenderCache, RenderSettings, render};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(test)]
+pub(crate) static PDF_PAGE_TEXT_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 /// Where a link or bookmark goes.
@@ -171,6 +175,11 @@ impl Engine {
 
     pub fn next_doc(&self) -> u64 {
         self.pool.next_doc.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn done_sender(&self) -> Sender<Done> {
+        self.done.clone()
     }
 
     pub fn send(&self, job: Job) {
@@ -799,6 +808,8 @@ fn glyphs(page: &Page<'_>) -> Vec<Glyph> {
 /// Page text with spaces and line breaks inferred from the gaps between glyphs, and for every
 /// char of it the glyph it came from (None for an inferred space).
 pub fn page_text(glyphs: &[Glyph]) -> (String, Vec<Option<usize>>) {
+    #[cfg(test)]
+    PDF_PAGE_TEXT_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut s = String::new();
     let mut map = Vec::new();
     let mut prev: Option<Rect> = None;
