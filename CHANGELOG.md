@@ -2,7 +2,34 @@
 
 All notable changes to Lemmata.
 
-## 3.0.1 (2026-11-03)
+## 3.1.0-rc.1 (2026-11-04)
+
+A reliability, performance, and preview release.
+
+### Added
+- Navigate build problems across files with F8 and Shift+F8: stable file/line ordering, wraparound, destination focus, and an accessible “Problem N of M” status.
+- Preview SVG figures in viewer tabs and hover cards with bundled fonts, transparency, embedded PNG support, offline rendering, and hard input/pixel limits.
+- Download smaller ARM64 or Intel macOS DMGs alongside the existing universal alternative; Homebrew selects the correct architecture automatically.
+
+### Faster
+- Virtualize PDF page and thumbnail traversal, with unchanged-frame medians falling from 0.384 ms to 0.103 ms for pages and 4.779 ms to 0.130 ms for thumbnails.
+- Cache accessibility snapshots, PDF search text, thumbnail geometry, and texture budgets to reduce repeated work and memory use.
+- Reuse one source snapshot for outline, labels, and bibliography discovery.
+- Align direct skrifa with hayro at 0.49, removing the duplicate 0.46 stack and shrinking the stripped binary and package.
+
+### Fixed
+- Preserve edits across project opens, fresh exports, stale responses, save retries, external conflicts, and failed writes.
+- Make Add package and template operations transactional; preserve backups after install-and-restore double failures.
+- Keep PDF/SyncTeX errors visible, repair toolbar and status controls, stop CLI watch output loops, and complete migration only after a successful scan.
+- Harden project and preview lifecycle: stale preflights/export dialogs cannot affect newer projects, rollback preserves external destinations, and legacy read failures do not write empty defaults.
+- Block external SVG resources and reject compressed SVG before unbounded decompression.
+
+### Notes
+- AppImage xz, editor offset caching, and latest-only automatic build queueing were evaluated and rejected because they did not meet their performance gates.
+- MSI compression and Apple/Windows signing require upstream support and organizational credentials; this release retains existing updater minisign behavior.
+
+### Verification
+- 646 tests pass; clippy passes with warnings denied. Native macOS/Windows installation and hardware-specific validation remain to be checked separately.
 
 ## 3.0.1-rc.6 (2026-11-03)
 
