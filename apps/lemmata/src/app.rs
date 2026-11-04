@@ -4179,6 +4179,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn synctex_empty_results_explain_the_failed_jump() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let backend = &app.backend;
+        let ws = app.project.as_mut().unwrap();
+        ws.on_build_msg(
+            backend,
+            &settings,
+            Msg::Synced(Err("position data is missing".into())),
+        );
+        ws.on_build_msg(backend, &settings, Msg::Synced(Ok(Vec::new())));
+        ws.on_build_msg(backend, &settings, Msg::SourceHit(Ok(None)));
+        assert!(ws.notices.iter().any(|n| n.text.contains("position data")));
+        assert!(
+            ws.notices
+                .iter()
+                .any(|n| n.text.contains("No PDF position matches this line"))
+        );
+        assert!(ws.notices.iter().any(|n| {
+            n.text
+                .contains("No source location matches this PDF position")
+        }));
+    }
+
+    #[test]
     fn stale_project_messages_cannot_replace_current_state() {
         let tmp = tempfile::tempdir().unwrap();
         let Some((mut h, _)) = in_article(tmp.path()) else {

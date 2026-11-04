@@ -692,8 +692,15 @@ impl PdfView {
     pub fn show(&mut self, ui: &mut Ui, p: &Palette) -> Option<Event> {
         let ctx = ui.ctx().clone();
         self.receive(&ctx);
-        let area = ui.max_rect();
+        let mut area = ui.max_rect();
         ui.painter().rect_filled(area, 0, p.pdf_ground);
+        if let Some(error) = self.error.clone() {
+            let banner = Rect::from_min_size(area.min, vec2(area.width(), 32.0));
+            ui.painter().rect_filled(banner, 0, p.error_soft);
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(banner.shrink(6.0)));
+            child.label(egui::RichText::new(error).color(p.error));
+            area.min.y += 32.0;
+        }
         if self.pages.is_empty() {
             return None;
         }
@@ -1094,6 +1101,7 @@ impl PdfView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui_kittest::kittest::Queryable;
 
     #[cfg(target_os = "linux")]
     fn pdf_threads() -> usize {
@@ -1141,6 +1149,40 @@ mod tests {
         view.set_fit(Fit::Zoom(2.0));
         view.relayout();
         assert_eq!(view.relayout_calls, 2);
+    }
+
+    #[test]
+    fn pdf_error_state_is_visible_and_preserves_old_pages() {
+        let harness = |view: PdfView| {
+            let p = crate::theme::LIGHT;
+            egui_kittest::Harness::builder()
+                .with_size([800.0, 600.0])
+                .with_context_setup(move |ctx| {
+                    crate::theme::install_fonts(ctx);
+                    crate::theme::apply(ctx, &p);
+                })
+                .wgpu()
+                .build_ui_state(
+                    move |ui, view: &mut PdfView| {
+                        view.show(ui, &p);
+                    },
+                    view,
+                )
+        };
+        let ctx = egui::Context::default();
+        let mut broken = PdfView::new(&ctx, egui::Id::unique("broken"));
+        broken.error = Some("This PDF could not be read".into());
+        let mut h = harness(broken);
+        h.run();
+        h.get_by_label("This PDF could not be read");
+
+        let mut older = PdfView::new(&ctx, egui::Id::unique("older"));
+        older.pages = vec![vec2(600.0, 800.0)];
+        older.error = Some("The new PDF could not be read".into());
+        let mut h = harness(older);
+        h.run();
+        h.get_by_label("The new PDF could not be read");
+        assert_eq!(h.state().page_count(), 1);
     }
 
     #[test]

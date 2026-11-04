@@ -519,15 +519,26 @@ impl Workspace {
                     self.build.logs_open = false;
                     let ctx = backend.ctx().clone();
                     self.pane.view.show_box(&ctx, b.page as usize, b.h as f32, b.v as f32, b.width as f32, b.height as f32);
+                } else {
+                    self.notice(
+                        "No PDF position matches this line. Position data is written when a build finishes; compile the document and try again.",
+                        Tone::Info,
+                    );
                 }
             }
-            Msg::Synced(Err(_)) => {}
+            Msg::Synced(Err(e)) => self.notice(
+                format!("Couldn't jump to the PDF: {e}. Position data is written when a build finishes."),
+                Tone::Info,
+            ),
             Msg::SourceHit(Ok(Some(hit))) => {
                 if hit.inside_project {
                     self.goto(backend, &hit.path, hit.line as usize);
                 }
             }
-            Msg::SourceHit(Ok(None)) => {}
+            Msg::SourceHit(Ok(None)) => self.notice(
+                "No source location matches this PDF position. Position data is written when a build finishes; compile and try again.",
+                Tone::Info,
+            ),
             Msg::SourceHit(Err(e)) => self.notice(format!("Couldn't jump to the source: {e}"), Tone::Info),
             Msg::Log(id, log) => self.pane.problems.set_log(id, log),
             Msg::Cleaned(Ok(n)) => {
