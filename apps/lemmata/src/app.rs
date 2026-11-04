@@ -2790,6 +2790,10 @@ pub(crate) mod tests {
         let Some((mut h, _)) = in_article(tmp.path()) else {
             return;
         };
+        wait_for(&mut h, "the initial build", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            ws.build.outcome.is_some() && !ws.build.building && ws.build.deadline.is_none()
+        });
         let app = h.state_mut();
         let ws = app.project.as_mut().unwrap();
         ws.build.building = false;
@@ -2860,6 +2864,10 @@ pub(crate) mod tests {
         let Some((mut h, project)) = in_article(tmp.path()) else {
             return;
         };
+        wait_for(&mut h, "the initial build", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            ws.build.outcome.is_some() && !ws.build.building && ws.build.deadline.is_none()
+        });
         // Preferences from the menu: a checkbox saves at once.
         h.get_by_label("Menu").click();
         h.run_steps(2);
@@ -4059,13 +4067,8 @@ pub(crate) mod tests {
         h.get_by_role_and_label(egui::accesskit::Role::Button, "Retry save")
             .click();
         wait_for(&mut h, "the conflict", |h| {
-            h.state()
-                .project
-                .as_ref()
-                .unwrap()
-                .buffers
-                .conflicts
-                .contains(&"main.tex".into())
+            let ws = h.state().project.as_ref().unwrap();
+            ws.buffers.conflicts.contains(&"main.tex".into()) && ws.save_error.is_none()
         });
         let ws = h.state().project.as_ref().unwrap();
         assert_eq!(

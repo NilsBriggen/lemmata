@@ -724,6 +724,13 @@ impl Workspace {
             return;
         }
         let path = path.clone();
+        if self.buffers.conflicts.iter().any(|c| c == &path) {
+            self.save_error = None;
+            self.open_error = None;
+            self.no_build.remove(&path);
+            self.closing_after_save.remove(&path);
+            return;
+        }
         self.no_build.insert(path.clone());
         self.write(backend, &path, settings);
     }

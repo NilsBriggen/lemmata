@@ -29,6 +29,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TEST_THREADS: "2"
 
 # A release commit is tested by release.yml on its tag (same commit), so its push to main skips every job here.
 jobs:

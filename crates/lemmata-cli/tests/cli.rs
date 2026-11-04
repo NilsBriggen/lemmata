@@ -493,6 +493,7 @@ fn watch_ignores_its_visible_build_folder() {
         .unwrap();
     std::io::Write::write_all(&mut source, b"% source edit\n").unwrap();
     source.sync_all().unwrap();
+    drop(source);
     let start = std::time::Instant::now();
     while changes() < 1 {
         assert!(start.elapsed() < std::time::Duration::from_secs(30));

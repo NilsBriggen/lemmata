@@ -20,11 +20,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(test)]
-static ACCESSKIT_TEXT_CONVERSIONS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-#[cfg(test)]
-static ACCESSKIT_LENGTH_CONSTRUCTIONS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    static ACCESSKIT_TEXT_CONVERSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ACCESSKIT_LENGTH_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// `.cm-line` padding: 10 px left, 16 px right.
 const PAD: f32 = 10.0;
@@ -1444,8 +1443,8 @@ pub fn show(
         {
             #[cfg(test)]
             {
-                ACCESSKIT_TEXT_CONVERSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                ACCESSKIT_LENGTH_CONSTRUCTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                ACCESSKIT_TEXT_CONVERSIONS.with(|n| n.set(n.get() + 1));
+                ACCESSKIT_LENGTH_CONSTRUCTIONS.with(|n| n.set(n.get() + 1));
             }
             let text = ed.doc.text();
             let lengths = text.chars().map(|c| c.len_utf8() as u8).collect();
@@ -3657,19 +3656,13 @@ mod tests {
     fn editor_accessibility_reuses_unchanged_snapshots() {
         let mut h = harness(Editor::new("é\nbeta", true), [560.0, 320.0]);
         h.run();
-        ACCESSKIT_TEXT_CONVERSIONS.store(0, std::sync::atomic::Ordering::Relaxed);
-        ACCESSKIT_LENGTH_CONSTRUCTIONS.store(0, std::sync::atomic::Ordering::Relaxed);
+        ACCESSKIT_TEXT_CONVERSIONS.with(|n| n.set(0));
+        ACCESSKIT_LENGTH_CONSTRUCTIONS.with(|n| n.set(0));
         for _ in 0..100 {
             h.step();
         }
-        assert_eq!(
-            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
-            0
-        );
-        assert_eq!(
-            ACCESSKIT_LENGTH_CONSTRUCTIONS.load(std::sync::atomic::Ordering::Relaxed),
-            0
-        );
+        assert_eq!(ACCESSKIT_TEXT_CONVERSIONS.with(std::cell::Cell::get), 0);
+        assert_eq!(ACCESSKIT_LENGTH_CONSTRUCTIONS.with(std::cell::Cell::get), 0);
 
         h.state_mut().doc.selection = Selection::single(Range::new(4, 1));
         h.run();
@@ -3677,22 +3670,13 @@ mod tests {
         let selection = node.text_selection().unwrap();
         assert_eq!(selection.start().to_raw().character_index, 1);
         assert_eq!(selection.end().to_raw().character_index, 4);
-        assert_eq!(
-            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
-            0
-        );
+        assert_eq!(ACCESSKIT_TEXT_CONVERSIONS.with(std::cell::Cell::get), 0);
 
         h.get_by_label("Editor").click();
         h.get_by_label("Editor").type_text("x");
         h.run();
-        assert_eq!(
-            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
-            1
-        );
-        assert_eq!(
-            ACCESSKIT_LENGTH_CONSTRUCTIONS.load(std::sync::atomic::Ordering::Relaxed),
-            1
-        );
+        assert_eq!(ACCESSKIT_TEXT_CONVERSIONS.with(std::cell::Cell::get), 1);
+        assert_eq!(ACCESSKIT_LENGTH_CONSTRUCTIONS.with(std::cell::Cell::get), 1);
         assert!(h.state_mut().doc.undo());
         h.run();
         assert_eq!(
@@ -3701,32 +3685,20 @@ mod tests {
         );
         assert!(h.state_mut().doc.redo());
         h.run();
-        assert_eq!(
-            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
-            3
-        );
+        assert_eq!(ACCESSKIT_TEXT_CONVERSIONS.with(std::cell::Cell::get), 3);
         h.state_mut().doc.replace_all("replacement λ");
         h.run();
         assert_eq!(
             h.get_by_label("Editor").accesskit_node().value(),
             Some("replacement λ".into())
         );
-        assert_eq!(
-            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
-            4
-        );
+        assert_eq!(ACCESSKIT_TEXT_CONVERSIONS.with(std::cell::Cell::get), 4);
 
         h.state_mut().toggle_fold(0);
         h.set_size(egui::vec2(700.0, 320.0));
         h.run();
-        assert_eq!(
-            ACCESSKIT_TEXT_CONVERSIONS.load(std::sync::atomic::Ordering::Relaxed),
-            4
-        );
-        assert_eq!(
-            ACCESSKIT_LENGTH_CONSTRUCTIONS.load(std::sync::atomic::Ordering::Relaxed),
-            4
-        );
+        assert_eq!(ACCESSKIT_TEXT_CONVERSIONS.with(std::cell::Cell::get), 4);
+        assert_eq!(ACCESSKIT_LENGTH_CONSTRUCTIONS.with(std::cell::Cell::get), 4);
     }
 
     #[test]
