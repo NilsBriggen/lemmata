@@ -2,6 +2,15 @@
 
 All notable changes to Lemmata.
 
+## 3.1.1 (2026-11-08)
+
+A bugfix release.
+
+### Fixed
+- Accept a completion by clicking it: the list no longer closes before the click lands.
+- Export a just-built PDF without being told it is out of date: an autosave just before Ctrl+S builds no longer counts as an unbuilt edit. Freshness now compares file contents with what the last good build read, so a Ctrl+S with nothing changed also reuses that PDF.
+- Choose "Build and export" or "Export older PDF" in one notice when the PDF really is out of date.
+
 ## 3.1.0 (2026-11-04)
 
 A reliability, performance, and preview release.
