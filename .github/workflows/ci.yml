@@ -55,7 +55,7 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-22.04, cli: linux_x86_64, target: x86_64-unknown-linux-gnu }
-          - { os: macos-14, cli: macos_universal, target: universal }
+          - { os: macos-15, cli: macos_universal, target: universal }
           - { os: windows-latest, cli: windows_x86_64, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     steps:
@@ -104,7 +104,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14, macos-15-intel, windows-latest]
+        os: [ubuntu-22.04, macos-15, macos-15-intel, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
