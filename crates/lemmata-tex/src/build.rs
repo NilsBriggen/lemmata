@@ -170,6 +170,7 @@ pub async fn build_with(
         return Ok(o);
     }
     let started_at = SystemTime::now();
+    let files = files_hash(project);
     prepare_outdir(project);
     // With the slack in written_since, last build's log would look fresh; no log is the signal that latexmk never ran TeX.
     let _ = std::fs::remove_file(project.log_path());
@@ -363,7 +364,7 @@ pub async fn build_with(
     }
 
     if status == Status::Success && fresh {
-        mark_ok(project, started_at);
+        mark_ok(project, started_at, &files);
         if fmt_failed {
             format::reject(project);
         }
@@ -599,11 +600,12 @@ const MAX_PASSES: usize = 5;
 /// file. Its presence means the folder is in a state the direct build can continue from.
 pub(crate) const OK_STAMP: &str = ".lemmata-ok";
 
-/// Beside `OK_STAMP`: every project file's size and time at the last good build. A deleted
-/// file, or one synced or unzipped with an old time, is a change the times alone don't show.
+/// Beside `OK_STAMP`: a hash of every project file's path and bytes when the last good build
+/// began. Content, not times: an autosave just before a build is in it, an edit during it isn't,
+/// and a deleted file or one synced in with an old time still shows.
 const FILES_STAMP: &str = ".lemmata-files";
 
-fn files_hash(project: &Project) -> String {
+pub(crate) fn files_hash(project: &Project) -> String {
     files_hash_with_tree(
         project,
         &lemmata_project::tree(&project.root, &project.config.outdir),
@@ -614,7 +616,7 @@ fn files_hash_with_tree(project: &Project, entries: &[lemmata_project::Entry]) -
     use std::hash::{Hash, Hasher};
     fn walk(root: &Path, entries: &[lemmata_project::Entry], h: &mut impl Hasher) {
         for e in entries {
-            (&e.path, e.is_dir, e.size, e.modified).hash(h);
+            (&e.path, e.is_dir, e.size).hash(h);
             if e.is_dir {
                 walk(root, &e.children, h);
             } else {
@@ -663,7 +665,7 @@ fn warm_ok(project: &Project) -> bool {
     !needs_tools
 }
 
-/// The last build succeeded, its PDF and log are there, and no project file changed since it began.
+/// The last build succeeded, its PDF and log are there, and every project file is as it was when it began.
 pub fn up_to_date(project: &Project) -> bool {
     up_to_date_with_tree(
         project,
@@ -677,7 +679,6 @@ pub fn up_to_date_with_tree(project: &Project, entries: &[lemmata_project::Entry
     std::fs::read_to_string(&stamp).is_ok_and(|s| s == main)
         && project.pdf_path().is_file()
         && project.log_path().is_file()
-        && !changed_since_with_tree(project, &stamp, entries)
         && std::fs::read_to_string(project.outdir_abs().join(FILES_STAMP))
             .is_ok_and(|s| s == files_hash_with_tree(project, entries))
 }
@@ -719,7 +720,8 @@ fn changed_since_with_tree(
 }
 
 /// Records a successful build, and what the bibliography tool read, so the next one can go direct without running it again.
-pub(crate) fn mark_ok(project: &Project, started_at: SystemTime) {
+/// `files` is `files_hash` from when the build began.
+pub(crate) fn mark_ok(project: &Project, started_at: SystemTime, files: &str) {
     let biber = project.config.bib == lemmata_project::Bib::Biber;
     // A .bib saved while the build ran was maybe not what the tool read: then it runs next time.
     let bib_edited = bib_files(project).iter().any(|e| {
@@ -737,7 +739,7 @@ pub(crate) fn mark_ok(project: &Project, started_at: SystemTime) {
     }
     let stamp = project.outdir_abs().join(OK_STAMP);
     let _ = std::fs::write(&stamp, project.main.to_string_lossy().as_bytes());
-    let _ = std::fs::write(project.outdir_abs().join(FILES_STAMP), files_hash(project));
+    let _ = std::fs::write(project.outdir_abs().join(FILES_STAMP), files);
     // Dated when the build began: a file saved while it ran was maybe not read, so it still counts as changed.
     let _ = std::fs::File::options()
         .write(true)
@@ -1539,14 +1541,41 @@ mod tests {
         mark_ok(
             &p,
             SystemTime::now() + MTIME_SLACK + Duration::from_millis(50),
+            &files_hash(&p),
         );
         assert!(!changed_since(&p, &stamp));
         // Saved while the build ran, which then finished.
         let started = SystemTime::now();
         std::fs::write(p.root.join(&p.main), "\\documentclass{article}% edit").unwrap();
         std::thread::sleep(Duration::from_millis(30));
-        mark_ok(&p, started);
+        mark_ok(&p, started, &files_hash(&p));
         assert!(changed_since(&p, &stamp));
+    }
+
+    #[test]
+    fn a_save_just_before_a_build_is_in_its_pdf_and_one_during_it_is_not() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        std::fs::write(p.pdf_path(), "pdf").unwrap();
+        std::fs::write(p.log_path(), "log").unwrap();
+        // Autosaved a moment before Ctrl+S built: well inside the times' slack.
+        std::fs::write(p.root.join(&p.main), "\\documentclass{article}% a").unwrap();
+        let (started, files) = (SystemTime::now(), files_hash(&p));
+        mark_ok(&p, started, &files);
+        assert!(
+            up_to_date(&p),
+            "a save just before the build counted as unbuilt"
+        );
+        // Saved while it ran.
+        let (started, files) = (SystemTime::now(), files_hash(&p));
+        std::fs::write(p.root.join(&p.main), "\\documentclass{article}% b").unwrap();
+        mark_ok(&p, started, &files);
+        assert!(
+            !up_to_date(&p),
+            "an edit made during the build counted as built"
+        );
     }
 
     #[test]
@@ -1561,6 +1590,7 @@ mod tests {
         mark_ok(
             &p,
             SystemTime::now() + MTIME_SLACK + Duration::from_millis(50),
+            &files_hash(&p),
         );
         assert!(up_to_date(&p));
         std::fs::remove_file(d.path().join("ch.tex")).unwrap();
@@ -1568,6 +1598,7 @@ mod tests {
         mark_ok(
             &p,
             SystemTime::now() + MTIME_SLACK + Duration::from_millis(50),
+            &files_hash(&p),
         );
         assert!(up_to_date(&p));
         // Unzipped or synced in, keeping the time it had elsewhere.
@@ -1589,6 +1620,7 @@ mod tests {
         mark_ok(
             &p,
             SystemTime::now() + MTIME_SLACK + Duration::from_millis(50),
+            &files_hash(&p),
         );
         let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
         std::fs::write(&file, "\\documentclass{articlX}").unwrap();
@@ -1615,11 +1647,12 @@ mod tests {
         mark_ok(
             &p,
             SystemTime::now() + MTIME_SLACK + Duration::from_millis(50),
+            &files_hash(&p),
         );
         assert!(fp().is_some());
         let started = SystemTime::now();
         std::fs::write(d.path().join("r.bib"), "@misc{k, title={Changed}}").unwrap();
-        mark_ok(&p, started);
+        mark_ok(&p, started, &files_hash(&p));
         assert_eq!(fp(), None, "the next build must not skip bibtex");
     }
 

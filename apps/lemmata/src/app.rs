@@ -2144,6 +2144,52 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_click_on_a_suggestion_accepts_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, _)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        {
+            let app = h.state_mut();
+            let ed = app
+                .project
+                .as_mut()
+                .unwrap()
+                .editors
+                .get_mut("main.tex")
+                .unwrap();
+            let end = ed.doc.line_end(9);
+            ed.doc.selection = crate::editor::buffer::Selection::cursor(end);
+        }
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex").type_text("\\beg");
+        h.run_steps(3);
+        // Press and release in separate frames, as a real mouse does.
+        let at = h.get_by_label("\\begin").rect().center();
+        h.hover_at(at);
+        h.run_steps(1);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            });
+            h.run_steps(1);
+        }
+        h.run_steps(2);
+        let ed = &h.state().project.as_ref().unwrap().editors["main.tex"];
+        assert!(
+            ed.doc.line(10).starts_with("\\begin{"),
+            "{}",
+            ed.doc.line(10)
+        );
+    }
+
+    #[test]
     fn texlab_adds_commands_and_goes_to_definitions() {
         if lemmata_shell::lsp::find_texlab(std::path::Path::new("/nonexistent")).is_none() {
             return; // no texlab on this machine, and tests don't download it
@@ -3664,8 +3710,8 @@ pub(crate) mod tests {
         let action = ws
             .notices
             .iter()
-            .find_map(|n| match n.action {
-                Some(crate::workspace::NoticeAction::ExportOlder(_)) => n.action.clone(),
+            .find_map(|n| match n.also {
+                Some(crate::workspace::NoticeAction::ExportOlder(_)) => n.also.clone(),
                 _ => None,
             })
             .expect("the explicit older-PDF choice");

@@ -1906,6 +1906,14 @@ pub fn show(
     let main = ed.doc.selection.main();
     let key = (ed.doc.version, main.head, look.generation);
     let wanted = ed.complete_wanted.take();
+    // egui counts a click on the list as one outside the editor and takes its focus away.
+    if ed.completion.as_ref().is_some_and(|c| {
+        ui.input(|i| i.pointer.interact_pos())
+            .is_some_and(|at| c.rect.contains(at))
+    }) && !ui.memory(|m| m.has_focus(id))
+    {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
     let focused = ui.memory(|m| m.has_focus(id));
     if !focused || !main.is_empty() || ed.doc.selection.ranges.len() > 1 {
         ed.completion = None;
@@ -1967,6 +1975,7 @@ pub fn show(
             key,
             top: 0,
             scrolled: 0.0,
+            rect: Rect::NOTHING,
         });
     }
     if let (Some(anchor), Some(c)) = (popup_anchor, &mut ed.completion) {

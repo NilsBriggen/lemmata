@@ -64,6 +64,8 @@ pub struct Notice {
     pub at: Instant,
     /// A button that does something about it; such notices stay until dismissed, like errors.
     pub action: Option<NoticeAction>,
+    /// A second choice beside it.
+    pub also: Option<NoticeAction>,
 }
 
 impl Notice {
@@ -73,10 +75,15 @@ impl Notice {
             tone,
             at: Instant::now(),
             action: None,
+            also: None,
         }
     }
     pub fn action(mut self, a: NoticeAction) -> Self {
         self.action = Some(a);
+        self
+    }
+    pub fn also(mut self, a: NoticeAction) -> Self {
+        self.also = Some(a);
         self
     }
 }
@@ -1805,7 +1812,7 @@ impl Workspace {
         if n.action.is_none() && n.tone != Tone::Error {
             ctx.request_repaint_after(Duration::from_millis(500));
         }
-        let (text, tone, act) = (n.text.clone(), n.tone, n.action.clone());
+        let (text, tone, acts) = (n.text.clone(), n.tone, [n.action.clone(), n.also.clone()]);
         let screen = ctx.content_rect();
         let mut dismissed = false;
         let mut run = None;
@@ -1843,13 +1850,14 @@ impl Workspace {
                             ui.add(
                                 egui::Label::new(egui::RichText::new(&text).color(p.ink)).wrap(),
                             );
-                            if let Some(a) = &act
-                                && Button::new(a.label())
+                            for a in acts.iter().flatten() {
+                                if Button::new(a.label())
                                     .size(widgets::Size::Sm)
                                     .show(ui, p)
                                     .clicked()
-                            {
-                                run = Some(a.clone());
+                                {
+                                    run = Some(a.clone());
+                                }
                             }
                             if Button::icon(crate::icons::X, "Dismiss")
                                 .size(widgets::Size::Sm)

@@ -301,22 +301,16 @@ impl Workspace {
     }
 
     fn offer_stale_export(&mut self, what: Save) {
-        self.notices.push(
-            Notice::new(
-                "The PDF is out of date. Build before exporting, or choose the older PDF explicitly.",
-                Tone::Info,
-            )
-            .action(NoticeAction::BuildExport(what)),
-        );
-        if self.pane.has_pdf() {
-            self.notices.push(
-                Notice::new(
-                    "Export the older PDF without compiling your latest edits?",
-                    Tone::Info,
-                )
-                .action(NoticeAction::ExportOlder(what)),
-            );
-        }
+        let n = Notice::new(
+            "The PDF is out of date: your latest edits aren't built yet.",
+            Tone::Info,
+        )
+        .action(NoticeAction::BuildExport(what));
+        self.notices.push(if self.pane.has_pdf() {
+            n.also(NoticeAction::ExportOlder(what))
+        } else {
+            n
+        });
     }
 
     pub fn export(&mut self, backend: &Backend, settings: &Settings, what: Save) {

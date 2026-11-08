@@ -20,6 +20,8 @@ pub struct Completion {
     pub top: usize,
     /// Wheel pixels not yet worth a whole row: smooth and touchpad scrolling come a few at a time.
     pub scrolled: f32,
+    /// Where the list was drawn last frame.
+    pub rect: Rect,
 }
 
 const ROWS: usize = 6;
@@ -186,6 +188,13 @@ pub fn show(
                     vec2(rect.width() - 2.0, row_h),
                 );
                 let resp = ui.interact(r, egui::Id::unique(("completion-row", i)), Sense::click());
+                resp.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::Role::ListBoxOption,
+                        true,
+                        it.display.as_deref().unwrap_or(&it.label),
+                    )
+                });
                 if i == c.selected {
                     ui.painter().with_clip_rect(clip).rect_filled(
                         r,
@@ -287,6 +296,7 @@ pub fn show(
                 c.top = (c.top as isize + steps as isize).clamp(0, max as isize) as usize;
             }
         });
+    c.rect = list_rect;
 
     // .cm-completionInfo beside the list, for the selected item.
     if let Some((it, _)) = c.items.get(c.selected)
