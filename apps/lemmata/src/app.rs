@@ -4360,6 +4360,70 @@ pub(crate) mod tests {
         );
     }
 
+    /// Hits are kept by line; lines added in the editor since the search would move them, and
+    /// an unticked hit could be replaced. The results are brought up to date instead.
+    #[test]
+    fn replace_all_after_an_edit_searches_again_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.state_mut()
+            .project
+            .as_mut()
+            .unwrap()
+            .open_search(Some("Equation~".into()));
+        wait_for(&mut h, "search results", |h| {
+            h.query_by_label_contains("chapters/method.tex:").is_some()
+        });
+        let rel = "chapters/method.tex";
+        {
+            let app = h.state_mut();
+            let ws = app.project.as_mut().unwrap();
+            ws.open_file(&app.backend, rel);
+        }
+        wait_for(&mut h, "method.tex open", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .editors
+                .contains_key(rel)
+        });
+        let before = std::fs::read_to_string(project.join(rel)).unwrap();
+        {
+            let ed = h
+                .state_mut()
+                .project
+                .as_mut()
+                .unwrap()
+                .editors
+                .get_mut(rel)
+                .unwrap();
+            ed.replace_range(0, 0, "% a line on top\n");
+        }
+        h.run_steps(2);
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let ws = app.project.as_mut().unwrap();
+        ws.replace_all(&app.backend, &settings);
+        h.run_steps(5);
+        let ws = h.state().project.as_ref().unwrap();
+        assert!(
+            ws.search
+                .as_ref()
+                .unwrap()
+                .message()
+                .unwrap_or("")
+                .contains("changed since the search")
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join(rel)).unwrap(),
+            before,
+            "nothing replaced"
+        );
+    }
+
     #[test]
     fn replace_stops_when_its_pre_save_conflicts() {
         let tmp = tempfile::tempdir().unwrap();

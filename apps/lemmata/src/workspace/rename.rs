@@ -166,20 +166,26 @@ impl Workspace {
             Workspace::job(
                 b,
                 move |s| {
-                    let _ = s.history_snapshot("Before rename".into());
+                    // An empty snapshot (nothing changed since the last) still means History has it.
+                    let saved = s.history_snapshot("Before rename".into()).is_ok();
                     s.rename_symbol(kind, old.clone(), new.clone())
-                        .map(|files| (files, old, new))
+                        .map(|files| (files, old, new, saved))
                 },
                 |ws, b, r| match r {
-                    Ok((files, old, new)) => {
+                    Ok((files, old, new, saved)) => {
                         ws.rename = None;
                         for f in &files {
                             ws.reload(b, f);
                         }
                         let n = files.len();
+                        let undo = if saved {
+                            ""
+                        } else {
+                            " History is off, so it can't be undone from there."
+                        };
                         ws.notice(
                             format!(
-                                "Renamed {old} to {new} in {n} file{}.",
+                                "Renamed {old} to {new} in {n} file{}.{undo}",
                                 if n == 1 { "" } else { "s" }
                             ),
                             Tone::Ok,

@@ -576,7 +576,7 @@ impl Workspace {
                 }
             }
             "unused" => self.show_unused(backend),
-            "undo-files" => self.undo_files(backend),
+            "undo-files" => self.undo_files(backend, settings),
             "deleted" => self.show_deleted(backend),
             "zotero-cite" => self.cite_from_zotero(backend),
             "zotero-sync" => self.sync_zotero(backend, true),

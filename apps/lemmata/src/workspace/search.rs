@@ -25,6 +25,8 @@ pub struct ProjectSearch {
     results: Vec<FileMatches>,
     /// Lines left out of a replacement.
     excluded: HashSet<(String, u32)>,
+    /// The open editors' versions when the results came: lines are counted in that text.
+    versions: std::collections::HashMap<String, u64>,
     error: Option<String>,
     message: Option<String>,
     /// The search runs 200 ms after the last keystroke.
@@ -34,6 +36,11 @@ pub struct ProjectSearch {
 }
 
 impl ProjectSearch {
+    #[cfg(test)]
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
     /// Every hit shows its replaced line.
     #[cfg(test)]
     pub fn previewed(&self, text: &str) -> bool {
@@ -169,7 +176,8 @@ impl Workspace {
         self.search = Some(s);
     }
 
-    fn run_search(&mut self, backend: &Backend) {
+    /// `note`: shown with the new results (the old message goes when they come).
+    fn run_search(&mut self, backend: &Backend, note: Option<String>) {
         let Some(s) = &mut self.search else { return };
         s.due = None;
         s.seq += 1;
@@ -179,12 +187,14 @@ impl Workspace {
             backend,
             move |shell| shell.search_project(options, replacement),
             move |ws, _, r| {
+                let versions = ws.editor_versions();
                 let Some(s) = &mut ws.search else { return };
                 if s.seq != seq {
                     return;
                 }
+                s.versions = versions;
                 s.error = None;
-                s.message = None;
+                s.message = note;
                 s.excluded.clear();
                 match r {
                     Ok(res) => s.results = res,
@@ -197,10 +207,34 @@ impl Workspace {
         );
     }
 
+    /// Each open editor's text version.
+    fn editor_versions(&self) -> std::collections::HashMap<String, u64> {
+        self.editors
+            .iter()
+            .map(|(p, e)| (p.clone(), e.doc.version))
+            .collect()
+    }
+
     pub(crate) fn replace_all(&mut self, backend: &Backend, settings: &Settings) {
-        let Some(s) = &self.search else { return };
+        let versions = self.editor_versions();
+        let Some(s) = &mut self.search else { return };
         let (targets, _) = s.chosen();
         if targets.is_empty() {
+            return;
+        }
+        // Lines added or removed since the search would move the hits (and the ones left out)
+        // onto other lines: the results are brought up to date first.
+        // A file opened since then and not edited is at version 0, as loaded.
+        let moved = targets.iter().any(|t| {
+            versions
+                .get(&t.path)
+                .is_some_and(|v| s.versions.get(&t.path).copied().unwrap_or(0) != *v)
+        });
+        if moved {
+            self.run_search(
+                backend,
+                Some("The files changed since the search, so the results were updated. Check them and Replace again.".into()),
+            );
             return;
         }
         let (options, replacement) = (s.options(), s.replacement.clone());
@@ -259,7 +293,7 @@ impl Workspace {
             .and_then(|s| s.due)
             .is_some_and(|d| Instant::now() >= d)
         {
-            self.run_search(backend);
+            self.run_search(backend, None);
         }
         let Some(s) = &mut self.search else { return };
         if let Some(d) = s.due {

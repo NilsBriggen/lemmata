@@ -277,8 +277,27 @@ impl Workspace {
     }
 
     /// A file or folder was renamed or moved: its tabs, editors and marks follow (onRenamed).
-    fn renamed(&mut self, from: &str, to: &str) {
+    fn renamed(&mut self, backend: &Backend, from: &str, to: &str) {
         let moved = |p: &str| remap(p, from, to);
+        // Review comments name their file: they move with it.
+        if self
+            .comments
+            .threads
+            .iter()
+            .any(|t| moved(&t.file) != t.file)
+        {
+            let threads = self
+                .comments
+                .threads
+                .iter()
+                .cloned()
+                .map(|mut t| {
+                    t.file = moved(&t.file);
+                    t
+                })
+                .collect();
+            self.save_comments(backend, threads);
+        }
         for map_keys in [self.editors.keys().cloned().collect::<Vec<_>>()] {
             for k in map_keys {
                 let n = moved(&k);
@@ -453,7 +472,7 @@ impl Workspace {
                     Ok(moved) if moved.is_empty() => {}
                     Ok(moved) => {
                         for m in &moved {
-                            ws.renamed(&m.from, &m.to);
+                            ws.renamed(b, &m.from, &m.to);
                         }
                         let from: Vec<String> = moved.iter().map(|m| m.from.clone()).collect();
                         let back = moved
@@ -681,11 +700,23 @@ impl Workspace {
     }
 
     /// Undoes the last file operation made in the tree.
-    pub fn undo_files(&mut self, backend: &Backend) {
+    pub fn undo_files(&mut self, backend: &Backend, settings: &Settings) {
         let Some((label, step)) = self.files.log.pop() else {
             self.notice("Nothing to undo in the file tree.", Tone::Info);
             return;
         };
+        // As for any delete or move: edits saved first, and the files changed only once no save
+        // is under way, or a late save would bring a file back (or leave a copy at an old name).
+        self.save_all_quietly(backend, settings);
+        if let Undo::Trash(paths) = &step {
+            self.trashed(backend, paths);
+        }
+        self.after_writes.push(Box::new(move |ws, backend| {
+            ws.undo_step(backend, label, step)
+        }));
+    }
+
+    fn undo_step(&mut self, backend: &Backend, label: String, step: Undo) {
         Workspace::job(
             backend,
             move |s| match step {
@@ -704,7 +735,7 @@ impl Workspace {
                 match r {
                     Ok(done) => {
                         for (from, to) in done {
-                            ws.renamed(&from, &to);
+                            ws.renamed(b, &from, &to);
                         }
                         ws.notice(format!("Undid: {}.", label.to_lowercase()), Tone::Ok);
                     }
@@ -859,7 +890,7 @@ impl Workspace {
             let t = self.targets(None);
             self.duplicate(backend, settings, t);
         } else if consume(ctx, "tree-undo") {
-            self.undo_files(backend);
+            self.undo_files(backend, settings);
         } else if consume(ctx, "tree-select-all") {
             self.sel.selected = rows.clone();
             self.sel.anchor = rows.first().cloned();
@@ -1144,7 +1175,7 @@ impl Workspace {
             }
             14 => self.collapsed.clear(),
             15 => self.show_unused(backend),
-            16 => self.undo_files(backend),
+            16 => self.undo_files(backend, settings),
             17 => self.show_deleted(backend),
             _ => {}
         }
@@ -1534,7 +1565,7 @@ impl Workspace {
                         move |ws, b, r| match r {
                             Ok((from, to, n)) => {
                                 ws.files.dialog = None;
-                                ws.renamed(&from, &to);
+                                ws.renamed(b, &from, &to);
                                 let files = reload.iter().collect::<std::collections::HashSet<_>>().len();
                                 let missed = if update { files.saturating_sub(n) } else { 0 };
                                 if missed > 0 {

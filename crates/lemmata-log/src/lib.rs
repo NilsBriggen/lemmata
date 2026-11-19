@@ -12,6 +12,7 @@ mod rules;
 use regex::Regex;
 use rules::{Engine, Source};
 use serde::Serialize;
+use std::path::Path;
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -354,9 +355,27 @@ impl FileStack {
             match bytes[i] {
                 b'(' => {
                     let rest = &line[i + 1..];
-                    let end = rest
+                    let mut end = rest
                         .find(|c: char| c.is_whitespace() || c == '(' || c == ')')
                         .unwrap_or(rest.len());
+                    // A path with a space (`./chapters/my chapter.tex`): up to the first source
+                    // extension, when the part before the space doesn't end in one itself.
+                    let has_ext = |n: &str| {
+                        Path::new(n).extension().is_some_and(|e| {
+                            ["tex", "sty", "cls", "bbl", "ltx", "def", "cfg", "clo", "fd"]
+                                .contains(&e.to_string_lossy().as_ref())
+                        })
+                    };
+                    if rest[..end].starts_with("./") && !has_ext(&rest[..end]) {
+                        let upto = rest.find(['(', ')']).unwrap_or(rest.len());
+                        if let Some(n) = [".tex", ".sty", ".cls"]
+                            .iter()
+                            .filter_map(|x| rest[..upto].find(x).map(|at| at + x.len()))
+                            .min()
+                        {
+                            end = n;
+                        }
+                    }
                     let name = &rest[..end];
                     let is_path = name.contains('.')
                         && (name.starts_with("./")
@@ -524,6 +543,15 @@ mod tests {
         include_str!("../../../tests/fixtures/logs/undefined-control-sequence.log");
     const MISSING: &str = include_str!("../../../tests/fixtures/logs/missing-package.log");
     const WARNINGS: &str = include_str!("../../../tests/fixtures/logs/warnings.log");
+
+    #[test]
+    fn file_names_with_spaces_are_whole() {
+        let mut f = FileStack::default();
+        f.scan("(./chapters/my chapter.tex");
+        assert_eq!(f.top().as_deref(), Some("./chapters/my chapter.tex"));
+        f.scan(")(./main.tex (/usr/share/texmf/tex/latex/base/size10.clo)");
+        assert_eq!(f.top().as_deref(), Some("./main.tex"));
+    }
 
     #[test]
     fn undefined_control_sequence_has_location() {

@@ -952,6 +952,46 @@ pub fn unused_in(files: &[String], sources: &[String], main: &str) -> Vec<String
 pub type Written = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>>;
 
 /// FNV-1a (32 bit), the same as `contentHash` in the frontend (src/lib/contentHash.ts).
+/// Windows-1252's characters for 0x80..=0x9F; the five it leaves out stay the C1 controls of
+/// the same number, so every byte comes back as it was.
+const CP1252_HIGH: [char; 32] = [
+    '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
+    '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+];
+
+/// A text file's text: UTF-8, else Windows-1252, which older documents with
+/// `\usepackage[latin1]{inputenc}` (or cp1252) are written in. True when it was the latter.
+pub(crate) fn decode_text(bytes: Vec<u8>) -> (String, bool) {
+    match String::from_utf8(bytes) {
+        Ok(text) => (text, false),
+        Err(e) => {
+            let text = e
+                .as_bytes()
+                .iter()
+                .map(|&b| match b {
+                    0x80..=0x9f => CP1252_HIGH[usize::from(b - 0x80)],
+                    _ => char::from(b),
+                })
+                .collect();
+            (text, true)
+        }
+    }
+}
+
+/// `text` in Windows-1252, or the first character it can't hold.
+pub(crate) fn encode_cp1252(text: &str) -> Result<Vec<u8>, char> {
+    text.chars()
+        .map(|c| match u32::from(c) {
+            n @ (0..=0x7f | 0xa0..=0xff) => Ok(n as u8),
+            _ => CP1252_HIGH
+                .iter()
+                .position(|&h| h == c)
+                .map(|i| 0x80 + i as u8)
+                .ok_or(c),
+        })
+        .collect()
+}
+
 pub fn content_hash(bytes: &[u8]) -> u32 {
     bytes.iter().fold(0x811c_9dc5, |h, &b| {
         (h ^ u32::from(b)).wrapping_mul(0x0100_0193)

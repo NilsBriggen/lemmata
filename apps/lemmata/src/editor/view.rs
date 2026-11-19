@@ -2318,7 +2318,14 @@ fn handle_event(
                 if lines {
                     cmd::delete_line(&mut ed.doc);
                 } else {
-                    cmd::delete_char_forward(&mut ed.doc);
+                    // Only what was copied: an empty cursor among the selections cuts nothing.
+                    let (c, sel) = ed.doc.change_by_range(|_, r| {
+                        (
+                            vec![super::buffer::Change::delete(r.from(), r.to())],
+                            super::buffer::Range::cursor(r.from()),
+                        )
+                    });
+                    ed.doc.apply(c, sel, super::buffer::EditKind::Delete);
                 }
                 ed.reveal = true;
             }
@@ -2381,6 +2388,15 @@ fn key_press(
     let shift = m.shift;
     let modk = cmd_key(&m);
     let on = |id: &str| shortcuts::pressed(id, m, key);
+    // The list is worked out after the frame's events; one computed before an edit earlier in
+    // this frame holds positions of the old text, so it goes (and the key does its own work).
+    if ed
+        .completion
+        .as_ref()
+        .is_some_and(|c| c.key.0 != ed.doc.version)
+    {
+        ed.completion = None;
+    }
     // completionKeymap: the open list takes the arrows, Enter and Escape.
     if let Some(c) = &mut ed.completion
         && !modk
@@ -2701,7 +2717,11 @@ fn key_press(
             if let Some(k) = next.filter(|k| *k < s.fields.len()) {
                 s.current = k;
                 let last = k + 1 == s.fields.len();
-                ed.doc.selection = s.select(k);
+                // Edits earlier in this frame aren't in the fields yet (they are mapped once per
+                // frame): a copy brought up to date picks the field.
+                let mut now = s.clone();
+                now.map(&ed.doc.journal);
+                ed.doc.selection = now.select(k);
                 ed.doc.break_group();
                 if last {
                     ed.snippet = None;
@@ -3248,6 +3268,24 @@ mod tests {
             focus: false,
             line_numbers: true,
         }
+    }
+
+    /// Cut with a selection and an empty cursor took out a character the clipboard never got.
+    #[test]
+    fn cut_takes_out_only_what_it_copies() {
+        let mut ed = Editor::new("abcdef\nghij\n", true);
+        ed.doc.selection = Selection::normalized(vec![Range::new(0, 2), Range::cursor(8)], 0);
+        let mut h = harness(ed, [620.0, 300.0]);
+        h.run();
+        h.get_by_label("Editor").click();
+        h.run();
+        {
+            let ed = h.state_mut();
+            ed.doc.selection = Selection::normalized(vec![Range::new(0, 2), Range::cursor(8)], 0);
+        }
+        h.event(egui::Event::Cut);
+        h.run();
+        assert_eq!(h.state().doc.text(), "cdef\nghij\n");
     }
 
     #[test]

@@ -118,7 +118,8 @@ fn by_group(d: &Doc, pos: usize, forward: bool) -> usize {
     let line = d.line_of(pos);
     let start = d.line_start(line);
     let text: Vec<char> = d.line(line).chars().collect();
-    let mut col = pos - start;
+    // A cursor can sit between a CRLF's two characters, past the line's text.
+    let mut col = (pos - start).min(text.len());
     if forward {
         if col >= text.len() {
             return by_char(d, pos, true);
@@ -296,7 +297,7 @@ pub fn word_at(d: &Doc, pos: usize) -> (usize, usize) {
     let line = d.line_of(pos);
     let start = d.line_start(line);
     let text: Vec<char> = d.line(line).chars().collect();
-    let col = pos - start;
+    let col = (pos - start).min(text.len());
     let is_word = |c: char| cat(c) == Cat::Word;
     let mut a = col;
     while a > 0 && is_word(text[a - 1]) {
@@ -1298,6 +1299,15 @@ mod tests {
         let mut d = Doc::new(text);
         d.selection = Selection::cursor(at);
         d
+    }
+
+    /// Between a CRLF's \r and \n the cursor is past the line's text, which once panicked.
+    #[test]
+    fn word_moves_from_inside_a_crlf_dont_panic() {
+        let d = doc("ab cd\r\nef\r\n", 6);
+        let _ = by_group(&d, 6, false);
+        let _ = by_group(&d, 6, true);
+        let _ = word_at(&d, 6);
     }
 
     /// Two cursors deleting over the same text once removed it twice and ended the app.

@@ -295,7 +295,9 @@ fn project_info_with_tree(p: &Project, tree: Vec<Entry>) -> ProjectInfo {
 }
 
 fn analysis_of(p: &Project, tree: Vec<Entry>) -> ProjectAnalysis {
-    analysis_of_with(p, tree, |path| std::fs::read_to_string(path))
+    analysis_of_with(p, tree, |path| {
+        std::fs::read(path).map(|b| files::decode_text(b).0)
+    })
 }
 
 fn analysis_of_with(
@@ -475,7 +477,8 @@ impl Shell {
                 "{path} is larger than 32 MB, too large to edit here. Open it in another program."
             ));
         }
-        std::fs::read_to_string(&abs).map_err(|e| format!("Could not open {path}: {e}"))
+        let bytes = std::fs::read(&abs).map_err(|e| format!("Could not open {path}: {e}"))?;
+        Ok(files::decode_text(bytes).0)
     }
 }
 
@@ -499,12 +502,31 @@ impl Shell {
         if let Some(dir) = abs.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
+        // A file that is in Windows-1252 (see `read_text`) stays in it.
+        let disk = std::fs::read(&abs).ok();
+        let (disk_text, cp1252) = match disk {
+            Some(d) => {
+                let (t, c) = files::decode_text(d);
+                (Some(t), c)
+            }
+            None => (None, false),
+        };
+        let bytes = if cp1252 {
+            files::encode_cp1252(&content).map_err(|c| {
+                format!(
+                    "Could not save {path}: it is written in Windows-1252 (latin1), which has no {c:?}. Remove the character, or convert the file to UTF-8."
+                )
+            })?
+        } else {
+            content.as_bytes().to_vec()
+        };
         // Beside the file first, so a crash never leaves half of it; through a link (a preamble
         // shared between projects) to the file it names.
-        let staged = lemmata_env::fs::stage(&abs, content.as_bytes())
+        let staged = lemmata_env::fs::stage(&abs, &bytes)
             .map_err(|e| format!("Could not save {path}: {e}"))?;
-        if let (Some(expected), Ok(disk)) = (expected, std::fs::read(staged.target()))
-            && files::content_hash(&disk) != expected
+        // The text as the editor knows it, whatever the file's encoding.
+        if let (Some(expected), Some(disk)) = (expected, &disk_text)
+            && files::content_hash(disk.as_bytes()) != expected
         {
             return Err(format!("{CONFLICT} {path} was changed by another program."));
         }
@@ -514,7 +536,7 @@ impl Shell {
         // From here on, an event for this exact content is our own doing.
         self.written
             .lock_safe()
-            .insert(written, files::hash_bytes(content.as_bytes()));
+            .insert(written, files::hash_bytes(&bytes));
         Ok(())
     }
 }
@@ -1099,6 +1121,51 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
+    /// A latin1 document opens, and its saves stay latin1: no false conflict, no re-encoding.
+    #[test]
+    fn a_windows_1252_file_reads_and_saves_as_it_is() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::write(
+            root.join("main.tex"),
+            b"\\documentclass{article}\n% Gr\xfc\xdfe \x80\n",
+        )
+        .unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let dirs = crate::Dirs {
+            resources: data.path().into(),
+            data: data.path().into(),
+            cache: data.path().into(),
+            home: None,
+        };
+        let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
+        shell
+            .open_project(1, root.to_string_lossy().into_owned(), false)
+            .unwrap();
+        let text = shell.read_text("main.tex".into()).unwrap();
+        assert!(text.contains("Grüße €"), "{text}");
+        let expected = Some(crate::files::content_hash(text.as_bytes()));
+        shell
+            .write_text(root, "main.tex".into(), format!("{text}% Ä\n"), expected)
+            .unwrap();
+        let bytes = std::fs::read(root.join("main.tex")).unwrap();
+        assert!(bytes.ends_with(b"% \xc4\n"), "{bytes:?}");
+        assert!(
+            bytes.windows(2).any(|w| w == b"\xfc\xdf"),
+            "the rest stays as it was"
+        );
+        let text = shell.read_text("main.tex".into()).unwrap();
+        let e = shell
+            .write_text(
+                root,
+                "main.tex".into(),
+                format!("{text}🙂"),
+                Some(crate::files::content_hash(text.as_bytes())),
+            )
+            .unwrap_err();
+        assert!(e.contains("Windows-1252"), "{e}");
+    }
+
     #[test]
     fn analysis_reads_each_source_once_and_keeps_one_snapshot() {
         let d = tempfile::tempdir().unwrap();

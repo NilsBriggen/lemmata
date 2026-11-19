@@ -349,6 +349,92 @@ fn switching_files_while_completion_is_coming_is_safe() {
     assert_ok(&h, "after switching");
 }
 
+/// A comment names its file; moving the file used to leave it pointing at the old name.
+#[test]
+fn a_comment_moves_with_its_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((mut h, project)) = in_article(tmp.path()) else {
+        return;
+    };
+    // A file nothing refers to: moving it asks nothing.
+    std::fs::write(project.join("notes.tex"), "Some notes here.\n").unwrap();
+    wait_for(&mut h, "notes.tex in the tree", |h| {
+        h.query_by_role_and_label(egui::accesskit::Role::TreeItem, "notes.tex")
+            .is_some()
+    });
+    {
+        let (ws, backend, _) = ws_mut(&mut h);
+        ws.open_file(backend, "notes.tex");
+    }
+    wait_for(&mut h, "notes.tex", |h| {
+        ws(h).editors.contains_key("notes.tex")
+    });
+    {
+        let (ws, _, _) = ws_mut(&mut h);
+        let ed = ws.editors.get_mut("notes.tex").unwrap();
+        let s = ed.doc.line_start(0);
+        ed.doc.selection = Selection::single(crate::editor::buffer::Range::new(s, s + 6));
+    }
+    h.get_by_label("Comment").click();
+    h.run_steps(3);
+    h.get_by_label("Write a comment").type_text("Check this.");
+    h.run_steps(2);
+    h.query_all_by_label("Comment").last().unwrap().click();
+    let comments = project.join(".lemmata/comments.json");
+    wait_for(&mut h, "the comment on disk", |_| {
+        std::fs::read_to_string(&comments).is_ok_and(|t| t.contains("Check this."))
+    });
+    std::fs::create_dir_all(project.join("parts")).unwrap();
+    {
+        let (ws, backend, settings) = ws_mut(&mut h);
+        ws.move_paths(backend, settings, vec!["notes.tex".into()], "parts".into());
+    }
+    wait_for(&mut h, "the comment moved", |_| {
+        std::fs::read_to_string(&comments).is_ok_and(|t| t.contains("parts/notes.tex"))
+    });
+}
+
+/// A session with a file that can no longer be read once never finished restoring: no tabs,
+/// and later the session's list replaced the tabs the user had opened since.
+#[cfg(unix)]
+#[test]
+fn a_session_with_an_unreadable_file_still_restores() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((mut h, project)) = in_article(tmp.path()) else {
+        return;
+    };
+    let locked = project.join("locked.tex");
+    std::fs::write(&locked, "x").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        return; // running as root: permissions don't stop the read
+    }
+    let root = ws(&h).root.clone();
+    crate::workspace::session::save(
+        &crate::app::tests::dirs(tmp.path()),
+        &root,
+        &crate::workspace::session::Session {
+            tabs: vec!["main.tex".into(), "locked.tex".into()],
+            active: Some("locked.tex".into()),
+            line: 1,
+            ..Default::default()
+        },
+    );
+    let before = ws(&h).project;
+    h.state_mut()
+        .open_project(project.to_string_lossy().into_owned());
+    wait_for(&mut h, "the project again", |h| {
+        h.state()
+            .project
+            .as_ref()
+            .is_some_and(|w| w.project != before)
+    });
+    wait_for(&mut h, "the restored tabs", |h| ws(h).tabs == ["main.tex"]);
+    assert_eq!(ws(&h).active.as_deref(), Some("main.tex"));
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
 #[test]
 fn a_resolved_comment_is_no_longer_marked() {
     let tmp = tempfile::tempdir().unwrap();
@@ -870,8 +956,8 @@ fn deleting_a_file_keeps_its_unsaved_edits_for_undo() {
     });
     assert!(!gone.exists());
     {
-        let (ws, backend, _) = ws_mut(&mut h);
-        ws.undo_files(backend);
+        let (ws, backend, settings) = ws_mut(&mut h);
+        ws.undo_files(backend, settings);
     }
     wait_for(&mut h, "the file back", |_| gone.exists());
     assert_eq!(std::fs::read_to_string(&gone).unwrap(), "Old.\nTyped.\n");

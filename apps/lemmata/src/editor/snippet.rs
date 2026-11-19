@@ -93,6 +93,7 @@ pub fn insert(
 }
 
 /// A snippet being filled in.
+#[derive(Clone)]
 pub struct Active {
     pub fields: Vec<Vec<(usize, usize)>>,
     pub current: usize,

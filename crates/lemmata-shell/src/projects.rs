@@ -305,7 +305,14 @@ pub fn save_as_template(
         fn walk(entries: &[lemmata_project::Entry], root: &Path, dest: &Path) -> io::Result<()> {
             for e in entries {
                 let target = dest.join(&e.path);
-                if e.is_dir {
+                let linked = root
+                    .join(&e.path)
+                    .symlink_metadata()
+                    .is_ok_and(|m| m.file_type().is_symlink());
+                if e.is_dir && linked {
+                    // The tree doesn't go into a linked folder; the template gets its files.
+                    copy_dir(&root.join(&e.path), &target)?;
+                } else if e.is_dir {
                     fs::create_dir_all(&target)?;
                     walk(&e.children, root, dest)?;
                 } else {
@@ -855,6 +862,28 @@ mod tests {
         assert_eq!(
             base64(b"Many hands make light work."),
             "TWFueSBoYW5kcyBtYWtlIGxpZ2h0IHdvcmsu"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_template_gets_the_files_of_a_linked_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let (user, proj, shared) = (
+            d.path().join("user"),
+            d.path().join("p"),
+            d.path().join("shared"),
+        );
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("logo.pdf"), "pdf").unwrap();
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("main.tex"), "\\documentclass{article}").unwrap();
+        std::os::unix::fs::symlink(&shared, proj.join("figures")).unwrap();
+        let id = save_as_template(&user, &proj, ".lemmata/build", "With logo", "").unwrap();
+        let folder = user.join(id.trim_start_matches("user:"));
+        assert_eq!(
+            fs::read_to_string(folder.join("figures/logo.pdf")).unwrap(),
+            "pdf"
         );
     }
 

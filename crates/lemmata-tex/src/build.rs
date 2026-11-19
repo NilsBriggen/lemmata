@@ -805,6 +805,54 @@ pub fn up_to_date_with_tree(project: &Project, entries: &[lemmata_project::Entry
         && project.log_path().is_file()
         && std::fs::read_to_string(project.outdir_abs().join(FILES_STAMP))
             .is_ok_and(|s| s == files_hash_with_tree(project, entries))
+        && !others_changed(project, entries, &stamp)
+}
+
+/// Files the last build read (its .fls) that the project's hash doesn't cover: outside the
+/// project (`\input{../common/macros}`, a .sty in TEXMFHOME), in a linked folder, or hidden.
+/// Changed since the stamp's time, the PDF is out of date. By time, as these aren't hashed: at
+/// worst one build too many.
+fn others_changed(project: &Project, entries: &[lemmata_project::Entry], stamp: &Path) -> bool {
+    let Ok(since) = std::fs::metadata(stamp).and_then(|m| m.modified()) else {
+        return true;
+    };
+    let Ok(fls) = std::fs::read_to_string(out_file(project, "fls")) else {
+        return false;
+    };
+    fn files(entries: &[lemmata_project::Entry], out: &mut std::collections::HashSet<String>) {
+        for e in entries {
+            if e.is_dir {
+                files(&e.children, out);
+            } else {
+                out.insert(e.path.clone());
+            }
+        }
+    }
+    let mut hashed = std::collections::HashSet::new();
+    files(entries, &mut hashed);
+    let pwd = fls
+        .lines()
+        .find_map(|l| l.strip_prefix("PWD "))
+        .map_or(project.root.clone(), PathBuf::from);
+    let outdir = project.outdir_abs();
+    let read: std::collections::HashSet<&str> = fls
+        .lines()
+        .filter_map(|l| l.strip_prefix("INPUT "))
+        .collect();
+    read.into_iter().any(|p| {
+        let abs = pwd.join(p);
+        let rel = abs.strip_prefix(&project.root).ok().map(|r| {
+            r.to_string_lossy()
+                .trim_start_matches("./")
+                .replace('\\', "/")
+        });
+        if abs.starts_with(&outdir) || rel.as_deref().is_some_and(|r| hashed.contains(r)) {
+            return false;
+        }
+        std::fs::metadata(&abs)
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t + MTIME_SLACK >= since)
+    })
 }
 
 /// True when some project file was modified after the time on `stamp`, the start of the last good build
@@ -1042,6 +1090,29 @@ fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
         .map(|e| format!("{}:{}:{}", e.path, e.size, e.modified))
         .collect();
     bibs.hash(&mut h);
+    // The sources the tool read last time, as its log names them: a .bib outside the project
+    // (`\addbibresource{~/library.bib}`) is not among the project's files.
+    let blg = std::fs::read_to_string(mirror("blg")).unwrap_or_default();
+    for line in blg.lines() {
+        let named = line
+            .split_once("Found BibTeX data source '")
+            .and_then(|(_, r)| r.split_once('\''))
+            .map(|(p, _)| p)
+            .or_else(|| {
+                line.strip_prefix("Database file #")
+                    .and_then(|r| r.split_once(": "))
+                    .map(|(_, p)| p.trim())
+            });
+        if let Some(p) = named {
+            let path = [project.root.join(p), project.outdir_abs().join(p)]
+                .into_iter()
+                .find(|p| p.is_file());
+            let stat = path
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map(|m| (m.len(), m.modified().ok()));
+            (p, stat).hash(&mut h);
+        }
+    }
     Some(format!("{:x}", h.finish()))
 }
 
@@ -1683,7 +1754,8 @@ mod tests {
             perl_dir: None,
         };
         let (_tx, rx) = oneshot::channel();
-        assert_eq!(build(&p, &opts, rx).await.unwrap().status, Status::Success);
+        let first = build(&p, &opts, rx).await.unwrap();
+        assert_eq!(first.status, Status::Success, "{:?}", first.diagnostics);
         // What a run killed while building a broken edit leaves behind.
         let out = p.outdir_abs();
         for f in ["main.log", "main.synctex.gz", OK_STAMP] {
@@ -2303,7 +2375,12 @@ mod tests {
             build(&p, &opts, rx).await.unwrap()
         };
         let first = run().await;
-        assert!(first.pdf.is_some());
+        assert!(
+            first.pdf.is_some(),
+            "{:?} {:?}",
+            first.status,
+            first.diagnostics
+        );
         let (latex_first, biber_first) = (count("pdflatex"), count("biber"));
         assert_eq!(biber_first, 1, "biber runs once on a fresh build");
         assert!(

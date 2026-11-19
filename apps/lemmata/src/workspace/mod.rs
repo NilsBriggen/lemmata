@@ -398,6 +398,8 @@ impl Workspace {
             ws.load(backend, t);
         }
         ws.restoring = Some((tabs, active));
+        // A session of images and PDFs only has no text file to wait for.
+        ws.finish_restore();
         ws.apply_analysis(analysis, true);
         ws.spawn(backend, |shell| Msg::Packages(shell.package_names()));
         // Deleted files wait a week in the project's trash, as the delete dialog says.
@@ -610,6 +612,20 @@ impl Workspace {
         }
         self.active = Some(path.into());
         self.load(backend, path);
+    }
+
+    /// The session's tabs, shown in their order once every text file of it is in (or couldn't be read).
+    fn finish_restore(&mut self) {
+        if let Some((tabs, active)) = &self.restoring
+            && tabs
+                .iter()
+                .all(|t| self.editors.contains_key(t) || !tree::is_text_file(t))
+        {
+            self.tabs = tabs.clone();
+            self.active = active.clone();
+            self.pin_first();
+            self.restoring = None;
+        }
     }
 
     /// A file the OS asked to open with the project: it joins the session's tabs being restored
@@ -833,18 +849,7 @@ impl Workspace {
                 }
                 self.buffers.loaded(&path, &text);
                 self.editors.insert(path.clone(), ed);
-                if let Some((tabs, active)) = &self.restoring {
-                    // All of the session's files are in: show them in their order.
-                    if tabs
-                        .iter()
-                        .all(|t| self.editors.contains_key(t) || !tree::is_text_file(t))
-                    {
-                        self.tabs = tabs.clone();
-                        self.active = active.clone();
-                        self.pin_first();
-                        self.restoring = None;
-                    }
-                }
+                self.finish_restore();
             }
             Msg::Viewed(path, result) => {
                 if self.viewers.contains_key(&path) {
@@ -873,10 +878,15 @@ impl Workspace {
                 if self.active.as_deref() == Some(path.as_str()) {
                     self.active = self.tabs.last().cloned();
                 }
-                if let Some((tabs, _)) = &mut self.restoring {
+                if let Some((tabs, active)) = &mut self.restoring {
                     tabs.retain(|t| t != &path);
+                    if active.as_deref() == Some(path.as_str()) {
+                        *active = tabs.last().cloned();
+                    }
                 }
                 self.open_error = Some(e);
+                // The others may all be in already.
+                self.finish_restore();
             }
             Msg::FileWritten { project, .. } if project != self.project => {}
             Msg::FileWritten {
@@ -1701,11 +1711,24 @@ impl Workspace {
                 }
                 if let Some((line, col, references)) = lsp_asks.2 {
                     let u = at(line, col);
-                    if references {
-                        msgs.extend(self.lsp.references(&path, line, u));
+                    let asked = if references {
+                        self.lsp.references(&path, line, u)
                     } else {
-                        msgs.extend(self.lsp.definition(&path, line, u));
+                        self.lsp.definition(&path, line, u)
+                    };
+                    // F12 needs texlab: say so rather than do nothing.
+                    if asked.is_none() {
+                        let why = match self.lsp.state {
+                            crate::lsp::State::Starting => "texlab is still starting",
+                            crate::lsp::State::Ready => "texlab hasn't read this file yet",
+                            _ => "texlab isn't running",
+                        };
+                        self.notice(
+                            format!("{why}, so this can't be answered now. \"Go to a label or citation…\" in the command palette finds them by name."),
+                            Tone::Info,
+                        );
                     }
+                    msgs.extend(asked);
                 }
                 self.lsp_send(backend, msgs);
                 if let Some(direction) = out.next_problem {

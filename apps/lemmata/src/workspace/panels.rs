@@ -133,7 +133,7 @@ impl Workspace {
         );
     }
 
-    fn save_comments(&mut self, backend: &Backend, threads: Vec<review::Thread>) {
+    pub(super) fn save_comments(&mut self, backend: &Backend, threads: Vec<review::Thread>) {
         self.comments.threads = threads;
         self.comments.generation += 1;
         // Shown, but not written over a file that couldn't be read.
