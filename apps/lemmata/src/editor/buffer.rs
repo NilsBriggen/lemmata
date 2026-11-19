@@ -229,6 +229,9 @@ pub struct Doc {
     /// The changes since texlab last heard, as it wants them; `None` once too many piled up
     /// (texlab was off), so it gets the whole text instead.
     lsp_edits: Option<Vec<LspEdit>>,
+    /// The `\begin`/`\end` tokens of a version (envs::tokens), asked for several times a key.
+    pub(super) env_tokens:
+        std::cell::RefCell<Option<(u64, std::sync::Arc<Vec<super::envs::Token>>)>>,
 }
 
 /// One change in LSP terms: the replaced range, as lines and UTF-16 columns of the text before
@@ -291,6 +294,7 @@ impl Doc {
             edit: None,
             journal: Vec::new(),
             lsp_edits: Some(Vec::new()),
+            env_tokens: Default::default(),
         }
     }
 

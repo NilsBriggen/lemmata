@@ -871,6 +871,10 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
             hide_below = Some(h.level);
         }
         let (rect, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
+        // A long thesis: only the headings in view are laid out and drawn.
+        if !ui.is_rect_visible(rect) {
+            continue;
+        }
         let indent = 4.0 + (h.level.saturating_sub(min_level)) as f32 * 13.0;
         let twist = Rect::from_min_size(pos2(rect.left() + indent, rect.top()), vec2(14.0, 26.0));
         let entry = Rect::from_min_max(pos2(twist.right(), rect.top()), rect.max);

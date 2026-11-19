@@ -1,7 +1,7 @@
 //! CodeMirror's search panel (@codemirror/search) as Editor.svelte used it: at the bottom of the
 //! editor, on `--surface-2`, with find, replace and their options, plus the Go to line panel.
 
-use super::buffer::{Change, ChangeSet, EditKind, Range, Selection};
+use super::buffer::{Change, ChangeSet, Doc, EditKind, Range, Selection};
 use super::view::Editor;
 use crate::theme::{self, Palette};
 use eframe::egui::{
@@ -71,9 +71,10 @@ impl Search {
             .filter(move |m| m.1 <= to && m.0 >= from)
     }
 
-    fn refresh(&mut self, ed_text: &str, version: u64) {
+    /// Finds the matches again if the text or the query changed (the text is only copied then).
+    fn refresh(&mut self, doc: &Doc) {
         let key = (
-            version,
+            doc.version,
             self.query.clone(),
             self.case_sensitive,
             self.regexp,
@@ -83,7 +84,7 @@ impl Search {
             return;
         }
         self.matches = find_all(
-            ed_text,
+            &doc.text(),
             &self.query,
             self.case_sensitive,
             self.regexp,
@@ -144,7 +145,7 @@ pub fn find_all(
 /// Mod-g / Enter: selects the next match after the selection (wrapping around); Shift goes back.
 pub fn find_next(ed: &mut Editor, forward: bool) {
     let Some(s) = ed.search.as_mut() else { return };
-    s.refresh(&ed.doc.text(), ed.doc.version);
+    s.refresh(&ed.doc);
     if s.matches.is_empty() {
         return;
     }
@@ -170,11 +171,10 @@ pub fn find_next(ed: &mut Editor, forward: bool) {
 
 /// Mod-Shift-l / "all": selects every match.
 pub fn select_all_matches(ed: &mut Editor) {
-    let text = ed.doc.text();
     // Without a search open, the main selection is what to look for (selectSelectionMatches).
     let matches = match ed.search.as_mut() {
         Some(s) => {
-            s.refresh(&text, ed.doc.version);
+            s.refresh(&ed.doc);
             s.matches.clone()
         }
         None => {
@@ -182,7 +182,7 @@ pub fn select_all_matches(ed: &mut Editor) {
             if sel.is_empty() {
                 return;
             }
-            find_all(&text, &sel, true, false, false)
+            find_all(&ed.doc.text(), &sel, true, false, false)
         }
     };
     if matches.is_empty() {
@@ -195,7 +195,7 @@ pub fn select_all_matches(ed: &mut Editor) {
 /// "replace": the current match (if selected) becomes the replacement, then the next one is selected.
 fn replace_next(ed: &mut Editor) {
     let Some(s) = ed.search.as_mut() else { return };
-    s.refresh(&ed.doc.text(), ed.doc.version);
+    s.refresh(&ed.doc);
     let main = ed.doc.selection.main();
     let replacement = s.replace.clone();
     if s.matches.contains(&(main.from(), main.to())) {
@@ -213,7 +213,7 @@ fn replace_next(ed: &mut Editor) {
 
 fn replace_all(ed: &mut Editor) {
     let Some(s) = ed.search.as_mut() else { return };
-    s.refresh(&ed.doc.text(), ed.doc.version);
+    s.refresh(&ed.doc);
     if s.matches.is_empty() {
         return;
     }
@@ -394,8 +394,6 @@ pub fn panel(ui: &mut Ui, p: &Palette, ed: &mut Editor, area: Rect, id: egui::Id
     );
     let ui = &mut child;
     ui.spacing_mut().item_spacing = vec2(0.6 * size * 0.7, 3.0);
-    let text = ed.doc.text();
-    let version = ed.doc.version;
     let lines = ed.doc.line_count();
     let current_line = ed.cursor_line();
     let mut act: Option<&str> = None;
@@ -420,7 +418,7 @@ pub fn panel(ui: &mut Ui, p: &Palette, ed: &mut Editor, area: Rect, id: egui::Id
                 }
             });
         } else {
-            s.refresh(&text, version);
+            s.refresh(&ed.doc);
             ui.horizontal(|ui| {
                 let r = cm_field(ui, p, &mut s.query, "Find", size, 140.0);
                 if s.focus_query {

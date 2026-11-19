@@ -982,6 +982,16 @@ pub fn show(
             }
         }
 
+        // The worst problem of each line, found once (not once per line drawn).
+        let mut worst_of: HashMap<usize, Severity> = HashMap::new();
+        for pr in &ed.problems {
+            let w = worst_of
+                .entry(ed.doc.line_of(pr.from))
+                .or_insert(pr.severity);
+            if (pr.severity as u8) < (*w as u8) {
+                *w = pr.severity;
+            }
+        }
         #[allow(clippy::needless_range_loop)] // n is also the line number.
         for n in first..last {
             if ed.heights[n] == 0.0 {
@@ -1231,13 +1241,7 @@ pub fn show(
                 }
             }
             // .cm-lint-marker in the gutter, the worst problem of the line.
-            if let Some(worst) = ed
-                .problems
-                .iter()
-                .filter(|pr| ed.doc.line_of(pr.from) == n)
-                .map(|pr| pr.severity)
-                .min_by_key(|s| *s as u8)
-            {
+            if let Some(&worst) = worst_of.get(&n) {
                 let r = Rect::from_center_size(
                     pos2(
                         gutter.left() + numbers_w + LINT_EM * em / 2.0,
@@ -3442,6 +3446,7 @@ mod tests {
                     "A paragraph long enough to wrap around the editor. ".repeat(4)
                 ),
                 6 => format!("$x_{i} = \\frac{{a}}{{b}}$ % note\n"),
+                8 => "\\begin{itemize}\\item a\\end{itemize}\n".to_owned(),
                 _ => format!("Line {i} of text.\n"),
             })
             .collect();
@@ -3466,6 +3471,24 @@ mod tests {
             })
             .collect();
         typing.sort();
+        // A command being typed (the suggestions list), then an environment's name (its \end follows).
+        let mut commands: Vec<_> = (0..10)
+            .map(|_| {
+                h.get_by_label("Editor").type_text("\\s");
+                frame(&mut h)
+            })
+            .collect();
+        commands.sort();
+        let env = h.state().doc.line_start(10_008) + "\\begin{item".len();
+        h.state_mut().doc.selection = Selection::cursor(env);
+        h.run();
+        let mut renaming: Vec<_> = (0..10)
+            .map(|_| {
+                h.get_by_label("Editor").type_text("z");
+                frame(&mut h)
+            })
+            .collect();
+        renaming.sort();
         let mut resizing: Vec<_> = (0..10)
             .map(|i| {
                 h.set_size(egui::vec2(900.0 - 20.0 * i as f32, 700.0));
@@ -3481,8 +3504,22 @@ mod tests {
             ms(resizing[5]),
             ms(resizing[9])
         );
+        eprintln!(
+            "20k lines: a command median {:.1} ms; an environment's name median {:.1} ms",
+            ms(commands[5]),
+            ms(renaming[5])
+        );
+        assert!(
+            h.state()
+                .doc
+                .line(10_008)
+                .ends_with("\\end{itemzzzzzzzzzzize}"),
+            "the \\end followed"
+        );
         assert!(h.state().doc.line(10_000).starts_with("xxx"));
         assert!(ms(typing[15]) < TYPING_MS, "typing: {typing:?}");
+        assert!(ms(commands[5]) < TYPING_MS, "commands: {commands:?}");
+        assert!(ms(renaming[5]) < TYPING_MS, "renaming: {renaming:?}");
         assert!(ms(resizing[5]) < RESIZING_MS, "resizing: {resizing:?}");
     }
 

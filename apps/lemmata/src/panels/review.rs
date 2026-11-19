@@ -104,39 +104,41 @@ fn radix36(mut n: u64) -> String {
 /// Where a thread's quote is in `text` now (chars): the copy nearest its last known line; a quote
 /// that's gone falls back to its line, if the file still has it.
 pub fn locate(text: &str, line: usize, quote: &str) -> Option<(usize, usize, usize)> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut starts = vec![0usize];
-    for (i, c) in chars.iter().enumerate() {
-        if *c == '\n' {
-            starts.push(i + 1);
-        }
-    }
-    let line_of = |pos: usize| starts.partition_point(|&s| s <= pos);
+    // Asked again at every key while a file has comments: no copy of the text, and the
+    // standard library's search instead of a comparison at every char.
     if !quote.is_empty() {
-        let q: Vec<char> = quote.chars().collect();
-        let mut best: Option<usize> = None;
-        for at in 0..chars.len().saturating_sub(q.len() - 1) {
-            if chars[at..at + q.len()] == q[..] {
-                let d = |p: usize| (line_of(p) as isize - line as isize).abs();
-                if best.is_none_or(|b| d(at) < d(b)) {
-                    best = Some(at);
-                }
+        let len = quote.chars().count();
+        let (mut best, mut seen, mut lines, mut chars) = (None, 0, 1, 0);
+        let mut from = 0;
+        while let Some(i) = text[from..].find(quote) {
+            let at = from + i;
+            lines += text.as_bytes()[seen..at]
+                .iter()
+                .filter(|&&b| b == b'\n')
+                .count();
+            chars += text[seen..at].chars().count();
+            seen = at;
+            // The nearest copy to its line, the first on a tie; overlapping copies count.
+            if best.is_none_or(|(_, _, l): (usize, usize, usize)| {
+                lines.abs_diff(line) < l.abs_diff(line)
+            }) {
+                best = Some((chars, chars + len, lines));
             }
+            from = at + text[at..].chars().next().map_or(1, char::len_utf8);
         }
-        if let Some(b) = best {
-            return Some((b, b + q.len(), line_of(b)));
+        if best.is_some() {
+            return best;
         }
     }
-    if line > starts.len() {
-        return None;
+    let mut start = 0;
+    for (n, l) in text.split('\n').enumerate() {
+        let len = l.chars().count();
+        if n + 1 == line {
+            return Some((start, start + len, line));
+        }
+        start += len + 1;
     }
-    let from = starts[line - 1];
-    let end = if line < starts.len() {
-        starts[line] - 1
-    } else {
-        chars.len()
-    };
-    Some((from, end.max(from), line))
+    None
 }
 
 /// What the panel asks of the workspace.
@@ -363,5 +365,9 @@ mod tests {
         assert_eq!(locate(text, 2, "vanished"), Some((4, 7, 2)));
         assert_eq!(locate(text, 3, ""), Some((8, 13, 3)));
         assert_eq!(locate(text, 9, ""), None);
+        assert_eq!(locate(text, 0, ""), None);
+        // Overlapping copies (they share the middle ä), in chars, not bytes.
+        assert_eq!(locate("ää\nä\nä", 2, "ä\nä"), Some((3, 6, 2)));
+        assert_eq!(locate("ää\nä\nä", 1, "ä\nä"), Some((1, 4, 1)));
     }
 }

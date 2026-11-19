@@ -5,7 +5,7 @@
 use super::buffer::{Change, ChangeSet, Doc, EditKind, Range, Selection};
 use super::commands::{Indent, comment_start};
 use regex::Regex;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 static TOKEN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\\(begin|end)\{([^{}\n]*)\}").unwrap());
@@ -25,18 +25,42 @@ pub struct Token {
 }
 
 /// All `\begin`/`\end` tokens, paired by nesting. Commented parts are skipped.
-pub fn tokens(d: &Doc) -> Vec<Token> {
+pub fn tokens(d: &Doc) -> Arc<Vec<Token>> {
+    let mut cache = d.env_tokens.borrow_mut();
+    match &*cache {
+        Some((v, t)) if *v == d.version => t.clone(),
+        _ => {
+            let t = Arc::new(scan(d));
+            *cache = Some((d.version, t.clone()));
+            t
+        }
+    }
+}
+
+fn scan(d: &Doc) -> Vec<Token> {
     let mut out: Vec<Token> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
-    for n in 0..d.line_count() {
-        let line = d.line(n);
-        if !line.contains('\\') {
+    // Typed at every key near a token, in thesis-sized files: lines are borrowed from the rope,
+    // and only those that can hold a token are looked at.
+    let mut next = 0;
+    for slice in d.rope.lines() {
+        let start = next;
+        next += slice.len_chars();
+        let owned;
+        let line = match slice.as_str() {
+            Some(l) => l,
+            None => {
+                owned = slice.to_string();
+                &owned
+            }
+        };
+        if !line.contains("\\begin") && !line.contains("\\end") {
             continue;
         }
+        let line = line.trim_end_matches(['\n', '\r']);
         let comment =
-            comment_start(&line).map(|c| line.char_indices().nth(c).map_or(line.len(), |(b, _)| b));
-        let start = d.line_start(n);
-        for m in TOKEN.captures_iter(&line) {
+            comment_start(line).map(|c| line.char_indices().nth(c).map_or(line.len(), |(b, _)| b));
+        for m in TOKEN.captures_iter(line) {
             let whole = m.get(0).unwrap();
             if comment.is_some_and(|c| whole.start() >= c) {
                 break;
@@ -140,7 +164,7 @@ pub fn close_environment(d: &mut Doc, indent: Indent) -> bool {
 /// The `\begin{x}` / `\end{x}` spans (backslash to closing brace) that have no partner.
 pub fn unmatched(d: &Doc) -> Vec<(usize, usize)> {
     tokens(d)
-        .into_iter()
+        .iter()
         .filter(|t| t.partner.is_none())
         .map(|t| (t.from - if t.begin { 7 } else { 5 }, t.to + 1))
         .collect()

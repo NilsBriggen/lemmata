@@ -1371,16 +1371,16 @@ mod tests {
         view.pages = vec![vec2(600.0, 800.0)];
         view.shown = 1;
         view.sent = 1;
-        PDF_PAGE_TEXT_CALLS.store(0, Ordering::Relaxed);
+        PDF_PAGE_TEXT_CALLS.with(|c| c.store(0, Ordering::Relaxed));
         decorate(&mut view, 1, 0, "hit");
         view.receive(&ctx);
-        assert_eq!(PDF_PAGE_TEXT_CALLS.load(Ordering::Relaxed), 0);
+        assert_eq!(PDF_PAGE_TEXT_CALLS.with(|c| c.load(Ordering::Relaxed)), 0);
         assert!(view.search_text.is_empty());
         view.search("hit", false);
         view.clear_search();
         decorate(&mut view, 1, 0, "hit");
         view.receive(&ctx);
-        assert_eq!(PDF_PAGE_TEXT_CALLS.load(Ordering::Relaxed), 0);
+        assert_eq!(PDF_PAGE_TEXT_CALLS.with(|c| c.load(Ordering::Relaxed)), 0);
         assert!(view.search_text.is_empty());
     }
 
@@ -1401,11 +1401,11 @@ mod tests {
             decorate(&mut view, 1, page, "other");
             view.receive(&ctx);
         }
-        PDF_PAGE_TEXT_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+        PDF_PAGE_TEXT_CALLS.with(|c| c.store(0, std::sync::atomic::Ordering::Relaxed));
         view.search("hit", false);
         view.search("hit", false);
         assert_eq!(
-            PDF_PAGE_TEXT_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+            PDF_PAGE_TEXT_CALLS.with(|c| c.load(std::sync::atomic::Ordering::Relaxed)),
             0
         );
     }

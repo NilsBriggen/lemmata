@@ -209,7 +209,20 @@ pub const SHORTCUTS: &[Shortcut] = &[
 
 /// Keys the user chose instead of the default (Preferences → the shortcut sheet), by id. An
 /// empty spec turns a shortcut off.
-static CHOSEN: std::sync::RwLock<Vec<(&'static str, String)>> = std::sync::RwLock::new(Vec::new());
+type Chosen = std::sync::RwLock<Vec<(&'static str, String)>>;
+
+#[cfg(not(test))]
+fn chosen_keys() -> &'static Chosen {
+    static CHOSEN: Chosen = std::sync::RwLock::new(Vec::new());
+    &CHOSEN
+}
+
+/// One per test thread: tests that load settings run side by side.
+#[cfg(test)]
+fn chosen_keys() -> &'static Chosen {
+    thread_local!(static CHOSEN: &'static Chosen = Box::leak(Box::default()));
+    CHOSEN.with(|c| *c)
+}
 
 /// Shortcuts whose keys come from the system (copy, cut, paste) or from arrow combinations the
 /// editor handles together: shown, not changeable.
@@ -237,13 +250,13 @@ pub fn choose(chosen: &std::collections::BTreeMap<String, String>) {
             (spec.is_empty() || parse(spec).is_some()).then(|| (s.id, spec.clone()))
         })
         .collect();
-    if let Ok(mut c) = CHOSEN.write() {
+    if let Ok(mut c) = chosen_keys().write() {
         *c = list;
     }
 }
 
 fn chosen(id: &str) -> Option<String> {
-    CHOSEN
+    chosen_keys()
         .read()
         .ok()?
         .iter()

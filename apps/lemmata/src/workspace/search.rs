@@ -577,8 +577,6 @@ impl Workspace {
                         p.chrome_ink,
                     );
                     for m in &f.matches {
-                        let key = (f.path.clone(), m.line);
-                        let off = s.show_replace && s.excluded.contains(&key);
                         let two = s.show_replace && m.replaced.is_some();
                         let (r, row) = ui.allocate_exact_size(
                             vec2(w, if two { 40.0 } else { 23.0 }),
@@ -591,6 +589,13 @@ impl Workspace {
                                 format!("{}:{} {}", f.path, m.line, m.text.trim()),
                             )
                         });
+                        // Up to 2000 hits: only the rows in view are laid out and drawn.
+                        // (A screen reader can still click one that isn't.)
+                        if !ui.is_rect_visible(r) && !row.clicked() {
+                            continue;
+                        }
+                        let key = (f.path.clone(), m.line);
+                        let off = s.show_replace && s.excluded.contains(&key);
                         let fade = |c: Color32| if off { c.gamma_multiply(0.45) } else { c };
                         let mut x = r.left() + 14.0;
                         if s.show_replace {

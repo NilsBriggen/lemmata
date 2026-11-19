@@ -25,8 +25,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(test)]
-pub(crate) static PDF_PAGE_TEXT_CALLS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    /// Per test thread, so tests running side by side don't count each other's calls.
+    pub(crate) static PDF_PAGE_TEXT_CALLS: std::sync::atomic::AtomicUsize =
+        const { std::sync::atomic::AtomicUsize::new(0) };
+}
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 /// Where a link or bookmark goes.
@@ -834,7 +837,7 @@ fn glyphs(page: &Page<'_>) -> Vec<Glyph> {
 /// char of it the glyph it came from (None for an inferred space).
 pub fn page_text(glyphs: &[Glyph]) -> (String, Vec<Option<usize>>) {
     #[cfg(test)]
-    PDF_PAGE_TEXT_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    PDF_PAGE_TEXT_CALLS.with(|c| c.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     let mut s = String::new();
     let mut map = Vec::new();
     let mut prev: Option<Rect> = None;

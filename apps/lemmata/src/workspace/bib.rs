@@ -111,6 +111,8 @@ pub struct CitePicker {
     zotero: Option<Status>,
     search_id: Option<egui::Id>,
     scroll: bool,
+    /// The query and the entries it matched: asked several times a frame.
+    found: std::cell::RefCell<Option<(String, Vec<usize>)>>,
 }
 
 enum Cite {
@@ -123,16 +125,23 @@ enum Cite {
 
 impl CitePicker {
     fn results(&self) -> Vec<&Entry> {
-        let terms = terms(&self.query);
-        self.entries
-            .iter()
-            .filter(|e| {
-                matches(
-                    &format!("{} {} {} {}", e.key, e.authors, e.title, e.year),
-                    &terms,
-                )
-            })
-            .collect()
+        let mut found = self.found.borrow_mut();
+        if found.as_ref().is_none_or(|(q, _)| *q != self.query) {
+            let terms = terms(&self.query);
+            let hits = (0..self.entries.len())
+                .filter(|&i| {
+                    let e = &self.entries[i];
+                    matches(
+                        &format!("{} {} {} {}", e.key, e.authors, e.title, e.year),
+                        &terms,
+                    )
+                })
+                .collect();
+            *found = Some((self.query.clone(), hits));
+        }
+        found.as_ref().map_or_else(Vec::new, |(_, hits)| {
+            hits.iter().map(|&i| &self.entries[i]).collect()
+        })
     }
 
     fn toggle(&mut self, key: &str) {
@@ -633,6 +642,10 @@ pub struct BibManager {
     confirming: String,
     renaming: Option<(String, String)>,
     expanded: HashSet<String>,
+    /// Each row's height when last drawn: a row out of view takes that space without being built.
+    heights: std::collections::HashMap<String, f32>,
+    /// The rows for (query, show, sort), until the library is read again.
+    rows: Option<((String, String, String), Vec<usize>)>,
 }
 
 enum Manage {
@@ -760,24 +773,32 @@ impl BibManager {
             ui.label(RichText::new(&self.error).color(p.error));
         }
         let warnings = warnings_by_entry(&lib.duplicates);
-        let terms = terms(&self.query);
-        let mut rows: Vec<usize> = (0..n)
-            .filter(|&i| {
-                let e = &lib.entries[i];
-                matches(
-                    &format!(
-                        "{} {} {} {} {}",
-                        e.entry.key, e.entry.authors, e.entry.title, e.entry.year, e.doi
-                    ),
-                    &terms,
-                ) && match self.show.as_str() {
-                    "duplicates" => warnings.contains_key(&i),
-                    "uncited" => !e.cited,
-                    _ => true,
-                }
-            })
-            .collect();
-        sort_entries(&lib.entries, &mut rows, &self.sort);
+        let want = (self.query.clone(), self.show.clone(), self.sort.clone());
+        let rows = match self.rows.take() {
+            Some((k, rows)) if k == want => rows,
+            _ => {
+                let terms = terms(&self.query);
+                let mut rows: Vec<usize> = (0..n)
+                    .filter(|&i| {
+                        let e = &lib.entries[i];
+                        matches(
+                            &format!(
+                                "{} {} {} {} {}",
+                                e.entry.key, e.entry.authors, e.entry.title, e.entry.year, e.doi
+                            ),
+                            &terms,
+                        ) && match self.show.as_str() {
+                            "duplicates" => warnings.contains_key(&i),
+                            "uncited" => !e.cited,
+                            _ => true,
+                        }
+                    })
+                    .collect();
+                sort_entries(&lib.entries, &mut rows, &self.sort);
+                rows
+            }
+        };
+        self.rows = Some((want, rows.clone()));
         let max_h = ui.ctx().content_rect().height() * 0.52;
         list_frame(ui, p, max_h, |ui| {
             egui::ScrollArea::vertical().id_salt("bib-list").max_height(max_h).min_scrolled_height(80.0f32.min(max_h)).auto_shrink([false, true]).show(ui, |ui| {
@@ -800,6 +821,17 @@ impl BibManager {
                     let e = &lib.entries[i];
                     let id = entry_id(e);
                     let ws = warnings.get(&i).map(Vec::as_slice).unwrap_or(&[]);
+                    // A library of thousands: a row out of view (and not being edited) isn't laid out.
+                    let quiet = !self.expanded.contains(&id)
+                        && self.confirming != id
+                        && self.renaming.as_ref().is_none_or(|(k, _)| *k != id);
+                    if quiet && let Some(&h) = self.heights.get(&id) {
+                        let w = ui.available_width();
+                        if !ui.is_rect_visible(Rect::from_min_size(ui.cursor().min, vec2(w, h))) {
+                            ui.allocate_space(vec2(w, h));
+                            continue;
+                        }
+                    }
                     let r = egui::Frame::new().inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal_top(|ui| {
@@ -907,6 +939,7 @@ impl BibManager {
                             });
                         });
                     });
+                    self.heights.insert(id.clone(), r.response.rect.height());
                     if k + 1 < rows.len() {
                         let b = r.response.rect;
                         ui.painter().hline(b.x_range(), b.bottom() - 0.5, Stroke::new(1.0, p.border));
@@ -978,6 +1011,7 @@ impl Workspace {
                             c.add_file = first.clone();
                         }
                         c.entries = b.entries;
+                        c.found = Default::default();
                         c.files = b.files;
                     }
                     Err(e) => c.add_msg = Some((false, e)),
@@ -1173,6 +1207,8 @@ impl Workspace {
             confirming: String::new(),
             renaming: None,
             expanded: HashSet::new(),
+            heights: Default::default(),
+            rows: None,
         });
         // Line numbers must match what is on disk.
         self.after_bib_saved(backend, settings, |ws, b| ws.load_library(b));
@@ -1187,7 +1223,10 @@ impl Workspace {
                 m.loading = false;
                 m.busy = false;
                 match r {
-                    Ok(l) => m.lib = Some(l),
+                    Ok(l) => {
+                        m.lib = Some(l);
+                        m.rows = None;
+                    }
                     Err(e) => m.error = e,
                 }
             },
