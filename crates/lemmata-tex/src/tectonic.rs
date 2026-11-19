@@ -196,6 +196,9 @@ pub async fn build(
     if !exe.exists() {
         return Err(Error::NoTectonic);
     }
+    crate::build::refuse_unsafe(project)?;
+    let restricted = crate::build::restrict(project);
+    let project = restricted.as_ref().unwrap_or(project);
     let started = Instant::now();
     if !force && let Some(o) = cached_outcome(project, started) {
         return Ok(o);

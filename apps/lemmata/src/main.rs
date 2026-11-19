@@ -28,6 +28,15 @@ mod workspace;
 mod writing;
 
 fn main() -> eframe::Result {
+    // Started as texlab's stand-in latexmk for a restricted project (lemmata_shell::lsp::latexmk_stub).
+    #[cfg(windows)]
+    if std::env::current_exe()
+        .ok()
+        .and_then(|e| e.file_stem().map(|s| s.eq_ignore_ascii_case("latexmk")))
+        .unwrap_or(false)
+    {
+        std::process::exit(1);
+    }
     // A second launch hands its file or link to the running Lemmata and quits. Not in debug
     // builds, so a test build can run next to an installed Lemmata.
     #[cfg(not(debug_assertions))]

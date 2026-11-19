@@ -58,6 +58,9 @@ impl Shell {
 
     /// Files that differ from the last commit in the user's own git repository.
     pub fn git_status(&self) -> CmdResult<Vec<lemmata_history::FileStatus>> {
+        if !self.trusted() {
+            return Err(crate::NEEDS_TRUST_GIT.into());
+        }
         Ok(lemmata_history::working_status(&root(self)?))
     }
 
@@ -109,6 +112,10 @@ impl Shell {
     /// Returns the PDF's path.
     pub fn history_latexdiff(&self, id: String) -> CmdResult<PathBuf> {
         let id = snapshot_id(&id)?.to_string();
+        // latexmk builds shell command lines from names the document chooses.
+        if !self.trusted() {
+            return Err("The PDF of the changes is built with latexmk, which restricted projects don't run. Trust the project in its settings to use it.".into());
+        }
         let project = self
             .project
             .lock_safe()

@@ -540,6 +540,10 @@ impl Workspace {
 
     /// The tree's markers and the toolbar's count, a moment after files change.
     pub fn refresh_git_status(&mut self, backend: &Backend) {
+        // A restricted project runs no git: its repository could bring hooks and filters.
+        if !self.trusted {
+            return;
+        }
         if self.git.status_pending {
             self.git.status_dirty = true;
             return;

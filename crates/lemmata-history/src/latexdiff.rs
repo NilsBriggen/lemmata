@@ -271,6 +271,8 @@ fn diff_and_compile(
             "-file-line-error",
             "-f",
             "-no-shell-escape",
+            // The project's latexmkrc is a Perl program; the diff never needs it.
+            "-norc",
         ])
         .arg(format!("-outdir={}", work.display()))
         .args(&tools.extra_args)

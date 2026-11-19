@@ -301,6 +301,7 @@ fn a_missing_package_is_named_and_the_logs_open() {
             .join("../../tests/fixtures/missing-package"),
         &other,
     );
+    crate::app::tests::trust(&mut h, &other);
     h.state_mut()
         .open_project(other.to_string_lossy().into_owned());
     wait_for(&mut h, "the other project", |h| {
@@ -675,6 +676,7 @@ fn a_very_large_image_is_drawn_after_another_large_one() {
         "\\documentclass{article}\n\\usepackage{graphicx}\n\\begin{document}\n\\noindent\\includegraphics[width=\\linewidth]{wide.png}\n\\newpage\n\\noindent\\includegraphics[width=\\linewidth]{tall.png}\n\\end{document}\n",
     )
     .unwrap();
+    crate::app::tests::trust(&mut h, &big);
     h.state_mut()
         .open_project(big.to_string_lossy().into_owned());
     wait_for(&mut h, "the other project", |h| {
@@ -804,6 +806,7 @@ fn a_deleted_file_comes_back_from_recently_deleted_after_reopening() {
     wait_for(&mut h, "the file deleted", |_| !gone.exists());
     // Reopening forgets the undo log, like a restart.
     let before = ws(&h).project;
+    crate::app::tests::trust(&mut h, &project);
     h.state_mut()
         .open_project(project.to_string_lossy().into_owned());
     wait_for(&mut h, "the project again", |h| {

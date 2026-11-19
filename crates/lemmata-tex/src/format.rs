@@ -2,7 +2,7 @@
 //! pdflatex rebuild doesn't load every package again. A format is made in the background after a
 //! good build, and used only once one run with it gave byte for byte the output of one without it.
 
-use crate::build::{Status, pass_args, run_step};
+use crate::build::{Status, pass_args, run_step, texformats};
 use lemmata_project::{Engine, Project};
 use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
@@ -333,6 +333,9 @@ async fn validate(
         ))
         .env("SOURCE_DATE_EPOCH", &epoch)
         .env("FORCE_SOURCE_DATE", "1");
+        if let Some(f) = fmt {
+            cmd.env("TEXFORMATS", texformats(f));
+        }
         run(cmd, limit)
     };
     let (plain, with_fmt) = tokio::join!(run_side("plain", None), run_side("fmt", Some(&fmt)));

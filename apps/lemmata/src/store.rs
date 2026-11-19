@@ -79,8 +79,11 @@ pub struct Settings {
     pub trash_mode: String,
     pub snippets: Vec<Snippet>,
     pub first_run_done: bool,
-    /// Projects (by folder) whose lemmata.toml may turn on shell escape: the user allowed it.
-    pub shell_escape_projects: Vec<String>,
+    /// Project folders the user trusts: they may run programs (a latexmkrc, shell escape when
+    /// their lemmata.toml asks for it, the repository's git hooks).
+    pub trusted_projects: Vec<String>,
+    /// Project folders the user chose to open restricted, so the question isn't asked again.
+    pub restricted_projects: Vec<String>,
     /// "off", "local" or "custom".
     pub grammar: String,
     pub grammar_url: String,
@@ -128,7 +131,8 @@ impl Default for Settings {
             trash_mode: "project".into(),
             snippets: Vec::new(),
             first_run_done: false,
-            shell_escape_projects: Vec::new(),
+            trusted_projects: Vec::new(),
+            restricted_projects: Vec::new(),
             grammar: "off".into(),
             grammar_url: "http://localhost:8081".into(),
             pdf_layout: "single".into(),
@@ -192,6 +196,12 @@ impl Settings {
         all.extend(valid);
         let mut settings: Settings = serde_json::from_value(Value::Object(all)).unwrap_or_default();
         settings.indent = valid_indent(&settings.indent);
+        // Before 3.2 only projects allowed shell escape counted as trusted; they still are.
+        if let Some(Value::Array(old)) = saved.get("shellEscapeProjects") {
+            for root in old.iter().filter_map(Value::as_str) {
+                settings.set_trust(root, Some(true));
+            }
+        }
         crate::shortcuts::choose(&settings.keybindings);
         settings
     }
@@ -202,6 +212,28 @@ impl Settings {
             &dirs.config.join("settings.json"),
             &serde_json::json!({ "settings": self }),
         );
+    }
+
+    /// Whether the user trusts the project in `root`: None when they haven't been asked.
+    pub fn trust_of(&self, root: &str) -> Option<bool> {
+        if self.trusted_projects.iter().any(|r| r == root) {
+            Some(true)
+        } else if self.restricted_projects.iter().any(|r| r == root) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// Records the answer for `root`; None forgets it (the project was trashed or forgotten).
+    pub fn set_trust(&mut self, root: &str, trusted: Option<bool>) {
+        self.trusted_projects.retain(|r| r != root);
+        self.restricted_projects.retain(|r| r != root);
+        match trusted {
+            Some(true) => self.trusted_projects.push(root.to_string()),
+            Some(false) => self.restricted_projects.push(root.to_string()),
+            None => {}
+        }
     }
 
     /// The colour scheme this setting asks for, given the system's.
@@ -506,15 +538,29 @@ mod tests {
 
     #[test]
     fn keeps_settings_of_the_right_type_and_drops_the_rest() {
-        let saved = json!({ "fontSize": 15, "theme": 3, "snippets": "x", "texDir": null, "layout": "pdf", "unknown": 1, "shellEscapeProjects": ["/p"] });
+        let saved = json!({ "fontSize": 15, "theme": 3, "snippets": "x", "texDir": null, "layout": "pdf", "unknown": 1, "trustedProjects": ["/p"] });
         let got = valid_settings(saved.as_object().unwrap());
         assert_eq!(
             Value::Object(got),
-            json!({ "fontSize": 15, "texDir": null, "layout": "pdf", "shellEscapeProjects": ["/p"] })
+            json!({ "fontSize": 15, "texDir": null, "layout": "pdf", "trustedProjects": ["/p"] })
         );
         let got = valid_settings(json!({ "texDir": "/opt/tex" }).as_object().unwrap());
         assert_eq!(Value::Object(got), json!({ "texDir": "/opt/tex" }));
-        assert!(Settings::default().shell_escape_projects.is_empty());
+        assert!(Settings::default().trusted_projects.is_empty());
+    }
+
+    #[test]
+    fn projects_allowed_shell_escape_before_3_2_stay_trusted() {
+        let saved = json!({ "shellEscapeProjects": ["/p", 3] });
+        let s = Settings::from_saved(saved.as_object().unwrap());
+        assert_eq!(s.trust_of("/p"), Some(true));
+        assert_eq!(s.trust_of("/q"), None);
+        let mut s = s;
+        s.set_trust("/p", Some(false));
+        assert_eq!(s.trust_of("/p"), Some(false));
+        assert!(s.trusted_projects.is_empty());
+        s.set_trust("/p", None);
+        assert_eq!(s.trust_of("/p"), None);
     }
 
     #[test]

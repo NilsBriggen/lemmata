@@ -21,9 +21,16 @@ use std::path::{Path, PathBuf};
                   --json prints machine-readable output."
 )]
 struct Cli {
+    /// Let the project run programs: its latexmkrc, and shell escape when its lemmata.toml asks
+    /// for it. Only for projects whose authors you trust.
+    #[arg(long, global = true)]
+    trust: bool,
     #[command(subcommand)]
     command: Cmd,
 }
+
+/// `--trust` was given.
+static TRUST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Subcommand)]
 enum Cmd {
@@ -146,7 +153,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(dir) = app_tectonic_dir() {
         lemmata_tex::tectonic::set_install_dir(dir);
     }
-    let ok = match Cli::parse().command {
+    let cli = Cli::parse();
+    TRUST.store(cli.trust, std::sync::atomic::Ordering::Relaxed);
+    let ok = match cli.command {
         Cmd::Doctor => return doctor(),
         Cmd::Build { dir, json } => build(&dir, json).await?.status == Status::Success,
         Cmd::Watch { dir, json } => return watch(dir, json).await,
@@ -257,9 +266,11 @@ async fn watch(dir: PathBuf, json: bool) -> anyhow::Result<()> {
     })?;
     debouncer.watcher().watch(&root, RecursiveMode::Recursive)?;
 
-    // A failing build isn't fatal here: the next edit may fix it.
+    // A failing build isn't fatal here: the next edit (to lemmata.toml, say) may fix it.
     let mut last_build = std::time::SystemTime::now();
-    build(&dir, json).await?;
+    if let Err(e) = build(&dir, json).await {
+        eprintln!("{e:#}");
+    }
     eprintln!(
         "Watching {} for changes. Press Ctrl+C to stop.",
         root.display()
@@ -275,7 +286,9 @@ async fn watch(dir: PathBuf, json: bool) -> anyhow::Result<()> {
         if relevant {
             eprintln!("\nChange detected, rebuilding…");
             last_build = std::time::SystemTime::now();
-            build(&dir, json).await?;
+            if let Err(e) = build(&dir, json).await {
+                eprintln!("{e:#}");
+            }
         }
     }
     Ok(())
@@ -283,9 +296,7 @@ async fn watch(dir: PathBuf, json: bool) -> anyhow::Result<()> {
 
 /// Compiles the project and prints its diagnostics.
 async fn build(dir: &Path, json: bool) -> anyhow::Result<Outcome> {
-    let mut project = Project::open(dir).with_context(|| format!("opening {}", dir.display()))?;
-    // Run from the command line on purpose: the project's latexmkrc applies, as with latexmk.
-    project.trusted = true;
+    let project = Project::open(dir).with_context(|| format!("opening {}", dir.display()))?;
     let outcome = compile(&project).await?;
 
     if json {
@@ -303,6 +314,10 @@ async fn build(dir: &Path, json: bool) -> anyhow::Result<Outcome> {
 /// Builds the project without printing anything: with latexmk, or with Tectonic when the
 /// project asks for it or no TeX is installed (the app's rule).
 async fn compile(project: &Project) -> anyhow::Result<Outcome> {
+    // Like the app: a project runs nothing of its own unless the user says so (--trust).
+    let mut project = project.clone();
+    project.trusted = TRUST.load(std::sync::atomic::Ordering::Relaxed);
+    let project = &project;
     let det = lemmata_tex::detect(&[]);
     if project.config.engine == lemmata_project::Engine::Tectonic
         || (det.tool("latexmk").is_none() && det.tectonic.is_some())

@@ -106,8 +106,6 @@ pub enum NoticeAction {
     PasteAsText(String, usize, String, String),
     /// Undoes the last file operation in the tree.
     UndoFiles,
-    /// Lets this project's latexmkrc run (and shell escape, when it asks for it).
-    TrustProject,
 }
 
 impl NoticeAction {
@@ -122,7 +120,6 @@ impl NoticeAction {
             NoticeAction::LinkZotero => "Add it",
             NoticeAction::PasteAsText(..) => "Paste as text instead",
             NoticeAction::UndoFiles => "Undo",
-            NoticeAction::TrustProject => "Use it",
         }
     }
 }
@@ -223,8 +220,8 @@ pub struct Workspace {
     pub table: Option<insert::TableDialog>,
     /// Run once every write in flight has finished (changes on disk that must not lose edits).
     pub after_writes: Vec<AfterWrites>,
-    /// "Use it" on the latexmkrc notice: the next frame puts the project on the trust list.
-    pub trust_requested: bool,
+    /// The user trusts the project: it may run programs (see `Settings::trusted_projects`).
+    pub trusted: bool,
     /// `Backend::project` for this project: results tagged otherwise are dropped.
     pub project: u64,
     /// Spelling and grammar, shared by the editors.
@@ -297,6 +294,7 @@ impl Workspace {
         backend: &Backend,
         tex_ready: bool,
         project: u64,
+        trusted: bool,
     ) -> Self {
         let info = analysis.info.clone();
         let root = info.root.to_string_lossy().into_owned();
@@ -361,7 +359,7 @@ impl Workspace {
             shortcut_sheet: None,
             table: None,
             after_writes: Vec::new(),
-            trust_requested: false,
+            trusted,
             project,
             checks: crate::writing::Checks::default(),
             spell_asked: None,
@@ -524,6 +522,25 @@ impl Workspace {
         if packages {
             self.spawn(backend, |shell| Msg::Packages(shell.package_names()));
         }
+    }
+
+    /// Trusts the project, or takes the trust back: remembered, then texlab starts again (with or
+    /// without the stand-in latexmk) and the document is built again.
+    pub fn set_trusted(&mut self, backend: &Backend, settings: &mut Settings, trusted: bool) {
+        settings.set_trust(&self.root, Some(trusted));
+        self.trusted = trusted;
+        let project = self.project;
+        self.lsp.state = crate::lsp::State::Starting;
+        backend.spawn_async(move |shell| async move {
+            shell.set_trusted(trusted);
+            Msg::Project(project, Box::new(Msg::LspStarted(shell.lsp_start().await)))
+        });
+        if trusted {
+            self.refresh_git_status(backend);
+        } else {
+            self.git.status.clear();
+        }
+        self.build_soon(false, true);
     }
 
     pub fn refresh_analysis(&mut self, backend: &Backend) {
@@ -1180,7 +1197,7 @@ impl Workspace {
         }
         self.run_autosaves(ui, backend, settings);
         let ctx = ui.ctx().clone();
-        self.poll_build(&ctx, backend, settings);
+        self.poll_build(&ctx, backend);
 
         // The app's own keys come before the editor's; an open dialog keeps them.
         self.tree_keys(&ctx, backend, settings);
@@ -1188,13 +1205,6 @@ impl Workspace {
             self.shortcuts(&ctx, backend, settings, &mut action);
         }
         self.snapshot_timer(backend);
-        if std::mem::take(&mut self.trust_requested)
-            && !settings.shell_escape_projects.contains(&self.root)
-        {
-            settings.shell_escape_projects.push(self.root.clone());
-            action = Some(Action::Settings);
-            self.build_soon(false, true);
-        }
         if !self.writing() && !self.after_writes.is_empty() {
             for then in std::mem::take(&mut self.after_writes) {
                 then(self, backend);

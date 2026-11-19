@@ -32,6 +32,8 @@ pub struct App {
     project: Option<Workspace>,
     /// The latest project open request; older answers are discarded.
     open_generation: u64,
+    /// Whether the project being opened is trusted (the answer `open_project_as` went by).
+    open_trusted: bool,
     open_request: u64,
     /// Startup has decided between the welcome, the last project and the library.
     started: bool,
@@ -86,6 +88,7 @@ enum Dialog {
     Clone(dialogs::Clone),
     Import(dialogs::Import),
     SaveTemplate(dialogs::SaveTemplate),
+    Trust(dialogs::Trust),
 }
 
 fn now_ms() -> f64 {
@@ -158,6 +161,7 @@ impl App {
             no_main_in: None,
             project: None,
             open_generation: 0,
+            open_trusted: false,
             open_request: 0,
             started: false,
             dialog: None,
@@ -214,16 +218,46 @@ impl App {
             .spawn(move |shell| Msg::Tex(shell.tex_status(dir)));
     }
 
+    /// A project Lemmata just made from a template is trusted, unless the template brought something
+    /// that runs programs (a template can be saved from any project).
+    fn trust_if_made_safe(&mut self, dir: &std::path::Path) {
+        if let Ok(p) = lemmata_project::Project::open(dir)
+            && !lemmata_project::runs_programs(&p.root, &p.config)
+        {
+            self.settings
+                .set_trust(&p.root.to_string_lossy(), Some(true));
+            self.settings.save(&self.dirs);
+        }
+    }
+
+    /// Opens the project in `path`, first asking whether to trust it when the user hasn't said.
     fn open_project(&mut self, path: String) {
+        self.open_project_as(path, None);
+    }
+
+    /// `trusted`: the answer, when it is already known (just given, or a project Lemmata made).
+    fn open_project_as(&mut self, path: String, trusted: Option<bool>) {
+        let root = lemmata_project::canonical(std::path::Path::new(&path))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.clone());
+        let Some(trusted) = trusted.or_else(|| self.settings.trust_of(&root)) else {
+            // Nothing of the project is read or run until the user answers.
+            self.dialog = Some(Dialog::Trust(dialogs::Trust { path, root }));
+            return;
+        };
         self.open_error = None;
         self.no_main_in = None;
         let generation = self.backend.next_project();
         self.open_generation = generation;
+        self.open_trusted = trusted;
         let p = path.clone();
         self.backend.spawn(move |shell| {
             Msg::Project(
                 generation,
-                Box::new(Msg::Opened(p.clone(), shell.open_project(generation, p))),
+                Box::new(Msg::Opened(
+                    p.clone(),
+                    shell.open_project(generation, p, trusted),
+                )),
             )
         });
     }
@@ -330,6 +364,7 @@ impl App {
             (Msg::Created(r), Some(Dialog::NewProject(st))) => match r {
                 Ok(path) => {
                     self.dialog = None;
+                    self.trust_if_made_safe(&path);
                     self.added(vec![path.to_string_lossy().into_owned()]);
                 }
                 Err(e) => {
@@ -398,7 +433,7 @@ impl App {
                     Dialog::NewProject(st) => st.parent = dir,
                     Dialog::Clone(st) => st.parent = dir,
                     Dialog::Import(st) => st.parent = dir,
-                    Dialog::SaveTemplate(_) => {}
+                    Dialog::SaveTemplate(_) | Dialog::Trust(_) => {}
                 }
             }
             // A dialog closed since: its answer has nowhere to go.
@@ -426,10 +461,19 @@ impl App {
             Dialog::Clone(st) => dialogs::clone(ctx, &p, st),
             Dialog::Import(st) => dialogs::import(ctx, &p, st),
             Dialog::SaveTemplate(st) => dialogs::save_template(ctx, &p, st),
+            Dialog::Trust(st) => dialogs::trust(ctx, &p, st),
         };
         let Some(action) = action else { return };
         match (action, d) {
             (dialogs::Action::Close, _) => self.dialog = None,
+            (dialogs::Action::Trust(trusted), Dialog::Trust(st)) => {
+                let (path, root) = (st.path.clone(), st.root.clone());
+                self.dialog = None;
+                self.settings.set_trust(&root, Some(trusted));
+                self.settings.save(&self.dirs);
+                self.open_project_as(path, Some(trusted));
+            }
+            (dialogs::Action::Trust(_), _) | (dialogs::Action::Submit, Dialog::Trust(_)) => {}
             (dialogs::Action::ChooseParent, _) => self.backend.pick(Pick::Parent),
             (dialogs::Action::DeleteTemplate(id), _) => {
                 self.backend.spawn(move |shell| {
@@ -587,6 +631,9 @@ impl App {
                 self.groups.save(&self.dirs);
                 self.recents.forget(&path);
                 self.recents.save(&self.dirs);
+                // A project put in the same folder later must be asked about again.
+                self.settings.set_trust(&path, None);
+                self.settings.save(&self.dirs);
             }
             Msg::Trashed(path, Err(e)) => {
                 self.library.deleting = Some(library::Deleting {
@@ -609,7 +656,10 @@ impl App {
                     o.terminal_error = r.err();
                 }
             }
-            Msg::Example(Ok(dir)) => self.open_project(dir.to_string_lossy().into_owned()),
+            Msg::Example(Ok(dir)) => {
+                self.trust_if_made_safe(&dir);
+                self.open_project(dir.to_string_lossy().into_owned());
+            }
             Msg::Example(Err(e)) => self.open_error = Some(e),
             Msg::Event(Event::OpenRequest(r)) => {
                 if !self.settings.first_run_done {
@@ -968,29 +1018,8 @@ impl App {
             &self.backend,
             ready,
             self.open_generation,
+            self.open_trusted,
         );
-        // A project's latexmkrc is a Perl program: it runs only once the user says so.
-        let rc = ["latexmkrc", ".latexmkrc"]
-            .iter()
-            .any(|f| ws.info.root.join(f).is_file());
-        if rc && !self.settings.shell_escape_projects.contains(&ws.root) {
-            ws.notices.push(
-                workspace::Notice::new(
-                    "This project has a latexmkrc, which can run programs on your computer, so builds leave it out. Use it only if you trust the project.",
-                    workspace::Tone::Info,
-                )
-                .action(workspace::NoticeAction::TrustProject),
-            );
-        }
-        if ws.info.config.shell_escape && !self.settings.shell_escape_projects.contains(&ws.root) {
-            ws.notices.push(
-                workspace::Notice::new(
-                    "This project asks to run programs during builds (shell escape). They stay off until you allow them for this project.",
-                    workspace::Tone::Info,
-                )
-                .action(workspace::NoticeAction::TrustProject),
-            );
-        }
         if let Some(file) = self.open_file_after.take() {
             ws.open_requested(&self.backend, &file);
         }
@@ -1064,6 +1093,8 @@ impl App {
                 self.recents.save(&self.dirs);
                 self.groups.forget(&path);
                 self.groups.save(&self.dirs);
+                self.settings.set_trust(&path, None);
+                self.settings.save(&self.dirs);
             }
             A::OpenFolder => self.backend.pick(Pick::ProjectFolder),
             A::Import => self.backend.pick(Pick::OverleafZip),
@@ -1364,13 +1395,14 @@ pub(crate) mod tests {
         let mut recents = Recents::default();
         recents.remember(&project.to_string_lossy(), 1.0);
         recents.save(&d);
-        Settings {
+        let mut settings = Settings {
             first_run_done: true,
             last_seen_version: env!("CARGO_PKG_VERSION").into(),
             tex_dir: Some(tex.to_string_lossy().into_owned()),
             ..Settings::default()
-        }
-        .save(&d);
+        };
+        settings.set_trust(&canonical_str(&project), Some(true));
+        settings.save(&d);
         let mut h = app(tmp.path());
         assert!(h.state().started, "startup must not wait for TeX detection");
         let start = std::time::Instant::now();
@@ -1460,12 +1492,13 @@ pub(crate) mod tests {
         let mut recents = Recents::default();
         recents.remember(&project.to_string_lossy(), 1.0);
         recents.save(&d);
-        Settings {
+        let mut settings = Settings {
             first_run_done: true,
             last_seen_version: env!("CARGO_PKG_VERSION").into(),
             ..Settings::default()
-        }
-        .save(&d);
+        };
+        settings.set_trust(&canonical_str(&project), Some(true));
+        settings.save(&d);
         let mut h = app(tmp);
         wait_for(&mut h, "the project or onboarding", |h| {
             h.query_by_label("Back to all projects").is_some()
@@ -1565,6 +1598,11 @@ pub(crate) mod tests {
             .type_text(&repo.to_string_lossy());
         h.run_steps(2);
         h.get_by_label("Clone").click();
+        // Someone else's repository: asked first, never trusted on its own.
+        wait_for(&mut h, "the trust question", |h| {
+            h.query_by_label("Open restricted").is_some()
+        });
+        h.get_by_label("Open restricted").click();
         wait_for(&mut h, "the cloned project", |h| {
             h.query_by_label("Back to all projects").is_some()
         });
@@ -1605,6 +1643,10 @@ pub(crate) mod tests {
         });
         h.run_steps(3);
         h.get_by_label("Import").click();
+        wait_for(&mut h, "the trust question", |h| {
+            h.query_by_label("Trust").is_some()
+        });
+        h.get_by_label("Trust").click();
         wait_for(&mut h, "the imported project", |h| {
             h.query_by_label("Back to all projects").is_some()
         });
@@ -1654,6 +1696,20 @@ pub(crate) mod tests {
     }
 
     /// The article fixture as the last project, opened by the app; None without TeX.
+    /// A folder as the trust lists key it.
+    pub(crate) fn canonical_str(p: &std::path::Path) -> String {
+        lemmata_project::canonical(p)
+            .map(|c| c.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| p.to_string_lossy().into_owned())
+    }
+
+    /// Trusts `path` before the test opens it: the trust question has its own test.
+    pub(crate) fn trust(h: &mut Harness<'static, App>, path: &std::path::Path) {
+        h.state_mut()
+            .settings
+            .set_trust(&canonical_str(path), Some(true));
+    }
+
     pub(crate) fn in_article(
         tmp: &std::path::Path,
     ) -> Option<(Harness<'static, App>, std::path::PathBuf)> {
@@ -1674,12 +1730,14 @@ pub(crate) mod tests {
         let mut recents = Recents::default();
         recents.remember(&project.to_string_lossy(), 1.0);
         recents.save(&d);
-        Settings {
+        let mut settings = Settings {
             first_run_done: true,
             last_seen_version: env!("CARGO_PKG_VERSION").into(),
             ..settings
-        }
-        .save(&d);
+        };
+        // The fixture is ours: the trust question has its own test.
+        settings.set_trust(&project.to_string_lossy(), Some(true));
+        settings.save(&d);
         let mut h = app(tmp);
         let opened = |h: &Harness<App>| h.query_all_by_label("main.tex").next().is_some();
         wait_for(&mut h, "the project or onboarding", |h| {
@@ -2981,7 +3039,7 @@ pub(crate) mod tests {
                 .is_ok_and(|t| t.contains("shell_escape = true"))
         });
         let root = h.state().project.as_ref().unwrap().root.clone();
-        assert!(h.state().settings.shell_escape_projects.contains(&root));
+        assert_eq!(h.state().settings.trust_of(&root), Some(true));
     }
 
     #[test]
@@ -3382,6 +3440,7 @@ pub(crate) mod tests {
         h.run_steps(2);
         h.get_by_label("Text of main.tex").type_text("% from A");
         h.run_steps(2);
+        trust(&mut h, &other);
         let target = lemmata_shell::open_with::OpenTarget {
             project_root: other,
             file: None,
@@ -3462,6 +3521,8 @@ pub(crate) mod tests {
             }
         };
         let (b, c) = (make("b"), make("c"));
+        trust(&mut h, &b.project_root);
+        trust(&mut h, &c.project_root);
         h.state_mut().open_request = 2;
         let ctx = h.ctx.clone();
         h.state_mut()
@@ -3544,8 +3605,10 @@ pub(crate) mod tests {
         );
     }
 
+    /// Opening a project nobody has answered for asks first, and nothing of it runs meanwhile:
+    /// no build, no texlab, no git. Restricted, its latexmkrc never runs; the answer is kept.
     #[test]
-    fn a_projects_latexmkrc_waits_for_consent() {
+    fn an_unknown_project_asks_before_anything_of_it_runs() {
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("paper");
         std::fs::create_dir_all(&project).unwrap();
@@ -3554,10 +3617,19 @@ pub(crate) mod tests {
             "\\documentclass{article}\n\\begin{document}\nHi\n\\end{document}\n",
         )
         .unwrap();
-        std::fs::write(project.join(".latexmkrc"), "system('touch pwned');").unwrap();
+        let pwned = tmp.path().join("pwned");
+        std::fs::write(
+            project.join(".latexmkrc"),
+            format!("system('touch {}');", pwned.display()),
+        )
+        .unwrap();
+        let root = lemmata_project::canonical(&project)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let d = dirs(tmp.path());
         let mut recents = Recents::default();
-        recents.remember(&project.to_string_lossy(), 1.0);
+        recents.remember(&root, 1.0);
         recents.save(&d);
         Settings {
             first_run_done: true,
@@ -3566,36 +3638,32 @@ pub(crate) mod tests {
         }
         .save(&d);
         let mut h = app(tmp.path());
-        wait_for(&mut h, "the project or onboarding", |h| {
-            h.state().project.is_some() || h.query_by_label("Check again").is_some()
+        wait_for(&mut h, "the question", |h| {
+            h.query_by_label("Open restricted").is_some()
         });
-        if h.state().project.is_none() {
-            return;
+        // Asked, and waiting: nothing is open, so nothing was built or started.
+        h.run_steps(5);
+        assert!(h.state().project.is_none());
+        h.get_by_label("Open restricted").click();
+        wait_for(&mut h, "the project", |h| h.state().project.is_some());
+        assert!(!h.state().project.as_ref().unwrap().trusted);
+        assert_eq!(h.state().settings.trust_of(&root), Some(false));
+        assert_eq!(Settings::load(&d).trust_of(&root), Some(false), "kept");
+        // Whatever ran (a build when TeX is here, texlab when it is installed), the latexmkrc didn't.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        while std::time::Instant::now() < until {
+            h.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        let asks = |h: &Harness<App>| {
-            h.state()
-                .project
-                .as_ref()
-                .unwrap()
-                .notices
-                .iter()
-                .any(|n| n.action == Some(crate::workspace::NoticeAction::TrustProject))
-        };
-        assert!(asks(&h), "the notice offers to use it");
-        wait_for(&mut h, "the notice", |h| {
-            h.query_by_label("Use it").is_some()
-        });
-        assert!(h.state().settings.shell_escape_projects.is_empty());
-        h.run_steps(2);
-        h.get_by_label("Use it").click();
-        h.run_steps(3);
-        let root = h.state().project.as_ref().unwrap().root.clone();
-        assert!(h.state().settings.shell_escape_projects.contains(&root));
-        wait_for(&mut h, "the trust setting to flush", |_h| {
-            Settings::load(&dirs(tmp.path()))
-                .shell_escape_projects
-                .contains(&root)
-        });
+        assert!(!pwned.exists(), "a restricted project's latexmkrc ran");
+        // Trusted from its settings, it may.
+        let app = h.state_mut();
+        let backend = &app.backend;
+        app.project
+            .as_mut()
+            .unwrap()
+            .set_trusted(backend, &mut app.settings, true);
+        assert_eq!(h.state().settings.trust_of(&root), Some(true));
     }
 
     #[test]
@@ -4516,11 +4584,12 @@ pub(crate) mod tests {
         recents.remember(&project.to_string_lossy(), 1.0);
         recents.save(&d);
         // This version was used before: no "What's new" in front of the project.
-        Settings {
+        let mut settings = Settings {
             last_seen_version: env!("CARGO_PKG_VERSION").into(),
             ..Settings::default()
-        }
-        .save(&d);
+        };
+        settings.set_trust(&canonical_str(&project), Some(true));
+        settings.save(&d);
         let mut h = app(tmp.path());
         wait_for(&mut h, "the project or onboarding", |h| {
             h.query_by_label("Back to all projects").is_some()

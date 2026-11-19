@@ -215,7 +215,7 @@ impl Workspace {
         }));
     }
 
-    pub fn run_build(&mut self, backend: &Backend, settings: &Settings, force: bool) {
+    pub fn run_build(&mut self, backend: &Backend, force: bool) {
         self.build.deadline = None;
         if !self.tex_ready {
             if !self.build.told_no_tex {
@@ -231,10 +231,9 @@ impl Workspace {
         self.build.building = true;
         self.build.note = None;
         let seq = self.build.seq;
-        // A downloaded project's lemmata.toml can't run programs on its own: the user must allow it.
-        let escape = settings.shell_escape_projects.contains(&self.root);
+        // Whether the project may run programs is the shell's to know (`Shell::open_project`).
         self.spawn_async(backend, move |shell| async move {
-            Msg::Built(seq, shell.build(escape, force).await)
+            Msg::Built(seq, shell.build(force).await)
         });
     }
 
@@ -253,16 +252,11 @@ impl Workspace {
     }
 
     /// Builds that were waiting for their time, and the thumbnail when it's drawn.
-    pub fn poll_build(
-        &mut self,
-        ctx: &eframe::egui::Context,
-        backend: &Backend,
-        settings: &Settings,
-    ) {
+    pub fn poll_build(&mut self, ctx: &eframe::egui::Context, backend: &Backend) {
         if let Some((at, force)) = self.build.deadline {
             let now = Instant::now();
             if now >= at && !self.writing() {
-                self.run_build(backend, settings, force);
+                self.run_build(backend, force);
             } else {
                 ctx.request_repaint_after(
                     at.saturating_duration_since(now)
@@ -631,7 +625,7 @@ impl Workspace {
                 // Read the main file again, with its new \usepackage; text typed meanwhile asks first.
                 let main = self.info.main.clone();
                 self.reload(backend, &main);
-                self.run_build(backend, settings, false);
+                self.run_build(backend, false);
             }
             Msg::PackageAdded(Err(e)) => self.open_error = Some(e),
             Msg::Event(lemmata_shell::Event::BuildProgress(note)) => self.build.note = Some(note),
@@ -678,7 +672,6 @@ impl Workspace {
             NoticeAction::DraftOff => self.set_config(backend, settings, |c| c.draft = false),
             NoticeAction::LinkZotero => self.link_zotero(backend, settings),
             NoticeAction::UndoFiles => self.undo_files(backend),
-            NoticeAction::TrustProject => self.trust_requested = true,
             NoticeAction::PasteAsText(path, from, table, text) => {
                 if let Some(ed) = self.editors.get_mut(&path) {
                     let to = from + table.chars().count();

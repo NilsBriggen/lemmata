@@ -144,13 +144,72 @@ pub fn install_texlab(data: &Path) -> Result<PathBuf, String> {
     result
 }
 
+/// A `latexmk` that does nothing, put first on texlab's PATH for a project the user hasn't
+/// trusted: texlab runs latexmk to read a latexmkrc it finds, and a latexmkrc is a Perl program.
+/// On Windows it is the app itself under that name; `main` exits at once when started so.
+pub fn latexmk_stub(data: &Path) -> std::io::Result<PathBuf> {
+    let dir = data.join("latexmk-stub");
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let stub = dir.join("latexmk");
+        let body = "#!/bin/sh\nexit 1\n";
+        if std::fs::read_to_string(&stub).ok().as_deref() != Some(body) {
+            std::fs::write(&stub, body)?;
+        }
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))?;
+    }
+    #[cfg(windows)]
+    {
+        let stub = dir.join("latexmk.exe");
+        let exe = std::env::current_exe()?;
+        let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).ok();
+        if size(&stub) != size(&exe) {
+            let _ = std::fs::remove_file(&stub);
+            std::fs::hard_link(&exe, &stub).or_else(|_| std::fs::copy(&exe, &stub).map(|_| ()))?;
+        }
+    }
+    Ok(dir)
+}
+
+/// texlab's PATH: the stub first when the project isn't trusted, then the TeX folder (texlab runs
+/// kpsewhich to find packages for completion), then the PATH Lemmata started with.
+fn texlab_path(
+    stub: Option<&Path>,
+    tex_bin: Option<&Path>,
+    inherited: Option<&std::ffi::OsStr>,
+) -> Option<std::ffi::OsString> {
+    let mut paths: Vec<PathBuf> = stub
+        .into_iter()
+        .chain(tex_bin)
+        .map(Path::to_path_buf)
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+    if let Some(existing) = inherited {
+        paths.extend(std::env::split_paths(existing));
+    }
+    std::env::join_paths(paths).ok()
+}
+
 pub async fn start(
     sink: Sink,
     root: &Path,
     data: &Path,
     tex_bin: Option<&Path>,
+    trusted: bool,
     generation: u64,
 ) -> Result<Server, String> {
+    // Without the stub texlab could run the project's latexmkrc: then it doesn't start at all.
+    let stub = if trusted {
+        None
+    } else {
+        Some(latexmk_stub(data).map_err(|e| {
+            format!("texlab is off for this restricted project, as it couldn't be kept from running latexmk: {e}")
+        })?)
+    };
     let texlab = match find_texlab(data) {
         Some(t) => t,
         // First use: download it, off the async threads.
@@ -168,15 +227,12 @@ pub async fn start(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    if let Some(bin) = tex_bin {
-        // texlab runs kpsewhich to find packages for completion.
-        let mut paths = vec![bin.to_path_buf()];
-        if let Some(existing) = std::env::var_os("PATH") {
-            paths.extend(std::env::split_paths(&existing));
-        }
-        if let Ok(joined) = std::env::join_paths(paths) {
-            cmd.env("PATH", joined);
-        }
+    if let Some(path) = texlab_path(
+        stub.as_deref(),
+        tex_bin,
+        std::env::var_os("PATH").as_deref(),
+    ) {
+        cmd.env("PATH", path);
     }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
@@ -268,6 +324,64 @@ async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// texlab runs latexmk on a latexmkrc it finds, and a latexmkrc is a Perl program: for a
+    /// restricted project it must only find the stub. Trusted, the same latexmkrc runs, which
+    /// shows the test would notice. Needs texlab and latexmk; the CI job with TeX has both.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn texlab_cannot_run_a_restricted_projects_latexmkrc() {
+        if which::which("texlab").is_err() || which::which("latexmk").is_err() {
+            return;
+        }
+        for trusted in [false, true] {
+            let d = tempfile::tempdir().unwrap();
+            let data = tempfile::tempdir().unwrap();
+            let marker = d.path().join("marker");
+            let main = "\\documentclass{article}\\begin{document}x\\end{document}\n";
+            std::fs::write(d.path().join("main.tex"), main).unwrap();
+            std::fs::write(
+                d.path().join("latexmkrc"),
+                format!("system('touch {}');\n", marker.display()),
+            )
+            .unwrap();
+            let sink: Sink = Arc::new(|_| {});
+            let server = start(sink, d.path(), data.path(), None, trusted, 1)
+                .await
+                .unwrap();
+            let uri = format!("file://{}", d.path().display());
+            let msg = |v: serde_json::Value| v.to_string();
+            server
+                .send(&msg(
+                    serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"processId": null, "rootUri": uri, "capabilities": {},
+                    "workspaceFolders": [{"uri": uri, "name": "p"}]}}),
+                ))
+                .await
+                .unwrap();
+            server
+                .send(&msg(
+                    serde_json::json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+                ))
+                .await
+                .unwrap();
+            server
+                .send(&msg(
+                    serde_json::json!({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                    "params": {"textDocument": {"uri": format!("{uri}/main.tex"),
+                    "languageId": "latex", "version": 1, "text": main}}}),
+                ))
+                .await
+                .unwrap();
+            let until = std::time::Instant::now()
+                + std::time::Duration::from_secs(if trusted { 20 } else { 6 });
+            while !marker.exists() && std::time::Instant::now() < until {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            server.stop().await;
+            assert_eq!(marker.exists(), trusted, "trusted {trusted}");
+        }
+    }
 
     /// Downloads the real release; run by hand: `cargo test -p lemmata-shell -- --ignored texlab`.
     #[test]

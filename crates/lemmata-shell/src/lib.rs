@@ -322,7 +322,14 @@ impl Shell {
         Ok(analysis_of(&p, tree))
     }
 
-    pub fn open_project(&self, generation: u64, path: String) -> CmdResult<ProjectAnalysis> {
+    /// `trusted`: the user said the project may run programs (its latexmkrc, shell escape, git
+    /// hooks). Without it nothing in the project gets to run code; see `Project::trusted`.
+    pub fn open_project(
+        &self,
+        generation: u64,
+        path: String,
+        trusted: bool,
+    ) -> CmdResult<ProjectAnalysis> {
         self.generation
             .fetch_max(generation, std::sync::atomic::Ordering::Relaxed);
         let _opening = self.operation.blocking_write();
@@ -331,7 +338,8 @@ impl Shell {
         }
         lemmata_synctex::forget();
         cancel_running(self);
-        let (project, tree) = Project::open_with_tree(&path).map_err(err)?;
+        let (mut project, tree) = Project::open_with_tree(&path).map_err(err)?;
+        project.trusted = trusted;
         let analysis = analysis_of(&project, tree);
         if self.current_project() != generation {
             return Err("A newer project open superseded this one.".into());
@@ -352,6 +360,9 @@ impl Shell {
         Ok(analysis)
     }
 }
+
+/// Why the Git panel is off in a restricted project.
+pub const NEEDS_TRUST_GIT: &str = "Git is off for this restricted project: a repository can bring hooks and filters that run programs. Trust the project in its settings to use Git here.";
 
 /// Opens a file or a web address with the system's program for it. From an AppImage it goes
 /// through xdg-open with the user's environment: the plain opener would hand the AppImage's
@@ -397,6 +408,18 @@ impl Shell {
             return Err(format!("{path} is not a file of this project."));
         }
         open_external(&full.to_string_lossy()).map_err(|e| format!("Could not open {path}: {e}"))
+    }
+
+    /// The user trusted the open project, or took the trust back. The caller restarts texlab
+    /// and rebuilds.
+    pub fn set_trusted(&self, trusted: bool) {
+        if let Some(p) = self.project.lock_safe().as_mut() {
+            p.trusted = trusted;
+        }
+    }
+
+    pub(crate) fn trusted(&self) -> bool {
+        self.project.lock_safe().as_ref().is_some_and(|p| p.trusted)
     }
 
     /// False when the file watcher couldn't start (e.g. the system's watch limit is reached).
@@ -522,7 +545,7 @@ fn cancel_running(state: &Shell) -> u64 {
 }
 
 impl Shell {
-    pub async fn build(&self, shell_escape: bool, force: bool) -> CmdResult<Outcome> {
+    pub async fn build(&self, force: bool) -> CmdResult<Outcome> {
         let generation = cancel_running(self);
         // Wait for the cancelled build to kill latexmk and its children before starting another in the same folder.
         let _running = self.build_lock.lock().await;
@@ -548,10 +571,8 @@ impl Shell {
             .lock_safe()
             .clone()
             .ok_or("No project is open.")?;
-        // A downloaded project's lemmata.toml can't run programs on its own: the user must have allowed it.
-        project.config.shell_escape &= shell_escape;
-        // The same consent lets the project's latexmkrc run.
-        project.trusted = shell_escape;
+        // A downloaded project's lemmata.toml can't run programs on its own: the user must have trusted it.
+        project.config.shell_escape &= project.trusted;
         let known = self.detection.lock_safe().clone();
         let detection = match known {
             Some(d) => d,
@@ -995,6 +1016,7 @@ impl Shell {
             .lock_safe()
             .as_ref()
             .and_then(|d| d.bin_dir.clone());
+        let trusted = self.trusted();
         let generation = self
             .lsp_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -1009,8 +1031,15 @@ impl Shell {
         let lsp_sink: Sink = Arc::new(move |event| {
             sink(Event::Project(project, Box::new(event)));
         });
-        let server =
-            lsp::start(lsp_sink, &root, &self.dirs.data, bin.as_deref(), generation).await?;
+        let server = lsp::start(
+            lsp_sink,
+            &root,
+            &self.dirs.data,
+            bin.as_deref(),
+            trusted,
+            generation,
+        )
+        .await?;
         if self.current_project() != project {
             drop(server);
             return Err("The project was closed.".into());
@@ -1167,7 +1196,7 @@ mod tests {
             std::sync::Arc::new(|_| {}),
         );
         shell
-            .open_project(1, d.path().to_string_lossy().into_owned())
+            .open_project(1, d.path().to_string_lossy().into_owned(), false)
             .unwrap();
         let error = shell
             .add_package_with("amsmath".into(), |project| {
@@ -1202,7 +1231,7 @@ mod tests {
             std::sync::Arc::new(|_| {}),
         );
         shell
-            .open_project(1, d.path().to_string_lossy().into_owned())
+            .open_project(1, d.path().to_string_lossy().into_owned(), false)
             .unwrap();
         std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
         let result = shell.add_package("amsmath".into());
@@ -1228,7 +1257,7 @@ mod tests {
             std::sync::Arc::new(|_| {}),
         );
         shell
-            .open_project(1, d.path().to_string_lossy().into_owned())
+            .open_project(1, d.path().to_string_lossy().into_owned(), false)
             .unwrap();
         shell.add_package("amsmath".into()).unwrap();
         assert_eq!(
@@ -1253,11 +1282,11 @@ mod tests {
         };
         let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
         shell
-            .open_project(2, d.path().join("b").to_string_lossy().into_owned())
+            .open_project(2, d.path().join("b").to_string_lossy().into_owned(), false)
             .unwrap();
         assert!(
             shell
-                .open_project(1, d.path().join("a").to_string_lossy().into_owned())
+                .open_project(1, d.path().join("a").to_string_lossy().into_owned(), false)
                 .is_err()
         );
         assert_eq!(shell.current_project(), 2);

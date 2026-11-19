@@ -14,6 +14,8 @@ use std::collections::HashMap;
 #[derive(Debug, PartialEq)]
 pub enum Action {
     Close,
+    /// The answer to "Do you trust this project?": true trusts it, false opens it restricted.
+    Trust(bool),
     /// Choose the folder the project goes in.
     ChooseParent,
     Submit,
@@ -971,6 +973,58 @@ pub fn import(ctx: &egui::Context, p: &Palette, st: &mut Import) -> Option<Actio
 }
 
 // ── Save as template ───────────────────────────────────────────────────────
+
+/// Asked before a project the user hasn't answered for opens: nothing of it runs until then.
+pub struct Trust {
+    /// The folder as asked to open.
+    pub path: String,
+    /// Its canonical form, the key the answer is kept under.
+    pub root: String,
+}
+
+pub fn trust(ctx: &egui::Context, p: &Palette, st: &Trust) -> Option<Action> {
+    let mut action = None;
+    let r = widgets::modal_with(
+        ctx,
+        p,
+        "Do you trust the authors of this project?",
+        Some(&st.path),
+        500.0,
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 10.0;
+            for text in [
+                "A LaTeX project can run programs on your computer: a latexmkrc file is a Perl program, shell escape runs commands, and a Git repository can bring hooks that run when it is used.",
+                "Trust projects you made yourself or got from people you trust. A restricted project still builds and shows its PDF, but nothing of its own runs, and the Git panel is off.",
+                "You can change this later in the project's settings.",
+            ] {
+                widgets::paragraph(
+                    ui,
+                    text,
+                    FontId::proportional(13.0),
+                    p.ink,
+                    1.45,
+                    ui.available_width(),
+                );
+            }
+        },
+        Some(&mut |ui: &mut Ui| {
+            if Button::new("Trust")
+                .kind(Kind::Primary)
+                .show(ui, p)
+                .clicked()
+            {
+                action = Some(Action::Trust(true));
+            }
+            if Button::new("Open restricted").show(ui, p).clicked() {
+                action = Some(Action::Trust(false));
+            }
+        }),
+    );
+    if r.closed {
+        action = Some(Action::Close);
+    }
+    action
+}
 
 pub struct SaveTemplate {
     /// The project folder.

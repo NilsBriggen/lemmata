@@ -15,6 +15,8 @@ pub struct ProjectSettings {
     timeout: String,
     words_open: bool,
     rules_open: bool,
+    /// "Trust this project", kept on this computer rather than in lemmata.toml.
+    trusted: bool,
     pub(super) busy: bool,
 }
 
@@ -64,6 +66,7 @@ impl Workspace {
             config,
             words_open: false,
             rules_open: false,
+            trusted: self.trusted,
             busy: false,
         });
     }
@@ -85,7 +88,7 @@ impl Workspace {
                 candidates.push(c.clone());
             }
         }
-        let trusted = settings.shell_escape_projects.contains(&self.root);
+        let trusted = self.trusted;
         let was_on = self.info.config.shell_escape;
         let invalid = outdir_error(&d.config.outdir).is_some() || timeout_ok(&d.timeout).is_none();
         let (mut save, mut cancel) = (false, false);
@@ -134,8 +137,10 @@ impl Workspace {
         let mut config = d.config.clone();
         config.timeout_secs =
             timeout_ok(&d.timeout).unwrap_or(lemmata_project::DEFAULT_TIMEOUT_SECS);
-        if grants_shell_escape_trust(&config, trusted, was_on) {
-            settings.shell_escape_projects.push(self.root.clone());
+        // Turning shell escape on here is the user allowing programs: that trusts the project.
+        let trust = d.trusted || grants_shell_escape_trust(&config, trusted, was_on);
+        if trust != trusted {
+            self.set_trusted(backend, settings, trust);
             *action = Some(Action::Settings);
         }
         let main_changed = config.main.as_deref() != Some(self.info.main.as_str());
@@ -420,6 +425,22 @@ fn body(
     widgets::checkbox(
         ui,
         p,
+        &mut d.trusted,
+        "Trust this project: it may run programs (its latexmkrc, Git hooks)",
+    );
+    ui.add_space(-8.0);
+    hint(
+        ui,
+        p,
+        if d.trusted {
+            "Kept on this computer only. Take the trust back if you don't know where the project comes from."
+        } else {
+            "Restricted: it builds and shows its PDF, but nothing of its own runs, and the Git panel is off."
+        },
+    );
+    widgets::checkbox(
+        ui,
+        p,
         &mut c.shell_escape,
         "Allow the document to run programs (shell escape)",
     );
@@ -428,7 +449,7 @@ fn body(
         hint(
             ui,
             p,
-            "The project's lemmata.toml turns this on, but it isn't allowed on this computer yet, so builds run without it. Save to allow it.",
+            "The project's lemmata.toml turns this on, but the project isn't trusted, so builds run without it. Saving with this on trusts the project.",
         );
     }
     if c.shell_escape {

@@ -23,6 +23,9 @@ pub enum Error {
     Spawn(std::io::Error),
     #[error("could not start {0}: {1}")]
     SpawnTool(String, std::io::Error),
+    /// The project is set up in a way that could make a build act outside it.
+    #[error("{0}")]
+    Refused(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -164,6 +167,9 @@ pub async fn build_with(
     if !opts.latexmk.exists() {
         return Err(Error::NoLatexmk);
     }
+    refuse_unsafe(project)?;
+    let restricted = restrict(project);
+    let project = restricted.as_ref().unwrap_or(project);
     let started = Instant::now();
     // Nothing changed since the last good build: no TeX run at all, just its result again.
     if !force && let Some(o) = cached_outcome(project, started) {
@@ -183,7 +189,21 @@ pub async fn build_with(
     let mut cancel = cancel;
     let engine = tool(opts, project.config.engine.binary());
     let can_go_direct = engine.is_some();
-    let warm = !skip_latexmk && can_go_direct && warm_ok(project);
+    // latexmk runs the project's latexmkrc and builds shell command lines from file names. A
+    // project the user hasn't trusted, or one whose names a shell would act on, gets the engine
+    // run directly instead, with its arguments passed as they are.
+    let no_latexmk = !project.trusted
+        || lemmata_project::shell_unsafe(&project.main.to_string_lossy())
+        || lemmata_project::shell_unsafe(&project.config.outdir);
+    if no_latexmk && !can_go_direct {
+        return Err(Error::SpawnTool(
+            project.config.engine.binary().into(),
+            std::io::Error::other("not found"),
+        ));
+    }
+    // Like latexmk's -f: past errors to the most complete PDF, unless the project asks to stop.
+    let keep_going = no_latexmk && !project.config.stop_on_error;
+    let warm = can_go_direct && (no_latexmk || !skip_latexmk) && warm_ok(project);
     // No stamp: the last build failed or was stopped midway, and a killed TeX run may have taken
     // the log and synctex with it. latexmk's record still says the PDF matches, so it would do
     // nothing once the text is back to what it last built (undoing a broken edit, say).
@@ -207,6 +227,7 @@ pub async fn build_with(
             deadline.saturating_duration_since(Instant::now()),
             &mut cancel,
             fmt.as_deref(),
+            keep_going,
         )
         .await
     {
@@ -217,9 +238,20 @@ pub async fn build_with(
         // Its errors could be the format's own: only a build without it gets to report them.
         let _ = std::fs::remove_file(project.log_path());
     }
-    // A failed direct build is run again by latexmk, which keeps going past errors the way the user chose.
-    let settled = warm && status != Status::Failed;
-    if !settled && !(skip_latexmk && can_go_direct) {
+    // A failed direct build is run again by latexmk, which keeps going past errors the way the user
+    // chose. Without latexmk it already went on past them, unless the precompiled preamble failed.
+    let settled = warm && (status != Status::Failed || (no_latexmk && !fmt_failed));
+    if !settled && no_latexmk {
+        status = direct_build(
+            project,
+            opts,
+            deadline.saturating_duration_since(Instant::now()),
+            &mut cancel,
+            None,
+            keep_going,
+        )
+        .await?;
+    } else if !settled && !(skip_latexmk && can_go_direct) {
         let (out, err) =
             match std::fs::File::create(&output_path).and_then(|f| f.try_clone().map(|g| (f, g))) {
                 Ok((f, g)) => (Stdio::from(f), Stdio::from(g)),
@@ -254,13 +286,14 @@ pub async fn build_with(
     // run the engine ourselves: the same passes, without latexmk.
     let log_fresh = written_since(&project.log_path(), started_at);
     let mut fell_back = false;
-    if status == Status::Failed && !log_fresh && can_go_direct {
+    if !no_latexmk && status == Status::Failed && !log_fresh && can_go_direct {
         match direct_build(
             project,
             opts,
             deadline.saturating_duration_since(Instant::now()),
             &mut cancel,
             None,
+            false,
         )
         .await
         {
@@ -350,6 +383,10 @@ pub async fn build_with(
         diagnostics.push(note);
     }
 
+    if !project.trusted {
+        diagnostics.extend(restricted_notes(project));
+    }
+
     // Failed without a single error in the log: latexmk never got to TeX.
     if status == Status::Failed
         && !diagnostics
@@ -382,6 +419,88 @@ pub async fn build_with(
         diagnostics,
         latexmk_failed: fell_back,
     })
+}
+
+/// A project the user hasn't trusted never gets shell escape, whatever its lemmata.toml asks
+/// for. Returns the changed copy when there is something to change.
+pub(crate) fn restrict(project: &Project) -> Option<Project> {
+    (!project.trusted && project.config.shell_escape).then(|| {
+        let mut p = project.clone();
+        p.config.shell_escape = false;
+        p
+    })
+}
+
+/// Refuses a project whose main file name holds control characters, or whose build folder (or a
+/// folder on the way to it) is a link out of the project: the build would write where the link points.
+pub(crate) fn refuse_unsafe(project: &Project) -> Result<(), Error> {
+    if project.main.to_string_lossy().chars().any(char::is_control) {
+        return Err(Error::Refused(
+            "The main file's name holds control characters. Rename it to build the project.".into(),
+        ));
+    }
+    if outdir_leaves_project(project) {
+        return Err(Error::Refused(format!(
+            "The build folder {} links to somewhere outside the project, so nothing is built there. Remove the link.",
+            project.config.outdir
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn outdir_leaves_project(project: &Project) -> bool {
+    let Ok(root) = lemmata_project::canonical(&project.root) else {
+        return true;
+    };
+    let mut p = project.root.clone();
+    for c in Path::new(&project.config.outdir).components() {
+        if matches!(c, std::path::Component::CurDir) {
+            continue;
+        }
+        p.push(c);
+        match lemmata_project::canonical(&p) {
+            Ok(real) if !real.starts_with(&root) || real == root => return true,
+            Ok(_) => {}
+            // A link to nowhere: creating the folder would follow it.
+            Err(_) if p.symlink_metadata().is_ok() => return true,
+            // Not there yet: prepare_outdir makes it inside the project.
+            Err(_) => break,
+        }
+    }
+    false
+}
+
+/// What a build of a project the user hasn't trusted leaves out, said once per build.
+fn restricted_notes(project: &Project) -> Vec<Diagnostic> {
+    let note = |message: &str| Diagnostic {
+        severity: lemmata_log::Severity::Info,
+        kind: lemmata_log::Kind::Other,
+        file: None,
+        line: None,
+        message: message.into(),
+        hint: Some("Trust the project in its settings if you know where it comes from.".into()),
+        fix: None,
+    };
+    let mut notes = Vec::new();
+    if lemmata_project::runs_programs(&project.root, &lemmata_project::Config::default()) {
+        notes.push(note(
+            "This project has a latexmkrc, which can run programs, so restricted builds leave it out.",
+        ));
+    }
+    let index = std::fs::read_dir(project.outdir_abs()).is_ok_and(|d| {
+        d.flatten().any(|e| {
+            e.path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| ["idx", "glo", "nlo", "acn"].contains(&x))
+        })
+    });
+    if index {
+        notes.push(note(
+            "This document makes an index or glossary. Restricted builds don't run the tools that sort them.",
+        ));
+    }
+    notes
 }
 
 /// The result of the last good build again, when nothing changed since.
@@ -755,12 +874,24 @@ pub(crate) fn pass_args(
     miktex: bool,
 ) -> Vec<String> {
     let c = &project.config;
-    let mut args: Vec<String> = fmt.map(|f| format!("-fmt={f}")).into_iter().collect();
+    // Only the format's name: with a folder in it, pdfTeX's -recorder writes into a folder of that
+    // name under the output folder, which doesn't exist. The folder goes in TEXFORMATS (`texformats`).
+    let mut args: Vec<String> = fmt
+        .map(|f| {
+            let name = Path::new(f)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned());
+            format!("-fmt={}", name.unwrap_or_else(|| f.to_string()))
+        })
+        .into_iter()
+        .collect();
     args.extend(
         [
             "-interaction=nonstopmode",
             "-file-line-error",
             "-synctex=1",
+            // The .fls list of files read and written, as latexmk asks for it: the arXiv export uses it.
+            "-recorder",
             if c.shell_escape {
                 "-shell-escape"
             } else {
@@ -785,6 +916,13 @@ pub(crate) fn pass_args(
     args
 }
 
+/// TEXFORMATS for a run from the format `fmt` (as `pass_args` takes it): its folder, then the
+/// usual places (an empty last entry).
+pub(crate) fn texformats(fmt: &str) -> OsString {
+    let dir = Path::new(fmt).parent().unwrap_or(Path::new("."));
+    std::env::join_paths([dir, Path::new("")]).unwrap_or_default()
+}
+
 /// The part of latexmk that matters, without latexmk: run the engine, run
 /// biber or bibtex once when citations need it, and run the engine again
 /// while the log asks for another pass. Returns the status of the last run.
@@ -794,6 +932,8 @@ async fn direct_build(
     limit: Duration,
     cancel: &mut oneshot::Receiver<()>,
     fmt: Option<&str>,
+    // On past a pass that reported errors, as latexmk -f does.
+    keep_going: bool,
 ) -> Result<Status, Error> {
     let engine = project.config.engine.binary();
     let engine_path = tool(opts, engine)
@@ -801,13 +941,18 @@ async fn direct_build(
     let deadline = Instant::now() + limit;
     let mut bib_checked = false;
     let mut status = Status::Failed;
+    let mut failed = false;
     // This writes over latexmk's outputs without latexmk knowing: its record would later call a
     // stale PDF up to date (e.g. after undoing a broken edit) and skip the build.
     let _ = std::fs::remove_file(out_file(project, "fdb_latexmk"));
 
     for pass in 0..MAX_PASSES {
+        let pass_started = SystemTime::now();
         let mut cmd = Command::new(&engine_path);
         cmd.args(pass_args(project, &project.config.outdir, fmt, opts.miktex));
+        if let Some(f) = fmt {
+            cmd.env("TEXFORMATS", texformats(f));
+        }
         cmd.current_dir(&project.root)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -820,7 +965,10 @@ async fn direct_build(
         )
         .await?
         .unwrap_or(Status::Failed);
-        if status != Status::Success {
+        let wrote_log = written_since(&out_file(project, "log"), pass_started);
+        if status == Status::Failed && keep_going && wrote_log {
+            failed = true;
+        } else if status != Status::Success {
             return Ok(status);
         }
 
@@ -855,7 +1003,7 @@ async fn direct_build(
             break;
         }
     }
-    Ok(status)
+    Ok(if failed { Status::Failed } else { status })
 }
 
 enum Bib {
@@ -1356,7 +1504,8 @@ mod tests {
             let mut text = std::fs::read_to_string(&main).unwrap_or_default();
             text.push_str("% edit\n");
             std::fs::write(&main, text).unwrap();
-            let p = Project::open(self.dir.path()).unwrap();
+            let mut p = Project::open(self.dir.path()).unwrap();
+            p.trusted = true; // these exercise the latexmk path
             let opts = BuildOptions {
                 latexmk: &self.tools.join("latexmk"),
                 bin_dir: Some(&self.tools),
@@ -1679,7 +1828,8 @@ mod tests {
             "pdflatex",
             "out=.lemmata/build\nfor a in \"$@\"; do case $a in -output-directory=*) out=${a#-output-directory=};; esac; done\nn=$(cat .count 2>/dev/null || echo 0); n=$((n+1)); echo $n > .count\nif [ $n -eq 1 ]; then echo 'LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right.' > $out/main.log; else echo done > $out/main.log; fi\necho pdf > $out/main.pdf\n",
         );
-        let p = Project::open(d.path()).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.trusted = true; // these exercise the latexmk path
         let (_tx, rx) = oneshot::channel();
         let opts = BuildOptions {
             latexmk: &latexmk,
@@ -1726,7 +1876,8 @@ mod tests {
             "pdflatex",
             "out=.lemmata/build\nfor a in \"$@\"; do case $a in -output-directory=*) out=${a#-output-directory=};; esac; done\necho done > $out/main.log\necho pdf > $out/main.pdf\n",
         );
-        let p = Project::open(d.path()).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.trusted = true; // these exercise the latexmk path
         let opts = BuildOptions {
             latexmk: &latexmk,
             bin_dir: Some(&tools),
@@ -1744,6 +1895,166 @@ mod tests {
                 .iter()
                 .any(|x| x.message.contains("built with pdflatex directly"))
         );
+    }
+
+    /// An untrusted project never reaches latexmk (it runs a project's latexmkrc and builds shell
+    /// command lines), and a pass that reports errors doesn't stop the build, as latexmk -f wouldn't.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_untrusted_project_is_built_without_latexmk_and_past_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::fs::write(d.path().join("latexmkrc"), "").unwrap();
+        let tools = d.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = tools.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let latexmk = script("latexmk", "touch latexmk-ran\n");
+        // Each pass appends to `passes`; the first asks for a rerun and fails, like an error in nonstop mode.
+        script(
+            "pdflatex",
+            "out=.lemmata/build\nfor a in \"$@\"; do case $a in -output-directory=*) out=${a#-output-directory=};; esac; done\necho x >> passes\nif [ $(wc -l < passes) -eq 1 ]; then echo 'Label(s) may have changed.' > $out/main.log; echo pdf > $out/main.pdf; exit 1; fi\necho done > $out/main.log\necho pdf > $out/main.pdf\n",
+        );
+        let p = Project::open(d.path()).unwrap();
+        assert!(!p.trusted);
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: Some(&tools),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let (_tx, rx) = oneshot::channel();
+        let out = build_with(&p, &opts, rx, false, false).await.unwrap();
+        assert!(!d.path().join("latexmk-ran").exists(), "latexmk ran");
+        let passes = std::fs::read_to_string(d.path().join("passes")).unwrap();
+        assert_eq!(passes.lines().count(), 2, "went on past the failed pass");
+        assert_eq!(
+            out.status,
+            Status::Failed,
+            "a pass with errors still counts"
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|x| x.message.contains("latexmkrc")
+                    && x.severity == lemmata_log::Severity::Info),
+            "says why the latexmkrc was left out: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
+    fn an_untrusted_project_never_gets_shell_escape() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::fs::write(d.path().join("lemmata.toml"), "shell_escape = true\n").unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        assert!(p.config.shell_escape);
+        let r = restrict(&p).expect("a restricted copy");
+        assert!(
+            pass_args(&r, ".lemmata/build", None, false).contains(&"-no-shell-escape".to_string())
+        );
+        p.trusted = true;
+        assert!(
+            restrict(&p).is_none(),
+            "a trusted project keeps what it asks for"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_build_folder_that_links_out_of_the_project_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), d.path().join(".lemmata")).unwrap();
+        let p = Project::open(d.path()).unwrap();
+        assert!(outdir_leaves_project(&p));
+        let latexmk = d.path().join("no-latexmk");
+        std::fs::write(&latexmk, "").unwrap();
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: None,
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let (_tx, rx) = oneshot::channel();
+        let e = build_with(&p, &opts, rx, false, true).await.unwrap_err();
+        assert!(matches!(e, Error::Refused(_)), "{e}");
+        assert!(
+            std::fs::read_dir(elsewhere.path())
+                .unwrap()
+                .next()
+                .is_none(),
+            "wrote outside"
+        );
+        // A link that stays inside the project is fine.
+        std::fs::remove_file(d.path().join(".lemmata")).unwrap();
+        std::fs::create_dir_all(d.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("real"), d.path().join(".lemmata")).unwrap();
+        assert!(!outdir_leaves_project(&Project::open(d.path()).unwrap()));
+    }
+
+    /// With real TeX: names a shell would act on are passed to the engine as they are, trusted or
+    /// not, and ordinary names with umlauts and spaces build in both modes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_names_never_reach_a_shell_and_unusual_names_build() {
+        let (Ok(pdflatex), Ok(latexmk)) = (which::which("pdflatex"), which::which("latexmk"))
+        else {
+            return; // no TeX on this machine: the CI job with TeX runs this
+        };
+        let bin = pdflatex.parent().unwrap().to_path_buf();
+        let doc = "\\documentclass{article}\\begin{document}x\\end{document}\n";
+        for trusted in [false, true] {
+            for (main, outdir) in [
+                ("a`touch marker`.tex", ".lemmata/build"),
+                ("main.tex", "$(touch marker)"),
+                ("Einführung.tex", ".lemmata/build"),
+                ("my chapter.tex", "out dir"),
+            ] {
+                let d = tempfile::tempdir().unwrap();
+                std::fs::write(d.path().join(main), doc).unwrap();
+                std::fs::write(
+                    d.path().join("lemmata.toml"),
+                    format!("main = {main:?}\noutdir = {outdir:?}\n"),
+                )
+                .unwrap();
+                let mut p = Project::open(d.path()).unwrap();
+                assert_eq!(
+                    p.config.outdir, outdir,
+                    "{outdir:?} is a folder name like any other"
+                );
+                p.trusted = trusted;
+                let opts = BuildOptions {
+                    latexmk: &latexmk,
+                    bin_dir: Some(&bin),
+                    installer: None,
+                    miktex: false,
+                    perl_dir: None,
+                };
+                let (_tx, rx) = oneshot::channel();
+                let out = build_with(&p, &opts, rx, false, true).await.unwrap();
+                assert!(
+                    !d.path().join("marker").exists(),
+                    "{main} / {outdir}: a shell ran it"
+                );
+                assert_eq!(
+                    out.status,
+                    Status::Success,
+                    "{main} / {outdir} (trusted {trusted}): {:?}",
+                    out.diagnostics
+                );
+                assert!(out.pdf.is_some_and(|p| p.is_file()), "{main} / {outdir}");
+            }
+        }
     }
 
     /// With real TeX: the direct build needs biber and a second pass to resolve
@@ -1991,7 +2302,8 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let p = Project::open(d.path()).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.trusted = true; // these exercise the latexmk path
         let (_tx, rx) = oneshot::channel();
         let opts = BuildOptions {
             latexmk: &fake,
@@ -2102,7 +2414,8 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let p = Project::open(d.path()).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.trusted = true; // these exercise the latexmk path
         assert_eq!(p.config.outdir, ".lemmata/build");
         let (_tx, rx) = oneshot::channel();
         let opts = BuildOptions {
@@ -2156,6 +2469,7 @@ mod tests {
         std::fs::write(&fake, "#!/bin/sh\ntrap '' TERM\nsleep 60\n").unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut p = Project::open(d.path()).unwrap();
+        p.trusted = true; // these exercise the latexmk path
         p.config.timeout_secs = 1;
         let opts = BuildOptions {
             latexmk: &fake,
@@ -2212,7 +2526,9 @@ mod tests {
             Some(Real { dir, latexmk, bin })
         }
         fn project(&self) -> Project {
-            Project::open(self.dir.path()).unwrap()
+            let mut p = Project::open(self.dir.path()).unwrap();
+            p.trusted = true;
+            p
         }
         fn edit(&self, from: &str, to: &str) {
             // File times are only a few milliseconds fine; an edit right after a build could look older.

@@ -459,9 +459,13 @@ impl Workspace {
                     .icon_size(13.0)
                     .kind(Kind::Ghost)
                     .size(Size::Sm)
-                    .enabled(base.is_some() && busy.is_none())
+                    .enabled(base.is_some() && busy.is_none() && self.trusted)
                     .show(ui, p)
-                    .on_hover_text("Compiles the old and the new version with latexdiff into one PDF with the changes marked.")
+                    .on_hover_text(if self.trusted {
+                        "Compiles the old and the new version with latexdiff into one PDF with the changes marked."
+                    } else {
+                        "Needs latexmk, which restricted projects don't run. Trust the project in its settings to use it."
+                    })
                     .clicked()
                 {
                     act = Some("pdf");

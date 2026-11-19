@@ -138,6 +138,7 @@ pub const DEFAULT_OUTDIR: &str = ".lemmata/build";
 pub fn valid_outdir(outdir: &str) -> bool {
     let p = Path::new(outdir);
     !outdir.trim().is_empty()
+        && !outdir.chars().any(char::is_control)
         && p.is_relative()
         && !p.components().any(|c| {
             !matches!(
@@ -147,6 +148,37 @@ pub fn valid_outdir(outdir: &str) -> bool {
         })
         && p.components()
             .any(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// Does `s` hold a character that `sh` or `cmd.exe` acts on? latexmk puts the main file and the
+/// build folder into shell command lines, so such names are built without it.
+pub fn shell_unsafe(s: &str) -> bool {
+    s.chars()
+        .any(|c| c.is_control() || "`$\"';&|<>()*?!%^".contains(c))
+}
+
+/// Can opening or building this project run programs of its own? A `latexmkrc` anywhere in it
+/// (latexmk, and texlab through latexmk, read one in any folder), or shell escape asked for.
+pub fn runs_programs(root: &Path, config: &Config) -> bool {
+    fn rc_in(dir: &Path, root: &Path, outdir: &str, depth: usize) -> bool {
+        let Ok(read) = fs::read_dir(dir) else {
+            return false;
+        };
+        read.flatten().any(|e| {
+            let name = e.file_name();
+            let path = e.path();
+            if name == "latexmkrc" || name == ".latexmkrc" {
+                return true;
+            }
+            // Not into links (they may loop), git's folders or the build output.
+            e.file_type().is_ok_and(|t| t.is_dir())
+                && depth < 12
+                && name != ".git"
+                && !is_outdir(root, &path, outdir)
+                && rc_in(&path, root, outdir, depth + 1)
+        })
+    }
+    config.shell_escape || rc_in(root, root, &config.outdir, 0)
 }
 
 fn is_false(b: &bool) -> bool {
@@ -967,8 +999,48 @@ mod tests {
     }
 
     #[test]
+    fn names_a_shell_would_act_on_are_spotted() {
+        for bad in ["a`id`.tex", "$(id)", "a;b", "x|y", "a\"b", "%PATH%", "a\nb"] {
+            assert!(shell_unsafe(bad), "{bad:?}");
+        }
+        for good in [
+            "main.tex",
+            "Einführung.tex",
+            "my chapter.tex",
+            "src/ch-1_a.tex",
+            ".lemmata/build",
+        ] {
+            assert!(!shell_unsafe(good), "{good:?}");
+        }
+    }
+
+    #[test]
+    fn a_latexmkrc_anywhere_or_shell_escape_runs_programs() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let config = Config::default();
+        assert!(!runs_programs(d.path(), &config));
+        std::fs::create_dir_all(d.path().join("ch/deep")).unwrap();
+        std::fs::write(d.path().join("ch/deep/.latexmkrc"), "").unwrap();
+        assert!(
+            runs_programs(d.path(), &config),
+            "a latexmkrc in a subfolder"
+        );
+        std::fs::remove_file(d.path().join("ch/deep/.latexmkrc")).unwrap();
+        // The build folder's contents are the build's own.
+        std::fs::create_dir_all(d.path().join(".lemmata/build")).unwrap();
+        std::fs::write(d.path().join(".lemmata/build/latexmkrc"), "").unwrap();
+        assert!(!runs_programs(d.path(), &config));
+        let escape = Config {
+            shell_escape: true,
+            ..Config::default()
+        };
+        assert!(runs_programs(d.path(), &escape));
+    }
+
+    #[test]
     fn unsafe_build_folders_fall_back_to_the_default() {
-        for bad in [".", "./", "..", "../out", "/tmp/x", "", "a/../.."] {
+        for bad in [".", "./", "..", "../out", "/tmp/x", "", "a/../..", "out\nx"] {
             assert!(!valid_outdir(bad), "{bad:?}");
         }
         for good in [".lemmata/build", "build", "out/pdf", "./build"] {

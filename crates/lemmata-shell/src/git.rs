@@ -20,6 +20,10 @@ async fn with<T: Send + 'static>(
     f: impl FnOnce(PathBuf) -> g::Result<T> + Send + 'static,
 ) -> CmdResult<T> {
     let root = root(state)?;
+    // A repository that came with the project brings its own hooks, filters and helpers.
+    if !state.trusted() {
+        return Err(crate::NEEDS_TRUST_GIT.into());
+    }
     tokio::task::spawn_blocking(move || {
         let _one_at_a_time = GIT.lock_safe();
         f(root).map_err(err)

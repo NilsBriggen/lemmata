@@ -372,10 +372,18 @@ mod tests {
         };
         let b = super::Backend::new(eframe::egui::Context::default(), &dirs);
         b.shell
-            .open_project(1, tmp.path().join("a").to_string_lossy().into_owned())
+            .open_project(
+                1,
+                tmp.path().join("a").to_string_lossy().into_owned(),
+                false,
+            )
             .unwrap();
         b.shell
-            .open_project(2, tmp.path().join("b").to_string_lossy().into_owned())
+            .open_project(
+                2,
+                tmp.path().join("b").to_string_lossy().into_owned(),
+                false,
+            )
             .unwrap();
         b.spawn_project(1, |_| -> super::Msg {
             panic!("a job for the old project ran")
