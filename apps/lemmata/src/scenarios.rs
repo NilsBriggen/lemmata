@@ -1134,11 +1134,50 @@ fn a_project_is_deleted_from_the_start_screen() {
         std::thread::sleep(std::time::Duration::from_millis(30));
         h.step();
     }
+    if refused(&h).is_some() {
+        held_open(&paper);
+    }
     assert_eq!(refused(&h), None, "the trash refused");
     wait_for(&mut h, "the list without it", |h| {
         h.query_by_role_and_label(egui::accesskit::Role::Button, "paper")
             .is_none()
     });
+}
+
+/// Prints what keeps `dir` from going to the trash: files that can't be opened for writing,
+/// whether the folder itself can be renamed, and the TeX, Git and texlab processes still running.
+fn held_open(dir: &std::path::Path) {
+    fn walk(dir: &std::path::Path) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p);
+            } else if let Err(err) = std::fs::OpenOptions::new().append(true).open(&p) {
+                eprintln!("held: {} ({err})", p.display());
+            }
+        }
+    }
+    walk(dir);
+    let moved = dir.with_extension("moved");
+    match std::fs::rename(dir, &moved) {
+        Ok(()) => {
+            eprintln!("held: the folder itself can be renamed");
+            let _ = std::fs::rename(&moved, dir);
+        }
+        Err(e) => eprintln!("held: the folder can't be renamed ({e})"),
+    }
+    if cfg!(windows) {
+        let list = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'perl|latexmk|pdflatex|texlab|git|miktex|mpm|initexmf|lemmata' } | Format-List ProcessId,ParentProcessId,Name,CommandLine",
+            ])
+            .output();
+        if let Ok(o) = list {
+            eprintln!("held: processes\n{}", String::from_utf8_lossy(&o.stdout));
+        }
+    }
 }
 
 /// "Commit 1 file", "Commit 3 files": there is something staged.
