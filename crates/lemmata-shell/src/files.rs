@@ -208,14 +208,14 @@ impl Shell {
     ) -> CmdResult<usize> {
         let p = project(self)?;
         let re = build_regex(&options)?;
-        replace_across(&p.root, &re, &replacement, options.regex, targets)
+        replace_across(&p, &re, &replacement, options.regex, targets)
     }
 }
 
 /// Computes every new text before writing any, so an unreadable file stops
 /// the whole replace instead of leaving it half done.
 fn replace_across(
-    root: &Path,
+    p: &lemmata_project::Project,
     re: &Regex,
     replacement: &str,
     regex_mode: bool,
@@ -230,7 +230,7 @@ fn replace_across(
     let mut count = 0;
     let mut writes = Vec::new();
     for (rel, lines) in by_file {
-        let path = root.join(safe_rel(&rel)?);
+        let path = p.root.join(safe_rel(&rel)?);
         let text =
             std::fs::read_to_string(&path).map_err(|e| format!("Could not read {rel}: {e}"))?;
         let (new, n) = replace_on_lines(&text, re, replacement, regex_mode, &lines);
@@ -239,16 +239,18 @@ fn replace_across(
             count += n;
         }
     }
-    write_all_atomic(&writes)?;
+    write_all_atomic(p, &writes)?;
     Ok(count)
 }
 
 /// Writes every file beside itself first and only then puts them in place, so a failure (a full
 /// disk, say) almost always happens before the first real file is touched. A file that is a link
-/// keeps it: the file it names gets the text.
-fn write_all_atomic(writes: &[(PathBuf, String)]) -> CmdResult<()> {
+/// keeps it: the file it names gets the text (see `lemmata_env::fs::may_write`).
+fn write_all_atomic(p: &lemmata_project::Project, writes: &[(PathBuf, String)]) -> CmdResult<()> {
     let mut staged = Vec::with_capacity(writes.len());
     for (path, text) in writes {
+        lemmata_env::fs::may_write(&p.root, p.trusted, path)
+            .map_err(|e| format!("Could not save {}: {e}.", path.display()))?;
         staged.push(
             lemmata_env::fs::stage(path, text.as_bytes())
                 .map_err(|e| format!("Could not save {}: {e}", path.display()))?,
@@ -328,7 +330,7 @@ impl Shell {
                 changed.push(f);
             }
         }
-        write_all_atomic(&writes)?;
+        write_all_atomic(&p, &writes)?;
         Ok(changed)
     }
 
@@ -534,7 +536,7 @@ fn rename_one(
                 continue;
             };
             let new = rewrite_references(&text, from, to);
-            if new != text && write_all_atomic(&[(path, new)]).is_ok() {
+            if new != text && write_all_atomic(p, &[(path, new)]).is_ok() {
                 updated += 1;
             }
         }
@@ -1682,12 +1684,18 @@ mod tests {
         }
     }
 
+    /// A project in `root` with a main file beside the test's own files.
+    fn article(root: &Path) -> lemmata_project::Project {
+        touch(root, "main.tex", "\\documentclass{article}");
+        lemmata_project::Project::open(root).unwrap()
+    }
+
     #[test]
     fn replace_writes_nothing_when_one_target_cannot_be_read() {
         let d = tempfile::tempdir().unwrap();
         touch(d.path(), "a.tex", "cat\n");
         let targets = vec![target("a.tex", &[1]), target("missing.tex", &[1])];
-        assert!(replace_across(d.path(), &opts("cat"), "dog", false, targets).is_err());
+        assert!(replace_across(&article(d.path()), &opts("cat"), "dog", false, targets).is_err());
         assert_eq!(
             std::fs::read_to_string(d.path().join("a.tex")).unwrap(),
             "cat\n"
@@ -1700,14 +1708,14 @@ mod tests {
         touch(d.path(), "a.tex", "cat\nbird\ncat\n");
         // Line 2 changed since the search, and line 9 is gone.
         let targets = vec![target("a.tex", &[1, 2, 9])];
-        let n = replace_across(d.path(), &opts("cat"), "dog", false, targets).unwrap();
+        let n = replace_across(&article(d.path()), &opts("cat"), "dog", false, targets).unwrap();
         assert_eq!(n, 1);
         assert_eq!(
             std::fs::read_to_string(d.path().join("a.tex")).unwrap(),
             "dog\nbird\ncat\n"
         );
         // No hidden temp file is left behind.
-        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 2);
     }
 
     #[test]

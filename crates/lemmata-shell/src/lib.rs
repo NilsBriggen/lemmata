@@ -516,7 +516,14 @@ impl Shell {
             content.as_bytes().to_vec()
         };
         // Beside the file first, so a crash never leaves half of it; through a link (a preamble
-        // shared between projects) to the file it names.
+        // shared between projects) to the file it names, out of the project only when trusted.
+        let trusted = self
+            .project
+            .lock_safe()
+            .as_ref()
+            .is_some_and(|p| p.trusted && p.root == root);
+        lemmata_env::fs::may_write(root, trusted, &abs)
+            .map_err(|e| format!("Could not save {path}: {e}."))?;
         let staged = lemmata_env::fs::stage(&abs, &bytes)
             .map_err(|e| format!("Could not save {path}: {e}"))?;
         // The text as the editor knows it, whatever the file's encoding.
@@ -1343,5 +1350,46 @@ mod tests {
             crate::project(&shell).unwrap().root,
             lemmata_project::canonical(&d.path().join("b")).unwrap()
         );
+    }
+
+    /// A restricted project can't point a file at one outside it and have a save, a settings
+    /// change or a bibliography edit overwrite that; trusted, a shared file is written through.
+    #[cfg(unix)]
+    #[test]
+    fn a_restricted_project_writes_through_no_link_out_of_it() {
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = lemmata_project::canonical(d.path()).unwrap();
+        std::fs::write(root.join("main.tex"), "\\documentclass{article}\n").unwrap();
+        let victim = outside.path().join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        std::os::unix::fs::symlink(&victim, root.join("refs.bib")).unwrap();
+        let toml = outside.path().join("settings.toml");
+        std::fs::write(&toml, "# mine\n").unwrap();
+        std::os::unix::fs::symlink(&toml, root.join("lemmata.toml")).unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let dirs = crate::Dirs {
+            resources: data.path().into(),
+            data: data.path().into(),
+            cache: data.path().into(),
+            home: None,
+        };
+        let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
+        shell
+            .open_project(1, root.to_string_lossy().into_owned(), false)
+            .unwrap();
+        let e = shell
+            .write_text(&root, "refs.bib".into(), "@misc{x}".into(), None)
+            .unwrap_err();
+        assert!(e.contains("outside the project"), "{e}");
+        let config = shell.project_info_cmd().unwrap().config;
+        assert!(shell.set_config(config).is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(&toml).unwrap(), "# mine\n");
+        shell.set_trusted(true);
+        shell
+            .write_text(&root, "refs.bib".into(), "@misc{x}".into(), None)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "@misc{x}");
     }
 }

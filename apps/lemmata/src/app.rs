@@ -3744,6 +3744,119 @@ pub(crate) mod tests {
         assert_eq!(h.state().settings.trust_of(&root), Some(true));
     }
 
+    /// End to end in the app: a project brings a latexmkrc, a snapshot store whose hooks and
+    /// config run programs, and a link where an old writer put its temporary file. Restricted,
+    /// typing, saving, building and a snapshot run none of it and change nothing outside the
+    /// project. Trusted, the latexmkrc runs, and git still runs nothing of the store's.
+    #[cfg(unix)]
+    #[test]
+    fn a_hostile_project_runs_nothing_until_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("paper");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\nHi\n\\end{document}\n",
+        )
+        .unwrap();
+        let rc = tmp.path().join("rc-ran");
+        std::fs::write(
+            project.join(".latexmkrc"),
+            format!("system('touch {}');", rc.display()),
+        )
+        .unwrap();
+        let git_ran = tmp.path().join("git-ran");
+        let store = project.join(".lemmata/history");
+        let made = std::process::Command::new("git")
+            .args(["init", "-q", "--bare"])
+            .arg(&store)
+            .status();
+        if !made.is_ok_and(|s| s.success()) {
+            return;
+        }
+        for hook in ["pre-commit", "post-commit", "reference-transaction"] {
+            let p = store.join("hooks").join(hook);
+            std::fs::write(&p, format!("#!/bin/sh\ntouch {}\n", git_ran.display())).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut config = std::fs::read_to_string(store.join("config")).unwrap();
+        config.push_str(&format!("\tfsmonitor = touch {}\n", git_ran.display()));
+        std::fs::write(store.join("config"), config).unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "untouched").unwrap();
+        std::os::unix::fs::symlink(&outside, project.join(".main.tex.0.lemmata-tmp")).unwrap();
+
+        let root = canonical_str(&project);
+        let d = dirs(tmp.path());
+        let mut recents = Recents::default();
+        recents.remember(&root, 1.0);
+        recents.save(&d);
+        Settings {
+            first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
+            ..Settings::default()
+        }
+        .save(&d);
+        let mut h = app(tmp.path());
+        wait_for(&mut h, "the question", |h| {
+            h.query_by_label("Open restricted").is_some()
+        });
+        h.get_by_label("Open restricted").click();
+        wait_for(&mut h, "the project", |h| h.state().project.is_some());
+        wait_for(&mut h, "TeX detection", |h| !h.state().checking);
+        if !h.state().project.as_ref().is_some_and(|ws| ws.tex_ready) {
+            without_tex::<()>();
+            return;
+        }
+        wait_for(&mut h, "the main file", |h| {
+            h.query_by_label("Text of main.tex").is_some()
+        });
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_label("Text of main.tex").type_text("% edited");
+        h.run_steps(2);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+        wait_for(&mut h, "the save", |_| {
+            std::fs::read_to_string(project.join("main.tex")).is_ok_and(|t| t.contains("% edited"))
+        });
+        let pdf = project.join(".lemmata/build/main.pdf");
+        wait_for(&mut h, "the restricted build", |_| pdf.exists());
+        // Restricted, the store the project brought is left alone, with a reason.
+        assert!(
+            h.state()
+                .backend
+                .shell
+                .history_snapshot("restricted".into())
+                .is_err()
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        while std::time::Instant::now() < until {
+            h.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!rc.exists(), "a restricted project's latexmkrc ran");
+        assert!(!git_ran.exists(), "git ran the store's hook or fsmonitor");
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched");
+
+        let app = h.state_mut();
+        let backend = &app.backend;
+        app.project
+            .as_mut()
+            .unwrap()
+            .set_trusted(backend, &mut app.settings, true);
+        wait_for(&mut h, "the trusted build's latexmkrc", |_| rc.exists());
+        // Trusted, it is used, with its hooks and fsmonitor turned off.
+        let snap = h.state().backend.shell.history_snapshot("trusted".into());
+        assert!(matches!(snap, Ok(Some(_))), "{snap:?}");
+        h.run_steps(5);
+        assert!(
+            !git_ran.exists(),
+            "git ran the store's hook or fsmonitor once trusted"
+        );
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched");
+    }
+
     #[test]
     fn a_reload_keeps_unsaved_text_and_asks() {
         let tmp = tempfile::tempdir().unwrap();

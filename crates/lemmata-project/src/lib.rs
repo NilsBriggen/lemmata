@@ -315,6 +315,12 @@ impl Project {
     /// differ so the user's comments, key order and unknown keys survive.
     pub fn save_config(&self) -> Result<()> {
         let path = self.root.join(CONFIG_FILE);
+        lemmata_env::fs::may_write(&self.root, self.trusted, &path).map_err(|source| {
+            Error::Io {
+                path: path.clone(),
+                source,
+            }
+        })?;
         let old_text = match fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),

@@ -41,7 +41,9 @@ impl Shell {
             .map(|e| e.key)
             .collect();
         let (key, text) = lemmata_bib::prepare_entry(&bibtex, &existing).map_err(crate::err)?;
-        lemmata_bib::append(&p.root.join(&file), &text).map_err(crate::err)?;
+        let path = p.root.join(&file);
+        writable(&p, &path)?;
+        lemmata_bib::append(&path, &text).map_err(crate::err)?;
         Ok(Added { key, file })
     }
 
@@ -82,6 +84,7 @@ fn edit_bib(
     }
     let path = p.root.join(file);
     let text = edit(&std::fs::read_to_string(&path).map_err(crate::err)?).map_err(crate::err)?;
+    writable(&p, &path)?;
     lemmata_bib::manage::write_atomic(&path, &text).map_err(crate::err)?;
     Ok(vec![file.to_string()])
 }
@@ -177,6 +180,7 @@ impl Shell {
                 wanted.len()
             ));
         }
+        writable(&p, &p.root.join(ZOTERO_BIB))?;
         let header = "% Exported from Zotero by Lemmata. Changes here are overwritten on the next sync;\n% edit the references in Zotero instead.\n\n";
         lemmata_bib::manage::write_atomic(
             &p.root.join(ZOTERO_BIB),
@@ -196,8 +200,14 @@ impl Shell {
         let main = p.main_abs();
         let text = std::fs::read_to_string(&main).map_err(crate::err)?;
         let new = link_zotero(&text)?;
+        writable(&p, &main)?;
         lemmata_bib::manage::write_atomic(&main, new).map_err(crate::err)
     }
+}
+
+/// A link out of the project is written through only in a trusted one.
+fn writable(p: &lemmata_project::Project, path: &std::path::Path) -> CmdResult<()> {
+    lemmata_env::fs::may_write(&p.root, p.trusted, path).map_err(|e| format!("{e}."))
 }
 
 /// The first `command` not in a `%` comment.

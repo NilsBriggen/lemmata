@@ -40,6 +40,19 @@ fn resolved(path: &Path) -> PathBuf {
     real
 }
 
+/// Whether `path`, a file of the project in `root`, may be written. A link there is followed by
+/// `stage`; one that leads out of the project only in a project the user trusts, so a project
+/// can't point its `refs.bib` at `~/.bashrc` and have an edit or a sync overwrite it.
+pub fn may_write(root: &Path, trusted: bool, path: &Path) -> std::io::Result<()> {
+    if trusted || resolved(path).starts_with(resolved(root)) {
+        return Ok(());
+    }
+    let name = path.strip_prefix(root).unwrap_or(path).display();
+    Err(std::io::Error::other(format!(
+        "{name} links to a file outside the project, and Lemmata writes through such a link only in a project you trust"
+    )))
+}
+
 /// New text for one file, written beside it and not yet in place. Dropped without `commit`, it
 /// leaves the file as it was.
 pub struct Staged {
@@ -213,6 +226,14 @@ mod tests {
         ] {
             std::os::unix::fs::symlink(&victim, shared.path().join(name)).unwrap();
         }
+        // A link out of the project is written through only when the project is trusted; one
+        // that stays inside it always.
+        assert!(may_write(d.path(), false, &link).is_err());
+        assert!(may_write(d.path(), true, &link).is_ok());
+        std::fs::write(d.path().join("real.bib"), "").unwrap();
+        std::os::unix::fs::symlink("real.bib", d.path().join("inner.bib")).unwrap();
+        assert!(may_write(d.path(), false, &d.path().join("inner.bib")).is_ok());
+        assert!(may_write(d.path(), false, &d.path().join("new.bib")).is_ok());
         let written = write_atomic(&link, b"new").unwrap();
         assert_eq!(written, library.canonicalize().unwrap());
         assert!(
