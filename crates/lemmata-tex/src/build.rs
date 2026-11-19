@@ -171,12 +171,14 @@ pub async fn build_with(
     let restricted = restrict(project);
     let project = restricted.as_ref().unwrap_or(project);
     let started = Instant::now();
+    // What the build reads, once: for "nothing changed" and for the stamp it leaves.
+    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
+    let files = files_hash_with_tree(project, &tree);
     // Nothing changed since the last good build: no TeX run at all, just its result again.
-    if !force && let Some(o) = cached_outcome(project, started) {
+    if !force && let Some(o) = cached_outcome_with(project, started, &tree, &files) {
         return Ok(o);
     }
     let started_at = SystemTime::now();
-    let files = files_hash(project);
     prepare_outdir(project);
     // With the slack in written_since, last build's log would look fresh; no log is the signal that latexmk never ran TeX.
     let _ = std::fs::remove_file(project.log_path());
@@ -503,9 +505,15 @@ fn restricted_notes(project: &Project) -> Vec<Diagnostic> {
     notes
 }
 
-/// The result of the last good build again, when nothing changed since.
-pub(crate) fn cached_outcome(project: &Project, started: Instant) -> Option<Outcome> {
-    if !up_to_date(project) {
+/// The result of the last good build again, when nothing changed since; `tree` and `files`
+/// (its `files_hash_with_tree`) are what this build reads.
+pub(crate) fn cached_outcome_with(
+    project: &Project,
+    started: Instant,
+    tree: &[lemmata_project::Entry],
+    files: &str,
+) -> Option<Outcome> {
+    if !up_to_date_hashed(project, tree, files) {
         return None;
     }
     let outdir = project.config.outdir.trim_start_matches("./").to_string();
@@ -729,6 +737,7 @@ pub(crate) const OK_STAMP: &str = ".lemmata-ok";
 /// and a deleted file or one synced in with an old time still shows.
 const FILES_STAMP: &str = ".lemmata-files";
 
+#[cfg(test)]
 pub(crate) fn files_hash(project: &Project) -> String {
     files_hash_with_tree(
         project,
@@ -736,13 +745,25 @@ pub(crate) fn files_hash(project: &Project) -> String {
     )
 }
 
-fn files_hash_with_tree(project: &Project, entries: &[lemmata_project::Entry]) -> String {
+pub(crate) fn files_hash_with_tree(
+    project: &Project,
+    entries: &[lemmata_project::Entry],
+) -> String {
     use std::hash::{Hash, Hasher};
+    // Figures and data files are big and aren't edited in the app: their size and time (to the
+    // nanosecond) stand for their content. Sources, which an autosave rewrites right before a
+    // build, are hashed by content.
+    const BIG: u64 = 1 << 20;
     fn walk(root: &Path, entries: &[lemmata_project::Entry], h: &mut impl Hasher) {
         for e in entries {
             (&e.path, e.is_dir, e.size).hash(h);
             if e.is_dir {
                 walk(root, &e.children, h);
+            } else if e.size > BIG {
+                std::fs::metadata(root.join(&e.path))
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .hash(h);
             } else {
                 match std::fs::read(root.join(&e.path)) {
                     Ok(bytes) => bytes.hash(h),
@@ -798,13 +819,22 @@ pub fn up_to_date(project: &Project) -> bool {
 }
 
 pub fn up_to_date_with_tree(project: &Project, entries: &[lemmata_project::Entry]) -> bool {
+    // The cheap checks first: the hash reads every project file.
     let stamp = project.outdir_abs().join(OK_STAMP);
     let main = project.main.to_string_lossy();
     std::fs::read_to_string(&stamp).is_ok_and(|s| s == main)
         && project.pdf_path().is_file()
         && project.log_path().is_file()
-        && std::fs::read_to_string(project.outdir_abs().join(FILES_STAMP))
-            .is_ok_and(|s| s == files_hash_with_tree(project, entries))
+        && up_to_date_hashed(project, entries, &files_hash_with_tree(project, entries))
+}
+
+fn up_to_date_hashed(project: &Project, entries: &[lemmata_project::Entry], files: &str) -> bool {
+    let stamp = project.outdir_abs().join(OK_STAMP);
+    let main = project.main.to_string_lossy();
+    std::fs::read_to_string(&stamp).is_ok_and(|s| s == main)
+        && project.pdf_path().is_file()
+        && project.log_path().is_file()
+        && std::fs::read_to_string(project.outdir_abs().join(FILES_STAMP)).is_ok_and(|s| s == files)
         && !others_changed(project, entries, &stamp)
 }
 
@@ -1847,6 +1877,29 @@ mod tests {
         let f = std::fs::File::create(d.path().join("ch.tex")).unwrap();
         f.set_modified(old).unwrap();
         assert!(!up_to_date(&p), "an old-dated new file");
+    }
+
+    /// A figure over 1 MB counts by size and time, not by reading it: replaced by one of the same
+    /// size, its new time still makes the PDF stale.
+    #[test]
+    fn a_changed_big_figure_makes_the_pdf_stale() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let fig = d.path().join("photo.png");
+        std::fs::write(&fig, vec![1u8; 2 << 20]).unwrap();
+        let p = Project::open(d.path()).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        std::fs::write(p.pdf_path(), "pdf").unwrap();
+        std::fs::write(p.log_path(), "log").unwrap();
+        mark_ok(
+            &p,
+            SystemTime::now() + MTIME_SLACK + Duration::from_millis(50),
+            &files_hash(&p),
+        );
+        assert!(up_to_date(&p));
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&fig, vec![2u8; 2 << 20]).unwrap();
+        assert!(!up_to_date(&p), "a replaced figure was taken as unchanged");
     }
 
     #[test]

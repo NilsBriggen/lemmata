@@ -7,8 +7,8 @@
 //! if its version matches Tectonic's bundled biblatex (TeX Live 2022).
 
 use crate::build::{
-    Error, OK_STAMP, Outcome, Status, cached_outcome, files_hash, mark_ok, merge_blg,
-    prepare_outdir, read_log, tail_of, written_since,
+    Error, OK_STAMP, Outcome, Status, mark_ok, merge_blg, prepare_outdir, read_log, tail_of,
+    written_since,
 };
 use lemmata_log::{Diagnostic, Kind, Severity};
 use lemmata_project::Project;
@@ -200,11 +200,12 @@ pub async fn build(
     let restricted = crate::build::restrict(project);
     let project = restricted.as_ref().unwrap_or(project);
     let started = Instant::now();
-    if !force && let Some(o) = cached_outcome(project, started) {
+    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
+    let files = crate::build::files_hash_with_tree(project, &tree);
+    if !force && let Some(o) = crate::build::cached_outcome_with(project, started, &tree, &files) {
         return Ok(o);
     }
     let started_at = SystemTime::now();
-    let files = files_hash(project);
     prepare_outdir(project);
     let outdir = project.outdir_abs();
     let _ = std::fs::remove_file(project.log_path());
