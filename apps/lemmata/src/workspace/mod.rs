@@ -341,7 +341,8 @@ impl Workspace {
             analysis_seq: 0,
             pdf_current: true,
             tex_ready,
-            tex_known: true,
+            // Until the app's next frame says otherwise: ready means the check has answered.
+            tex_known: tex_ready,
             tex_outdated: false,
             no_build: HashSet::new(),
             auto_writes: HashSet::new(),

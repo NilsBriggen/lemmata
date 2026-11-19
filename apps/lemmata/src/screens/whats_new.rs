@@ -183,9 +183,14 @@ pub fn to_show(last: &str, current: &str, used_before: bool) -> Vec<&'static Rel
 }
 
 /// The dialog. Returns true when it was closed.
-pub fn show(ctx: &egui::Context, p: &Palette, releases: &[&'static Release]) -> bool {
+pub fn show(
+    ctx: &egui::Context,
+    p: &Palette,
+    releases: &[&'static Release],
+    version: &str,
+) -> bool {
     let mut done = false;
-    let subtitle = format!("You're now on version {}.", env!("CARGO_PKG_VERSION"));
+    let subtitle = format!("You're now on version {version}.");
     let r = widgets::modal_with(
         ctx,
         p,
@@ -286,5 +291,16 @@ mod tests {
         // version sees only this release's.
         assert!(to_show("", "2.0.0", false).is_empty());
         assert_eq!(to_show("", "2.0.0", true).len(), 1);
+    }
+
+    /// Fixed releases, so the picture doesn't change when the app's version does.
+    #[test]
+    fn two_releases_labelled() {
+        let shown = releases_since("1.4.0", "2.0.0");
+        let mut h = crate::testing::harness(theme::LIGHT, move |ui| {
+            show(ui.ctx(), &theme::LIGHT, &shown, "2.0.0");
+        });
+        h.run();
+        h.snapshot("whats-new-2.0-light");
     }
 }

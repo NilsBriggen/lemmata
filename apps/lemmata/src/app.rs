@@ -1183,7 +1183,12 @@ impl eframe::App for App {
         self.show_prefs(&ctx);
         if !self.whats_new.is_empty()
             && self.welcome.is_none()
-            && whats_new::show(&ctx, &self.palette, &self.whats_new)
+            && whats_new::show(
+                &ctx,
+                &self.palette,
+                &self.whats_new,
+                env!("CARGO_PKG_VERSION"),
+            )
         {
             self.whats_new.clear();
         }
@@ -1382,13 +1387,14 @@ pub(crate) mod tests {
     }
 
     /// Whole screens hold a clock, a build's time, a fading SyncTeX box and a PDF that may sit a
-    /// few pixels lower: up to about 0.5% of the screen may differ. A broken layout differs by
-    /// far more.
+    /// few pixels lower: up to about 0.5% of the screen may differ. The references are drawn on
+    /// Linux; macOS and Windows antialias text otherwise and build the PDF with another TeX, so
+    /// there 5% may (a broken layout moves 20% and more).
     pub(crate) fn loose() -> egui_kittest::SnapshotOptions {
         egui_kittest::SnapshotOptions::new().max_failed_pixels(
             egui_kittest::OsThreshold::new(6000)
-                .macos(8000)
-                .windows(8000),
+                .macos(63_000)
+                .windows(63_000),
         )
     }
 
@@ -3293,7 +3299,7 @@ pub(crate) mod tests {
             h.query_by_label("LEMMATA 1.5").is_some(),
             "both releases, labelled"
         );
-        snap(&mut h, "whats-new-light");
+        // The window's picture is screens::whats_new's test: this list grows with the version.
         h.get_by_label("Got it").click();
         h.run_steps(2);
         assert!(h.query_by_label("Got it").is_none());

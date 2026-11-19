@@ -29,8 +29,9 @@ env:
 jobs:
   # One job, so MiKTeX is installed once: the app's scenarios first, then the build scenarios.
   windows:
-    # The version bump of a release changes nothing the tests cover; its code was tested on the commit before.
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
+    # The version bump on main changes nothing the tests cover; its code was tested on the commit
+    # before. A release tag (release.yml calls this) points at that commit too, and must run.
+    if: ${{ !(github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release)')) }}
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
@@ -97,6 +98,15 @@ jobs:
       - name: Run the app's tests and scenarios
         timeout-minutes: 30
         run: cargo test -p lemmata-app -- --test-threads=1
+      - name: Upload the snapshots that differ
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: snapshots-windows-miktex
+          path: |
+            apps/lemmata/tests/snapshots/*.new.png
+            apps/lemmata/tests/snapshots/*.diff.png
+          if-no-files-found: ignore
       # Debug build: it reuses the test build's dependencies, and the timings are TeX's anyway.
       - name: Build the command-line tool
         if: ${{ !cancelled() }}
