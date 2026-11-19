@@ -925,6 +925,10 @@ impl Shell {
             cancel_running(self);
             *self.watcher.lock_safe() = None;
             *self.project.lock_safe() = None;
+            // texlab works in the folder. The app stops it on closing only once it has started,
+            // so one still starting when the project closed runs on; dropping it kills it, and a
+            // start still under way finds the project gone and drops its own.
+            drop(self.lsp.blocking_lock().take());
         }
         // A precompiled preamble may still be in the making there, open or not.
         lemmata_tex::stop_background(&dir);
