@@ -120,6 +120,8 @@ impl Shell {
     /// Also remembers what this launch's command line asks to open, and tells detection where a
     /// downloaded Tectonic lives.
     pub fn new(dirs: Dirs, sink: Sink) -> Self {
+        // The history stores Lemmata made here; one a project brings isn't on the list.
+        lemmata_history::set_registry(dirs.data.join("history-stores"));
         let shell = Shell {
             dirs,
             sink,

@@ -30,7 +30,7 @@ fn root(state: &Shell) -> CmdResult<PathBuf> {
 fn with<T>(state: &Shell, f: impl FnOnce(&History) -> lemmata_history::Result<T>) -> CmdResult<T> {
     let root = root(state)?;
     let _one_at_a_time = GIT.lock_safe();
-    f(&History::open(&root).map_err(err)?).map_err(err)
+    f(&History::open(&root, state.trusted()).map_err(err)?).map_err(err)
 }
 
 /// Snapshot ids are commit hashes; anything else (an option such as `--help`) is refused.
@@ -46,7 +46,7 @@ impl Shell {
     pub fn history_status(&self) -> CmdResult<HistoryStatus> {
         let root = root(self)?;
         let _one_at_a_time = GIT.lock_safe();
-        Ok(match History::open(&root) {
+        Ok(match History::open(&root, self.trusted()) {
             Ok(_) => HistoryStatus::On,
             Err(Error::NotARepo(_)) => HistoryStatus::NotARepo,
             Err(e @ Error::NoGit) => HistoryStatus::NoGit {

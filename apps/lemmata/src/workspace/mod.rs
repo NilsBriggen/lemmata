@@ -529,10 +529,11 @@ impl Workspace {
     pub fn set_trusted(&mut self, backend: &Backend, settings: &mut Settings, trusted: bool) {
         settings.set_trust(&self.root, Some(trusted));
         self.trusted = trusted;
+        // Before any job below starts, so none runs with the old answer.
+        backend.shell.set_trusted(trusted);
         let project = self.project;
         self.lsp.state = crate::lsp::State::Starting;
         backend.spawn_async(move |shell| async move {
-            shell.set_trusted(trusted);
             Msg::Project(project, Box::new(Msg::LspStarted(shell.lsp_start().await)))
         });
         if trusted {
@@ -540,6 +541,8 @@ impl Workspace {
         } else {
             self.git.status.clear();
         }
+        // A store the project brought (or its own repository) may be used now, or no longer.
+        self.ensure_history(backend);
         self.build_soon(false, true);
     }
 

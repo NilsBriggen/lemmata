@@ -93,7 +93,8 @@ pub fn git_guard(git: &std::path::Path, dir: &std::path::Path) -> Option<Vec<Str
         None => (config(&["--local", "--includes"])?, false),
     };
     let mut names: Vec<String> = Vec::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
+    // A name that isn't UTF-8 can't be repeated back to git to turn the filter off.
+    for line in std::str::from_utf8(&out.stdout).ok()?.lines() {
         let key = match line.split_once('\t') {
             Some((scope, key)) if scoped => {
                 if scope != "local" && scope != "worktree" {
@@ -113,7 +114,16 @@ pub fn git_guard(git: &std::path::Path, dir: &std::path::Path) -> Option<Vec<Str
         }
     }
     let mut args = Vec::new();
-    for kv in ["core.fsmonitor=false", "log.showSignature=false"] {
+    // No hooks (a repository that came with a project brings its own), and no network: git
+    // fetches missing objects from a "promisor" remote on its own, through whatever transport
+    // and helper the repository names.
+    let no_hooks = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    for kv in [
+        "core.fsmonitor=false",
+        "log.showSignature=false",
+        &format!("core.hooksPath={no_hooks}"),
+        "protocol.allow=never",
+    ] {
         args.extend(["-c".to_string(), kv.to_string()]);
     }
     for name in names {

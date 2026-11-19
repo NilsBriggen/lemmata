@@ -368,6 +368,8 @@ impl Repo {
                 "--porcelain=v2",
                 "--branch",
                 "-z",
+                // Not into nested repositories: their own config was never looked at.
+                "--ignore-submodules=all",
             ],
             LOCAL,
         )?;

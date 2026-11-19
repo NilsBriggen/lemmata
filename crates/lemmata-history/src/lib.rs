@@ -32,6 +32,11 @@ pub enum Error {
     /// A TeX tool (latexdiff, latexmk) failed or couldn't run.
     #[error("{0}")]
     Tool(String),
+    /// The project brought a history folder Lemmata didn't make on this computer, and isn't trusted.
+    #[error(
+        "this project came with a history folder of its own (.lemmata/history), which could run programs. Trust the project in its settings to use it."
+    )]
+    Foreign,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -251,16 +256,119 @@ pub struct History {
     separate: bool,
 }
 
+/// The ids of the snapshot stores Lemmata made on this computer, one per line; see `set_registry`.
+static REGISTRY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// Made in this run, for when no registry file is set (tests, the command line).
+static MADE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+const ID_FILE: &str = "lemmata-store-id";
+
+/// Where the list of this computer's own stores is kept (in the app's data folder). A store a
+/// project brings along isn't on it, so it isn't used until the project is trusted.
+pub fn set_registry(path: PathBuf) {
+    let _ = REGISTRY.set(path);
+}
+
+fn registered() -> Vec<String> {
+    let mut ids = MADE.lock().map(|m| m.clone()).unwrap_or_default();
+    if let Some(text) = REGISTRY.get().and_then(|p| std::fs::read_to_string(p).ok()) {
+        ids.extend(text.lines().map(str::to_string));
+    }
+    ids
+}
+
+fn register(id: &str) {
+    if let Ok(mut m) = MADE.lock() {
+        m.push(id.to_string());
+    }
+    if let Some(p) = REGISTRY.get() {
+        let mut text = std::fs::read_to_string(p).unwrap_or_default();
+        if !text.lines().any(|l| l == id) {
+            text.push_str(id);
+            text.push('\n');
+            if let Some(dir) = p.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = lemmata_env::fs::write_atomic(p, text.as_bytes());
+        }
+    }
+}
+
+/// A store's id, written when Lemmata makes it.
+fn store_id(store: &Path) -> Option<String> {
+    let id = std::fs::read_to_string(store.join(ID_FILE)).ok()?;
+    let id = id.trim();
+    (id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())).then(|| id.to_string())
+}
+
+/// 128 random bits as hex, from the standard library's randomly seeded hasher.
+fn new_id() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let half = || {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        );
+        h.write_u32(std::process::id());
+        h.finish()
+    };
+    format!("{:016x}{:016x}", half(), half())
+}
+
+/// A store that came with a project can be set up to read config, hooks or objects from
+/// elsewhere, or link its files out of the project. Such a store is never used.
+fn store_is_plain(root: &Path, store: &Path) -> bool {
+    let link = |p: &Path| {
+        p.symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+    };
+    let redirects = [
+        "commondir",
+        "gitdir",
+        "config.worktree",
+        "objects/info/alternates",
+    ]
+    .iter()
+    .any(|f| store.join(f).symlink_metadata().is_ok());
+    let links = [
+        root.join(".lemmata"),
+        store.to_path_buf(),
+        store.join("config"),
+        store.join("info"),
+        store.join("info/exclude"),
+        store.join(ID_FILE),
+    ]
+    .iter()
+    .any(|p| link(p));
+    !redirects && !links
+}
+
 impl History {
-    /// Opens history for a project folder: Lemmata's own store if it has one,
-    /// else the git repository the folder is (inside of).
-    pub fn open(root: &Path) -> Result<History> {
+    /// Opens history for a project folder: Lemmata's own store if it has one, else the git
+    /// repository the folder is (inside of). `trusted`: the user trusts the project. Without it
+    /// only a store Lemmata made on this computer is used, never one the project brought and
+    /// never the project's own repository, as either could run programs (hooks, filters).
+    pub fn open(root: &Path, trusted: bool) -> Result<History> {
         let git = find_git().ok_or(Error::NoGit)?;
         let guard = lemmata_env::git_guard(&git, root).ok_or_else(|| {
             Error::Git("the repository's config names a filter that can't be turned off".into())
         })?;
         let store = root.join(STORE);
         if store.join("HEAD").is_file() {
+            if !store_is_plain(root, &store) {
+                return Err(Error::Foreign);
+            }
+            match store_id(&store) {
+                Some(id) if registered().contains(&id) => {}
+                // A store from before ids, or from elsewhere: once trusted, it is ours.
+                _ if trusted => {
+                    let id = store_id(&store).unwrap_or_else(new_id);
+                    std::fs::write(store.join(ID_FILE), &id)?;
+                    register(&id);
+                }
+                _ => return Err(Error::Foreign),
+            }
             let h = History {
                 git,
                 root: root.to_path_buf(),
@@ -271,6 +379,9 @@ impl History {
             h.exclude_build_folder()?;
             h.safe_config()?;
             return Ok(h);
+        }
+        if !trusted {
+            return Err(Error::NotARepo(root.to_path_buf()));
         }
         let out = lemmata_env::host(&mut Command::new(&git))
             .arg("-C")
@@ -310,16 +421,20 @@ impl History {
             .args(["config", "--unset", "core.worktree"]);
         no_window(&mut unset);
         let _ = unset.output();
-        History::open(root)
+        let id = new_id();
+        std::fs::write(store.join(ID_FILE), &id)?;
+        register(&id);
+        History::open(root, false)
     }
 
     /// The store can arrive with the project (committed to a cloned repository), and git config
     /// can name programs to run (core.fsmonitor, filters). Only the keys `git init` writes stay.
     fn safe_config(&self) -> Result<()> {
         let path = self.git_dir.join("config");
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let kept = safe_config_text(&text);
-        if kept != text {
+        // Bytes, not text: a config that isn't UTF-8 would otherwise read as empty and stay.
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        let kept = safe_config_text(&String::from_utf8_lossy(&bytes));
+        if kept.as_bytes() != bytes {
             std::fs::write(&path, kept)?;
         }
         Ok(())
@@ -345,7 +460,9 @@ impl History {
     fn cmd(&self) -> Command {
         let mut c = Command::new(&self.git);
         if self.separate {
+            // GIT_COMMON_DIR too: git then reads no `commondir` file a store could carry.
             c.env("GIT_DIR", &self.git_dir)
+                .env("GIT_COMMON_DIR", &self.git_dir)
                 .env("GIT_WORK_TREE", &self.root);
         }
         c.arg("-C")
@@ -764,7 +881,7 @@ mod tests {
         fs::write(root.join("main.tex"), "one").unwrap();
 
         assert!(!working_status(root).is_empty());
-        let h = History::open(root).unwrap();
+        let h = History::open(root, true).unwrap();
         h.snapshot("First").unwrap().unwrap();
         assert_eq!(h.list(10).unwrap().len(), 1);
         assert!(!mark.exists(), "the repository's config ran a program");
@@ -780,7 +897,7 @@ mod tests {
         fs::write(root.join("main.tex"), "one").unwrap();
         fs::write(root.join(".gitignore"), "*.aux\n").unwrap();
         git(root, &["init", "-q"]);
-        let h = History::open(root).unwrap();
+        let h = History::open(root, true).unwrap();
         // The user has a staged change of their own.
         fs::write(root.join("notes.txt"), "mine").unwrap();
         git(root, &["add", "notes.txt"]);
@@ -833,7 +950,10 @@ mod tests {
         let root = d.path().join("thesis");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("main.tex"), "one").unwrap();
-        assert!(matches!(History::open(&root), Err(Error::NotARepo(_))));
+        assert!(matches!(
+            History::open(&root, true),
+            Err(Error::NotARepo(_))
+        ));
         let h = History::init(&root).unwrap();
         let first = h.snapshot("First").unwrap().unwrap();
         // The folder itself is still not a repository, and nothing was added to it.
@@ -844,7 +964,7 @@ mod tests {
         let moved = d.path().join("moved");
         fs::rename(&root, &moved).unwrap();
         fs::write(moved.join("main.tex"), "two").unwrap();
-        let h = History::open(&moved).unwrap();
+        let h = History::open(&moved, true).unwrap();
         h.snapshot("Second").unwrap().unwrap();
         let list = h.list(10).unwrap();
         assert_eq!(list.len(), 2);
@@ -867,7 +987,7 @@ mod tests {
         git(root, &["init", "-q"]);
         git(root, &["config", "core.autocrlf", "true"]);
         fs::write(root.join("main.tex"), "one\r\ntwo\r\n").unwrap();
-        let h = History::open(root).unwrap();
+        let h = History::open(root, true).unwrap();
         let id = h.snapshot("s").unwrap().unwrap();
         assert_eq!(
             h.file_at(&id, "main.tex").unwrap().as_deref(),
@@ -936,7 +1056,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("main.tex"), "x").unwrap();
         fs::write(d.path().join("unrelated.txt"), "y").unwrap();
-        let h = History::open(&root).unwrap();
+        let h = History::open(&root, true).unwrap();
         let id = h.snapshot("s").unwrap().unwrap();
         assert_eq!(h.file_at(&id, "main.tex").unwrap().as_deref(), Some("x"));
         let list = h.list(5).unwrap();
@@ -967,7 +1087,10 @@ mod tests {
         {
             return;
         }
-        assert!(matches!(History::open(d.path()), Err(Error::NotARepo(_))));
+        assert!(matches!(
+            History::open(d.path(), true),
+            Err(Error::NotARepo(_))
+        ));
     }
 
     #[test]
@@ -1038,6 +1161,81 @@ mod tests {
             h.file_at(&second, "Einführung.tex").unwrap().as_deref(),
             Some("4")
         );
+    }
+
+    /// Snapshots happen unasked; a store (or repository) can carry hooks that git would run on
+    /// `add` and `update-ref`. They never run.
+    #[cfg(unix)]
+    #[test]
+    fn hooks_never_run_on_snapshots() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(root.join("a.tex"), "1").unwrap();
+        let h = History::init(root).unwrap();
+        let marker = d.path().join("hook-ran");
+        let hooks = root.join(STORE).join("hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        for name in ["post-index-change", "reference-transaction", "pre-commit"] {
+            let f = hooks.join(name);
+            fs::write(&f, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+            fs::set_permissions(&f, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::write(root.join("a.tex"), "2").unwrap();
+        assert!(h.snapshot("After").unwrap().is_some());
+        assert!(!marker.exists(), "a hook ran");
+    }
+
+    /// A store a project brings along isn't used until the project is trusted; one that points
+    /// git elsewhere (a `commondir` file) never is.
+    #[test]
+    fn a_store_from_elsewhere_waits_for_trust() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(root.join("a.tex"), "1").unwrap();
+        History::init(root).unwrap();
+        // As if made on another computer: an id this one never registered.
+        fs::write(
+            root.join(STORE).join(ID_FILE),
+            "0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+        assert!(matches!(History::open(root, false), Err(Error::Foreign)));
+        History::open(root, true).unwrap();
+        History::open(root, false).expect("trusted once, it is registered");
+        fs::write(root.join(STORE).join("commondir"), "/elsewhere").unwrap();
+        assert!(matches!(History::open(root, true), Err(Error::Foreign)));
+    }
+
+    #[test]
+    fn a_config_that_isnt_utf8_is_cleaned_too() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(root.join("a.tex"), "1").unwrap();
+        History::init(root).unwrap();
+        let config = root.join(STORE).join("config");
+        let mut bad = fs::read(&config).unwrap();
+        bad.extend_from_slice(b"[core]\n\tfsmonitor = touch-me\n# \xff\n");
+        fs::write(&config, &bad).unwrap();
+        History::open(root, false).unwrap();
+        let now = fs::read_to_string(&config).unwrap();
+        assert!(!now.contains("fsmonitor"), "{now}");
+    }
+
+    /// Without trust, the project's own repository isn't used for history either.
+    #[test]
+    fn an_untrusted_project_never_uses_its_own_repository() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(root.join("a.tex"), "1").unwrap();
+        let mut init = Command::new(find_git().unwrap());
+        init.arg("-C").arg(root).args(["init", "--quiet"]);
+        assert!(init.status().unwrap().success());
+        assert!(matches!(
+            History::open(root, false),
+            Err(Error::NotARepo(_))
+        ));
+        assert!(History::open(root, true).is_ok());
     }
 
     #[test]
