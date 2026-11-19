@@ -363,17 +363,9 @@ const CONFIG_KEYS: &[&str] = &[
     "fast_preamble",
 ];
 
-/// A crash mid-write must not leave a half-written file, so write beside it
-/// and rename over.
+/// A crash mid-write must not leave a half-written file: see `lemmata_env::fs::write_atomic`.
 fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, text)
-        .and_then(|()| fs::rename(&tmp, path))
-        .inspect_err(|_| {
-            let _ = fs::remove_file(&tmp);
-        })
+    lemmata_env::fs::write_atomic(path, text.as_bytes()).map(|_| ())
 }
 
 /// Is `main` (relative to `root`) an existing file inside the project?
@@ -566,11 +558,14 @@ pub fn tree(root: &Path, outdir: &str) -> Vec<Entry> {
                 let ft = e.file_type().ok();
                 let real_dir = ft.is_some_and(|t| t.is_dir());
                 let is_dir = real_dir || ft.is_some_and(|t| t.is_symlink()) && path.is_dir();
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy();
+                // Only Windows separates with `\`; elsewhere it is part of a name, and
+                // `a\..\..\x` must not become a path that climbs out of the project.
+                let rel = if cfg!(windows) {
+                    rel.replace('\\', "/")
+                } else {
+                    rel.into_owned()
+                };
                 Entry {
                     name: e.file_name().to_string_lossy().into_owned(),
                     path: rel,
@@ -691,7 +686,10 @@ pub fn analyze_with_sources(project: &Project, entries: &[Entry], sources: &Sour
 /// The document's headings in reading order with word counts, following
 /// `\input`, `\include` and `\subfile` from the main file.
 pub fn outline(project: &Project) -> Outline {
-    let mut walk = Walk::default();
+    let mut walk = Walk {
+        trusted: project.trusted,
+        ..Walk::default()
+    };
     walk.file(&project.root, &project.main, 0, true);
     walk.out
 }
@@ -702,6 +700,7 @@ fn outline_with(
 ) -> Outline {
     let mut walk = Walk {
         sources: Some(sources),
+        trusted: project.trusted,
         ..Walk::default()
     };
     walk.file(&project.root, &project.main, 0, true);
@@ -714,6 +713,9 @@ struct Walk<'a> {
     seen: std::collections::HashSet<PathBuf>,
     prose: prose::State,
     sources: Option<&'a std::collections::HashMap<PathBuf, String>>,
+    /// Follows `\input` out of the project only for a trusted project: on Windows, reading a
+    /// network path (`\\server\share\x`) makes the computer contact that server.
+    trusted: bool,
 }
 
 impl Walk<'_> {
@@ -783,9 +785,17 @@ impl Walk<'_> {
                     words: 0,
                 });
             } else if let Some(target) = include_target(&name, after) {
-                let mut child = PathBuf::from(target.trim());
+                let mut child: PathBuf = Path::new(target.trim())
+                    .components()
+                    .filter(|c| !matches!(c, std::path::Component::CurDir))
+                    .collect();
                 if child.extension().is_none() {
                     child.set_extension("tex");
+                }
+                if !self.trusted && lemmata_env::fs::inside_rel(&child.to_string_lossy()).is_none()
+                {
+                    self.count(raw);
+                    return;
                 }
                 // This line's own text counts before the included file's.
                 self.count(raw);
@@ -996,6 +1006,31 @@ mod tests {
         assert_eq!(p.main, PathBuf::from("a.tex"));
         assert_eq!(p.config.engine, Engine::Xelatex);
         assert!(!p.config.shell_escape);
+    }
+
+    #[test]
+    fn an_untrusted_outline_stays_inside_the_project() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("p");
+        std::fs::create_dir_all(root.join("ch")).unwrap();
+        std::fs::write(d.path().join("outside.tex"), "\\section{Outside}\n").unwrap();
+        std::fs::write(root.join("ch/in.tex"), "\\section{Inside}\n").unwrap();
+        std::fs::write(
+            root.join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\n\\input{./ch/in}\n\\input{../outside}\n\\end{document}\n",
+        )
+        .unwrap();
+        let mut p = Project::open(&root).unwrap();
+        let titles = |p: &Project| {
+            outline(p)
+                .headings
+                .into_iter()
+                .map(|h| h.title)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(titles(&p), ["Inside"]);
+        p.trusted = true;
+        assert_eq!(titles(&p), ["Inside", "Outside"]);
     }
 
     #[test]

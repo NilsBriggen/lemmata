@@ -62,7 +62,13 @@ pub fn bib_files_with_sources(
                     p.set_extension("bib");
                 }
                 let p = p.to_string_lossy().replace('\\', "/");
-                if project.root.join(&p).is_file() && !named.contains(&p) {
+                // Outside the project only for a trusted one: on Windows a network path makes
+                // the computer contact that server.
+                let inside = lemmata_env::fs::inside_rel(p.trim_start_matches("./")).is_some();
+                if (inside || project.trusted)
+                    && project.root.join(&p).is_file()
+                    && !named.contains(&p)
+                {
                     named.push(p);
                 }
             }

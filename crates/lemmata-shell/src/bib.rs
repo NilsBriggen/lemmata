@@ -31,10 +31,7 @@ impl Shell {
     /// here, when the user asks for it.
     pub async fn bib_add_reference(&self, id: String, file: String) -> CmdResult<Added> {
         let p = project(self)?;
-        if !file.ends_with(".bib")
-            || file.contains("..")
-            || std::path::Path::new(&file).is_absolute()
-        {
+        if !file.ends_with(".bib") || crate::files::safe_rel(&file).is_err() {
             return Err("Choose a .bib file inside the project.".into());
         }
         let doi = lemmata_bib::to_doi(&id).ok_or("That doesn't look like a DOI or an arXiv ID.")?;
@@ -80,7 +77,7 @@ fn edit_bib(
     edit: impl FnOnce(&str) -> Result<String, lemmata_bib::Error>,
 ) -> CmdResult<Vec<String>> {
     let p = project(state)?;
-    if !file.ends_with(".bib") || file.contains("..") || std::path::Path::new(file).is_absolute() {
+    if !file.ends_with(".bib") || crate::files::safe_rel(file).is_err() {
         return Err("Choose a .bib file inside the project.".into());
     }
     let path = p.root.join(file);

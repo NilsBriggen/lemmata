@@ -50,7 +50,11 @@ impl History {
                     .args(["show", &format!("{id}:{prefix}{path}")])
                     .output()?,
             )?;
-            let to = dest.join(path);
+            // `paths` only lists names inside the folder; checked again where the file goes.
+            let Some(rel) = lemmata_env::fs::inside_rel(path) else {
+                continue;
+            };
+            let to = dest.join(rel);
             if let Some(dir) = to.parent() {
                 std::fs::create_dir_all(dir)?;
             }

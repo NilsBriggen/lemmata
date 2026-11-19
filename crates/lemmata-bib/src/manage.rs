@@ -320,21 +320,10 @@ pub fn free_key(base: &str, taken: &[String]) -> String {
     key
 }
 
-/// A crash mid-write must not leave a half-written file.
+/// A crash mid-write must not leave a half-written file, and a .bib that is a link (a library
+/// shared between projects) stays one: see `lemmata_env::fs::write_atomic`.
 pub fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".lemmata-tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    // Synced before the rename, so a crash can't leave an empty .bib behind.
-    std::fs::File::create(&tmp)
-        .and_then(|mut f| {
-            std::io::Write::write_all(&mut f, text.as_ref())?;
-            f.sync_all()
-        })
-        .and_then(|()| std::fs::rename(&tmp, path))
-        .inspect_err(|_| {
-            let _ = std::fs::remove_file(&tmp);
-        })
+    lemmata_env::fs::write_atomic(path, text.as_ref()).map(|_| ())
 }
 
 #[cfg(test)]

@@ -493,41 +493,26 @@ impl Shell {
         expected: Option<u32>,
     ) -> CmdResult<()> {
         let abs = root.join(files::safe_rel(&path)?);
-        // Through a symlink (a preamble shared between projects) to the file it names.
-        let abs = std::fs::canonicalize(&abs).unwrap_or(abs);
-        if let (Some(expected), Ok(disk)) = (expected, std::fs::read(&abs))
-            && files::content_hash(&disk) != expected
-        {
-            return Err(format!("{CONFLICT} {path} was changed by another program."));
-        }
-        // Write to a hidden sibling first so a crash never leaves a half-written
-        // source file; the watcher ignores hidden files. The name keeps the full
-        // file name, so main.tex and main.bib can't share a temp file.
-        let name = abs
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        // Unique per save, so two saves of one file in flight can't mix their temp files.
-        static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = abs.with_file_name(format!(".{name}.{n}.lemmata-tmp"));
-        let old = std::fs::metadata(&abs).ok();
         // A file in a folder that doesn't exist yet (e.g. .lemmata/comments.json before the first build).
         if let Some(dir) = abs.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        files::write_synced(&tmp, content.as_bytes())
+        // Beside the file first, so a crash never leaves half of it; through a link (a preamble
+        // shared between projects) to the file it names.
+        let staged = lemmata_env::fs::stage(&abs, content.as_bytes())
             .map_err(|e| format!("Could not save {path}: {e}"))?;
-        // The file keeps its permissions (an edited script stays executable).
-        if let Some(m) = old {
-            let _ = std::fs::set_permissions(&tmp, m.permissions());
+        if let (Some(expected), Ok(disk)) = (expected, std::fs::read(staged.target()))
+            && files::content_hash(&disk) != expected
+        {
+            return Err(format!("{CONFLICT} {path} was changed by another program."));
         }
-        files::put_in_place(&tmp, &abs, &content)
+        let written = staged
+            .commit()
             .map_err(|e| format!("Could not save {path}: {e}"))?;
         // From here on, an event for this exact content is our own doing.
         self.written
             .lock_safe()
-            .insert(abs, files::hash_bytes(content.as_bytes()));
+            .insert(written, files::hash_bytes(content.as_bytes()));
         Ok(())
     }
 }

@@ -450,15 +450,21 @@ impl History {
     }
 
     fn write_back(&self, id: &str, path: &str) -> Result<()> {
+        // Names come from the snapshot, which can arrive with the project.
+        let outside = || Error::Git(format!("{path} is outside the project"));
+        let rel = lemmata_env::fs::inside_rel(path).ok_or_else(outside)?;
+        let dest = self.root.join(&rel);
+        // A folder on the way can be a link out of the project.
+        let inside = |dir: &Path| -> Result<bool> {
+            let root = std::fs::canonicalize(&self.root)?;
+            Ok(std::fs::canonicalize(dir)?.starts_with(root))
+        };
         match self.bytes_at(id, path)? {
             Some(bytes) => {
-                let dest = self.root.join(path);
                 if let Some(dir) = dest.parent() {
                     std::fs::create_dir_all(dir)?;
-                    // A folder on the way can be a link out of the project.
-                    let root = std::fs::canonicalize(&self.root)?;
-                    if !std::fs::canonicalize(dir)?.starts_with(root) {
-                        return Err(Error::Git(format!("{path} is outside the project")));
+                    if !inside(dir)? {
+                        return Err(outside());
                     }
                 }
                 // A link is replaced by the file, not written through.
@@ -471,7 +477,9 @@ impl History {
                 std::fs::write(dest, bytes)?;
             }
             None => {
-                let _ = std::fs::remove_file(self.root.join(path));
+                if dest.parent().is_some_and(|d| inside(d).unwrap_or(false)) {
+                    let _ = std::fs::remove_file(&dest);
+                }
             }
         }
         Ok(())
@@ -509,11 +517,13 @@ impl History {
         Ok(changed)
     }
 
+    /// Paths git lists, only those that name a file inside the project: a snapshot that came
+    /// with the project can hold any name (`..`, absolute, drive letters).
     fn paths(&self, args: &[&str]) -> Result<Vec<String>> {
         let out = self.run(args)?;
         Ok(out
             .split('\0')
-            .filter(|p| !p.is_empty())
+            .filter(|p| lemmata_env::fs::inside_rel(p).is_some())
             .map(String::from)
             .collect())
     }
@@ -521,8 +531,12 @@ impl History {
     /// What changed going from snapshot `a` to snapshot `b`.
     pub fn compare(&self, a: &str, b: &str) -> Result<Vec<Change>> {
         let out = self.run(&[
+            // As `list` does: names as they are, from the project folder (not the repository's top).
+            "-c",
+            "core.quotePath=false",
             "diff-tree",
             "-r",
+            "--relative",
             "--no-renames",
             "--name-status",
             a,
@@ -1005,6 +1019,7 @@ mod tests {
         fs::write(root.join("a.tex"), "2").unwrap();
         fs::remove_file(root.join("b.tex")).unwrap();
         fs::write(root.join("c.tex"), "3").unwrap();
+        fs::write(root.join("Einführung.tex"), "4").unwrap();
         let second = h.snapshot("Second").unwrap().unwrap();
         let mut got = h.compare(&first, &second).unwrap();
         got.sort_by(|x, y| x.path.cmp(&y.path));
@@ -1012,10 +1027,16 @@ mod tests {
         assert_eq!(
             got,
             [
+                ("added", "Einführung.tex"),
                 ("modified", "a.tex"),
                 ("deleted", "b.tex"),
                 ("added", "c.tex")
             ]
+        );
+        // As the History panel then opens it: the name works as a path.
+        assert_eq!(
+            h.file_at(&second, "Einführung.tex").unwrap().as_deref(),
+            Some("4")
         );
     }
 

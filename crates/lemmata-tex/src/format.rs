@@ -502,8 +502,7 @@ fn without_id(pdf: &[u8]) -> Vec<u8> {
 }
 
 fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let tmp = path.with_extension("key-tmp");
-    std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path))
+    lemmata_env::fs::write_atomic(path, text.as_bytes()).map(|_| ())
 }
 
 #[cfg(test)]

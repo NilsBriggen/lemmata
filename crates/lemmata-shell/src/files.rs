@@ -243,51 +243,23 @@ fn replace_across(
     Ok(count)
 }
 
-/// Writes every file to a hidden sibling first and only then renames them
-/// into place, so a failure (a full disk, say) almost always happens before
-/// the first real file is touched. The watcher ignores hidden files.
+/// Writes every file beside itself first and only then puts them in place, so a failure (a full
+/// disk, say) almost always happens before the first real file is touched. A file that is a link
+/// keeps it: the file it names gets the text.
 fn write_all_atomic(writes: &[(PathBuf, String)]) -> CmdResult<()> {
-    let tmp_of = |path: &Path| {
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
-        path.with_file_name(format!(".{}.lemmata-tmp", name.unwrap_or_default()))
-    };
-    for (i, (path, text)) in writes.iter().enumerate() {
-        if let Err(e) = write_synced(&tmp_of(path), text.as_bytes()) {
-            for (path, _) in &writes[..=i] {
-                let _ = std::fs::remove_file(tmp_of(path));
-            }
-            return Err(format!("Could not save {}: {e}", path.display()));
-        }
+    let mut staged = Vec::with_capacity(writes.len());
+    for (path, text) in writes {
+        staged.push(
+            lemmata_env::fs::stage(path, text.as_bytes())
+                .map_err(|e| format!("Could not save {}: {e}", path.display()))?,
+        );
     }
-    for (i, (path, text)) in writes.iter().enumerate() {
-        if let Err(e) = put_in_place(&tmp_of(path), path, text) {
-            for (path, _) in &writes[i..] {
-                let _ = std::fs::remove_file(tmp_of(path));
-            }
-            return Err(format!("Could not save {}: {e}", path.display()));
-        }
+    for s in staged {
+        let shown = s.target().display().to_string();
+        s.commit()
+            .map_err(|e| format!("Could not save {shown}: {e}"))?;
     }
     Ok(())
-}
-
-/// Writes `bytes` and waits until they are on the disk, so the rename that follows can't
-/// leave an empty file behind after a crash or power cut.
-pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut f = std::fs::File::create(path)?;
-    f.write_all(bytes)?;
-    f.sync_all()
-}
-
-/// Moves `tmp` (holding `text`) over `path`. Windows refuses to replace a file another program has open, and TeX
-/// keeps its input open for the whole build; overwriting it in place is still allowed then.
-pub(crate) fn put_in_place(tmp: &Path, path: &Path, text: &str) -> std::io::Result<()> {
-    let result = std::fs::rename(tmp, path).or_else(|e| match e.kind() {
-        std::io::ErrorKind::PermissionDenied => std::fs::write(path, text),
-        _ => Err(e),
-    });
-    let _ = std::fs::remove_file(tmp);
-    result
 }
 
 impl Shell {
@@ -1142,25 +1114,6 @@ pub fn watch(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    #[test]
-    fn saves_in_place_when_the_file_cant_be_replaced() {
-        use std::os::unix::fs::PermissionsExt;
-        let d = tempfile::tempdir().unwrap();
-        let (tmp, path) = (
-            d.path().join(".main.tex.lemmata-tmp"),
-            d.path().join("main.tex"),
-        );
-        std::fs::write(&path, "old").unwrap();
-        std::fs::write(&tmp, "new").unwrap();
-        // A read-only folder refuses the rename, as Windows does for an open file; the file itself stays writable.
-        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let result = super::put_in_place(&tmp, &path, "new");
-        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        result.unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
-    }
-
     #[test]
     fn content_hash_matches_the_frontend() {
         // The same vectors are checked in src/lib/contentHash.test.ts.

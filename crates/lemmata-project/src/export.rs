@@ -204,6 +204,25 @@ pub fn project_files(root: &Path, outdir: &str) -> Vec<String> {
     out
 }
 
+/// A project file's bytes for an export. None for a name that isn't a plain path inside the
+/// project (a `\` in a name on Linux, say), and for a link out of a project the user hasn't
+/// trusted: a project from elsewhere could link to a private file, which would then be sent out.
+fn export_bytes(p: &Project, rel: &str) -> Result<Option<Vec<u8>>, String> {
+    let Some(rel) = lemmata_env::fs::inside_rel(&rel.replace(std::path::MAIN_SEPARATOR, "/"))
+    else {
+        return Ok(None);
+    };
+    let path = p.root.join(rel);
+    if !p.trusted {
+        let inside = crate::canonical(&path)
+            .is_ok_and(|real| crate::canonical(&p.root).is_ok_and(|root| real.starts_with(root)));
+        if !inside {
+            return Ok(None);
+        }
+    }
+    std::fs::read(path).map(Some).map_err(io)
+}
+
 fn io(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
@@ -282,11 +301,10 @@ pub fn zip_project(p: &Project, dest: &Path, with_pdf: bool) -> Result<usize, St
         if dest_rel.as_ref().is_some_and(|d| d == Path::new(&rel)) {
             continue;
         }
-        add(
-            &mut zip,
-            &rel,
-            &std::fs::read(p.root.join(&rel)).map_err(io)?,
-        )?;
+        let Some(bytes) = export_bytes(p, &rel)? else {
+            continue;
+        };
+        add(&mut zip, &rel, &bytes)?;
         count += 1;
     }
     if with_pdf && let Ok(pdf) = std::fs::read(p.pdf_path()) {
@@ -583,10 +601,12 @@ pub fn zip_arxiv(p: &Project, dest: &Path, strip: bool, flatten: bool) -> Result
     let files = used_files(&fls, &p.root, p.config.outdir.trim_start_matches("./"));
     let bbl = std::fs::read(outdir.join(format!("{stem}.bbl"))).ok();
     let flat = if flatten {
+        // A file that isn't UTF-8 (latin1) stays out of the merge, with its \input, as it is.
         let read = |rel: &Path| {
-            std::fs::read(p.root.join(rel))
+            export_bytes(p, &rel.to_string_lossy())
                 .ok()
-                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .flatten()
+                .and_then(|b| String::from_utf8(b).ok())
         };
         let bbl_text = bbl
             .as_deref()
@@ -603,15 +623,20 @@ pub fn zip_arxiv(p: &Project, dest: &Path, strip: bool, flatten: bool) -> Result
         if flat.as_ref().is_some_and(|f| f.inlined.contains(rel)) {
             continue;
         }
-        let name = rel.to_string_lossy().replace('\\', "/");
+        let name = rel
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
         let bytes = match &flat {
             Some(f) if *rel == p.main => f.text.as_bytes().to_vec(),
-            _ => std::fs::read(p.root.join(rel)).map_err(io)?,
+            _ => match export_bytes(p, &rel.to_string_lossy())? {
+                Some(b) => b,
+                None => continue,
+            },
         };
-        let bytes = if strip && name.ends_with(".tex") {
-            strip_comments(&String::from_utf8_lossy(&bytes)).into_bytes()
-        } else {
-            bytes
+        // Comments are only taken out of UTF-8 text: a latin1 file is sent as it is.
+        let bytes = match std::str::from_utf8(&bytes) {
+            Ok(text) if strip && name.ends_with(".tex") => strip_comments(text).into_bytes(),
+            _ => bytes,
         };
         add(&mut zip, name, &bytes)?;
         count += 1;
@@ -681,11 +706,52 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
         std::os::unix::fs::symlink("missing.tex", d.path().join("bad.tex")).unwrap();
-        let p = Project::open(d.path()).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        // Trusted, so the broken link is read (and fails) rather than left out.
+        p.trusted = true;
         let dest = d.path().join("paper.zip");
         std::fs::write(&dest, b"known good").unwrap();
         assert!(zip_project(&p, &dest, false).is_err());
         assert_eq!(std::fs::read(&dest).unwrap(), b"known good");
+    }
+
+    /// A project from elsewhere can't get a private file into a zip the user sends out, nor a name
+    /// that unpacks outside the folder it is unpacked into.
+    #[cfg(unix)]
+    #[test]
+    fn an_untrusted_export_leaves_out_links_out_of_the_project_and_odd_names() {
+        let d = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::write(elsewhere.path().join("id_ed25519"), "private").unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::os::unix::fs::symlink(
+            elsewhere.path().join("id_ed25519"),
+            d.path().join("refs.bib"),
+        )
+        .unwrap();
+        std::fs::write(d.path().join("a\\..\\..\\x.tex"), "odd").unwrap();
+        std::fs::create_dir(d.path().join("ch")).unwrap();
+        std::fs::write(d.path().join("ch/one.tex"), "one").unwrap();
+        std::os::unix::fs::symlink(d.path().join("ch/one.tex"), d.path().join("same.tex")).unwrap();
+        let names = |p: &Project| {
+            let out = tempfile::tempdir().unwrap();
+            let dest = out.path().join("p.zip");
+            zip_project(p, &dest, false).unwrap();
+            let mut n: Vec<String> = zip::ZipArchive::new(std::fs::File::open(&dest).unwrap())
+                .unwrap()
+                .file_names()
+                .map(|n| n.unwrap().into_owned())
+                .collect();
+            n.sort();
+            n
+        };
+        let mut p = Project::open(d.path()).unwrap();
+        assert_eq!(names(&p), ["ch/one.tex", "main.tex", "same.tex"]);
+        p.trusted = true;
+        assert_eq!(
+            names(&p),
+            ["ch/one.tex", "main.tex", "refs.bib", "same.tex"]
+        );
     }
 
     #[test]

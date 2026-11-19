@@ -502,10 +502,7 @@ fn write_json(path: &Path, v: &Value) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, serde_json::to_vec_pretty(v).unwrap()).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
-    }
+    let _ = lemmata_env::fs::write_atomic(path, &serde_json::to_vec_pretty(v).unwrap());
 }
 
 #[cfg(test)]

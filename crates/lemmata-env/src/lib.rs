@@ -3,6 +3,8 @@
 //! libraries first on `LD_LIBRARY_PATH` and points GTK and GIO into it; a system program
 //! that inherits that loads those older libraries and can crash ("symbol lookup error").
 
+pub mod fs;
+
 use std::ffi::{OsStr, OsString};
 use std::process::Command;
 

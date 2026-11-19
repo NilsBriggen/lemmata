@@ -1,0 +1,227 @@
+//! Writing user files so a crash, a full disk or a link planted by a project can't damage them,
+//! and checking names that come from snapshots, archives and documents before they become paths.
+
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// `rel` as a path inside a folder: relative, made only of plain names (no `..`, no `.`, nothing
+/// empty), and without a backslash or a colon, which are a separator and a drive letter on
+/// Windows. Names from snapshots, archives and documents go through this before they are joined
+/// onto a project folder.
+pub fn inside_rel(rel: &str) -> Option<PathBuf> {
+    let p = Path::new(rel);
+    let plain = !rel.is_empty()
+        && !rel.contains(['\\', ':'])
+        && !rel.chars().any(char::is_control)
+        && !p.is_absolute()
+        && p.components().all(|c| matches!(c, Component::Normal(_)));
+    plain.then(|| p.to_path_buf())
+}
+
+/// `path` with links resolved, as far as it exists; on Windows without the `\\?\` prefix
+/// `canonicalize` adds.
+fn resolved(path: &Path) -> PathBuf {
+    let Ok(real) = path.canonicalize() else {
+        return path.to_path_buf();
+    };
+    #[cfg(windows)]
+    {
+        let s = real.to_string_lossy();
+        if let Some(unc) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{unc}"));
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\")
+            && rest.as_bytes().get(1) == Some(&b':')
+        {
+            return PathBuf::from(rest);
+        }
+    }
+    real
+}
+
+/// New text for one file, written beside it and not yet in place. Dropped without `commit`, it
+/// leaves the file as it was.
+pub struct Staged {
+    tmp: PathBuf,
+    target: PathBuf,
+    bytes: Vec<u8>,
+    done: bool,
+}
+
+/// Writes `bytes` beside `path` and waits until they are on the disk, so the rename in `commit`
+/// can't leave an empty file after a power cut. A link at `path` is followed: the file it names
+/// gets the text, the link stays (a bibliography shared between projects). The temporary file is
+/// created anew under a fresh name, so a link a project planted there can't redirect the write.
+pub fn stage(path: &Path, bytes: &[u8]) -> std::io::Result<Staged> {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let target = resolved(path);
+    let dir = target.parent().unwrap_or(Path::new("."));
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let old = std::fs::metadata(&target).ok();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    for _ in 0..16 {
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        // Hidden, so file watchers and the tree ignore it.
+        let tmp = dir.join(format!(
+            ".{name}.{}-{stamp:x}-{n}.lemmata-tmp",
+            std::process::id()
+        ));
+        let mut f = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        let staged = Staged {
+            tmp,
+            target,
+            bytes: bytes.to_vec(),
+            done: false,
+        };
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        // The file keeps its permissions (an edited script stays executable).
+        if let Some(m) = old {
+            let _ = std::fs::set_permissions(&staged.tmp, m.permissions());
+        }
+        return Ok(staged);
+    }
+    Err(std::io::Error::other(
+        "no free name for a temporary file beside it",
+    ))
+}
+
+impl Staged {
+    /// The file the text goes to: the one a link at the given path names.
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+
+    /// Puts the text in place. Windows refuses to rename over a file another program holds open
+    /// (TeX keeps its input open while it runs); then the file is overwritten in place.
+    pub fn commit(mut self) -> std::io::Result<PathBuf> {
+        let result = std::fs::rename(&self.tmp, &self.target).or_else(|e| match e.kind() {
+            std::io::ErrorKind::PermissionDenied => std::fs::write(&self.target, &self.bytes),
+            _ => Err(e),
+        });
+        self.done = result.is_ok();
+        let _ = std::fs::remove_file(&self.tmp);
+        result.map(|()| std::mem::take(&mut self.target))
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = std::fs::remove_file(&self.tmp);
+        }
+    }
+}
+
+/// `stage` and `commit` in one go. Returns the file written, as `Staged::target`.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    stage(path, bytes)?.commit()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_plain_names_inside_the_folder_pass() {
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../x",
+            "a/../../x",
+            "./a",
+            "a\\..\\b",
+            "C:x",
+            "a\nb",
+        ] {
+            assert!(inside_rel(bad).is_none(), "{bad:?}");
+        }
+        for good in [
+            "main.tex",
+            "ch/Einführung.tex",
+            "my chapter.tex",
+            ".lemmata/x",
+        ] {
+            assert_eq!(inside_rel(good), Some(PathBuf::from(good)), "{good:?}");
+        }
+    }
+
+    #[test]
+    fn a_write_replaces_the_file_and_leaves_nothing_beside_it() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.tex");
+        std::fs::write(&f, "old").unwrap();
+        write_atomic(&f, b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+        // Dropped before commit: the file stays as it was.
+        drop(stage(&f, b"never").unwrap());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
+    /// Windows refuses to rename over a file TeX holds open; a read-only folder refuses it here too,
+    /// while the file itself stays writable.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_cant_be_replaced_is_written_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("main.tex");
+        std::fs::write(&f, "old").unwrap();
+        let staged = stage(&f, b"new").unwrap();
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = staged.commit();
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        result.unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_at_the_file_are_followed_and_planted_temp_links_are_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let shared = tempfile::tempdir().unwrap();
+        let library = shared.path().join("library.bib");
+        std::fs::write(&library, "old").unwrap();
+        std::fs::set_permissions(&library, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let link = d.path().join("refs.bib");
+        std::os::unix::fs::symlink(&library, &link).unwrap();
+        // The temp names the writers before 3.2 used, planted by a project to point elsewhere.
+        let victim = shared.path().join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        for name in [
+            ".library.bib.0.lemmata-tmp",
+            "library.bib.lemmata-tmp",
+            ".library.bib.lemmata-tmp",
+        ] {
+            std::os::unix::fs::symlink(&victim, shared.path().join(name)).unwrap();
+        }
+        let written = write_atomic(&link, b"new").unwrap();
+        assert_eq!(written, library.canonicalize().unwrap());
+        assert!(
+            link.symlink_metadata().unwrap().file_type().is_symlink(),
+            "the link stays"
+        );
+        assert_eq!(std::fs::read_to_string(&library).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        let mode = std::fs::metadata(&library).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640, "keeps its permissions");
+    }
+}
