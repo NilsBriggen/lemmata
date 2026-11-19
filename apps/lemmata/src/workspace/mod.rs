@@ -400,6 +400,8 @@ impl Workspace {
         ws.restoring = Some((tabs, active));
         ws.apply_analysis(analysis, true);
         ws.spawn(backend, |shell| Msg::Packages(shell.package_names()));
+        // Deleted files wait a week in the project's trash, as the delete dialog says.
+        ws.spawn(backend, |shell| Msg::Done(shell.purge_trash(7).map(|_| ())));
         // texlab starts in the background (downloaded the first time); completion and hover
         // gain its answers once it's ready.
         ws.lsp.state = crate::lsp::State::Starting;
@@ -947,6 +949,7 @@ impl Workspace {
                     // One undo step, so an outside change can be undone like any edit.
                     ed.doc.replace_all(&disk);
                     ed.doc.break_group();
+                    ed.mark_reported();
                     self.buffers.loaded(&path, &disk);
                     self.buffers.dirty.remove(&path);
                 }

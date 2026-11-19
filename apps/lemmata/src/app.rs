@@ -1880,14 +1880,16 @@ pub(crate) mod tests {
                 .text()
                 .contains("notacommand")
         });
-        wait_for(&mut h, "the compiler to be idle", |h| {
-            let build = &h.state().project.as_ref().unwrap().build;
-            !build.building && build.deadline.is_none()
+        // The outside change is built on its own, a moment later; then Recompile builds again.
+        wait_for(&mut h, "the build of the outside change", |h| {
+            let b = &h.state().project.as_ref().unwrap().build;
+            !b.building && b.deadline.is_none() && b.errors() > 0
         });
+        let before = h.state().project.as_ref().unwrap().build.seq;
         h.get_by_label("Recompile").click();
         wait_for(&mut h, "the failed build", |h| {
             let b = &h.state().project.as_ref().unwrap().build;
-            !b.building && b.errors() > 0
+            b.seq > before && !b.building && b.errors() > 0
         });
         h.run_steps(2);
         {
@@ -4224,6 +4226,30 @@ pub(crate) mod tests {
         });
         let text = std::fs::read_to_string(project.join("main.tex")).unwrap();
         assert!(text.contains("% typed here"), "{text}");
+    }
+
+    /// A file another program changed is taken into its clean editor, and stays clean: it was
+    /// once marked unsaved, written back, and after a Git branch switch skipped on the next.
+    #[test]
+    fn an_outside_change_to_a_clean_file_is_taken_and_stays_saved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        h.run_steps(3);
+        let main = project.join("main.tex");
+        let text = std::fs::read_to_string(&main).unwrap();
+        std::fs::write(&main, format!("{text}% from another program\n")).unwrap();
+        wait_for(&mut h, "the reload", |h| {
+            h.state().project.as_ref().unwrap().editors["main.tex"]
+                .doc
+                .text()
+                .contains("% from another program")
+        });
+        h.run_steps(5);
+        let ws = h.state().project.as_ref().unwrap();
+        assert!(!ws.buffers.is_dirty("main.tex"), "a reload is not an edit");
+        assert!(h.query_by_label("Unsaved").is_none());
     }
 
     #[test]

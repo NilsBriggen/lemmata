@@ -492,6 +492,8 @@ impl Workspace {
         if list.is_empty() {
             return;
         }
+        // What was typed goes into the trash with the file, so Undo brings it back.
+        self.save_all_quietly(backend, settings);
         let system = settings.trash_mode == "system";
         Workspace::job(
             backend,
@@ -510,7 +512,8 @@ impl Workspace {
     }
 
     fn run_trash(&mut self, backend: &Backend, paths: Vec<String>, system: bool) {
-        // Saving afterwards would bring the files back: drop their edits first.
+        // Their edits were saved before (`trash`, the dialog); a save from now on would bring
+        // the files back, so the editors close.
         self.trashed(backend, &paths);
         // After any save in flight: a late save would bring a deleted file back.
         self.after_writes.push(Box::new(move |_, backend| {
@@ -1562,8 +1565,14 @@ impl Workspace {
                 self.save_all_quietly(backend, settings);
                 self.run_move(backend, settings, paths, folder, update);
             }
-            FileDialog::Trash { paths, .. } => self.run_trash(backend, paths, system),
-            FileDialog::Unused { picked, .. } => self.run_trash(backend, picked, system),
+            FileDialog::Trash { paths, .. } => {
+                self.save_all_quietly(backend, settings);
+                self.run_trash(backend, paths, system)
+            }
+            FileDialog::Unused { picked, .. } => {
+                self.save_all_quietly(backend, settings);
+                self.run_trash(backend, picked, system)
+            }
             FileDialog::Deleted(_) => {}
         }
     }

@@ -169,6 +169,14 @@ impl Shell {
                 .await
                 .map_err(crate::err)?
         };
+        // Not one key came back: more likely a Zotero problem than a document citing nothing it
+        // has. zotero.bib stays as it was.
+        if !wanted.is_empty() && missing.len() == wanted.len() {
+            return Err(format!(
+                "Zotero knows none of the {} cited keys, so zotero.bib was left as it is. Check that Better BibTeX's citation keys match the document.",
+                wanted.len()
+            ));
+        }
         let header = "% Exported from Zotero by Lemmata. Changes here are overwritten on the next sync;\n% edit the references in Zotero instead.\n\n";
         lemmata_bib::manage::write_atomic(
             &p.root.join(ZOTERO_BIB),

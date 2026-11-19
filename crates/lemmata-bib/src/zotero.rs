@@ -70,6 +70,8 @@ pub fn parse_keys(cite: &str) -> Vec<String> {
 /// doesn't know are returned in the second list.
 pub async fn export(keys: &[String]) -> Result<(String, Vec<String>), Error> {
     let c = client(Duration::from_secs(30))?;
+    let offline = || Error("Zotero isn't running, or Better BibTeX isn't installed.".into());
+    // Err(true): Zotero couldn't be reached at all; Err(false): it answered with an error.
     let call = |keys: Vec<String>| {
         let c = c.clone();
         async move {
@@ -82,30 +84,26 @@ pub async fn export(keys: &[String]) -> Result<(String, Vec<String>), Error> {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|_| {
-                    Error("Zotero isn't running, or Better BibTeX isn't installed.".into())
-                })?
+                .map_err(|_| true)?
                 .json()
                 .await
-                .map_err(|e| Error(e.to_string()))?;
+                .map_err(|_| false)?;
             match res.get("result") {
                 // Older Better BibTeX versions answer [status, format, text].
                 Some(serde_json::Value::Array(a)) => {
                     Ok(a.last().and_then(|v| v.as_str()).unwrap_or("").to_string())
                 }
                 Some(v) => Ok(v.as_str().unwrap_or("").to_string()),
-                None => Err(Error(
-                    res["error"]["message"]
-                        .as_str()
-                        .unwrap_or("export failed")
-                        .to_string(),
-                )),
+                None => Err(false),
             }
         }
     };
     // One call for everything; if a key is unknown, fall back to one by one.
-    if let Ok(all) = call(keys.to_vec()).await {
-        return Ok((all, Vec::new()));
+    match call(keys.to_vec()).await {
+        Ok(all) => return Ok((all, Vec::new())),
+        // Unreachable: every key would come back "unknown", and zotero.bib be emptied.
+        Err(true) => return Err(offline()),
+        Err(false) => {}
     }
     let mut text = String::new();
     let mut missing = Vec::new();
@@ -115,7 +113,8 @@ pub async fn export(keys: &[String]) -> Result<(String, Vec<String>), Error> {
                 text.push_str(t.trim_end());
                 text.push_str("\n\n");
             }
-            Err(_) => missing.push(k.clone()),
+            Err(true) => return Err(offline()),
+            Err(false) => missing.push(k.clone()),
         }
     }
     Ok((text, missing))
@@ -123,6 +122,19 @@ pub async fn export(keys: &[String]) -> Result<(String, Vec<String>), Error> {
 
 #[cfg(test)]
 mod tests {
+    /// With Zotero closed the export used to report every key "unknown" and succeed, so the
+    /// sync emptied zotero.bib. It fails instead.
+    #[tokio::test]
+    async fn an_unreachable_zotero_is_an_error_not_an_empty_export() {
+        if std::net::TcpStream::connect("127.0.0.1:23119").is_ok() {
+            return; // Zotero runs on this computer
+        }
+        let e = super::export(&["a".to_string(), "b".to_string()])
+            .await
+            .unwrap_err();
+        assert!(e.0.contains("isn't running"), "{}", e.0);
+    }
+
     #[test]
     fn parses_cayw_output() {
         assert_eq!(

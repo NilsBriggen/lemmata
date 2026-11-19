@@ -825,6 +825,58 @@ fn a_deleted_file_comes_back_from_recently_deleted_after_reopening() {
     assert_eq!(std::fs::read_to_string(&gone).unwrap(), "Keep me.\n");
 }
 
+/// What was typed and not yet saved goes into the trash with the file: Undo brings it back.
+#[test]
+fn deleting_a_file_keeps_its_unsaved_edits_for_undo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let settings = Settings {
+        trash_mode: "project".into(),
+        autosave_ms: 0.0,
+        ..Settings::default()
+    };
+    let Some((mut h, project)) = in_article_with(tmp.path(), settings) else {
+        return;
+    };
+    let gone = project.join("gone.tex");
+    std::fs::write(&gone, "Old.\n").unwrap();
+    wait_for(&mut h, "gone.tex in the tree", |h| {
+        h.query_by_role_and_label(egui::accesskit::Role::TreeItem, "gone.tex")
+            .is_some()
+    });
+    {
+        let (ws, backend, _) = ws_mut(&mut h);
+        ws.open_file(backend, "gone.tex");
+    }
+    wait_for(&mut h, "gone.tex open", |h| {
+        ws(h).editors.contains_key("gone.tex")
+    });
+    {
+        let ed = ws_mut(&mut h).0.editors.get_mut("gone.tex").unwrap();
+        let end = ed.doc.len();
+        ed.replace_range(end, end, "Typed.\n");
+    }
+    // The editor reports the edit, and with autosave off the file stays unsaved.
+    h.run_steps(3);
+    assert!(ws(&h).buffers.is_dirty("gone.tex"));
+    {
+        let (ws, backend, settings) = ws_mut(&mut h);
+        ws.trash(backend, settings, vec!["gone.tex".into()]);
+    }
+    wait_for(&mut h, "the delete, undoable", |h| {
+        ws(h)
+            .notices
+            .iter()
+            .any(|n| n.text.starts_with("Deleted gone.tex"))
+    });
+    assert!(!gone.exists());
+    {
+        let (ws, backend, _) = ws_mut(&mut h);
+        ws.undo_files(backend);
+    }
+    wait_for(&mut h, "the file back", |_| gone.exists());
+    assert_eq!(std::fs::read_to_string(&gone).unwrap(), "Old.\nTyped.\n");
+}
+
 #[test]
 fn an_unknown_citation_or_label_offers_a_search() {
     let tmp = tempfile::tempdir().unwrap();

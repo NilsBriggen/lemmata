@@ -301,8 +301,10 @@ impl Project {
 
     /// The PDF latexmk writes for the main file.
     pub fn pdf_path(&self) -> PathBuf {
-        let stem = self.main.file_stem().unwrap_or_default();
-        self.outdir_abs().join(stem).with_extension("pdf")
+        // Stem plus ".pdf", not `with_extension`: for paper.v2.tex that would give paper.pdf.
+        let mut name = self.main.file_stem().unwrap_or_default().to_os_string();
+        name.push(".pdf");
+        self.outdir_abs().join(name)
     }
 
     pub fn log_path(&self) -> PathBuf {
@@ -1045,6 +1047,23 @@ mod tests {
         assert_eq!(titles(&p), ["Inside"]);
         p.trusted = true;
         assert_eq!(titles(&p), ["Inside", "Outside"]);
+    }
+
+    #[test]
+    fn a_main_file_with_dots_has_its_own_pdf() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("paper.v2.tex"), "\\documentclass{article}").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        assert!(
+            p.pdf_path().ends_with(".lemmata/build/paper.v2.pdf"),
+            "{:?}",
+            p.pdf_path()
+        );
+        assert!(
+            p.log_path().ends_with(".lemmata/build/paper.v2.log"),
+            "{:?}",
+            p.log_path()
+        );
     }
 
     #[test]

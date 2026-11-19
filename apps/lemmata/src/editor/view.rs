@@ -204,6 +204,12 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// The text now in the editor came from the disk, not from the user: it isn't reported as
+    /// an edit (which would mark the file unsaved and write it back).
+    pub fn mark_reported(&mut self) {
+        self.reported_version = self.doc.version;
+    }
+
     pub fn new(text: &str, tex: bool) -> Self {
         Self {
             path: String::new(),

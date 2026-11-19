@@ -121,7 +121,20 @@ impl ChangeSet {
     pub fn new(mut changes: Vec<Change>) -> Self {
         changes.retain(|c| c.from != c.to || !c.insert.is_empty());
         changes.sort_by_key(|c| (c.from, c.to));
-        Self(changes)
+        // Two cursors in one word deleting to its start (Ctrl+Backspace) make changes that
+        // overlap; applied as they are, the second removes text that is already gone. One
+        // change covers both.
+        let mut merged: Vec<Change> = Vec::with_capacity(changes.len());
+        for c in changes {
+            match merged.last_mut() {
+                Some(prev) if c.from < prev.to => {
+                    prev.to = prev.to.max(c.to);
+                    prev.insert.push_str(&c.insert);
+                }
+                _ => merged.push(c),
+            }
+        }
+        Self(merged)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -348,7 +361,7 @@ impl Doc {
         lsp_record(&self.rope, &mut self.lsp_edits, &changes);
         let inverse = changes.apply(&mut self.rope);
         self.journal.push(changes.clone());
-        self.selection = selection;
+        self.selection = clamp(selection, self.rope.len_chars());
         self.version += 1;
         self.redo.clear();
         let now = Instant::now();

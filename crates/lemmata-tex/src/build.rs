@@ -1268,6 +1268,21 @@ pub(crate) fn prepare_outdir(project: &Project) {
     let outdir = project.outdir_abs();
     let _ = std::fs::create_dir_all(&outdir);
     let _ = std::fs::write(outdir.join(MARKER), "");
+    // A TeX run stopped part way leaves its file list as `pdflatex12345.fls`; one per cancel.
+    for e in std::fs::read_dir(&outdir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let stray = name
+            .strip_suffix(".fls")
+            .and_then(|n| {
+                ["pdflatex", "xelatex", "lualatex"]
+                    .iter()
+                    .find_map(|p| n.strip_prefix(p))
+            })
+            .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
+        if stray {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
     mirror(
         &lemmata_project::tree(&project.root, &project.config.outdir),
         &outdir,
@@ -2025,6 +2040,68 @@ mod tests {
         std::fs::create_dir_all(d.path().join("real")).unwrap();
         std::os::unix::fs::symlink(d.path().join("real"), d.path().join(".lemmata")).unwrap();
         assert!(!outdir_leaves_project(&Project::open(d.path()).unwrap()));
+    }
+
+    /// With real TeX: a build stopped after its direct pass leaves a newer PDF and file list but
+    /// no log; the next build must still run TeX and report the error, not take them as current.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_error_after_a_stopped_build_is_reported() {
+        let (Ok(pdflatex), Ok(latexmk)) = (which::which("pdflatex"), which::which("latexmk"))
+        else {
+            return; // no TeX on this machine: the CI job with TeX runs this
+        };
+        let bin = pdflatex.parent().unwrap().to_path_buf();
+        let d = tempfile::tempdir().unwrap();
+        let main = d.path().join("main.tex");
+        std::fs::write(
+            &main,
+            "\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n",
+        )
+        .unwrap();
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: Some(&bin),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let mut p = Project::open(d.path()).unwrap();
+        p.trusted = true;
+        p.config.fast_preamble = false;
+        let (_tx, rx) = oneshot::channel();
+        assert_eq!(
+            build_with(&p, &opts, rx, false, false)
+                .await
+                .unwrap()
+                .status,
+            Status::Success
+        );
+        std::thread::sleep(Duration::from_millis(1100));
+        std::fs::write(
+            &main,
+            "\\documentclass{article}\n\\begin{document}\nx\\notacommand\n\\end{document}\n",
+        )
+        .unwrap();
+        // A build stopped after its direct pass: a newer PDF and file list, no log, no stamp.
+        let pass = std::process::Command::new(&pdflatex)
+            .args(pass_args(&p, &p.config.outdir, None, false))
+            .current_dir(d.path())
+            .output()
+            .unwrap();
+        assert!(!pass.status.success());
+        let _ = std::fs::remove_file(p.log_path());
+        let _ = std::fs::remove_file(p.outdir_abs().join(OK_STAMP));
+        let (_tx, rx) = oneshot::channel();
+        let out = build_with(&p, &opts, rx, false, false).await.unwrap();
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.severity == lemmata_log::Severity::Error),
+            "{:?} {:?}",
+            out.status,
+            out.diagnostics
+        );
     }
 
     /// With real TeX: names a shell would act on are passed to the engine as they are, trusted or

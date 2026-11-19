@@ -1300,6 +1300,29 @@ mod tests {
         d
     }
 
+    /// Two cursors deleting over the same text once removed it twice and ended the app.
+    #[test]
+    fn cursors_whose_deletions_overlap_delete_once() {
+        let cursors = |text: &str, at: &[usize]| {
+            let mut d = Doc::new(text);
+            d.selection = Selection::normalized(at.iter().map(|&a| Range::cursor(a)).collect(), 0);
+            d
+        };
+        let mut d = cursors("hello world", &[2, 4]);
+        delete_group_backward(&mut d);
+        assert_eq!(d.text(), "o world");
+        let mut d = cursors("hello world", &[1, 3]);
+        delete_group_forward(&mut d);
+        assert_eq!(d.text(), "h world");
+        // Backspace at `(|)|`: the pair's delete and the plain one overlap.
+        let mut d = cursors("()", &[1, 2]);
+        delete_char_backward(&mut d, Indent::Spaces(2), true);
+        assert!(d.text().len() <= 1, "{}", d.text());
+        assert!(d.selection.ranges.iter().all(|r| r.head <= d.len()));
+        d.undo();
+        assert_eq!(d.text(), "()");
+    }
+
     #[test]
     fn citations_join_an_open_cite() {
         let keys = ["a".to_owned(), "b".to_owned()];
