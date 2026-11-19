@@ -50,6 +50,12 @@ fn rel(p: &lemmata_project::Project, abs: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// A figures folder or a name in it that links out of the project is written through only in a
+/// trusted one.
+fn writable(p: &lemmata_project::Project, dest: &std::path::Path) -> CmdResult<()> {
+    lemmata_env::fs::may_write(&p.root, p.trusted, dest).map_err(|e| format!("{e}."))
+}
+
 impl Shell {
     /// Copies an image into the figures folder, unless it's already inside the
     /// project. Returns its project-relative path.
@@ -76,6 +82,7 @@ impl Shell {
         std::fs::create_dir_all(&dir).map_err(err)?;
         let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("figure");
         let dest = unique(&dir, &slug(stem), &ext);
+        writable(&p, &dest)?;
         std::fs::copy(&src, &dest).map_err(|e| format!("Could not copy the image: {e}"))?;
         Ok(rel(&p, &dest))
     }
@@ -89,6 +96,7 @@ impl Shell {
         let dir = p.root.join(&p.config.figures_dir);
         std::fs::create_dir_all(&dir).map_err(err)?;
         let dest = unique(&dir, "pasted-figure", "png");
+        writable(&p, &dest)?;
         std::fs::write(&dest, bytes).map_err(err)?;
         Ok(rel(&p, &dest))
     }

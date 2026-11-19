@@ -46,11 +46,15 @@ fn resolved(path: &Path) -> PathBuf {
 pub fn may_write(root: &Path, trusted: bool, path: &Path) -> std::io::Result<()> {
     // A file not written yet is resolved through its folder, which may be reached by a link
     // (macOS's /var is /private/var).
+    // A link that leads nowhere would be written through to wherever it names.
     let target = match (path.symlink_metadata(), path.parent(), path.file_name()) {
-        (Err(_), Some(dir), Some(name)) => resolved(dir).join(name),
-        _ => resolved(path),
+        (Err(_), Some(dir), Some(name)) => Some(resolved(dir).join(name)),
+        (Ok(m), ..) if m.file_type().is_symlink() => {
+            path.canonicalize().ok().map(|_| resolved(path))
+        }
+        _ => Some(resolved(path)),
     };
-    if trusted || target.starts_with(resolved(root)) {
+    if trusted || target.is_some_and(|t| t.starts_with(resolved(root))) {
         return Ok(());
     }
     let name = path.strip_prefix(root).unwrap_or(path).display();
@@ -246,6 +250,9 @@ mod tests {
         assert!(may_write(&via, false, &via.join("new.bib")).is_ok());
         assert!(may_write(&via, false, &via.join("inner.bib")).is_ok());
         assert!(may_write(&via, false, &via.join("refs.bib")).is_err());
+        std::os::unix::fs::symlink(shared.path().join("nowhere"), d.path().join("dangling.png"))
+            .unwrap();
+        assert!(may_write(d.path(), false, &d.path().join("dangling.png")).is_err());
         let written = write_atomic(&link, b"new").unwrap();
         assert_eq!(written, library.canonicalize().unwrap());
         assert!(
