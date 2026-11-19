@@ -1123,9 +1123,17 @@ fn a_project_is_deleted_from_the_start_screen() {
             .as_ref()
             .and_then(|d| d.error.clone())
     };
-    wait_for(&mut h, "the project gone", |h| {
-        !paper.exists() || refused(h).is_some()
-    });
+    // Windows refuses while the closed project's TeX or texlab still has a file open, and the
+    // trash retries for 30 s (Shell::trash_project): wait past that, so a refusal shows its reason.
+    let start = std::time::Instant::now();
+    while paper.exists() && refused(&h).is_none() {
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(45),
+            "timed out waiting for the project gone"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        h.step();
+    }
     assert_eq!(refused(&h), None, "the trash refused");
     wait_for(&mut h, "the list without it", |h| {
         h.query_by_role_and_label(egui::accesskit::Role::Button, "paper")
