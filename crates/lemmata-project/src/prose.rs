@@ -106,15 +106,37 @@ pub struct State {
     env: Option<String>,
     /// Inside `$$ … $$` or `\[ … \]` that spans lines.
     display: Option<&'static str>,
+    /// Inside an `otherlanguage` environment, with its name.
+    foreign: Option<String>,
 }
 
 /// Byte ranges of prose words in one line, updating `state` for
 /// environments that span lines.
 pub fn words(line: &str, state: &mut State) -> Vec<(usize, usize)> {
+    scan(line, state)
+        .into_iter()
+        .map(|(a, b, _)| (a, b))
+        .collect()
+}
+
+/// The words of `words` in the document's own language: those in `\foreignlanguage{…}{…}` or an
+/// `otherlanguage` environment are left out, so the spell checker doesn't mark them.
+pub fn own_language_words(line: &str, state: &mut State) -> Vec<(usize, usize)> {
+    scan(line, state)
+        .into_iter()
+        .filter(|w| !w.2)
+        .map(|(a, b, _)| (a, b))
+        .collect()
+}
+
+/// Words with whether they are in another language.
+fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
     let code = strip_comment(line);
     let b = code.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
+    // The end of a `\foreignlanguage` text on this line.
+    let mut foreign_until = 0;
 
     while i < b.len() {
         if let Some(env) = &state.env {
@@ -187,7 +209,34 @@ pub fn words(line: &str, state: &mut State) -> Vec<(usize, usize)> {
                         i += len;
                         if MATH_ENVS.contains(&env) || VERBATIM_ENVS.contains(&env) {
                             state.env = Some(env.to_string());
+                        } else if env == "otherlanguage" || env == "otherlanguage*" {
+                            state.foreign = Some(env.to_string());
+                            // The language's name isn't prose.
+                            if let Some((_, len)) = braced_at(code, skip_ws(code, i)) {
+                                i = skip_ws(code, i) + len;
+                            }
                         }
+                    }
+                    continue;
+                }
+                if name == "end"
+                    && let Some((env, _)) = braced_at(code, skip_ws(code, i))
+                    && state.foreign.as_deref() == Some(env)
+                {
+                    state.foreign = None;
+                }
+                if name == "foreignlanguage" {
+                    // [options]{language}{text}: the language is skipped, the text is marked.
+                    let mut at = skip_ws(code, i);
+                    if code[at..].starts_with('[') {
+                        at = code[at..].find(']').map_or(b.len(), |p| at + p + 1);
+                    }
+                    if let Some((_, len)) = braced_at(code, skip_ws(code, at)) {
+                        i = skip_ws(code, at) + len;
+                        let text = skip_ws(code, i);
+                        // shortcut: a text that goes on past this line is foreign to the line's end only.
+                        foreign_until =
+                            braced_at(code, text).map_or(b.len(), |(_, len)| text + len);
                     }
                     continue;
                 }
@@ -228,7 +277,8 @@ pub fn words(line: &str, state: &mut State) -> Vec<(usize, usize)> {
                 }
                 let word = code[start..end].trim_end_matches(['\'', '-']);
                 if !word.is_empty() {
-                    out.push((start, start + word.len()));
+                    let foreign = state.foreign.is_some() || start < foreign_until;
+                    out.push((start, start + word.len(), foreign));
                 }
                 i = end;
             }
@@ -303,6 +353,41 @@ mod tests {
             ),
             ["Caption"]
         );
+    }
+
+    #[test]
+    fn other_languages_count_but_are_not_spell_checked() {
+        let mut s = State::default();
+        let own = |line: &str, s: &mut State| -> Vec<String> {
+            own_language_words(line, s)
+                .into_iter()
+                .map(|(a, b)| line[a..b].to_string())
+                .collect()
+        };
+        let line = r"As \foreignlanguage{ngerman}{man sagt} here";
+        assert_eq!(texts(line, &mut s), ["As", "man", "sagt", "here"]);
+        assert_eq!(own(line, &mut s), ["As", "here"]);
+        assert_eq!(
+            own(
+                r"\foreignlanguage[variant=swiss]{german}{Grüezi \emph{mitenand}}",
+                &mut s
+            ),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            own(r"Text \begin{otherlanguage}{french} Bonjour", &mut s),
+            ["Text"]
+        );
+        assert_eq!(
+            texts(
+                r"\begin{otherlanguage*}{french} Bonjour",
+                &mut State::default()
+            ),
+            ["Bonjour"]
+        );
+        assert!(own("tout le monde", &mut s).is_empty());
+        assert_eq!(own(r"au revoir \end{otherlanguage} back", &mut s), ["back"]);
+        assert_eq!(own("home", &mut s), ["home"]);
     }
 
     #[test]

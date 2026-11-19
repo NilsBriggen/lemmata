@@ -100,6 +100,8 @@ pub struct Settings {
     /// Transitions and smooth scrolls happen at once.
     pub reduce_motion: bool,
     pub line_numbers: bool,
+    /// The whole window's zoom (Ctrl+plus, Ctrl+minus, Ctrl+0).
+    pub ui_zoom: f64,
 }
 
 impl Default for Settings {
@@ -141,6 +143,7 @@ impl Default for Settings {
             damaged: false,
             reduce_motion: false,
             line_numbers: true,
+            ui_zoom: 1.0,
         }
     }
 }

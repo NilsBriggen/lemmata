@@ -15,6 +15,27 @@ pub struct Release {
 /// Newest first.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "3.2.0",
+        highlights: &[
+            (
+                "You decide which projects may run programs",
+                "The first time you open a folder, Lemmata asks whether you trust its authors. A trusted project builds as before, with its latexmkrc, shell escape and Git. A restricted one is built without running anything from the folder. Change it any time in Project settings.",
+            ),
+            (
+                "Long documents stay quick",
+                "Typing in a thesis-sized file, long bibliographies, the outline and project search all do less work per key.",
+            ),
+            (
+                "More in the command palette",
+                "Find, Go to line, Next problem, Fold everything and other actions that only had a shortcut are in the palette (Ctrl+Shift+P) too.",
+            ),
+            (
+                "Other languages aren't marked as misspelled",
+                "Text in \\foreignlanguage or an otherlanguage environment is left out of spell checking. The window's zoom (Ctrl+plus, Ctrl+minus) is kept for next time.",
+            ),
+        ],
+    },
+    Release {
         version: "3.0.0",
         highlights: &[
             (

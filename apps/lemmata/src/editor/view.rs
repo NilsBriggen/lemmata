@@ -150,6 +150,9 @@ pub struct Editor {
     pub reveal: bool,
     /// Take the keyboard focus on the next frame (after a dialog that inserted text closes).
     pub refocus: bool,
+    /// A shortcut's command picked in the palette, run as its keys would once the editor has
+    /// the keyboard.
+    pub queued: Option<&'static str>,
     /// Scroll so this line (0-based) is in the middle (go to line, a jump from the PDF).
     pub center_line: Option<usize>,
     last_activity: f64,
@@ -224,6 +227,7 @@ impl Editor {
             goal_x: None,
             reveal: false,
             refocus: false,
+            queued: None,
             center_line: None,
             last_activity: 0.0,
             drag: None,
@@ -1883,6 +1887,21 @@ pub fn show(
         });
         let events = ui.input(|i| i.events.clone());
         let page = (visible.height() / style.line_height).floor().max(1.0) as usize;
+        if let Some(q) = ed.queued.take() {
+            let indent = style.indent;
+            key_press(
+                ui,
+                ed,
+                style,
+                Key::F35,
+                Modifiers::NONE,
+                &mut geo,
+                page,
+                &mut out,
+                indent,
+                Some(q),
+            );
+        }
         for e in &events {
             // An edit inside a \begin or \end name renames its partner in the same undo step.
             let sync = ed.tex
@@ -2372,7 +2391,9 @@ fn handle_event(
             pressed: true,
             modifiers,
             ..
-        } => key_press(ui, ed, style, *key, *modifiers, geo, page, out, indent),
+        } => key_press(
+            ui, ed, style, *key, *modifiers, geo, page, out, indent, None,
+        ),
         _ => false,
     }
 }
@@ -2388,10 +2409,11 @@ fn key_press(
     page: usize,
     out: &mut Output,
     indent: Indent,
+    queued: Option<&str>,
 ) -> bool {
     let shift = m.shift;
     let modk = cmd_key(&m);
-    let on = |id: &str| shortcuts::pressed(id, m, key);
+    let on = |id: &str| queued.map_or_else(|| shortcuts::pressed(id, m, key), |q| q == id);
     // The list is worked out after the frame's events; one computed before an edit earlier in
     // this frame holds positions of the old text, so it goes (and the key does its own work).
     if ed
@@ -3521,6 +3543,23 @@ mod tests {
         assert!(ms(commands[5]) < TYPING_MS, "commands: {commands:?}");
         assert!(ms(renaming[5]) < TYPING_MS, "renaming: {renaming:?}");
         assert!(ms(resizing[5]) < RESIZING_MS, "resizing: {resizing:?}");
+    }
+
+    /// A shortcut's command from the palette does what its keys do.
+    #[test]
+    fn a_queued_command_runs_as_its_keys_would() {
+        let mut h = harness(Editor::new("one two", true), [560.0, 420.0]);
+        h.run();
+        h.get_by_label("Editor").click();
+        h.run();
+        h.state_mut().doc.selection = Selection::single(Range::new(4, 7));
+        h.state_mut().queued = Some("bold");
+        h.run();
+        assert_eq!(h.state().doc.text(), "one \\textbf{two}");
+        assert!(h.state().queued.is_none());
+        h.state_mut().queued = Some("goto-line");
+        h.run();
+        assert!(h.state().search.as_ref().is_some_and(|s| s.goto.is_some()));
     }
 
     #[test]

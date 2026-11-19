@@ -120,11 +120,55 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "Export for arXiv as one .tex file (.zip)…",
         "",
     ),
+    ("save", "Save all files", "save"),
+    ("close-tab", "Close tab", "close-tab"),
+    ("find", "Find in file", "find"),
+    ("goto-line", "Go to line…", "goto-line"),
+    (
+        "select-all-matches",
+        "Select all matches",
+        "select-all-matches",
+    ),
+    ("next-problem", "Next problem", "next-problem"),
+    ("prev-problem", "Previous problem", "prev-problem"),
+    ("next-todo", "Next TODO", "next-todo"),
+    ("next-comment", "Next review comment", "next-comment"),
+    ("definition", "Go to definition", "definition"),
+    ("references", "Find references", "references"),
+    ("bold", "Bold", "bold"),
+    ("italic", "Italic", "italic"),
+    (
+        "heading-down",
+        "Make heading one level deeper",
+        "heading-down",
+    ),
+    ("heading-up", "Make heading one level higher", "heading-up"),
+    ("fold-all", "Fold everything", "fold-all"),
+    ("unfold-all", "Unfold everything", "unfold-all"),
     ("project-settings", "Project settings", ""),
     ("preferences", "Preferences", ""),
     ("guide", "User guide", ""),
     ("report", "Report a problem…", ""),
     ("close", "All projects", ""),
+];
+
+/// The palette's commands the editor runs (`Editor::queued`).
+const EDITOR: &[&str] = &[
+    "find",
+    "goto-line",
+    "select-all-matches",
+    "next-problem",
+    "prev-problem",
+    "next-todo",
+    "next-comment",
+    "definition",
+    "references",
+    "bold",
+    "italic",
+    "heading-down",
+    "heading-up",
+    "fold-all",
+    "unfold-all",
 ];
 
 /// A command's name, the same in the palette and the menus.
@@ -595,7 +639,28 @@ impl Workspace {
             "guide" => backend.spawn(|s| Msg::Done(s.open_url(GUIDE.into()))),
             "report" => return Some(Action::Report),
             "close" => return Some(Action::Library),
-            _ => {}
+            "save" => {
+                if settings.auto_compile {
+                    self.save_all(backend, settings);
+                } else {
+                    self.recompile(backend, settings);
+                }
+            }
+            "close-tab" => {
+                if let Some(a) = self.active.clone() {
+                    self.close_tab(backend, &a, settings);
+                }
+            }
+            // Shortcuts the editor handles: it runs them as their keys would.
+            _ => {
+                if let Some(&(cmd, _, _)) =
+                    COMMANDS.iter().find(|c| c.0 == id && EDITOR.contains(&id))
+                    && let Some(ed) = self.active_editor()
+                {
+                    ed.queued = Some(cmd);
+                    ed.refocus = true;
+                }
+            }
         }
         action
     }

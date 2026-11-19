@@ -11,10 +11,11 @@ pub struct Word {
     pub text: String,
 }
 
-/// The prose words of one line, carrying `state` across lines (maths, verbatim).
+/// The prose words of one line in the document's language, carrying `state` across lines (maths,
+/// verbatim, other languages).
 pub fn line_words(line: &str, state: &mut State, offset: usize) -> Vec<Word> {
     // Byte offsets to char offsets, walked once.
-    let spans = lemmata_project::prose::words(line, state);
+    let spans = lemmata_project::prose::own_language_words(line, state);
     let mut out = Vec::with_capacity(spans.len());
     let (mut byte, mut ch) = (0usize, 0usize);
     let mut chars = line.char_indices().peekable();

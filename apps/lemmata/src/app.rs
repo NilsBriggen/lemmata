@@ -117,6 +117,8 @@ impl App {
         let palette = palette_for(&cc.egui_ctx, &settings);
         theme::apply(&cc.egui_ctx, &palette);
         theme::reduce_motion(&cc.egui_ctx, settings.reduce_motion);
+        cc.egui_ctx
+            .set_zoom_factor(settings.ui_zoom.clamp(0.5, 3.0) as f32);
         let backend = Backend::new(cc.egui_ctx.clone(), &dirs);
         #[cfg(not(debug_assertions))]
         {
@@ -1155,6 +1157,12 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.focus_changed(ctx.input(|i| i.viewport().focused));
+        // egui zooms on Ctrl+plus and Ctrl+minus; the next start keeps it.
+        let zoom = f64::from(ctx.zoom_factor());
+        if (zoom - self.settings.ui_zoom).abs() > 1e-3 {
+            self.settings.ui_zoom = zoom;
+            self.save_settings(&ctx);
+        }
         while let Ok(msg) = self.backend.rx.try_recv() {
             self.on_msg(&ctx, msg);
         }
@@ -1494,6 +1502,25 @@ pub(crate) mod tests {
         std::thread::sleep(std::time::Duration::from_millis(350));
         h.run_steps(2);
         assert!(path.exists(), "the final change was not flushed");
+    }
+
+    #[test]
+    fn the_window_zoom_is_kept_for_the_next_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(tmp.path());
+        let settings = Settings {
+            ui_zoom: 1.25,
+            ..Settings::default()
+        };
+        settings.save(&d);
+        let mut h = app(tmp.path());
+        h.run_steps(2);
+        assert_eq!(h.ctx.zoom_factor(), 1.25);
+        h.ctx.set_zoom_factor(1.5);
+        h.run_steps(2);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        h.run_steps(2);
+        assert_eq!(Settings::load(&d).ui_zoom, 1.5);
     }
 
     #[test]
