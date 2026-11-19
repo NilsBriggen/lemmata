@@ -2,7 +2,8 @@
 # Usage: scripts/release.sh prepare 0.3.0    (or 0.3.0-rc.1)
 #        scripts/release.sh tag 0.3.0
 # prepare bumps every version field and adds the new version's section to CHANGELOG.md, without
-# committing, so the section can be edited first. tag checks the section isn't blank, commits and
+# committing, so the section can be edited first; a section written ahead as "## X.Y.Z (unreleased)"
+# is kept and gets the date. tag checks the section isn't blank, commits and
 # tags. Push with `git push --follow-tags` to start .github/workflows/release.yml.
 set -euo pipefail
 
@@ -17,9 +18,14 @@ if [[ $step == prepare ]]; then
   command -v git-cliff >/dev/null || { echo "install git-cliff (pacman -S git-cliff or cargo install git-cliff)" >&2; exit 1; }
   sed -i.bak -E "0,/^version = \".*\"/s//version = \"$version\"/" Cargo.toml && rm Cargo.toml.bak
   cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace >/dev/null
-  # Only the new version's section is added on top, so sections edited by hand stay as they are.
-  section=$(git cliff --unreleased --tag "v$version" --strip header)
-  { head -n 3 CHANGELOG.md; echo; echo "$section"; tail -n +4 CHANGELOG.md; } > CHANGELOG.md.new && mv CHANGELOG.md.new CHANGELOG.md
+  if grep -q "^## $version (unreleased)" CHANGELOG.md; then
+    # Written ahead of the release: it only gets today's date.
+    sed -i.bak "s/^## $version (unreleased)/## $version ($(date +%Y-%m-%d))/" CHANGELOG.md && rm CHANGELOG.md.bak
+  else
+    # Only the new version's section is added on top, so sections edited by hand stay as they are.
+    section=$(git cliff --unreleased --tag "v$version" --strip header)
+    { head -n 3 CHANGELOG.md; echo; echo "$section"; tail -n +4 CHANGELOG.md; } > CHANGELOG.md.new && mv CHANGELOG.md.new CHANGELOG.md
+  fi
   echo "Edit the $version section of CHANGELOG.md, then: scripts/release.sh tag $version"
   exit 0
 fi
