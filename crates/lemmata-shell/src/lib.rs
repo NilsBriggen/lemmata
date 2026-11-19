@@ -928,7 +928,7 @@ impl Shell {
             *self.project.lock_safe() = None;
             // texlab works in the folder. The app stops it on closing only once it has started,
             // so one still starting when the project closed runs on; dropping it kills it, and a
-            // start still under way finds the project gone and drops its own.
+            // start still under way finds the project gone (see lsp_start) and drops its own.
             drop(self.lsp.blocking_lock().take());
         }
         // A precompiled preamble may still be in the making there, open or not.
@@ -1058,11 +1058,19 @@ impl Shell {
             generation,
         )
         .await?;
-        if self.current_project() != project {
+        // Checked under the slot's lock, which trash_project takes after clearing the project:
+        // either this sees the project gone, or trash_project finds the server and drops it.
+        let mut slot = self.lsp.lock().await;
+        let still_open = self
+            .project
+            .lock_safe()
+            .as_ref()
+            .is_some_and(|p| p.root == root);
+        if self.current_project() != project || !still_open {
             drop(server);
             return Err("The project was closed.".into());
         }
-        *self.lsp.lock().await = Some(server);
+        *slot = Some(server);
         Ok(generation)
     }
 

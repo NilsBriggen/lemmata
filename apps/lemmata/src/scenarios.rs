@@ -1175,7 +1175,11 @@ fn held_open(dir: &std::path::Path) {
             ])
             .output();
         if let Ok(o) = list {
-            eprintln!("held: processes\n{}", String::from_utf8_lossy(&o.stdout));
+            eprintln!(
+                "held: processes\n{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
         }
     }
 }
