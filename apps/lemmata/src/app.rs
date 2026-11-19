@@ -1267,6 +1267,7 @@ impl App {
             let ready = self.tex.as_ref().is_some_and(|t| t.detection.ready);
             let became_ready = ready && !ws.tex_ready;
             ws.tex_ready = ready;
+            ws.tex_known = self.tex.is_some();
             ws.tex_outdated = self.tex.as_ref().is_some_and(|t| t.detection.outdated);
             if became_ready && !ws.pdf_current {
                 ws.build_soon(false, false);
@@ -1352,6 +1353,37 @@ pub(crate) mod tests {
     }
 
     /// Steps until `found` holds; the backend answers from other threads.
+    /// Compares the screen with its reference once it has settled: no build running or due,
+    /// and the PDF (if the build made one) drawn.
+    pub(crate) fn snap(h: &mut Harness<App>, name: &str) {
+        wait_for(h, "a settled screen", |h| {
+            let frame = h.ctx.cumulative_frame_nr();
+            h.state().project.as_ref().is_none_or(|ws| {
+                !ws.build.building
+                    && ws.build.deadline.is_none()
+                    && ws
+                        .build
+                        .outcome
+                        .as_ref()
+                        .and_then(|o| o.pdf.as_ref())
+                        .is_none_or(|_| ws.pane.view.settled(frame))
+            })
+        });
+        h.run_steps(2);
+        h.try_snapshot_options(name, &loose()).unwrap();
+    }
+
+    /// Whole screens hold a clock, a build's time, a fading SyncTeX box and a PDF that may sit a
+    /// few pixels lower: up to about 0.5% of the screen may differ. A broken layout differs by
+    /// far more.
+    pub(crate) fn loose() -> egui_kittest::SnapshotOptions {
+        egui_kittest::SnapshotOptions::new().max_failed_pixels(
+            egui_kittest::OsThreshold::new(6000)
+                .macos(8000)
+                .windows(8000),
+        )
+    }
+
     pub(crate) fn wait_for(
         h: &mut Harness<App>,
         what: &str,
@@ -1777,7 +1809,7 @@ pub(crate) mod tests {
             h.state().project.as_ref().unwrap().pane.view.rendered()
         });
         h.run_steps(3);
-        let _ = h.try_snapshot("editor-split-light");
+        snap(&mut h, "editor-split-light");
         assert!(h.query_by_label("Recompile").is_some());
         assert!(
             h.query_by_label("method.tex").is_some(),
@@ -1847,7 +1879,7 @@ pub(crate) mod tests {
             h.state().project.as_ref().unwrap().pane.view.match_count() > 0
         });
         h.run_steps(2);
-        let _ = h.try_snapshot("editor-split-built-light");
+        snap(&mut h, "editor-split-built-light");
     }
 
     #[test]
@@ -1918,14 +1950,14 @@ pub(crate) mod tests {
             seen.contains(&("main.tex".into(), 11)),
             "F8 reaches the error on line 11: {seen:?}"
         );
-        let _ = h.try_snapshot("editor-problem-light");
+        snap(&mut h, "editor-problem-light");
         h.get_by_label("Logs").click();
         h.run_steps(3);
         assert!(
             h.query_by_label("main.tex:11").is_some(),
             "the card links to the line"
         );
-        let _ = h.try_snapshot("logs-light");
+        snap(&mut h, "logs-light");
         h.get_by_label("main.tex:11").click();
         h.run_steps(2);
         assert_eq!(h.state().project.as_ref().unwrap().cursor.1, 11);
@@ -2069,7 +2101,7 @@ pub(crate) mod tests {
             )
         });
         h.run_steps(2);
-        let _ = h.try_snapshot("viewer-image-light");
+        snap(&mut h, "viewer-image-light");
         // The build's own PDF, opened as a file of the project.
         wait_for(&mut h, "the build", |h| {
             h.query_by_label_contains("Compiled in").is_some()
@@ -2121,7 +2153,7 @@ pub(crate) mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
             h.step();
         }
-        let _ = h.try_snapshot("pdf-narrow-dark");
+        snap(&mut h, "pdf-narrow-dark");
     }
 
     #[test]
@@ -2137,7 +2169,7 @@ pub(crate) mod tests {
         let pdf_left = h.get_by_label("Resize the PDF panel").rect().center().x;
         let right = |h: &Harness<App>, label: &str| h.get_by_label(label).rect().right();
         assert!(right(&h, "Bold") <= pdf_left);
-        let _ = h.try_snapshot("edit-bar-narrow-light");
+        snap(&mut h, "edit-bar-narrow-light");
         // The buttons past the edge scroll in sideways.
         h.event(egui::Event::PointerMoved(
             h.get_by_label("Bold").rect().center(),
@@ -2190,7 +2222,7 @@ pub(crate) mod tests {
         h.run_steps(2);
         h.get_by_label("Symbols").click();
         h.run_steps(4);
-        let _ = h.try_snapshot("symbols-light");
+        snap(&mut h, "symbols-light");
         h.get_by_label("\\alpha").click();
         h.run_steps(3);
         assert!(
@@ -2366,7 +2398,7 @@ pub(crate) mod tests {
                 .spell
                 .bad("quick")
         );
-        let _ = h.try_snapshot("spell-light");
+        snap(&mut h, "spell-light");
         h.state_mut()
             .project
             .as_mut()
@@ -2439,7 +2471,7 @@ pub(crate) mod tests {
                 .is_empty(),
             "the text is marked"
         );
-        let _ = h.try_snapshot("review-light");
+        snap(&mut h, "review-light");
 
         // TODOs.
         std::fs::write(
@@ -2461,7 +2493,7 @@ pub(crate) mod tests {
         wait_for(&mut h, "the TODOs", |h| {
             h.query_by_label("check the proof").is_some()
         });
-        let _ = h.try_snapshot("todos-light");
+        snap(&mut h, "todos-light");
 
         // Git: not a repository yet, then one.
         h.get_by_label("Close TODOs").click();
@@ -2476,7 +2508,7 @@ pub(crate) mod tests {
         wait_for(&mut h, "the repository", |h| {
             h.query_by_label("Commit message").is_some()
         });
-        let _ = h.try_snapshot("git-light");
+        snap(&mut h, "git-light");
 
         // History: the session's first save took a snapshot.
         h.get_by_label("Close Git").click();
@@ -2492,7 +2524,7 @@ pub(crate) mod tests {
                 .is_empty()
         });
         h.run_steps(2);
-        let _ = h.try_snapshot("history-light");
+        snap(&mut h, "history-light");
     }
 
     #[test]
@@ -2524,7 +2556,7 @@ pub(crate) mod tests {
         });
         h.get_by_label("Search the bibliography").type_text("ppo");
         h.run_steps(2);
-        let _ = h.try_snapshot("cite-light");
+        snap(&mut h, "cite-light");
         h.key_press(egui::Key::Enter);
         h.run_steps(2);
         assert!(
@@ -2557,7 +2589,7 @@ pub(crate) mod tests {
         });
         // The dialog grew: let it settle in the middle.
         h.run_steps(3);
-        let _ = h.try_snapshot("bib-manager-light");
+        snap(&mut h, "bib-manager-light");
         h.query_all_by_label("Rename key…").last().unwrap().click();
         h.run_steps(4);
         h.get_by_label("Rename").click();
@@ -2592,7 +2624,7 @@ pub(crate) mod tests {
                 .as_ref()
                 .is_some_and(|s| s.previewed("as in Eq.~"))
         });
-        let _ = h.try_snapshot("search-light");
+        snap(&mut h, "search-light");
         h.get_by_label("Replace all").click();
         wait_for(&mut h, "the replacement", |_| {
             std::fs::read_to_string(project.join("chapters/method.tex"))
@@ -2639,7 +2671,7 @@ pub(crate) mod tests {
         h.run_steps(3);
         h.get_by_label("2 columns by 2 rows").click();
         h.run_steps(2);
-        let _ = h.try_snapshot("table-light");
+        snap(&mut h, "table-light");
         h.get_by_label("Insert").click();
         h.run_steps(2);
         let t = text(&h);
@@ -2666,7 +2698,7 @@ pub(crate) mod tests {
         h.run_steps(1);
         h.get_by_label("Caption").type_text("A plot");
         h.run_steps(2);
-        let _ = h.try_snapshot("figure-light");
+        snap(&mut h, "figure-light");
         h.get_by_label("Insert").click();
         h.run_steps(2);
         let t = text(&h);
@@ -2726,7 +2758,7 @@ pub(crate) mod tests {
         wait_for(&mut h, "the uses", |h| {
             h.query_by_label("2 places in 1 file:").is_some()
         });
-        let _ = h.try_snapshot("rename-light");
+        snap(&mut h, "rename-light");
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
         h.get_by_label("New name").type_text("eq:loss");
         h.run_steps(2);
@@ -2776,7 +2808,7 @@ pub(crate) mod tests {
         h.run_steps(1);
         h.get_by_label("New name").type_text("introduction");
         h.run_steps(1);
-        let _ = h.try_snapshot("file-rename-light");
+        snap(&mut h, "file-rename-light");
         h.get_by_label("Rename").click();
         wait_for(&mut h, "the renamed file", |_| {
             project.join("introduction.tex").exists()
@@ -2994,7 +3026,7 @@ pub(crate) mod tests {
         modes.last().unwrap().click();
         h.run_steps(2);
         assert!(!h.state().settings.auto_compile);
-        let _ = h.try_snapshot("preferences-light");
+        snap(&mut h, "preferences-light");
 
         // A snippet: incomplete ones are left out on Save.
         h.get_by_label("Add…").click();
@@ -3012,7 +3044,7 @@ pub(crate) mod tests {
         h.run_steps(2);
         h.get_by_label("New snippet").click();
         h.run_steps(3);
-        let _ = h.try_snapshot("snippets-light");
+        snap(&mut h, "snippets-light");
         h.get_by_label("Save").click();
         wait_for(&mut h, "the preferences again", |h| {
             h.query_by_label("Edit 1…").is_some()
@@ -3034,7 +3066,7 @@ pub(crate) mod tests {
         h.get_by_label("Allow the document to run programs (shell escape)")
             .click();
         h.run_steps(3);
-        let _ = h.try_snapshot("project-settings-light");
+        snap(&mut h, "project-settings-light");
         h.get_by_label("Save").click();
         wait_for(&mut h, "lemmata.toml", |_| {
             std::fs::read_to_string(project.join("lemmata.toml"))
@@ -3068,7 +3100,7 @@ pub(crate) mod tests {
         );
         h.get_by_label("Open a file by name").type_text("meth");
         h.run_steps(2);
-        let _ = h.try_snapshot("quick-open-light");
+        snap(&mut h, "quick-open-light");
         h.key_press(egui::Key::Enter);
         wait_for(&mut h, "method.tex", |h| {
             h.query_by_label("Text of method.tex").is_some()
@@ -3082,7 +3114,7 @@ pub(crate) mod tests {
         h.run_steps(3);
         h.get_by_label("Type a command").type_text("keyboard");
         h.run_steps(2);
-        let _ = h.try_snapshot("palette-light");
+        snap(&mut h, "palette-light");
         h.key_press(egui::Key::Enter);
         wait_for(&mut h, "the sheet", |h| {
             h.query_by_label("Search shortcuts").is_some()
@@ -3108,7 +3140,7 @@ pub(crate) mod tests {
             h.query_by_label("Display maths").is_some()
         });
         h.run_steps(3);
-        let _ = h.try_snapshot("word-count-light");
+        snap(&mut h, "word-count-light");
         h.get_by_label("Done").click();
         h.run_steps(2);
 
@@ -3161,7 +3193,7 @@ pub(crate) mod tests {
                 .is_some_and(|p| p.rendered())
         });
         h.run_steps(2);
-        let _ = h.try_snapshot("present-light");
+        snap(&mut h, "present-light");
         // P: the presenter view, with the timer and the notes hint.
         h.key_press(egui::Key::P);
         wait_for(&mut h, "the presenter view", |h| {
@@ -3200,7 +3232,8 @@ pub(crate) mod tests {
             ph.run_steps(1);
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        let _ = ph.try_snapshot("presenter-light");
+        ph.try_snapshot_options("presenter-light", &loose())
+            .unwrap();
         h.key_press(egui::Key::Escape);
         h.run_steps(2);
         assert!(h.state().project.as_ref().unwrap().presentation.is_none());
@@ -3223,7 +3256,7 @@ pub(crate) mod tests {
             h.query_by_label("LEMMATA 1.5").is_some(),
             "both releases, labelled"
         );
-        let _ = h.try_snapshot("whats-new-light");
+        snap(&mut h, "whats-new-light");
         h.get_by_label("Got it").click();
         h.run_steps(2);
         assert!(h.query_by_label("Got it").is_none());
@@ -3273,7 +3306,7 @@ pub(crate) mod tests {
             h.query_by_label("Lemmata 9.9.9 is available.").is_some()
         });
         h.run_steps(2);
-        let _ = h.try_snapshot("update-light");
+        snap(&mut h, "update-light");
         h.get_by_label("Later").click();
         h.run_steps(2);
         assert!(h.state().update.is_none());
@@ -3330,7 +3363,7 @@ pub(crate) mod tests {
             ));
             h.run_steps(1);
         }
-        let _ = h.try_snapshot("tree-drag-light");
+        snap(&mut h, "tree-drag-light");
         assert_eq!(
             h.state()
                 .project
@@ -4062,6 +4095,15 @@ pub(crate) mod tests {
         let ws = app.project.as_mut().unwrap();
         ws.build.deadline = None;
         ws.tex_ready = false;
+        // While the TeX check still runs (the last project opens at start), nothing is said.
+        ws.tex_known = false;
+        ws.run_build(backend, false);
+        assert!(
+            !ws.notices
+                .iter()
+                .any(|n| n.text.contains("TeX isn't installed"))
+        );
+        ws.tex_known = true;
         ws.notice_action(
             backend,
             &settings,

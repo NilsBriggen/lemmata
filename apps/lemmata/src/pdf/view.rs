@@ -100,6 +100,9 @@ pub struct PdfView {
     layout_key: Option<(u64, Fit, Layout, Vec2)>,
     #[cfg(test)]
     relayout_calls: usize,
+    /// The frame it was last drawn in.
+    #[cfg(test)]
+    drawn_at: u64,
     /// The newest document sent to the engine, and the one whose pages are laid out.
     sent: u64,
     shown: u64,
@@ -169,6 +172,8 @@ impl PdfView {
             layout_key: None,
             #[cfg(test)]
             relayout_calls: 0,
+            #[cfg(test)]
+            drawn_at: 0,
             sent: 0,
             bytes: None,
             shown: 0,
@@ -674,6 +679,13 @@ impl PdfView {
                 .all(|(i, _)| self.tex.get(&i).is_some_and(|t| t.doc == self.shown))
     }
 
+    /// Nothing more to draw: not on screen (last drawn before frame `frame - 1`), failed to
+    /// open, or `rendered`.
+    #[cfg(test)]
+    pub fn settled(&self, frame: u64) -> bool {
+        self.drawn_at + 1 < frame || self.error.is_some() || self.rendered()
+    }
+
     /// The SyncTeX box on screen: page index and rect in points.
     #[cfg(test)]
     pub fn highlighted(&self) -> Option<(usize, Rect)> {
@@ -771,6 +783,10 @@ impl PdfView {
 
     pub fn show(&mut self, ui: &mut Ui, p: &Palette) -> Option<Event> {
         let ctx = ui.ctx().clone();
+        #[cfg(test)]
+        {
+            self.drawn_at = ctx.cumulative_frame_nr();
+        }
         self.receive(&ctx);
         let mut area = ui.max_rect();
         ui.painter().rect_filled(area, 0, p.pdf_ground);

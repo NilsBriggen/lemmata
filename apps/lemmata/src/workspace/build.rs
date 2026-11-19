@@ -218,7 +218,8 @@ impl Workspace {
     pub fn run_build(&mut self, backend: &Backend, force: bool) {
         self.build.deadline = None;
         if !self.tex_ready {
-            if !self.build.told_no_tex {
+            // Still being looked for: the build starts when TeX is found.
+            if self.tex_known && !self.build.told_no_tex {
                 self.build.told_no_tex = true;
                 self.notices.push(Notice::new(
                     "TeX isn't installed yet, so nothing is compiled. Your edits are saved as usual.",

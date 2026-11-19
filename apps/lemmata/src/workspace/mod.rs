@@ -189,6 +189,8 @@ pub struct Workspace {
     pub pdf_current: bool,
     /// TeX was found, so builds can run; and whether it's an old TeX Live.
     pub tex_ready: bool,
+    /// The TeX check has answered (it runs while the last project opens at start).
+    pub tex_known: bool,
     pub tex_outdated: bool,
     /// Saves that don't start a build (Recompile, exports and settings changes build themselves).
     no_build: HashSet<String>,
@@ -339,6 +341,7 @@ impl Workspace {
             analysis_seq: 0,
             pdf_current: true,
             tex_ready,
+            tex_known: true,
             tex_outdated: false,
             no_build: HashSet::new(),
             auto_writes: HashSet::new(),
