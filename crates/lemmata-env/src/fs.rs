@@ -44,7 +44,13 @@ fn resolved(path: &Path) -> PathBuf {
 /// `stage`; one that leads out of the project only in a project the user trusts, so a project
 /// can't point its `refs.bib` at `~/.bashrc` and have an edit or a sync overwrite it.
 pub fn may_write(root: &Path, trusted: bool, path: &Path) -> std::io::Result<()> {
-    if trusted || resolved(path).starts_with(resolved(root)) {
+    // A file not written yet is resolved through its folder, which may be reached by a link
+    // (macOS's /var is /private/var).
+    let target = match (path.symlink_metadata(), path.parent(), path.file_name()) {
+        (Err(_), Some(dir), Some(name)) => resolved(dir).join(name),
+        _ => resolved(path),
+    };
+    if trusted || target.starts_with(resolved(root)) {
         return Ok(());
     }
     let name = path.strip_prefix(root).unwrap_or(path).display();
@@ -234,6 +240,12 @@ mod tests {
         std::os::unix::fs::symlink("real.bib", d.path().join("inner.bib")).unwrap();
         assert!(may_write(d.path(), false, &d.path().join("inner.bib")).is_ok());
         assert!(may_write(d.path(), false, &d.path().join("new.bib")).is_ok());
+        // The project reached through a link, as macOS's temp folder always is.
+        let via = shared.path().join("via");
+        std::os::unix::fs::symlink(d.path(), &via).unwrap();
+        assert!(may_write(&via, false, &via.join("new.bib")).is_ok());
+        assert!(may_write(&via, false, &via.join("inner.bib")).is_ok());
+        assert!(may_write(&via, false, &via.join("refs.bib")).is_err());
         let written = write_atomic(&link, b"new").unwrap();
         assert_eq!(written, library.canonicalize().unwrap());
         assert!(
