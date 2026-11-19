@@ -426,11 +426,6 @@ impl Shell {
         self.project.lock_safe().as_ref().is_some_and(|p| p.trusted)
     }
 
-    /// False when the file watcher couldn't start (e.g. the system's watch limit is reached).
-    pub fn watching(&self) -> bool {
-        self.watcher.lock_safe().is_some()
-    }
-
     pub fn project_info_cmd(&self) -> CmdResult<ProjectInfo> {
         let guard = self.project.lock_safe();
         guard

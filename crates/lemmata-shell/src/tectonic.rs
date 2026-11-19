@@ -40,10 +40,6 @@ fn status() -> TectonicStatus {
 }
 
 impl Shell {
-    pub fn tectonic_status(&self) -> TectonicStatus {
-        status()
-    }
-
     /// Downloads and verifies the pinned Tectonic. Blocks until done (tens of MB).
     pub fn tectonic_install(&self) -> Result<TectonicStatus, String> {
         let dir = install_dir(self)?;

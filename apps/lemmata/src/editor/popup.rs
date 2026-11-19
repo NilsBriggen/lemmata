@@ -5,8 +5,8 @@
 use super::complete::{Item, Kind};
 use crate::theme::{self, Palette};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui,
-    pos2, text::LayoutJob, vec2,
+    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2,
+    text::LayoutJob, vec2,
 };
 
 /// An open completion list.
@@ -329,6 +329,5 @@ pub fn show(
                     });
             });
     }
-    let _ = Shape::Noop;
     picked
 }
