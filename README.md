@@ -134,11 +134,18 @@ cargo run -p lemmata-app
 ### Releasing
 
 ```bash
-scripts/release.sh 2.1.0
+scripts/release.sh prepare 2.1.0
+```
+
+```bash
+scripts/release.sh tag 2.1.0
+```
+
+```bash
 git push --follow-tags
 ```
 
-The script adds the new version to the changelog and tags it. The tag starts `.github/workflows/release.yml`, which builds every system and publishes the release. Plain versions also go to the update feed. Version numbers with `-rc` become pre-releases. The checklist is in [docs/release-checklist.md](docs/release-checklist.md).
+`prepare` sets the version and adds its section to the changelog, to be edited before `tag` commits and tags it. The tag starts `.github/workflows/release.yml`, which builds every system and publishes the release. Plain versions also go to the update feed. Version numbers with `-rc` become pre-releases. The checklist is in [docs/release-checklist.md](docs/release-checklist.md).
 
 ## Licence
 

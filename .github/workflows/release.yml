@@ -26,7 +26,7 @@ jobs:
         shell: bash
         run: |
           if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
-            echo "::error::$GITHUB_REF_NAME is not vX.Y.Z or vX.Y.Z-suffix. Use scripts/release.sh."
+            echo "::error::$GITHUB_REF_NAME is not vX.Y.Z or vX.Y.Z-suffix. Use scripts/release.sh prepare and tag."
             exit 1
           fi
           version=${GITHUB_REF_NAME#v}
@@ -40,6 +40,11 @@ jobs:
   ci:
     needs: verify
     uses: ./.github/workflows/ci.yml
+
+  # MiKTeX builds and the app's tests on Windows.
+  windows:
+    needs: verify
+    uses: ./.github/workflows/windows.yml
 
   build:
     needs: verify
@@ -201,7 +206,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [build, macos, cli, ci]
+    needs: [build, macos, cli, ci, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -226,7 +231,10 @@ jobs:
       # manifest names is here, under its own name, and verifies with the key built into the app.
       - name: Check the updater manifest
         run: |
-          [[ -f dist/latest.json ]] || exit 0
+          if [[ ! -f dist/latest.json ]]; then
+            [[ "${{ steps.meta.outputs.plain }}" == "false" ]] && exit 0 # pre-releases have none
+            echo "::error::a stable release without latest.json: no one would be offered it"; exit 1
+          fi
           sudo apt-get install -y minisign >/dev/null
           grep -m1 'const PUBLIC_KEY' crates/lemmata-shell/src/update.rs | cut -d'"' -f2 | base64 -d > key.pub
           python3 -I scripts/updater-files.py dist/latest.json > checks.txt
@@ -239,7 +247,7 @@ jobs:
       - name: Release notes
         run: |
           awk -v v="## ${GITHUB_REF_NAME#v} " 'index($0, v) == 1 {on = 1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
-          test -s notes.md || { echo "::error::CHANGELOG.md has no section for ${GITHUB_REF_NAME#v}"; exit 1; }
+          grep -q '[^[:space:]]' notes.md || { echo "::error::CHANGELOG.md has no section for ${GITHUB_REF_NAME#v}, or it is blank"; exit 1; }
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -254,9 +262,11 @@ jobs:
     env:
       AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
     steps:
+      - name: Check the AUR key is set
+        run: |
+          test -n "$AUR_SSH_KEY" || { echo "::error::the AUR_SSH_KEY secret is not set: lemmata-bin was not updated"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Render PKGBUILD
-        if: env.AUR_SSH_KEY != ''
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.publish.outputs.version }}
@@ -264,10 +274,10 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS.txt
           export SHA_X86_64=$(grep "_linux_x86_64.deb$" SHA256SUMS.txt | cut -d' ' -f1)
           export SHA_AARCH64=$(grep "_linux_aarch64.deb$" SHA256SUMS.txt | cut -d' ' -f1)
+          [[ -n $SHA_X86_64 && -n $SHA_AARCH64 ]] || { echo "::error::SHA256SUMS.txt lacks a Linux .deb"; exit 1; }
           envsubst '$VERSION $SHA_X86_64 $SHA_AARCH64' < packaging/aur/PKGBUILD.in > PKGBUILD
           cat PKGBUILD
       - name: Push to the AUR
-        if: env.AUR_SSH_KEY != ''
         uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3 (pinned: this step receives the AUR key)
         with:
           pkgname: lemmata-bin
@@ -284,9 +294,11 @@ jobs:
     env:
       TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
     steps:
+      - name: Check the tap token is set
+        run: |
+          test -n "$TAP_TOKEN" || { echo "::error::the TAP_TOKEN secret is not set: the Homebrew cask was not updated"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Update the cask in NilsBriggen/homebrew-tap
-        if: env.TAP_TOKEN != ''
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.publish.outputs.version }}
@@ -294,6 +306,7 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS.txt
           export SHA_DMG_AARCH64=$(grep "_macos_universal_aarch64.dmg$" SHA256SUMS.txt | cut -d' ' -f1)
           export SHA_DMG_X86_64=$(grep "_macos_universal_x86_64.dmg$" SHA256SUMS.txt | cut -d' ' -f1)
+          [[ -n $SHA_DMG_AARCH64 && -n $SHA_DMG_X86_64 ]] || { echo "::error::SHA256SUMS.txt lacks a macOS .dmg"; exit 1; }
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/NilsBriggen/homebrew-tap.git" tap
           mkdir -p tap/Casks
           envsubst '$VERSION $SHA_DMG_AARCH64 $SHA_DMG_X86_64' < packaging/homebrew/lemmata.rb.in > tap/Casks/lemmata.rb
@@ -311,8 +324,11 @@ jobs:
     env:
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     steps:
+      - name: Check the winget token is set
+        shell: bash
+        run: |
+          test -n "$WINGET_TOKEN" || { echo "::error::the WINGET_TOKEN secret is not set: no winget PR was opened"; exit 1; }
       - name: Open a PR to microsoft/winget-pkgs
-        if: env.WINGET_TOKEN != ''
         uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2 (pinned: this step receives the winget token)
         with:
           identifier: NilsBriggen.Lemmata
@@ -326,8 +342,10 @@ jobs:
       WEBSITE_DISPATCH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
       WEBSITE_REPO: ${{ vars.WEBSITE_REPO }}
     steps:
+      - name: Check the website token and repository are set
+        run: |
+          test -n "$WEBSITE_DISPATCH_TOKEN" -a -n "$WEBSITE_REPO" || { echo "::error::WEBSITE_DISPATCH_TOKEN or WEBSITE_REPO is not set: the website was not rebuilt"; exit 1; }
       - name: Ask the website to rebuild
-        if: env.WEBSITE_DISPATCH_TOKEN != '' && env.WEBSITE_REPO != ''
         env:
           GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
         run: gh api "repos/$WEBSITE_REPO/dispatches" -f event_type=release-published -f "client_payload[tag]=$GITHUB_REF_NAME"

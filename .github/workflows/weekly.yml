@@ -1,0 +1,26 @@
+name: Weekly
+
+# What depends on other people's servers: texlab's release and every spell-check dictionary still
+# download and verify against the checksums built into the app. A failing run is a link or a
+# file that moved, to fix before users meet it.
+on:
+  schedule:
+    - cron: "41 4 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  downloads:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - name: texlab
+        run: cargo test -p lemmata-shell -- --ignored downloads_and_verifies_texlab
+      - name: Dictionaries
+        run: cargo test -p lemmata-spell -- --ignored downloads_every_dictionary

@@ -110,6 +110,10 @@ def main() -> None:
                 sig = signatures.get((label, ext))
                 if sig:
                     platforms[platform] = {"signature": sig, "url": f"{base}/Lemmata_{version}_{label}{ext}"}
+        # A stable release without a platform would leave that platform's users on the old version.
+        missing = [p for entries in UPDATER.values() for p, _ in entries if p not in platforms]
+        if missing:
+            sys.exit(f"no signed installer for {', '.join(missing)}: the updater manifest would leave them out")
         manifest = {
             "version": version,
             "notes": f"https://github.com/{repo}/releases/tag/{tag}",
@@ -120,7 +124,7 @@ def main() -> None:
         (out / name).write_text(json.dumps(manifest, indent=2) + "\n")
         print(f"wrote {name} for {', '.join(platforms)}")
     else:
-        print("no .sig files: skipping the updater manifest (TAURI_SIGNING_PRIVATE_KEY secret not set?)")
+        sys.exit("no .sig files for a stable release, so no updater manifest (TAURI_SIGNING_PRIVATE_KEY secret not set?)")
 
     lines = []
     for f in sorted(out.iterdir()):

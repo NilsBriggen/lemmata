@@ -3,9 +3,10 @@ name: Windows
 # Builds a document on Windows with a real MiKTeX in the situations that have
 # broken for users (Perl missing, Perl failing to start) and reports timings,
 # and runs the app's tests and scenarios on Windows.
-# It runs on pushes to main that touch the build code (the paths below) and by hand:
-# Actions → Windows → Run workflow.
+# It runs on pushes to main that touch the build code (the paths below), by hand
+# (Actions → Windows → Run workflow), and before every release (release.yml).
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches: [main]

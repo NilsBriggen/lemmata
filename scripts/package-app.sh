@@ -91,6 +91,29 @@ for dmg in "$out"/*.dmg; do
   mv "$dmg.ulmo.dmg" "$dmg"
 done
 
+# Every installer carries the templates and the dictionaries (resources in apps/lemmata/Cargo.toml):
+# without them New project is empty and spell checking is off.
+need="$(ls templates) dictionaries"
+carries() {
+  local listing
+  listing=$(tr '\\' '/' <<<"$2")
+  for n in $need; do
+    grep -Eq "(^|[[:space:]/])$n/" <<<"$listing" || { echo "$1 lacks $n/" >&2; exit 1; }
+  done
+}
+for deb in "$out"/*.deb; do
+  [[ -e $deb ]] || continue
+  carries "$deb" "$(dpkg-deb -c "$deb")"
+done
+for app in "$out"/*.app "$out"/*/*.app; do
+  [[ -d $app ]] || continue
+  carries "$app" "$(find "$app" -type d | sed 's|$|/|')"
+done
+for exe in "$out"/*-setup.exe; do
+  [[ -e $exe ]] || continue
+  if command -v 7z >/dev/null; then carries "$exe" "$(7z l "$exe")"; else echo "::warning::no 7z: $exe not inspected"; fi
+done
+
 if [[ -n ${CARGO_PACKAGER_SIGN_PRIVATE_KEY:-} ]]; then
   find "$out" -maxdepth 2 -type f \( -name '*.AppImage' -o -name '*.app.tar.gz' -o -name '*-setup.exe' \) \
     -exec cargo packager signer sign {} \;

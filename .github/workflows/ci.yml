@@ -159,6 +159,7 @@ jobs:
             ulem
             listings
             graphics
+            mylatexformat
       - name: Build the CLI
         run: cargo build -p lemmata-cli
       - name: lemmata doctor
@@ -170,6 +171,11 @@ jobs:
       # latexdiff's markup needs ulem, color and listings; the test fails instead of skipping when any is missing.
       - name: PDF of the changes (latexdiff)
         run: cargo test -p lemmata-history --test latexdiff
+        env:
+          LEMMATA_REQUIRE_TEX: "1"
+      # The builds with real TeX (warm formats, citations, the CLI), which skip on the other jobs.
+      - name: Builds with real TeX
+        run: cargo test -p lemmata-tex -p lemmata-cli
         env:
           LEMMATA_REQUIRE_TEX: "1"
 
@@ -222,6 +228,8 @@ jobs:
           git config --global user.email "ci@lemmata.invalid"
       - name: Run the app's tests and scenarios
         run: cargo test -p lemmata-app
+        env:
+          LEMMATA_REQUIRE_TEX: "1"
       # Timed, so alone: typing and resizing in a 20,000-line file (editor/view.rs).
       - name: Editor speed in a long file
         run: cargo test -p lemmata-app -- --ignored --test-threads=1 --nocapture stay_fast

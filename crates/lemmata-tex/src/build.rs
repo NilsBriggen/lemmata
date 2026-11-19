@@ -1444,6 +1444,15 @@ pub(crate) fn kill_tree(pid: Option<u32>, force: bool) {
 
 #[cfg(test)]
 mod tests {
+    /// A test that needs real TeX skips without it, unless LEMMATA_REQUIRE_TEX is set (CI's
+    /// TeX job), where skipping would hide a broken install.
+    fn tex_missing(what: &str) {
+        assert!(
+            std::env::var_os("LEMMATA_REQUIRE_TEX").is_none(),
+            "LEMMATA_REQUIRE_TEX is set, but {what} is missing"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -1717,6 +1726,7 @@ mod tests {
             which::which("biber"),
             which::which("latexmk"),
         ) else {
+            tex_missing("pdflatex, latexmk or biber");
             return;
         };
         let d = tempfile::tempdir().unwrap();
@@ -1767,6 +1777,7 @@ mod tests {
     async fn after_a_stopped_build_undoing_back_still_builds() {
         let (Ok(pdflatex), Ok(latexmk)) = (which::which("pdflatex"), which::which("latexmk"))
         else {
+            tex_missing("pdflatex, latexmk or biber");
             return;
         };
         let d = tempfile::tempdir().unwrap();
@@ -2174,6 +2185,7 @@ mod tests {
     async fn an_error_after_a_stopped_build_is_reported() {
         let (Ok(pdflatex), Ok(latexmk)) = (which::which("pdflatex"), which::which("latexmk"))
         else {
+            tex_missing("pdflatex, latexmk or biber");
             return; // no TeX on this machine: the CI job with TeX runs this
         };
         let bin = pdflatex.parent().unwrap().to_path_buf();
@@ -2236,6 +2248,7 @@ mod tests {
     async fn file_names_never_reach_a_shell_and_unusual_names_build() {
         let (Ok(pdflatex), Ok(latexmk)) = (which::which("pdflatex"), which::which("latexmk"))
         else {
+            tex_missing("pdflatex, latexmk or biber");
             return; // no TeX on this machine: the CI job with TeX runs this
         };
         let bin = pdflatex.parent().unwrap().to_path_buf();
@@ -2292,6 +2305,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let (Ok(pdflatex), Ok(_), true) = (which::which("pdflatex"), which::which("biber"), true)
         else {
+            tex_missing("pdflatex or biber");
             return; // no TeX on this machine: the CI job with TeX runs this
         };
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/article");
@@ -2353,6 +2367,7 @@ mod tests {
     async fn direct_build_is_incremental() {
         use std::os::unix::fs::PermissionsExt;
         let (Ok(pdflatex), Ok(biber)) = (which::which("pdflatex"), which::which("biber")) else {
+            tex_missing("pdflatex, latexmk or biber");
             return;
         };
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/article");
@@ -2742,6 +2757,7 @@ mod tests {
         fn new(main: &str, toml: &str) -> Option<Self> {
             let (Ok(pdflatex), Ok(latexmk)) = (which::which("pdflatex"), which::which("latexmk"))
             else {
+                tex_missing("pdflatex or latexmk");
                 return None;
             };
             let has_mylatexformat = std::process::Command::new("kpsewhich")
@@ -2749,6 +2765,7 @@ mod tests {
                 .output()
                 .is_ok_and(|o| !o.stdout.is_empty());
             if !has_mylatexformat {
+                tex_missing("mylatexformat");
                 return None;
             }
             let dir = tempfile::tempdir().unwrap();

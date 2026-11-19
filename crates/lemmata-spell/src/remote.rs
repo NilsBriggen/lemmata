@@ -428,12 +428,18 @@ mod tests {
         assert_eq!(dic, "1\nabc/65000,7 ph:x\n");
     }
 
-    /// Needs the network: `cargo test -p lemmata-spell -- --ignored`.
+    /// Needs the network: `cargo test -p lemmata-spell -- --ignored` (weekly.yml). Every
+    /// dictionary offered still downloads, matches its checksum and loads.
     #[tokio::test]
     #[ignore]
-    async fn downloads_a_dictionary() {
+    async fn downloads_every_dictionary() {
         let dir = tempfile::tempdir().unwrap();
-        download(dir.path(), "pt-PT").await.unwrap();
+        for r in REMOTE {
+            download(dir.path(), r.code).await.unwrap();
+            if let Err(e) = crate::Speller::load(&[dir.path()], r.code) {
+                panic!("{} doesn't load: {e:?}", r.code);
+            }
+        }
         let sp = crate::Speller::load(&[dir.path()], "pt-PT").unwrap();
         assert!(sp.check("computador") && !sp.check("computadro"));
     }

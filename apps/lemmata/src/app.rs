@@ -1384,6 +1384,16 @@ pub(crate) mod tests {
         )
     }
 
+    /// Tests that build skip without TeX, unless LEMMATA_REQUIRE_TEX is set (CI's job with TeX
+    /// Live), where skipping would hide a broken install.
+    pub(crate) fn without_tex<T>() -> Option<T> {
+        assert!(
+            std::env::var_os("LEMMATA_REQUIRE_TEX").is_none(),
+            "LEMMATA_REQUIRE_TEX is set, but TeX wasn't found"
+        );
+        None
+    }
+
     pub(crate) fn wait_for(
         h: &mut Harness<App>,
         what: &str,
@@ -1538,7 +1548,7 @@ pub(crate) mod tests {
         });
         wait_for(&mut h, "TeX detection", |h| !h.state().checking);
         if !h.state().project.as_ref().is_some_and(|ws| ws.tex_ready) {
-            return None;
+            return without_tex();
         }
         h.query_by_label("Back to all projects")?;
         h.get_by_label("Back to all projects").click();
@@ -1776,11 +1786,11 @@ pub(crate) mod tests {
             opened(h) || h.query_by_label("Check again").is_some()
         });
         if !opened(&h) {
-            return None;
+            return without_tex();
         }
         wait_for(&mut h, "TeX detection", |h| !h.state().checking);
         if !h.state().project.as_ref().is_some_and(|ws| ws.tex_ready) {
-            return None;
+            return without_tex();
         }
         wait_for(&mut h, "the main file", |h| {
             h.query_by_label("Text of main.tex").is_some()
@@ -4736,6 +4746,8 @@ pub(crate) mod tests {
             });
             assert!(h.query_by_label("paper").is_some());
             assert!(Recents::load(&d).0[0].last_opened > 1.0);
+        } else {
+            without_tex::<()>();
         }
     }
 }

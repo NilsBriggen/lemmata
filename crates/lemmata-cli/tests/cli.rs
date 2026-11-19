@@ -40,6 +40,10 @@ fn can_build() -> bool {
         && tool_runs("pdflatex")
         && tool_runs("biber");
     if !ready {
+        assert!(
+            std::env::var_os("LEMMATA_REQUIRE_TEX").is_none(),
+            "LEMMATA_REQUIRE_TEX is set, but latexmk, pdflatex or biber is missing"
+        );
         eprintln!("skipping: needs latexmk, pdflatex and biber");
     }
     ready
