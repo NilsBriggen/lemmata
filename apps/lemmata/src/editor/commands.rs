@@ -1308,6 +1308,10 @@ mod tests {
         let _ = by_group(&d, 6, false);
         let _ = by_group(&d, 6, true);
         let _ = word_at(&d, 6);
+        // Enter there too: the rest of the line came out backwards.
+        let mut d = doc("ab cd\r\nef\r\n", 6);
+        insert_newline_and_indent(&mut d, Indent::Spaces(2));
+        assert!(d.text().starts_with("ab cd"), "{:?}", d.text());
     }
 
     /// Two cursors deleting over the same text once removed it twice and ended the app.

@@ -181,10 +181,13 @@ pub fn to_source(
         return None;
     }
     let (from, to) = (p.map[a]?, p.map[b]? + 1);
-    let flagged: String = p.text[offset..(offset + length).min(p.text.len())]
+    let flagged: String = p
+        .text
+        .get(offset..(offset + length).min(p.text.len()))?
         .iter()
         .collect();
-    let src: String = source[from..to.min(source.len())].iter().collect();
+    // The source may have shrunk since the paragraph was sent (a late reply after a deletion).
+    let src: String = source.get(from..to.min(source.len()))?.iter().collect();
     Some((from, to, src == flagged))
 }
 
@@ -370,6 +373,11 @@ mod tests {
                 1,
                 &"Let $x$ be.".chars().collect::<Vec<_>>()
             ),
+            None
+        );
+        // A late reply after the text got shorter maps to nothing instead of panicking.
+        assert_eq!(
+            to_source(p, t.find("We has").unwrap(), 6, &chars[..5]),
             None
         );
     }

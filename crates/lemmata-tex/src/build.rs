@@ -759,16 +759,17 @@ pub(crate) fn files_hash_with_tree(
             (&e.path, e.is_dir, e.size).hash(h);
             if e.is_dir {
                 walk(root, &e.children, h);
-            } else if e.size > BIG {
-                std::fs::metadata(root.join(&e.path))
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .hash(h);
-            } else {
-                match std::fs::read(root.join(&e.path)) {
+                continue;
+            }
+            // What a link names decides, not the link: one to /dev/zero or a huge file isn't read.
+            let path = root.join(&e.path);
+            match std::fs::metadata(&path) {
+                Ok(m) if m.is_file() && m.len() <= BIG => match std::fs::read(&path) {
                     Ok(bytes) => bytes.hash(h),
                     Err(e) => e.to_string().hash(h),
-                }
+                },
+                Ok(m) => (m.len(), m.modified().ok()).hash(h),
+                Err(e) => e.to_string().hash(h),
             }
         }
     }
@@ -1911,6 +1912,20 @@ mod tests {
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&fig, vec![2u8; 2 << 20]).unwrap();
         assert!(!up_to_date(&p), "a replaced figure was taken as unchanged");
+    }
+
+    /// A project's link to an endless file (/dev/zero) or a huge one is hashed by what it names,
+    /// not read to the end.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_an_endless_file_is_not_read() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::os::unix::fs::symlink("/dev/zero", d.path().join("data.csv")).unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(files_hash(&p), files_hash(&p));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

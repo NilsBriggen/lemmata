@@ -348,10 +348,14 @@ impl Doc {
         self.rope.char_to_line(pos.min(self.len()))
     }
 
+    /// The text from `from` to `to`; empty when `to` is before `from` (a caret between a CRLF's
+    /// two characters makes the line's end come before it), where the rope would panic.
     pub fn slice(&self, from: usize, to: usize) -> String {
-        self.rope
-            .slice(from.min(self.len())..to.min(self.len()))
-            .to_string()
+        let (from, to) = (from.min(self.len()), to.min(self.len()));
+        if from >= to {
+            return String::new();
+        }
+        self.rope.slice(from..to).to_string()
     }
 
     /// Applies `changes` and moves the selection to `selection` (given in the coordinates after the change).
