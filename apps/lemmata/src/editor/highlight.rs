@@ -322,6 +322,58 @@ pub fn line(text: &str, state: &mut State) -> Vec<(usize, usize, Token)> {
     out
 }
 
+/// A line of a .bib file: the `@type`, the entry's key, field names, braces and `%` comments.
+/// Line by line, so a value spread over several lines is plain text after its first.
+pub fn bib_line(text: &str) -> Vec<(usize, usize, Token)> {
+    let c: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = c.iter().take_while(|ch| ch.is_whitespace()).count();
+    if c.get(i) == Some(&'%') {
+        return vec![(i, c.len(), Token::Comment)];
+    }
+    let word = |i: usize| {
+        i + c[i..]
+            .iter()
+            .take_while(|ch| ch.is_alphanumeric() || "_-:.".contains(**ch))
+            .count()
+    };
+    if c.get(i) == Some(&'@') {
+        let end = word(i + 1);
+        out.push((i, end, Token::Tag));
+        i = end;
+        if matches!(c.get(i), Some('{' | '(')) {
+            out.push((i, i + 1, Token::Bracket));
+            let key = i
+                + 1
+                + c[i + 1..]
+                    .iter()
+                    .take_while(|ch| !ch.is_whitespace() && **ch != ',' && **ch != '}')
+                    .count();
+            if key > i + 1 {
+                out.push((i + 1, key, Token::Atom));
+            }
+            i = key;
+        }
+    } else {
+        let end = word(i);
+        let eq = end
+            + c[end..]
+                .iter()
+                .take_while(|ch| **ch == ' ' || **ch == '\t')
+                .count();
+        if end > i && c.get(eq) == Some(&'=') {
+            out.push((i, end, Token::Keyword));
+            i = eq + 1;
+        }
+    }
+    for (k, ch) in c.iter().enumerate().skip(i) {
+        if matches!(ch, '{' | '}' | '"') {
+            out.push((k, k + 1, Token::Bracket));
+        }
+    }
+    out
+}
+
 /// Per-line start states of a document, recomputed lazily from the first changed line.
 #[derive(Default)]
 pub struct Highlighter {
@@ -390,6 +442,37 @@ mod tests {
         let t = toks("\\section{Intro}");
         assert_eq!(t[0], ("\\section".into(), Token::Tag));
         assert!(!t.iter().any(|(s, _)| s == "Intro"));
+    }
+
+    #[test]
+    fn bib_entries_fields_and_comments() {
+        let t = |s: &str| -> Vec<(String, Token)> {
+            let chars: Vec<char> = s.chars().collect();
+            bib_line(s)
+                .into_iter()
+                .map(|(a, b, t)| (chars[a..b].iter().collect(), t))
+                .collect()
+        };
+        assert_eq!(
+            t("@article{müller2020,"),
+            [
+                ("@article".into(), Token::Tag),
+                ("{".into(), Token::Bracket),
+                ("müller2020".into(), Token::Atom)
+            ]
+        );
+        assert_eq!(
+            t("  title = {Über {LaTeX}},"),
+            [
+                ("title".into(), Token::Keyword),
+                ("{".into(), Token::Bracket),
+                ("{".into(), Token::Bracket),
+                ("}".into(), Token::Bracket),
+                ("}".into(), Token::Bracket)
+            ]
+        );
+        assert_eq!(t("% a note"), [("% a note".into(), Token::Comment)]);
+        assert!(t("  continued text").is_empty());
     }
 
     #[test]

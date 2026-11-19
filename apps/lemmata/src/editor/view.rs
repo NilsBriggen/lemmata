@@ -1004,6 +1004,8 @@ pub fn show(
             let text = ed.doc.line(n);
             let tokens = if ed.tex {
                 ed.hl.tokens(n, |k| ed.doc.line(k))
+            } else if ed.path.ends_with(".bib") {
+                super::highlight::bib_line(&text)
             } else {
                 Vec::new()
             };
