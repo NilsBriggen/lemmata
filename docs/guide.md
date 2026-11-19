@@ -163,13 +163,13 @@ The status bar shows the word count of the document body, and the number of word
 
 **Review changes.** The bar at the top of History turns it into a way to review edits, for example after a co-author changed your text. Choose a starting point in *Review changes since* (by default your last review) and click **Review changes**. Every changed text file is listed as separate changes with the old lines in red and the new lines in green. **Accept** keeps the current text for that change; **Reject** puts the old text back for that change only, and Ctrl+Z in the file undoes it. Each file and the whole list also have **Accept all** and **Reject all**. Accepted changes are hidden. **Mark as reviewed** takes a snapshot called *Reviewed* where your next review starts.
 
-**PDF of the changes.** **PDF of the changes** compiles the old and the current version with `latexdiff` into one PDF with insertions and deletions marked, then offers **Open PDF of the changes**. It opens in your PDF viewer. It needs `latexdiff` (part of TeX Live; with MiKTeX it also needs Perl), `latexmk` and the LaTeX package `ulem`. If one is missing, Lemmata says how to install it.
+**PDF of the changes.** In a trusted project, **PDF of the changes** compiles the old and the current version with `latexdiff` into one PDF with insertions and deletions marked, then offers **Open PDF of the changes**. It opens in your PDF viewer. It needs `latexdiff` (part of TeX Live; with MiKTeX it also needs Perl), `latexmk` and the LaTeX package `ulem`. If one is missing, Lemmata says how to install it.
 
 History is on for every project; it only needs git to be installed. A project that is a git repository keeps its snapshots on a private ref of its own, so your branches, commits and staged changes are never touched. Any other project gets a small snapshot store in its hidden `.lemmata` folder; the project folder doesn't become a git repository and nothing else in it changes. Without git, History is off, and replacing or renaming across the project says that it can't be undone.
 
 ## Git
 
-Lemmata works with the git on your computer; install git first if you don't have it. Open the panel with the **Git** button in the top toolbar; its badge counts the files that changed since the last commit. It's also in the main menu and the command palette.
+Lemmata works with the git on your computer; install git first if you don't have it. The panel is on for trusted projects (see [Trusted and restricted projects](#trusted-and-restricted-projects)). Open the panel with the **Git** button in the top toolbar; its badge counts the files that changed since the last commit. It's also in the main menu and the command palette.
 
 - **Turn this project into a git repository** appears when the project isn't in one. It runs `git init`, adds a `.gitignore` containing `.lemmata/` if there is none, and makes a first commit of everything.
 - **Changes** are listed as *Staged*, *Changes* and *Untracked*. Tick a file to stage it and untick it to unstage it. **Stage all** stages every change in one go. Files with merge conflicts are listed under *Conflicts*; resolve them in a terminal.
@@ -216,11 +216,16 @@ Files changed by other programs (another editor, `git pull`) reload automaticall
 - **Export for arXiv** builds the project, then zips exactly the files the build used plus the compiled bibliography (`.bbl`), with comments removed (but not a `%` inside verbatim environments, `\verb` or URLs). If the document doesn't build without errors, Lemmata warns first and offers **Export anyway**. That's ready to upload to arXiv.
 - **Export for arXiv as one .tex file** (in the command palette and the app menu) does the same, but puts the whole document into the main file: `\input`, `\include`, `\subfile` and `\import` are replaced by the text of the file they load, and with BibTeX the `.bbl` text replaces `\bibliography`. The files that were merged are left out of the zip. With biblatex, `\printbibliography` stays and the `.bbl` is in the zip. An input that can't be found, or that lies outside the project, is left as it is.
 
-## Shell escape
+## Trusted and restricted projects
 
-Some packages (`minted`, `svg`) need to run programs during the build. Because a document could run any command, this is off by default. Turn it on in *Project settings* only for projects you trust; doing so counts as allowing it.
+A LaTeX project can run programs on your computer: a `latexmkrc` file is a Perl program, shell escape lets the document run commands, and a git repository can bring hooks that run when it is used. So the first time you open a folder, Lemmata asks whether you trust its authors.
 
-A project's `lemmata.toml` can't turn it on by itself. If it does, Lemmata asks when you open the project: **Allow for this project** lets the document run programs, and **Build without it** builds without shell escape. Until you allow it, builds run without it. If you choose **Build without it**, Lemmata asks again the next time you open the project.
+- **Trust** for projects you made yourself or got from people you trust. They build with `latexmk` as usual, with their `latexmkrc`, with shell escape when `lemmata.toml` turns it on, and with the Git panel and *PDF of the changes*.
+- **Open restricted** for anything else. The project still builds and shows its PDF, but nothing of its own runs: Lemmata calls the TeX engine and the bibliography tool itself instead of `latexmk`, leaves the `latexmkrc` out and keeps shell escape off. The Git panel and *PDF of the changes* are off, and History uses only a snapshot store Lemmata made itself. Documents that need an index or glossary tool, a `latexmkrc` or shell escape say so in the Problems panel.
+
+Projects you create with **New project** are trusted unless the template holds a `latexmkrc` or turns on shell escape. Cloned and imported projects always ask. Your answer is kept on this computer, not in the project. Change it any time with *Trust this project* in *Project settings*; forgetting or deleting a project also forgets the answer.
+
+**Shell escape.** Some packages (`minted`, `svg`) need to run programs during the build. It's off unless the project's `lemmata.toml` turns it on (*Project settings → Allow the document to run programs*), and even then only for a trusted project.
 
 ## Updates
 
@@ -232,7 +237,7 @@ Run **Report a problem** from the command palette. It shows the details it will 
 
 ## The command line
 
-`lemmata build [dir]` compiles a project once and prints its problems, `lemmata watch [dir]` rebuilds whenever a file changes, and `lemmata doctor` checks your TeX installation. The other commands check and export a project without the editor, for scripts and CI. The commands that compile (`build`, `watch`, `lint` and `export --arxiv`) use `latexmk` from TeX Live or MiKTeX, or Tectonic when the project's compiler is Tectonic or no TeX is installed (the one Lemmata downloaded, or one on your PATH). The `lemmata` command is not part of the app's installer: each release also has it on its own, as `lemmata-cli_<version>_<platform>` (Linux, macOS, Windows), for scripts and CI. Unpack it and put `lemmata` on your PATH. From the source repository, `cargo install --path crates/lemmata-cli` builds it too.
+`lemmata build [dir]` compiles a project once and prints its problems, `lemmata watch [dir]` rebuilds whenever a file changes, and `lemmata doctor` checks your TeX installation. The other commands check and export a project without the editor, for scripts and CI. The commands that compile (`build`, `watch`, `lint` and `export --arxiv`) use `latexmk` from TeX Live or MiKTeX, or Tectonic when the project's compiler is Tectonic or no TeX is installed (the one Lemmata downloaded, or one on your PATH). The `lemmata` command is not part of the app's installer: each release also has it on its own, as `lemmata-cli_<version>_<platform>` (Linux, macOS, Windows), for scripts and CI. Unpack it and put `lemmata` on your PATH. Like a restricted project in the app, the commands ignore a project's `latexmkrc` and shell escape unless you add `--trust` (for example `lemmata --trust build`). From the source repository, `cargo install --path crates/lemmata-cli` builds it too.
 
 | Command | What it does |
 |---|---|
