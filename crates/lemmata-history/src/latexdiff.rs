@@ -106,7 +106,7 @@ fn last_lines(text: &str) -> String {
 }
 
 fn read(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_default()
+    lemmata_env::fs::read_to_string(path).unwrap_or_default()
 }
 
 /// Why the diff document didn't compile, in plain words. A missing package says how to install it.
@@ -198,7 +198,7 @@ fn stage(root: &Path, main: &Path, work: &Path) -> Result<(PathBuf, PathBuf)> {
     let (old, new) = (work.join("old"), work.join("new"));
     copy_tex_files(root, &root.join(&new))?;
     for side in [&old, &new] {
-        std::fs::copy(
+        lemmata_env::fs::copy(
             root.join(side).join(main),
             root.join(side).join(STAGED_MAIN),
         )?;
@@ -219,7 +219,7 @@ fn copy_tex_files(from: &Path, to: &Path) -> Result<()> {
         if path.is_dir() {
             copy_tex_files(&path, &to.join(&file))?;
         } else if path.extension().is_some_and(|e| e == "tex") {
-            std::fs::copy(&path, to.join(&file))?;
+            lemmata_env::fs::copy(&path, to.join(&file))?;
         }
     }
     Ok(())

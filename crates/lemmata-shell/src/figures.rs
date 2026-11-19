@@ -83,7 +83,7 @@ impl Shell {
         let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("figure");
         let dest = unique(&dir, &slug(stem), &ext);
         writable(&p, &dest)?;
-        std::fs::copy(&src, &dest).map_err(|e| format!("Could not copy the image: {e}"))?;
+        lemmata_env::fs::copy(&src, &dest).map_err(|e| format!("Could not copy the image: {e}"))?;
         Ok(rel(&p, &dest))
     }
 
@@ -104,7 +104,7 @@ impl Shell {
     /// Whether the main file loads `package` (directly or via a list).
     pub fn has_package(&self, package: String) -> CmdResult<bool> {
         let p = project(self)?;
-        let text = std::fs::read_to_string(p.main_abs()).map_err(err)?;
+        let text = lemmata_env::fs::read_to_string(p.main_abs()).map_err(err)?;
         Ok(text.lines().any(|l| {
             let code = l.split('%').next().unwrap_or("");
             code.contains("\\usepackage")

@@ -102,7 +102,7 @@ fn normalize(p: &Path) -> PathBuf {
 
 /// The main file named by a `% !TeX root = ../main.tex` comment, if it exists.
 fn magic_root(file: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(file).ok()?;
+    let text = lemmata_env::fs::read_to_string(file).ok()?;
     text.lines().take(MAGIC_LINES).find_map(|line| {
         let rest = line
             .trim_start()

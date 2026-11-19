@@ -544,7 +544,7 @@ pub(crate) fn merge_blg(
 ) {
     let blg_path = out_file(project, "blg");
     let blg_fresh = written_since(&blg_path, started_at);
-    if blg_fresh && let Ok(bytes) = std::fs::read(&blg_path) {
+    if blg_fresh && let Ok(bytes) = lemmata_env::fs::read(&blg_path) {
         for d in lemmata_log::parse_blg(&String::from_utf8_lossy(&bytes)) {
             // A missing key is already reported from the main log.
             if !diagnostics.iter().any(|x| x.kind == d.kind) {
@@ -595,13 +595,17 @@ const LOG_CAP: u64 = 32 << 20;
 /// A build file, or only its first and last part when it is huge.
 pub(crate) fn read_capped(path: &Path) -> Vec<u8> {
     use std::io::{Read, Seek, SeekFrom};
+    // A regular file only: a planted link to /dev/zero reports no length and never ends.
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return Vec::new();
+    }
     let Ok(mut f) = std::fs::File::open(path) else {
         return Vec::new();
     };
     let len = f.metadata().map_or(0, |m| m.len());
     let mut out = Vec::new();
     if len <= LOG_CAP {
-        let _ = f.read_to_end(&mut out);
+        let _ = f.take(LOG_CAP).read_to_end(&mut out);
         return out;
     }
     let half = LOG_CAP / 2;
@@ -616,13 +620,16 @@ pub(crate) fn read_capped(path: &Path) -> Vec<u8> {
 /// The last `n` bytes of a file.
 pub(crate) fn read_tail(path: &Path, n: u64) -> Vec<u8> {
     use std::io::{Read, Seek, SeekFrom};
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return Vec::new();
+    }
     let Ok(mut f) = std::fs::File::open(path) else {
         return Vec::new();
     };
     let len = f.metadata().map_or(0, |m| m.len());
     let _ = f.seek(SeekFrom::Start(len.saturating_sub(n)));
     let mut out = Vec::new();
-    let _ = f.read_to_end(&mut out);
+    let _ = f.take(n).read_to_end(&mut out);
     out
 }
 

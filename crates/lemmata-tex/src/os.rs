@@ -50,7 +50,7 @@ pub fn detect() -> OsInfo {
             name: "Windows".into(),
         };
     }
-    let text = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let text = lemmata_env::fs::read_to_string("/etc/os-release").unwrap_or_default();
     from_os_release(&text)
 }
 

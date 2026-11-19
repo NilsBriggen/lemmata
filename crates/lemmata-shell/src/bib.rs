@@ -83,7 +83,8 @@ fn edit_bib(
         return Err("Choose a .bib file inside the project.".into());
     }
     let path = p.root.join(file);
-    let text = edit(&std::fs::read_to_string(&path).map_err(crate::err)?).map_err(crate::err)?;
+    let text =
+        edit(&lemmata_env::fs::read_to_string(&path).map_err(crate::err)?).map_err(crate::err)?;
     writable(&p, &path)?;
     lemmata_bib::manage::write_atomic(&path, &text).map_err(crate::err)?;
     Ok(vec![file.to_string()])
@@ -198,7 +199,7 @@ impl Shell {
     pub fn zotero_link(&self) -> CmdResult<()> {
         let p = project(self)?;
         let main = p.main_abs();
-        let text = std::fs::read_to_string(&main).map_err(crate::err)?;
+        let text = lemmata_env::fs::read_to_string(&main).map_err(crate::err)?;
         let new = link_zotero(&text)?;
         writable(&p, &main)?;
         lemmata_bib::manage::write_atomic(&main, new).map_err(crate::err)

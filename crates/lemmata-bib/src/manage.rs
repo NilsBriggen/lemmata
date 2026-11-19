@@ -129,7 +129,7 @@ pub fn library(root: &Path, files: &[String], cited: &[String]) -> Library {
     let cited_set: HashSet<&str> = cited.iter().map(String::as_str).collect();
     let mut entries = Vec::new();
     for file in files {
-        let Ok(src) = std::fs::read_to_string(root.join(file)) else {
+        let Ok(src) = lemmata_env::fs::read_to_string(root.join(file)) else {
             continue;
         };
         for span in scan(&src) {

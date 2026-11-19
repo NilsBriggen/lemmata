@@ -281,7 +281,7 @@ pub fn editor_family(ctx: &egui::Context, setting: &str) -> FontFamily {
         Some(_) => FontFamily::Monospace,
         None => {
             let data = find_system_font(setting)
-                .and_then(|path| std::fs::read(path).ok())
+                .and_then(|path| lemmata_env::fs::read(path).ok())
                 .map(|b| Arc::new(FontData::from_owned(b)));
             let found = data.is_some();
             list.push(SystemFont {

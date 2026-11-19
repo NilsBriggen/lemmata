@@ -414,7 +414,7 @@ impl Workspace {
         backend.spawn_async(move |shell| async move {
             Msg::Project(project, Box::new(Msg::LspStarted(shell.lsp_start().await)))
         });
-        if let Ok(main) = std::fs::read_to_string(ws.info.root.join(&ws.info.main)) {
+        if let Ok(main) = lemmata_env::fs::read_to_string(ws.info.root.join(&ws.info.main)) {
             Self::set_macros(&main);
             ws.detected = crate::writing::spell::detect_language(&main);
         }

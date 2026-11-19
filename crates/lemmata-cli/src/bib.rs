@@ -4,7 +4,6 @@ use crate::open;
 use lemmata_bib::manage::{Library, ManagedEntry};
 use lemmata_project::{Entry, Project};
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -98,7 +97,7 @@ fn bibitem_keys(project: &Project) -> HashSet<String> {
     );
     let mut keys = HashSet::new();
     for file in files {
-        let Ok(text) = fs::read_to_string(project.root.join(&file)) else {
+        let Ok(text) = lemmata_env::fs::read_to_string(project.root.join(&file)) else {
             continue;
         };
         for line in text.lines() {

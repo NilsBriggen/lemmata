@@ -113,7 +113,7 @@ fn list_templates(dir: &Path, source: Source) -> Vec<Template> {
         // The example document is offered on its own, not as a template.
         .filter(|e| e.file_name() != EXAMPLE)
         .filter_map(|e| {
-            let text = fs::read_to_string(e.path().join(META)).ok()?;
+            let text = lemmata_env::fs::read_to_string(e.path().join(META)).ok()?;
             let meta: TemplateMeta = toml::from_str(&text).ok()?;
             let folder = e.file_name().to_string_lossy().into_owned();
             let id = match source {
@@ -128,7 +128,7 @@ fn list_templates(dir: &Path, source: Source) -> Vec<Template> {
             };
             // Only bundled and collection templates come with a thumbnail: a user's own project may have a preview.png of its own.
             let preview = (!user)
-                .then(|| fs::read(e.path().join(PREVIEW)).ok())
+                .then(|| lemmata_env::fs::read(e.path().join(PREVIEW)).ok())
                 .flatten()
                 .map(|png| format!("data:image/png;base64,{}", base64(&png)));
             Some((
@@ -319,7 +319,7 @@ pub fn save_as_template(
                     if let Some(parent) = target.parent() {
                         fs::create_dir_all(parent)?;
                     }
-                    fs::copy(root.join(&e.path), target)?;
+                    lemmata_env::fs::copy(root.join(&e.path), target)?;
                 }
             }
             Ok(())
@@ -369,7 +369,7 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
         if entry.file_type()?.is_dir() {
             copy_dir(&entry.path(), &dest)?;
         } else {
-            fs::copy(entry.path(), dest)?;
+            lemmata_env::fs::copy(entry.path(), dest)?;
         }
     }
     Ok(())

@@ -296,7 +296,7 @@ fn project_info_with_tree(p: &Project, tree: Vec<Entry>) -> ProjectInfo {
 
 fn analysis_of(p: &Project, tree: Vec<Entry>) -> ProjectAnalysis {
     analysis_of_with(p, tree, |path| {
-        std::fs::read(path).map(|b| files::decode_text(b).0)
+        lemmata_env::fs::read(path).map(|b| files::decode_text(b).0)
     })
 }
 
@@ -472,7 +472,8 @@ impl Shell {
                 "{path} is larger than 32 MB, too large to edit here. Open it in another program."
             ));
         }
-        let bytes = std::fs::read(&abs).map_err(|e| format!("Could not open {path}: {e}"))?;
+        let bytes =
+            lemmata_env::fs::read(&abs).map_err(|e| format!("Could not open {path}: {e}"))?;
         Ok(files::decode_text(bytes).0)
     }
 }
@@ -498,7 +499,7 @@ impl Shell {
             let _ = std::fs::create_dir_all(dir);
         }
         // A file that is in Windows-1252 (see `read_text`) stays in it.
-        let disk = std::fs::read(&abs).ok();
+        let disk = lemmata_env::fs::read(&abs).ok();
         let (disk_text, cp1252) = match disk {
             Some(d) => {
                 let (t, c) = files::decode_text(d);
@@ -644,8 +645,8 @@ impl Shell {
             let guard = self.project.lock_safe();
             guard.as_ref().ok_or("No project is open.")?.pdf_path()
         };
-        let bytes =
-            std::fs::read(&pdf).map_err(|_| "No PDF yet. Build the project first.".to_string())?;
+        let bytes = lemmata_env::fs::read(&pdf)
+            .map_err(|_| "No PDF yet. Build the project first.".to_string())?;
         Ok(bytes)
     }
 
@@ -828,7 +829,7 @@ impl Shell {
             .as_ref()
             .map(|p| p.log_path())
             .ok_or("No project is open.")?;
-        std::fs::read(&path)
+        lemmata_env::fs::read(&path)
             .map(|b| String::from_utf8_lossy(&b).into_owned())
             .map_err(|_| "There's no log yet. Build the project first.".into())
     }
@@ -908,7 +909,7 @@ impl Shell {
     }
 
     pub fn load_thumbnail(&self, root: String) -> CmdResult<Vec<u8>> {
-        let bytes = std::fs::read(thumbnail_path(self, &root)?)
+        let bytes = lemmata_env::fs::read(thumbnail_path(self, &root)?)
             .map_err(|_| "No thumbnail yet.".to_string())?;
         Ok(bytes)
     }
@@ -957,7 +958,7 @@ impl Shell {
     /// \usepackage (or after \documentclass).
     pub fn add_package(&self, package: String) -> CmdResult<()> {
         self.add_package_with(package, |p| {
-            std::fs::read_to_string(p.main_abs()).map_err(err)
+            lemmata_env::fs::read_to_string(p.main_abs()).map_err(err)
         })
     }
 

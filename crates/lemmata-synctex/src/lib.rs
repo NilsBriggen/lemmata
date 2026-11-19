@@ -130,7 +130,7 @@ fn load(pdf: &Path) -> Option<Arc<Index>> {
     if std::fs::metadata(&path).ok()?.len() > LIMIT {
         return None;
     }
-    let mut bytes = std::fs::read(&path).ok()?;
+    let mut bytes = lemmata_env::fs::read(&path).ok()?;
     if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut text = Vec::new();
         flate2::read::GzDecoder::new(&bytes[..])

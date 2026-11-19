@@ -107,7 +107,7 @@ fn sha256(bytes: &[u8]) -> String {
 /// Whether `path` already holds exactly the file the index describes.
 fn have(path: &Path, f: &File) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.len() == f.size)
-        && std::fs::read(path).is_ok_and(|b| sha256(&b) == f.sha256)
+        && lemmata_env::fs::read(path).is_ok_and(|b| sha256(&b) == f.sha256)
 }
 
 /// The files of `entries` the cache doesn't have yet: (template id, file).

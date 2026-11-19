@@ -155,7 +155,7 @@ pub fn latexmk_stub(data: &Path) -> std::io::Result<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
         let stub = dir.join("latexmk");
         let body = "#!/bin/sh\nexit 1\n";
-        if std::fs::read_to_string(&stub).ok().as_deref() != Some(body) {
+        if lemmata_env::fs::read_to_string(&stub).ok().as_deref() != Some(body) {
             std::fs::write(&stub, body)?;
         }
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))?;

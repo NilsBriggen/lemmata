@@ -117,7 +117,7 @@ pub fn stop_background(root: &Path) {
 /// A build with the format failed where one without it worked: never use it for this preamble again.
 pub(crate) fn reject(project: &Project) {
     let path = key_path(project);
-    if let Ok(text) = std::fs::read_to_string(&path)
+    if let Ok(text) = lemmata_env::fs::read_to_string(&path)
         && let Some(rest) = text.strip_prefix("ok ")
     {
         let _ = write_atomic(&path, &format!("bad {rest}"));
@@ -131,7 +131,7 @@ pub(crate) fn was_used(log: &str) -> bool {
 
 /// The log of the run that made the format in use: what the preamble said is only there.
 pub(crate) fn preamble_log(project: &Project) -> String {
-    std::fs::read(dir(project).join(format!("{}.log", stem(project))))
+    lemmata_env::fs::read(dir(project).join(format!("{}.log", stem(project))))
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default()
 }
@@ -207,11 +207,11 @@ fn tex_files(entries: &[lemmata_project::Entry]) -> Vec<&str> {
 /// What was recorded for the current preamble: `Some(true)` checked and good, `Some(false)` not
 /// suitable, `None` nothing yet or stale.
 pub(crate) fn recorded(project: &Project, engine: &Path) -> Option<bool> {
-    let text = std::fs::read_to_string(key_path(project)).ok()?;
+    let text = lemmata_env::fs::read_to_string(key_path(project)).ok()?;
     let mut lines = text.lines();
     let (state, recorded_key) = lines.next()?.split_once(' ')?;
     let inputs: Vec<String> = lines.map(String::from).collect();
-    let main = std::fs::read_to_string(project.main_abs()).ok()?;
+    let main = lemmata_env::fs::read_to_string(project.main_abs()).ok()?;
     (recorded_key == key(project, engine, preamble(&main)?, &inputs)).then_some(state == "ok")
 }
 
@@ -240,7 +240,7 @@ async fn make(
     limit: Duration,
     stop: &watch::Receiver<bool>,
 ) {
-    let Some(pre) = std::fs::read_to_string(project.main_abs())
+    let Some(pre) = lemmata_env::fs::read_to_string(project.main_abs())
         .ok()
         .and_then(|t| preamble(&t).map(String::from))
     else {
@@ -274,10 +274,10 @@ async fn make(
     if matches!(status, Status::Cancelled | Status::Timeout) {
         return;
     }
-    let fls = std::fs::read_to_string(tmp.join(format!("{stem}.fls"))).unwrap_or_default();
+    let fls = lemmata_env::fs::read_to_string(tmp.join(format!("{stem}.fls"))).unwrap_or_default();
     let inputs = inputs(&fls, project);
     // Changed while the format was made: it may already be stale, so leave it for the next build.
-    let changed = std::fs::read_to_string(project.main_abs())
+    let changed = lemmata_env::fs::read_to_string(project.main_abs())
         .ok()
         .is_none_or(|t| preamble(&t) != Some(pre.as_str()))
         || inputs.iter().any(|i| {
@@ -469,7 +469,7 @@ fn copy_build(from: &Path, to: &Path, skip: &Path) -> std::io::Result<()> {
                 copy_build(&src, &to.join(&name), skip)?;
             }
         } else if !skipped(&n) {
-            std::fs::copy(&src, to.join(&name))?;
+            lemmata_env::fs::copy(&src, to.join(&name))?;
         }
     }
     Ok(())
@@ -495,7 +495,10 @@ fn same_outputs(a: &Path, b: &Path) -> bool {
     !fa.is_empty()
         && fa == fb
         && fa.iter().all(|f| {
-            let (Ok(x), Ok(y)) = (std::fs::read(a.join(f)), std::fs::read(b.join(f))) else {
+            let (Ok(x), Ok(y)) = (
+                lemmata_env::fs::read(a.join(f)),
+                lemmata_env::fs::read(b.join(f)),
+            ) else {
                 return false;
             };
             if f.extension().is_some_and(|e| e == "pdf") {

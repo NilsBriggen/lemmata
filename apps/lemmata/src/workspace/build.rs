@@ -366,7 +366,7 @@ impl Workspace {
             let text = cache
                 .1
                 .entry(f.to_owned())
-                .or_insert_with(|| std::fs::read_to_string(root.join(f)).ok());
+                .or_insert_with(|| lemmata_env::fs::read_to_string(root.join(f)).ok());
             text.as_deref().map_or(Vec::new(), |t| {
                 t.split('\n')
                     .skip(from - 1)

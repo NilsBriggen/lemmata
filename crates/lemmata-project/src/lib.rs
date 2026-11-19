@@ -321,7 +321,7 @@ impl Project {
                 source,
             }
         })?;
-        let old_text = match fs::read_to_string(&path) {
+        let old_text = match lemmata_env::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(source) => return Err(Error::Io { path, source }),
@@ -412,7 +412,7 @@ fn strip_verbatim(path: &str) -> String {
 
 fn read_config(root: &Path) -> Result<Config> {
     let path = root.join(CONFIG_FILE);
-    match fs::read_to_string(&path) {
+    match lemmata_env::fs::read_to_string(&path) {
         Ok(text) => Ok(toml::from_str(&text)?),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
         Err(source) => Err(Error::Io { path, source }),
@@ -440,8 +440,14 @@ fn find_main_candidates(root: &Path, entries: &[Entry]) -> Vec<PathBuf> {
             if path.components().count() > 3 || path.extension().is_none_or(|x| x != "tex") {
                 continue;
             }
-            if fs::File::open(root.join(&path)).is_ok_and(|file| {
-                std::io::BufReader::new(file)
+            // Only a regular file, and only so much of it: a link to /dev/zero is one endless
+            // line, and opening a named pipe waits for a writer forever.
+            let full = root.join(&path);
+            if !fs::metadata(&full).is_ok_and(|m| m.is_file()) {
+                continue;
+            }
+            if fs::File::open(&full).is_ok_and(|file| {
+                std::io::BufReader::new(std::io::Read::take(file, lemmata_env::fs::TEXT_LIMIT))
                     .lines()
                     .map_while(std::io::Result::ok)
                     .any(|line| has_documentclass(&line))
@@ -466,7 +472,7 @@ fn has_documentclass(text: &str) -> bool {
 /// Prefers `main.tex`, then the shallowest candidate.
 /// A `% !TeX <key> = value` comment (also `TS-program`) near the top of a file, as TeXShop, TeXstudio and VS Code read them.
 fn magic(file: &Path, key: &str) -> Option<String> {
-    let text = fs::read_to_string(file).ok()?;
+    let text = lemmata_env::fs::read_to_string(file).ok()?;
     text.lines().take(40).find_map(|line| {
         let rest = line
             .trim_start()
@@ -498,7 +504,7 @@ fn engine_named(program: &str) -> Option<Engine> {
 
 /// Whether lemmata.toml sets `key` itself (rather than leaving the default).
 fn sets_key(root: &Path, key: &str) -> bool {
-    fs::read_to_string(root.join(CONFIG_FILE))
+    lemmata_env::fs::read_to_string(root.join(CONFIG_FILE))
         .ok()
         .and_then(|t| t.parse::<toml::Table>().ok())
         .is_some_and(|t| t.contains_key(key))
@@ -643,11 +649,15 @@ pub struct Analysis {
 pub type Sources = std::collections::HashMap<PathBuf, String>;
 
 pub fn analyze(project: &Project, entries: &[Entry]) -> Analysis {
-    analyze_with(project, entries, |path| fs::read_to_string(path))
+    analyze_with(project, entries, |path| {
+        lemmata_env::fs::read_to_string(path)
+    })
 }
 
 pub fn source_snapshot(project: &Project, entries: &[Entry]) -> Sources {
-    source_snapshot_with(project, entries, |path| fs::read_to_string(path))
+    source_snapshot_with(project, entries, |path| {
+        lemmata_env::fs::read_to_string(path)
+    })
 }
 
 pub fn source_snapshot_with(
@@ -744,7 +754,7 @@ impl Walk<'_> {
             .sources
             .and_then(|sources| sources.get(rel).map(std::borrow::Cow::Borrowed))
             .or_else(|| {
-                fs::read_to_string(root.join(rel))
+                lemmata_env::fs::read_to_string(root.join(rel))
                     .ok()
                     .map(std::borrow::Cow::Owned)
             });
@@ -1031,6 +1041,34 @@ mod tests {
         .unwrap();
         let p = Project::open(d.path()).unwrap();
         let _ = outline(&p);
+    }
+
+    /// A project's link to /dev/zero and a named pipe, as .tex files and as an \input: opening
+    /// and analysing it neither fills memory nor waits forever.
+    #[cfg(unix)]
+    #[test]
+    fn endless_files_and_pipes_are_not_read() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(
+            root.join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\n\\section{A}\n\\input{zero}\n\\input{pipe}\n\\end{document}\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("/dev/zero", root.join("zero.tex")).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(root.join("pipe.tex"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        let started = std::time::Instant::now();
+        let p = Project::open(root).unwrap();
+        assert_eq!(p.main, PathBuf::from("main.tex"));
+        let a = analyze(&p, &tree(&p.root, &p.config.outdir));
+        assert_eq!(a.outline.headings.len(), 1);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

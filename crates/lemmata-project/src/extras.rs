@@ -6,7 +6,6 @@ use crate::prose;
 use regex::Regex;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -127,7 +126,7 @@ pub(crate) fn labels_with(
             .get(Path::new(&file))
             .map(std::borrow::Cow::Borrowed)
             .or_else(|| {
-                fs::read_to_string(project.root.join(&file))
+                lemmata_env::fs::read_to_string(project.root.join(&file))
                     .ok()
                     .map(std::borrow::Cow::Owned)
             });
@@ -277,7 +276,7 @@ impl Counter {
         if depth > 16 || !self.seen.insert(rel.to_path_buf()) {
             return;
         }
-        let Ok(text) = fs::read_to_string(root.join(rel)) else {
+        let Ok(text) = lemmata_env::fs::read_to_string(root.join(rel)) else {
             return;
         };
         let name = rel.to_string_lossy().replace('\\', "/");
@@ -387,6 +386,7 @@ fn includes(code: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     /// Bytes that aren't a character's start, right after a sectioning command, once panicked.
     #[test]

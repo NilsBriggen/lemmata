@@ -168,7 +168,7 @@ impl Shell {
         let mut out = Vec::new();
         let mut total = 0;
         for rel in text_files(&p) {
-            let Ok(text) = std::fs::read_to_string(p.root.join(&rel)) else {
+            let Ok(text) = lemmata_env::fs::read_to_string(p.root.join(&rel)) else {
                 continue;
             };
             let mut matches = search_in(&text, &re);
@@ -231,8 +231,8 @@ fn replace_across(
     let mut writes = Vec::new();
     for (rel, lines) in by_file {
         let path = p.root.join(safe_rel(&rel)?);
-        let text =
-            std::fs::read_to_string(&path).map_err(|e| format!("Could not read {rel}: {e}"))?;
+        let text = lemmata_env::fs::read_to_string(&path)
+            .map_err(|e| format!("Could not read {rel}: {e}"))?;
         let (new, n) = replace_on_lines(&text, re, replacement, regex_mode, &lines);
         if n > 0 {
             writes.push((path, new));
@@ -322,8 +322,8 @@ impl Shell {
         let mut writes = Vec::new();
         for f in files {
             let path = p.root.join(safe_rel(&f)?);
-            let text =
-                std::fs::read_to_string(&path).map_err(|e| format!("Could not read {f}: {e}"))?;
+            let text = lemmata_env::fs::read_to_string(&path)
+                .map_err(|e| format!("Could not read {f}: {e}"))?;
             let (out, n) = rename_in_text(&f, &text, f.ends_with(".bib"), kind, &old, &new);
             if n > 0 {
                 writes.push((path, out));
@@ -400,7 +400,7 @@ impl Shell {
         if size > MAX_BINARY {
             return Err(format!("{path} is too large to preview."));
         }
-        std::fs::read(&full).map_err(|e| format!("Could not open {path}: {e}"))
+        lemmata_env::fs::read(&full).map_err(|e| format!("Could not open {path}: {e}"))
     }
 
     /// Moves a file or folder to the system trash, so it can be recovered.
@@ -455,7 +455,7 @@ impl Shell {
         let re = reference_regex(&path);
         let mut out = Vec::new();
         for rel in text_files(&p) {
-            let Ok(text) = std::fs::read_to_string(p.root.join(&rel)) else {
+            let Ok(text) = lemmata_env::fs::read_to_string(p.root.join(&rel)) else {
                 continue;
             };
             for (i, line) in text.lines().enumerate() {
@@ -532,7 +532,7 @@ fn rename_one(
     if update_references {
         for rel in text_files(p) {
             let path = p.root.join(&rel);
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Ok(text) = lemmata_env::fs::read_to_string(&path) else {
                 continue;
             };
             let new = rewrite_references(&text, from, to);
@@ -807,7 +807,7 @@ pub fn restore_from(root: &Path, id: &str) -> CmdResult<Vec<String>> {
     }
     let batch = root.join(TRASH_DIR).join(id);
     let manifest: TrashBatch = serde_json::from_slice(
-        &std::fs::read(batch.join(MANIFEST))
+        &lemmata_env::fs::read(batch.join(MANIFEST))
             .map_err(|_| "That deletion can't be undone anymore.")?,
     )
     .map_err(err)?;
@@ -840,7 +840,9 @@ pub fn batches_in(root: &Path) -> Vec<TrashBatch> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|e| serde_json::from_slice(&std::fs::read(e.path().join(MANIFEST)).ok()?).ok())
+        .filter_map(|e| {
+            serde_json::from_slice(&lemmata_env::fs::read(e.path().join(MANIFEST)).ok()?).ok()
+        })
         .collect();
     list.sort_by_key(|b: &TrashBatch| std::cmp::Reverse(b.id.parse::<u128>().unwrap_or(0)));
     list
@@ -885,7 +887,7 @@ impl Shell {
         let p = project(self)?;
         let sources: Vec<String> = text_files(&p)
             .iter()
-            .filter_map(|rel| std::fs::read_to_string(p.root.join(rel)).ok())
+            .filter_map(|rel| lemmata_env::fs::read_to_string(p.root.join(rel)).ok())
             .collect();
         let main = p.main.to_string_lossy().replace('\\', "/");
         Ok(unused_in(&all_files(&p), &sources, &main))
@@ -1040,7 +1042,7 @@ pub fn classify(root: &Path, outdir: &str, written: &Written, paths: &[PathBuf])
         }
         if abs.is_file()
             && let Some(&known) = written.lock_safe().get(abs)
-            && std::fs::read(abs).is_ok_and(|b| hash_bytes(&b) == known)
+            && lemmata_env::fs::read(abs).is_ok_and(|b| hash_bytes(&b) == known)
         {
             continue;
         }
@@ -1101,7 +1103,7 @@ fn drop_unchanged(
                 let modified = m.modified().unwrap_or(std::time::UNIX_EPOCH);
                 let recent = modified.elapsed().is_ok_and(|d| d < TICK);
                 let hash = if recent {
-                    match std::fs::read(&abs) {
+                    match lemmata_env::fs::read(&abs) {
                         Ok(b) => Some(hash_bytes(&b)),
                         Err(_) => return true,
                     }

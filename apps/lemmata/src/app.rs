@@ -3786,6 +3786,16 @@ pub(crate) mod tests {
         let outside = tmp.path().join("outside.txt");
         std::fs::write(&outside, "untouched").unwrap();
         std::os::unix::fs::symlink(&outside, project.join(".main.tex.0.lemmata-tmp")).unwrap();
+        // An endless file and a pipe among the sources: nothing may read them to the end or wait.
+        std::fs::create_dir_all(project.join("ch")).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", project.join("ch/zero.tex")).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(project.join("ch/pipe.tex"))
+                .status()
+                .unwrap()
+                .success()
+        );
 
         let root = canonical_str(&project);
         let d = dirs(tmp.path());
@@ -3838,6 +3848,19 @@ pub(crate) mod tests {
         assert!(!rc.exists(), "a restricted project's latexmkrc ran");
         assert!(!git_ran.exists(), "git ran the store's hook or fsmonitor");
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched");
+        // A shared bibliography the project links to: not written through while restricted.
+        let library = tmp.path().join("library.bib");
+        std::fs::write(&library, "old").unwrap();
+        std::os::unix::fs::symlink(&library, project.join("refs.bib")).unwrap();
+        let info_root = h.state().project.as_ref().unwrap().info.root.clone();
+        let save = |h: &Harness<'_, App>| {
+            h.state()
+                .backend
+                .shell
+                .write_text(&info_root, "refs.bib".into(), "new".into(), None)
+        };
+        assert!(save(&h).is_err());
+        assert_eq!(std::fs::read_to_string(&library).unwrap(), "old");
 
         let app = h.state_mut();
         let backend = &app.backend;
@@ -3855,6 +3878,10 @@ pub(crate) mod tests {
             "git ran the store's hook or fsmonitor once trusted"
         );
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched");
+        // Trusted, the shared bibliography is written through, and the link stays.
+        save(&h).unwrap();
+        assert_eq!(std::fs::read_to_string(&library).unwrap(), "new");
+        assert!(project.join("refs.bib").is_symlink());
     }
 
     #[test]

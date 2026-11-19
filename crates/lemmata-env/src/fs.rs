@@ -5,6 +5,57 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// The most of a project's text file that is read: more is no LaTeX source.
+pub const TEXT_LIMIT: u64 = 64 << 20;
+/// The most of any other project file (a PDF, an image) that is read.
+pub const FILE_LIMIT: u64 = 1 << 30;
+
+/// The bytes of `path`, a file a project may have planted, at most `limit` of them. Only a
+/// regular file is read: a link to /dev/zero never ends and one to a named pipe never answers.
+pub fn read_limited(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::other(format!(
+            "larger than {} MB",
+            limit >> 20
+        )));
+    }
+    Ok(bytes)
+}
+
+/// `std::fs::read` for files a project may have planted (see `read_limited`).
+pub fn read(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+    read_limited(path.as_ref(), FILE_LIMIT)
+}
+
+/// `std::fs::read_to_string` for files a project may have planted (see `read_limited`).
+pub fn read_to_string(path: impl AsRef<Path>) -> std::io::Result<String> {
+    String::from_utf8(read_limited(path.as_ref(), TEXT_LIMIT)?)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// `std::fs::copy` for files a project may have planted: only a regular file, as copying a link to
+/// /dev/zero would fill the disk and one to a named pipe would wait forever.
+pub fn copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<u64> {
+    if !std::fs::metadata(from.as_ref())?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", from.as_ref().display()),
+        ));
+    }
+    std::fs::copy(from, to)
+}
+
 /// `rel` as a path inside a folder: relative, made only of plain names (no `..`, no `.`, nothing
 /// empty), and without a backslash or a colon, which are a separator and a drive letter on
 /// Windows. Names from snapshots, archives and documents go through this before they are joined
@@ -213,6 +264,34 @@ mod tests {
         std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         result.unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
+    }
+
+    /// A link to an endless device or a pipe is refused at once, and a file over the limit too.
+    #[cfg(unix)]
+    #[test]
+    fn only_regular_files_up_to_the_limit_are_read() {
+        let d = tempfile::tempdir().unwrap();
+        let zero = d.path().join("zero.tex");
+        std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
+        assert!(read_to_string(&zero).is_err());
+        assert!(read(&zero).is_err());
+        let fifo = d.path().join("pipe.tex");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(read_to_string(&fifo).is_err(), "a pipe must not block");
+        let f = d.path().join("a.tex");
+        std::fs::write(&f, "0123456789").unwrap();
+        assert_eq!(read_to_string(&f).unwrap(), "0123456789");
+        assert!(read_limited(&f, 9).is_err());
+        assert_eq!(read_limited(&f, 10).unwrap().len(), 10);
+        assert!(copy(&zero, d.path().join("out")).is_err());
+        assert!(copy(&fifo, d.path().join("out")).is_err());
+        assert_eq!(copy(&f, d.path().join("out")).unwrap(), 10);
     }
 
     #[cfg(unix)]

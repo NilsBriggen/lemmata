@@ -220,7 +220,7 @@ fn export_bytes(p: &Project, rel: &str) -> Result<Option<Vec<u8>>, String> {
             return Ok(None);
         }
     }
-    std::fs::read(path).map(Some).map_err(io)
+    lemmata_env::fs::read(path).map(Some).map_err(io)
 }
 
 fn io(e: impl std::fmt::Display) -> String {
@@ -263,7 +263,7 @@ impl Drop for Destination {
 
 pub fn atomic_copy(source: &Path, dest: &Path) -> Result<(), String> {
     let destination = Destination::new(dest);
-    std::fs::copy(source, &destination.tmp).map_err(io)?;
+    lemmata_env::fs::copy(source, &destination.tmp).map_err(io)?;
     destination.finish()
 }
 
@@ -307,7 +307,7 @@ pub fn zip_project(p: &Project, dest: &Path, with_pdf: bool) -> Result<usize, St
         add(&mut zip, &rel, &bytes)?;
         count += 1;
     }
-    if with_pdf && let Ok(pdf) = std::fs::read(p.pdf_path()) {
+    if with_pdf && let Ok(pdf) = lemmata_env::fs::read(p.pdf_path()) {
         let name = p
             .pdf_path()
             .file_name()
@@ -595,11 +595,13 @@ pub fn zip_arxiv(p: &Project, dest: &Path, strip: bool, flatten: bool) -> Result
         .unwrap_or("main")
         .to_string();
     let outdir = p.outdir_abs();
-    let fls = std::fs::read_to_string(outdir.join(format!("{stem}.fls"))).map_err(|_| {
-        "Build the project once before exporting, so Lemmata knows which files it uses.".to_string()
-    })?;
+    let fls =
+        lemmata_env::fs::read_to_string(outdir.join(format!("{stem}.fls"))).map_err(|_| {
+            "Build the project once before exporting, so Lemmata knows which files it uses."
+                .to_string()
+        })?;
     let files = used_files(&fls, &p.root, p.config.outdir.trim_start_matches("./"));
-    let bbl = std::fs::read(outdir.join(format!("{stem}.bbl"))).ok();
+    let bbl = lemmata_env::fs::read(outdir.join(format!("{stem}.bbl"))).ok();
     let flat = if flatten {
         // A file that isn't UTF-8 (latin1) stays out of the merge, with its \input, as it is.
         let read = |rel: &Path| {

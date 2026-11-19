@@ -47,7 +47,7 @@ pub fn get(ctx: &egui::Context, path: &Path) -> Option<TextureHandle> {
             let cell = Arc::new(Mutex::new(None));
             let (c, p, ctx) = (cell.clone(), path.to_owned(), ctx.clone());
             std::thread::spawn(move || {
-                let img = std::fs::read(&p)
+                let img = lemmata_env::fs::read(&p)
                     .ok()
                     .and_then(|b| crate::workspace::viewer::decode(&p.to_string_lossy(), &b).ok())
                     .map(shrink);

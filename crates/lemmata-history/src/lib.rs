@@ -270,7 +270,10 @@ pub fn set_registry(path: PathBuf) {
 
 fn registered() -> Vec<String> {
     let mut ids = MADE.lock().map(|m| m.clone()).unwrap_or_default();
-    if let Some(text) = REGISTRY.get().and_then(|p| std::fs::read_to_string(p).ok()) {
+    if let Some(text) = REGISTRY
+        .get()
+        .and_then(|p| lemmata_env::fs::read_to_string(p).ok())
+    {
         ids.extend(text.lines().map(str::to_string));
     }
     ids
@@ -281,7 +284,7 @@ fn register(id: &str) {
         m.push(id.to_string());
     }
     if let Some(p) = REGISTRY.get() {
-        let mut text = std::fs::read_to_string(p).unwrap_or_default();
+        let mut text = lemmata_env::fs::read_to_string(p).unwrap_or_default();
         if !text.lines().any(|l| l == id) {
             text.push_str(id);
             text.push('\n');
@@ -295,7 +298,7 @@ fn register(id: &str) {
 
 /// A store's id, written when Lemmata makes it.
 fn store_id(store: &Path) -> Option<String> {
-    let id = std::fs::read_to_string(store.join(ID_FILE)).ok()?;
+    let id = lemmata_env::fs::read_to_string(store.join(ID_FILE)).ok()?;
     let id = id.trim();
     (id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())).then(|| id.to_string())
 }
@@ -432,7 +435,7 @@ impl History {
     fn safe_config(&self) -> Result<()> {
         let path = self.git_dir.join("config");
         // Bytes, not text: a config that isn't UTF-8 would otherwise read as empty and stay.
-        let bytes = std::fs::read(&path).unwrap_or_default();
+        let bytes = lemmata_env::fs::read(&path).unwrap_or_default();
         let kept = safe_config_text(&String::from_utf8_lossy(&bytes));
         if kept.as_bytes() != bytes {
             std::fs::write(&path, kept)?;
@@ -444,7 +447,7 @@ impl History {
     fn exclude_build_folder(&self) -> Result<()> {
         let info = self.git_dir.join("info");
         let exclude = info.join("exclude");
-        let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+        let current = lemmata_env::fs::read_to_string(&exclude).unwrap_or_default();
         if !current.lines().any(|l| l.trim() == ".lemmata/") {
             std::fs::create_dir_all(&info)?;
             let sep = if current.is_empty() || current.ends_with('\n') {
@@ -621,7 +624,7 @@ impl History {
         let current = self.paths(&["ls-files", "-z", "--", "."])?;
         let mut changed = 0;
         for path in &wanted {
-            let now = std::fs::read(self.root.join(path)).ok();
+            let now = lemmata_env::fs::read(self.root.join(path)).ok();
             if now != self.bytes_at(id, path)? {
                 self.write_back(id, path)?;
                 changed += 1;

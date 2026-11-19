@@ -31,7 +31,7 @@ fn path(dirs: &Dirs) -> std::path::PathBuf {
 }
 
 fn read_all(dirs: &Dirs) -> serde_json::Map<String, Value> {
-    std::fs::read(path(dirs))
+    lemmata_env::fs::read(path(dirs))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()

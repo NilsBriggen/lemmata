@@ -97,7 +97,7 @@ impl Workspace {
                             Some(e) if line >= 1 && line <= e.doc.line_count() => {
                                 e.doc.line(line - 1)
                             }
-                            _ => std::fs::read_to_string(self.info.root.join(&path))
+                            _ => lemmata_env::fs::read_to_string(self.info.root.join(&path))
                                 .ok()
                                 .and_then(|t| {
                                     t.lines().nth(line.saturating_sub(1)).map(str::to_owned)

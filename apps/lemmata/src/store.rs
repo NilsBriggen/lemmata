@@ -496,7 +496,7 @@ fn new_id() -> String {
 }
 
 fn read_json(path: &Path) -> Option<Value> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    serde_json::from_slice(&lemmata_env::fs::read(path).ok()?).ok()
 }
 
 /// Written whole to a temporary file and renamed, so a crash never leaves half a file. Failing to

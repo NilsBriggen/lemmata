@@ -380,7 +380,12 @@ pub fn card(
                 if IMAGE_EXT.is_match(&f) {
                     image(ui, p, &root.join(&f));
                 }
-            } else if let Ok(file) = std::fs::File::open(root.join(&f)) {
+            } else if let Some(file) = std::fs::metadata(root.join(&f))
+                .is_ok_and(|m| m.is_file())
+                .then(|| std::fs::File::open(root.join(&f)).ok())
+                .flatten()
+            {
+                // A regular file only: opening a named pipe would wait on this thread forever.
                 // Only the start, as the card shows only that: a long chapter isn't read on every frame.
                 // shortcut: still one small read per frame while hovering; cache it if files on slow drives lag.
                 let mut head = Vec::new();

@@ -26,7 +26,7 @@ fn file(dir: &Path) -> PathBuf {
 
 /// Hands this launch to a running Lemmata. True when one took it: this process should quit.
 pub fn forward(dir: &Path, args: &[String], cwd: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(file(dir)) else {
+    let Ok(text) = lemmata_env::fs::read_to_string(file(dir)) else {
         return false;
     };
     let Some((port, token)) = text.trim().split_once(' ') else {
@@ -65,7 +65,7 @@ static OWN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// without first trying to reach this one. Leaves another instance's file alone.
 pub fn release(dir: &Path) {
     let Some(own) = OWN.get() else { return };
-    if std::fs::read_to_string(file(dir)).is_ok_and(|t| t.trim().ends_with(own.as_str())) {
+    if lemmata_env::fs::read_to_string(file(dir)).is_ok_and(|t| t.trim().ends_with(own.as_str())) {
         let _ = std::fs::remove_file(file(dir));
     }
 }
@@ -161,7 +161,7 @@ pub fn register_scheme() {
             exec.display()
         );
         let path = dir.join(&name);
-        if std::fs::read_to_string(&path).ok().as_deref() != Some(entry.as_str()) {
+        if lemmata_env::fs::read_to_string(&path).ok().as_deref() != Some(entry.as_str()) {
             if std::fs::create_dir_all(&dir)
                 .and_then(|_| std::fs::write(&path, &entry))
                 .is_err()

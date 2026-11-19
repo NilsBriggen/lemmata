@@ -432,7 +432,7 @@ pub fn init(root: &Path) -> Result<()> {
     } else {
         // The user's own .gitignore stays as it is; the build output and snapshots still stay out.
         let exclude = root.join(".git/info/exclude");
-        let mut text = std::fs::read_to_string(&exclude).unwrap_or_default();
+        let mut text = lemmata_env::fs::read_to_string(&exclude).unwrap_or_default();
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
         }

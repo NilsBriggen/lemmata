@@ -87,7 +87,7 @@ fn scan_entries(root: &Path, entries: &[lemmata_project::Entry], out: &mut Vec<T
         if e.is_dir {
             scan_entries(root, &e.children, out);
         } else if Path::new(&e.name).extension().is_some_and(|x| x == "tex")
-            && let Ok(text) = std::fs::read_to_string(root.join(&e.path))
+            && let Ok(text) = lemmata_env::fs::read_to_string(root.join(&e.path))
         {
             out.extend(scan_text(&e.path, &text));
         }

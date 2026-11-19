@@ -108,7 +108,7 @@ pub fn cited_keys(project: &lemmata_project::Project) -> Vec<String> {
         &project.root,
         &project.config.outdir,
     )) {
-        let Ok(text) = std::fs::read_to_string(project.root.join(&rel)) else {
+        let Ok(text) = lemmata_env::fs::read_to_string(project.root.join(&rel)) else {
             continue;
         };
         for line in text.lines() {
@@ -247,7 +247,7 @@ fn cyclic<'a>(
 pub fn entries(root: &Path, files: &[String]) -> Vec<Entry> {
     let mut out = Vec::new();
     for file in files {
-        let Ok(src) = std::fs::read_to_string(root.join(file)) else {
+        let Ok(src) = lemmata_env::fs::read_to_string(root.join(file)) else {
             continue;
         };
         let Ok(bib) = parse_bib(&src) else {
@@ -434,7 +434,7 @@ pub fn prepare_entry(bibtex: &str, existing: &[String]) -> Result<(String, Strin
 /// Appends an entry to a .bib file, separated by a blank line. The file's bytes are kept as they
 /// are (it may not be UTF-8), and it is replaced in one step.
 pub fn append(path: &Path, entry: &str) -> std::io::Result<()> {
-    let mut bytes = match std::fs::read(path) {
+    let mut bytes = match lemmata_env::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e),
