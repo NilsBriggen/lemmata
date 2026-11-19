@@ -567,12 +567,17 @@ pub(crate) fn out_file(project: &Project, ext: &str) -> PathBuf {
 
 /// The time a build may take: `timeout_secs`, where 0 (no limit, a day) is only for projects the
 /// user trusts; a downloaded project can't make a runaway build fill the disk for a day.
+/// How long a build may run. A day at most (0 asks for no limit); a project the user hasn't
+/// trusted gets at most the default, whatever its lemmata.toml says.
 pub(crate) fn time_limit(project: &Project) -> Duration {
-    match project.config.timeout_secs {
-        0 if project.trusted => Duration::from_secs(60 * 60 * 24),
-        0 => Duration::from_secs(lemmata_project::DEFAULT_TIMEOUT_SECS),
-        n => Duration::from_secs(n),
-    }
+    const DAY: u64 = 60 * 60 * 24;
+    let default = lemmata_project::DEFAULT_TIMEOUT_SECS;
+    Duration::from_secs(match project.config.timeout_secs {
+        0 if project.trusted => DAY,
+        n if project.trusted => n.min(DAY),
+        0 => default,
+        n => n.min(default),
+    })
 }
 
 /// Logs bigger than this are read as their first and last half: a runaway document can write
@@ -1947,6 +1952,26 @@ mod tests {
             "says why the latexmkrc was left out: {:?}",
             out.diagnostics
         );
+    }
+
+    #[test]
+    fn build_time_limits_are_bounded() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        let limit = |p: &Project, secs: u64| {
+            let mut p = p.clone();
+            p.config.timeout_secs = secs;
+            time_limit(&p).as_secs()
+        };
+        let day = 60 * 60 * 24;
+        assert_eq!(limit(&p, u64::MAX), lemmata_project::DEFAULT_TIMEOUT_SECS);
+        assert_eq!(limit(&p, 0), lemmata_project::DEFAULT_TIMEOUT_SECS);
+        assert_eq!(limit(&p, 10), 10);
+        p.trusted = true;
+        assert_eq!(limit(&p, u64::MAX), day, "no overflow past the deadline");
+        assert_eq!(limit(&p, 0), day);
+        assert_eq!(limit(&p, 3600), 3600);
     }
 
     #[test]

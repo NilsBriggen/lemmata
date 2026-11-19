@@ -344,9 +344,23 @@ async fn compile(project: &Project) -> anyhow::Result<Outcome> {
     Ok(lemmata_tex::build(project, &opts, rx).await?)
 }
 
+/// `s` without control characters other than line breaks and tabs: text from a document or a
+/// log mustn't reach the terminal as escape sequences that rewrite what is shown.
+pub(crate) fn plain(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
+}
+
 /// One diagnostic per block, compiler style: `file:line: error: message`, then the hint.
 fn print_diagnostics(diagnostics: &[Diagnostic]) {
     for d in diagnostics {
+        let d = Diagnostic {
+            message: plain(&d.message),
+            hint: d.hint.as_deref().map(plain),
+            file: d.file.as_deref().map(plain),
+            ..d.clone()
+        };
         let loc = match (&d.file, d.line) {
             (Some(f), Some(l)) => format!("{f}:{l}: "),
             (Some(f), None) => format!("{f}: "),
@@ -378,7 +392,7 @@ fn wordcount(dir: &Path, json: bool) -> anyhow::Result<()> {
     } else {
         println!("{} words in total", counts.total_words);
         for f in &counts.files {
-            println!("{:>8}  {}", f.words, f.file);
+            println!("{:>8}  {}", f.words, plain(&f.file));
         }
     }
     Ok(())
@@ -393,10 +407,10 @@ fn outline(dir: &Path, json: bool) -> anyhow::Result<()> {
         for h in &outline.headings {
             println!(
                 "{}:{}: {}{} ({} words)",
-                h.file,
+                plain(&h.file),
                 h.line,
                 "  ".repeat(usize::from(h.level)),
-                h.title,
+                plain(&h.title),
                 h.words
             );
         }
@@ -412,6 +426,12 @@ fn open(dir: &Path) -> anyhow::Result<Project> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escape_sequences_from_a_document_never_reach_the_terminal() {
+        assert_eq!(plain("a\u{1b}]52;c;x\u{7}b\u{9b}2J"), "a]52;c;xb2J");
+        assert_eq!(plain("line\n\tnext"), "line\n\tnext");
+    }
 
     #[test]
     fn watch_ignores_only_the_configured_output_tree() {

@@ -58,8 +58,21 @@ fn pick(manifest: &[u8], platform: &str, current: &str) -> Result<Option<Update>
     }))
 }
 
+/// When this version's release commit was made (seconds since 1970), set by the release build.
+/// An update must have been signed after it: the manifest isn't signed, so without this check
+/// whoever controls it could offer an older, validly signed build as the newer version.
+fn released() -> u64 {
+    option_env!("LEMMATA_RELEASE_EPOCH")
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// An update is never more than this; a server that sends more is not the release.
+const MAX_DOWNLOAD: u64 = 1 << 30;
+
 /// `signature` and `key` as the manifest and the config hold them: base64 of minisign's files.
-fn verify(data: &[u8], signature: &str, key: &str) -> Result<(), String> {
+/// `not_before`: the signature's signed timestamp must be later than this.
+fn verify(data: &[u8], signature: &str, key: &str, not_before: u64) -> Result<(), String> {
     let bad = || "The download's signature doesn't match, so it was not installed.".to_string();
     let text = |s: &str| {
         base64::engine::general_purpose::STANDARD
@@ -71,7 +84,20 @@ fn verify(data: &[u8], signature: &str, key: &str) -> Result<(), String> {
     let key = minisign_verify::PublicKey::decode(&text(key)?).map_err(|_| bad())?;
     let sig = minisign_verify::Signature::decode(&text(signature)?).map_err(|_| bad())?;
     // Legacy (not prehashed) signatures too, as Tauri's updater accepted them.
-    key.verify(data, &sig, true).map_err(|_| bad())
+    key.verify(data, &sig, true).map_err(|_| bad())?;
+    // "timestamp:1794158560\tfile:…", covered by the signature's global part.
+    let signed = sig
+        .trusted_comment()
+        .split('\t')
+        .find_map(|f| f.strip_prefix("timestamp:"))
+        .and_then(|t| t.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    if signed <= not_before {
+        return Err(
+            "The download is an older version than this one, so it was not installed.".into(),
+        );
+    }
+    Ok(())
 }
 
 fn offline(e: reqwest::Error) -> String {
@@ -107,15 +133,22 @@ pub async fn install(u: &Update, progress: impl Fn(f32)) -> Result<AfterExit, St
     if !res.status().is_success() {
         return Err(format!("The download answered {}.", res.status()));
     }
+    let too_big = || "The download is far larger than an update, so it was stopped.".to_string();
+    if res.content_length().is_some_and(|n| n > MAX_DOWNLOAD) {
+        return Err(too_big());
+    }
     let total = res.content_length().unwrap_or(0) as f32;
     let mut data = Vec::new();
     while let Some(chunk) = res.chunk().await.map_err(offline)? {
         data.extend_from_slice(&chunk);
+        if data.len() as u64 > MAX_DOWNLOAD {
+            return Err(too_big());
+        }
         if total > 0.0 {
             progress(data.len() as f32 / total);
         }
     }
-    verify(&data, &u.signature, PUBLIC_KEY)?;
+    verify(&data, &u.signature, PUBLIC_KEY, released())?;
     let version = u.version.clone();
     tokio::task::spawn_blocking(move || put_in_place(&data, &version))
         .await
@@ -170,20 +203,42 @@ fn put_in_place(data: &[u8], _version: &str) -> Result<AfterExit, String> {
             .map(|e| e.path())
             .find(|p| p.extension().is_some_and(|e| e == "app"))
             .ok_or("The download holds no app.")?;
-        let old = work.join("old.app");
-        std::fs::rename(&app, &old).map_err(|e| e.to_string())?;
-        if let Err(e) = std::fs::rename(&new, &app) {
-            let _ = std::fs::rename(&old, &app);
-            return Err(e.to_string());
-        }
-        Ok(())
+        swap(&app, &new, &work.join("old.app"), |a, b| {
+            std::fs::rename(a, b)
+        })
     })();
-    let _ = std::fs::remove_dir_all(&work);
+    // The old app may still be in the work folder (the swap couldn't put it back): keep it then.
+    if !work.join("old.app").exists() {
+        let _ = std::fs::remove_dir_all(&work);
+    }
     result.map_err(|e| format!("Couldn't replace {}: {e}", app.display()))?;
     Ok((
         "open".into(),
         vec!["-n".into(), app.to_string_lossy().into_owned()],
     ))
+}
+
+/// Puts `new` where `app` is, the old one moved to `old` first and back again if that fails. When
+/// even that fails, the old app stays at `old` and the message says where.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn swap(
+    app: &std::path::Path,
+    new: &std::path::Path,
+    old: &std::path::Path,
+    rename: impl Fn(&std::path::Path, &std::path::Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    rename(app, old).map_err(|e| e.to_string())?;
+    if let Err(e) = rename(new, app) {
+        return match rename(old, app) {
+            Ok(()) => Err(e.to_string()),
+            Err(back) => Err(format!(
+                "{e}; the previous Lemmata couldn't be put back ({back}) and is at {}",
+                old.display()
+            )),
+        };
+    }
+    let _ = std::fs::remove_dir_all(old);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -211,13 +266,66 @@ mod tests {
 
     #[test]
     fn only_a_signed_download_passes() {
-        verify(DATA, SIG, KEY).unwrap();
+        verify(DATA, SIG, KEY, 0).unwrap();
         assert!(
-            verify(b"Lemmata update tesT\n", SIG, KEY).is_err(),
+            verify(b"Lemmata update tesT\n", SIG, KEY, 0).is_err(),
             "changed bytes"
         );
-        assert!(verify(DATA, SIG, PUBLIC_KEY).is_err(), "another key");
-        assert!(verify(DATA, "garbage", KEY).is_err());
+        assert!(verify(DATA, SIG, PUBLIC_KEY, 0).is_err(), "another key");
+        assert!(verify(DATA, "garbage", KEY, 0).is_err());
+        // Signed at 1700000000: older than a version released after that.
+        verify(DATA, SIG, KEY, 1_699_999_999).unwrap();
+        let e = verify(DATA, SIG, KEY, 1_700_000_000).unwrap_err();
+        assert!(e.contains("older version"), "{e}");
+    }
+
+    #[test]
+    fn a_failed_swap_puts_the_old_app_back_or_says_where_it_is() {
+        use std::cell::Cell;
+        use std::path::Path;
+        let d = tempfile::tempdir().unwrap();
+        let (app, new, old) = (
+            d.path().join("Lemmata.app"),
+            d.path().join("new.app"),
+            d.path().join("old.app"),
+        );
+        let setup = || {
+            let _ = std::fs::remove_dir_all(&app);
+            let _ = std::fs::remove_dir_all(&old);
+            std::fs::create_dir_all(app.join("v1")).unwrap();
+            std::fs::create_dir_all(new.join("v2")).unwrap();
+        };
+        // The second rename (new into place) fails: the old app goes back.
+        setup();
+        let n = Cell::new(0);
+        let fail_second = |a: &Path, b: &Path| {
+            n.set(n.get() + 1);
+            if n.get() == 2 {
+                Err(std::io::Error::other("busy"))
+            } else {
+                std::fs::rename(a, b)
+            }
+        };
+        assert!(swap(&app, &new, &old, fail_second).is_err());
+        assert!(app.join("v1").is_dir(), "the old app is back");
+        // Putting it back fails too: it stays at `old`, and the message says so.
+        setup();
+        let n = Cell::new(0);
+        let fail_after_first = |a: &Path, b: &Path| {
+            n.set(n.get() + 1);
+            if n.get() >= 2 {
+                Err(std::io::Error::other("busy"))
+            } else {
+                std::fs::rename(a, b)
+            }
+        };
+        let e = swap(&app, &new, &old, fail_after_first).unwrap_err();
+        assert!(old.join("v1").is_dir(), "the old app is kept");
+        assert!(e.contains(&old.display().to_string()), "{e}");
+        // Both work: the new app is in place and the old one gone.
+        setup();
+        swap(&app, &new, &old, |a, b| std::fs::rename(a, b)).unwrap();
+        assert!(app.join("v2").is_dir() && !old.exists());
     }
 
     #[test]

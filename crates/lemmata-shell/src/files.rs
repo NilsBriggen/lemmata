@@ -494,7 +494,11 @@ pub fn rewrite_references(text: &str, from: &str, to: &str) -> String {
 
 fn strip_ext(p: &str) -> String {
     match Path::new(p).extension() {
-        Some(e) => p[..p.len() - e.len() - 1].to_string(),
+        // Not by length: "a.tex/" has the extension "tex" but doesn't end with it.
+        Some(e) => p
+            .strip_suffix(&format!(".{}", e.to_string_lossy()))
+            .unwrap_or(p)
+            .to_string(),
         None => p.to_string(),
     }
 }
@@ -1114,6 +1118,13 @@ pub fn watch(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn extensions_are_stripped_by_name_not_length() {
+        assert_eq!(super::strip_ext("ch/a.tex"), "ch/a");
+        assert_eq!(super::strip_ext("a.é//"), "a.é//", "once panicked");
+        assert_eq!(super::strip_ext("noext"), "noext");
+    }
+
     #[test]
     fn content_hash_matches_the_frontend() {
         // The same vectors are checked in src/lib/contentHash.test.ts.

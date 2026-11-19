@@ -19,12 +19,31 @@ pub enum Viewer {
     },
 }
 
+/// Longest side a texture may have (wgpu's default limit): egui refuses bigger ones.
+const MAX_SIDE: u32 = 8192;
+
 /// Decodes an image file, off the UI thread.
 pub fn decode(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
     if path.to_lowercase().ends_with(".svg") {
         return decode_svg(path, bytes);
     }
-    let img = image::load_from_memory(bytes).map_err(|e| format!("Could not open {path}: {e}"))?;
+    let bad = |e: image::ImageError| format!("Could not open {path}: {e}");
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("Could not open {path}: {e}"))?;
+    // A file can declare any size; past this it isn't a figure but a way to fill memory.
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(40_000);
+    limits.max_image_height = Some(40_000);
+    limits.max_alloc = Some(512 << 20);
+    reader.limits(limits);
+    let img = reader.decode().map_err(bad)?;
+    // Textures are at most MAX_SIDE a side: a bigger image is shown scaled down.
+    let img = if img.width() > MAX_SIDE || img.height() > MAX_SIDE {
+        img.thumbnail(MAX_SIDE, MAX_SIDE)
+    } else {
+        img
+    };
     let rgba = img.to_rgba8();
     Ok(ColorImage::from_rgba_unmultiplied(
         [rgba.width() as usize, rgba.height() as usize],
@@ -54,7 +73,11 @@ fn decode_svg(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
         .map_err(|e| format!("Could not open {path}: {e}"))?;
     let size = tree.size().to_int_size();
     let (w, h) = (size.width() as usize, size.height() as usize);
-    if w == 0 || h == 0 || w.checked_mul(h).is_none_or(|n| n > MAX_PIXELS) {
+    if w == 0
+        || h == 0
+        || w.max(h) > MAX_SIDE as usize
+        || w.checked_mul(h).is_none_or(|n| n > MAX_PIXELS)
+    {
         return Err(format!(
             "Could not open {path}: SVG dimensions are too large"
         ));

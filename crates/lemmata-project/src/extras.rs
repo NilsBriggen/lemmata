@@ -197,7 +197,7 @@ pub(crate) fn labels_with(
                     stack[i].labels.push(out.len());
                 } else if let Some((cmd, title, end)) = &section
                     && *end <= pos
-                    && code[*end..pos].trim().is_empty()
+                    && code.get(*end..pos).is_some_and(|t| t.trim().is_empty())
                 {
                     item.env = cmd.clone();
                     item.snippet = title.chars().take(SNIPPET_MAX).collect();
@@ -387,6 +387,25 @@ fn includes(code: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bytes that aren't a character's start, right after a sectioning command, once panicked.
+    #[test]
+    fn labels_after_odd_section_commands_dont_panic() {
+        let d = tempfile::tempdir().unwrap();
+        for body in [
+            "\\section€\n\\label{a}\n",
+            "\\section{Ü\n\\label{a}\n",
+            "\\section中\\label{a}",
+        ] {
+            std::fs::write(
+                d.path().join("main.tex"),
+                format!("\\documentclass{{article}}\n{body}"),
+            )
+            .unwrap();
+            let p = Project::open(d.path()).unwrap();
+            let _ = labels(&p);
+        }
+    }
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);

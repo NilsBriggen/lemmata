@@ -34,7 +34,7 @@ pub fn run(dir: &Path, filter: Filter, json: bool) -> anyhow::Result<bool> {
             println!("{}", serde_json::to_string_pretty(&missing)?);
         } else {
             for key in &missing {
-                println!("{key}");
+                println!("{}", crate::plain(key));
             }
         }
         return Ok(missing.is_empty());
@@ -54,7 +54,11 @@ pub fn run(dir: &Path, filter: Filter, json: bool) -> anyhow::Result<bool> {
         for e in &entries {
             println!(
                 "{:<28} {:<4}  {}  ({}:{})",
-                e.entry.key, e.entry.year, e.entry.title, e.entry.file, e.line
+                crate::plain(&e.entry.key),
+                crate::plain(&e.entry.year),
+                crate::plain(&e.entry.title),
+                crate::plain(&e.entry.file),
+                e.line
             );
         }
     }

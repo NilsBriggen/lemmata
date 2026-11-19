@@ -2625,6 +2625,7 @@ name = "lemmata-bib"
 version = "3.1.1"
 dependencies = [
  "biblatex",
+ "lemmata-env",
  "lemmata-project",
  "regex",
  "reqwest",
@@ -2655,6 +2656,9 @@ dependencies = [
 [[package]]
 name = "lemmata-env"
 version = "3.1.1"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "lemmata-git"
@@ -2713,6 +2717,7 @@ dependencies = [
 name = "lemmata-project"
 version = "3.1.1"
 dependencies = [
+ "lemmata-env",
  "regex",
  "serde",
  "serde_json",

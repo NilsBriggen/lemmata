@@ -124,12 +124,22 @@ fn load(pdf: &Path) -> Option<Arc<Index>> {
     {
         return Some(idx.clone());
     }
+    // A thesis's synctex is tens of megabytes; past this it is something else (a file that
+    // unpacks to gigabytes), and the synctex program answers instead.
+    const LIMIT: u64 = 512 << 20;
+    if std::fs::metadata(&path).ok()?.len() > LIMIT {
+        return None;
+    }
     let mut bytes = std::fs::read(&path).ok()?;
     if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut text = Vec::new();
         flate2::read::GzDecoder::new(&bytes[..])
+            .take(LIMIT + 1)
             .read_to_end(&mut text)
             .ok()?;
+        if text.len() as u64 > LIMIT {
+            return None;
+        }
         bytes = text;
     }
     let idx = Arc::new(Index::parse(

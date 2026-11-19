@@ -8,6 +8,7 @@ pub mod zotero;
 use biblatex::{Bibliography, ChunksExt};
 use regex::Regex;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -128,6 +129,120 @@ pub fn cited_keys(project: &lemmata_project::Project) -> Vec<String> {
     keys
 }
 
+/// `Bibliography::parse` made safe for any file. biblatex resolves `@string` names and
+/// `crossref`/`xdata` parents by recursion, so a loop among them, a very long chain, or braces
+/// nested thousands deep would overflow the stack and end the app. Such links are cut first:
+/// a looping `@string` stands for its own name, and a looping or too deep entry loses its
+/// `crossref` and `xdata`; the rest of the file reads as usual.
+pub fn parse_bib(src: &str) -> Result<Bibliography, String> {
+    const MAX_DEPTH: usize = 64;
+    let (mut depth, mut deepest) = (0usize, 0usize);
+    for b in src.bytes() {
+        match b {
+            b'{' => {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
+            b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    if deepest > MAX_DEPTH {
+        return Err(format!("braces are nested more than {MAX_DEPTH} deep"));
+    }
+    let mut raw = biblatex::RawBibliography::parse(src).map_err(|e| e.to_string())?;
+
+    // @string names that lead back to themselves.
+    let uses: HashMap<&str, Vec<&str>> = raw
+        .abbreviations
+        .iter()
+        .map(|p| {
+            let names = p.value.v.iter().filter_map(|c| match c.v {
+                biblatex::RawChunk::Abbreviation(n) => Some(n),
+                biblatex::RawChunk::Normal(_) => None,
+            });
+            (p.key.v, names.collect())
+        })
+        .collect();
+    let looping = cyclic(&uses, MAX_DEPTH);
+    for p in &mut raw.abbreviations {
+        if looping.contains(p.key.v) {
+            let span = p.value.span.clone();
+            p.value.v = vec![biblatex::Spanned::new(
+                biblatex::RawChunk::Normal(p.key.v),
+                span,
+            )];
+        }
+    }
+
+    // Entries whose crossref/xdata parents loop or go on too long.
+    let text = |f: &biblatex::Field| -> String {
+        f.iter()
+            .map(|c| match c.v {
+                biblatex::RawChunk::Normal(s) | biblatex::RawChunk::Abbreviation(s) => s,
+            })
+            .collect()
+    };
+    let parents: HashMap<&str, Vec<String>> = raw
+        .entries
+        .iter()
+        .map(|e| {
+            let mut ps = Vec::new();
+            for f in &e.v.fields {
+                let k = f.key.v.to_ascii_lowercase();
+                if k == "crossref" || k == "xdata" {
+                    ps.extend(text(&f.value.v).split(',').map(|s| s.trim().to_string()));
+                }
+            }
+            (e.v.key.v, ps)
+        })
+        .collect();
+    let graph: HashMap<&str, Vec<&str>> = parents
+        .iter()
+        .map(|(k, ps)| (*k, ps.iter().map(String::as_str).collect()))
+        .collect();
+    let cut = cyclic(&graph, MAX_DEPTH);
+    for e in &mut raw.entries {
+        if cut.contains(e.v.key.v) {
+            e.v.fields.retain(|f| {
+                let k = f.key.v.to_ascii_lowercase();
+                k != "crossref" && k != "xdata"
+            });
+        }
+    }
+    Bibliography::from_raw(raw).map_err(|e| e.to_string())
+}
+
+/// The nodes of `graph` from which following edges loops, or runs longer than `max` steps.
+/// Without recursion, so no input can overflow the stack here either.
+fn cyclic<'a>(
+    graph: &HashMap<&'a str, Vec<&'a str>>,
+    max: usize,
+) -> std::collections::HashSet<&'a str> {
+    let mut bad = std::collections::HashSet::new();
+    for &start in graph.keys() {
+        // Depth-first, the path kept: a node seen again on it is a loop.
+        let mut path: Vec<(&str, usize)> = vec![(start, 0)];
+        while let Some(&mut (node, ref mut next)) = path.last_mut() {
+            let kids = graph.get(node).map(Vec::as_slice).unwrap_or(&[]);
+            if *next >= kids.len() {
+                path.pop();
+                continue;
+            }
+            let kid = kids[*next];
+            *next += 1;
+            if path.iter().any(|(n, _)| *n == kid) || path.len() > max {
+                bad.insert(start);
+                break;
+            }
+            if graph.contains_key(kid) {
+                path.push((kid, 0));
+            }
+        }
+    }
+    bad
+}
+
 /// Every entry in the given .bib files. Files that fail to parse are skipped.
 pub fn entries(root: &Path, files: &[String]) -> Vec<Entry> {
     let mut out = Vec::new();
@@ -135,7 +250,7 @@ pub fn entries(root: &Path, files: &[String]) -> Vec<Entry> {
         let Ok(src) = std::fs::read_to_string(root.join(file)) else {
             continue;
         };
-        let Ok(bib) = Bibliography::parse(&src) else {
+        let Ok(bib) = parse_bib(&src) else {
             continue;
         };
         out.extend(bib.iter().map(|e| make_entry(e, file)));
@@ -262,8 +377,8 @@ pub async fn fetch_bibtex(doi: &str) -> Result<String, Error> {
 /// Renames the fetched entry to a readable key (`schulman2017proximal`),
 /// unique among `existing`, and returns the key and the BibTeX to append.
 pub fn prepare_entry(bibtex: &str, existing: &[String]) -> Result<(String, String), Error> {
-    let bib = Bibliography::parse(bibtex)
-        .map_err(|e| Error(format!("The reference couldn't be read: {e}")))?;
+    let bib =
+        parse_bib(bibtex).map_err(|e| Error(format!("The reference couldn't be read: {e}")))?;
     let mut entry = bib
         .iter()
         .next()
@@ -339,6 +454,38 @@ pub fn append(path: &Path, entry: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each of these once overflowed the stack inside biblatex, which ends the whole app.
+    #[test]
+    fn loops_and_deep_nesting_in_a_bib_file_dont_crash() {
+        let ok = |src: &str| parse_bib(src).unwrap_or_else(|e| panic!("{e}: {src}"));
+        let b = ok("@string{a = b}\n@string{b = a}\n@misc{k, title = a}\n");
+        assert_eq!(b.get("k").unwrap().title().unwrap().format_verbatim(), "a");
+        let b = ok("@misc{k, crossref = {k}, title = {T}}\n");
+        assert!(b.get("k").is_some());
+        ok(
+            "@misc{a, crossref = {b}}\n@misc{b, xdata = {c}}\n@misc{c, crossref = {a}}\n@misc{d, crossref = {a}, title = {D}}\n",
+        );
+        let chain: String = (0..500)
+            .map(|i| format!("@misc{{e{i}, crossref = {{e{}}}, title = {{T}}}}\n", i + 1))
+            .collect();
+        ok(&chain);
+        let deep = format!(
+            "@misc{{k, title = {}{}}}\n",
+            "{".repeat(5000),
+            "}".repeat(5000)
+        );
+        assert!(parse_bib(&deep).is_err());
+        // An ordinary crossref still resolves.
+        let b = ok(
+            "@book{p, title = {Proceedings}, year = {2020}}\n@inproceedings{c, crossref = {p}, title = {Paper}}\n",
+        );
+        // biblatex keeps an inherited year as `date`, and the book's title as `booktitle`.
+        assert!(
+            b.get("c").unwrap().get("booktitle").is_some(),
+            "inherited from its parent"
+        );
+    }
 
     #[test]
     fn appending_keeps_a_file_that_isnt_utf8() {

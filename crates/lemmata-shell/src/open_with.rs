@@ -52,7 +52,14 @@ fn from_link(link: &str) -> Option<Request> {
     match url.host_str()? {
         "open" => {
             let path = PathBuf::from(param("path")?);
-            if !path.is_absolute() {
+            // A web page's link must not make the computer contact a server (`\\server\share`
+            // on Windows sends the user's credentials to it). The trust question comes before
+            // anything of a local folder is built or run.
+            let network = {
+                let s = path.to_string_lossy();
+                s.starts_with("\\\\") || s.starts_with("//")
+            };
+            if !path.is_absolute() || network {
                 return None;
             }
             target_from_path(&normalize(&path)).map(Request::Open)
@@ -370,6 +377,8 @@ mod tests {
         );
         for bad in [
             "lemmata://open?path=proj",
+            "lemmata://open?path=%5C%5Cattacker%5Cshare%5Cproj",
+            "lemmata://open?path=//attacker/share/proj",
             "lemmata://clone?url=file:///etc",
             "lemmata://clone?url=ext::sh%20-c%20x",
             "lemmata://new?template=../x",

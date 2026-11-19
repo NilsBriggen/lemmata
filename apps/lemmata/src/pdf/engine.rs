@@ -242,14 +242,28 @@ fn run(jobs: Receiver<Job>, routes: Routes, ctx: egui::Context, announce: bool) 
                     Err(_) => return,
                 },
             };
-            if let Job::Load { doc, bytes } = job {
-                let active = routes
+            let active = |doc: &u64| {
+                routes
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .contains_key(&doc);
-                if active {
-                    documents.insert(doc, bytes.clone());
-                    break (doc, bytes);
+                    .contains_key(doc)
+            };
+            match job {
+                Job::Load { doc, bytes } => {
+                    if active(&doc) {
+                        documents.insert(doc, bytes.clone());
+                        break (doc, bytes);
+                    }
+                }
+                // Between documents (a load came, for a viewer that has moved on since): a job
+                // for a document this worker has must not be lost, or its page stays blank.
+                Job::Render { doc, .. } | Job::Decorate { doc, .. } | Job::Png { doc, .. } => {
+                    if active(&doc)
+                        && let Some(bytes) = documents.get(&doc).cloned()
+                    {
+                        queue.push_front(job);
+                        queue.push_front(Job::Load { doc, bytes });
+                    }
                 }
             }
         };
@@ -422,16 +436,31 @@ fn guard<T>(f: impl FnOnce() -> T) -> Option<T> {
 
 fn blank(page: &Page<'_>, scale: f32) -> ColorImage {
     let (w, h) = page.render_dimensions();
-    let s = scale * (MAX_PIXELS / (w * h * scale * scale)).sqrt().min(1.0);
-    ColorImage::filled(
-        [((w * s) as usize).max(1), ((h * s) as usize).max(1)],
-        egui::Color32::WHITE,
-    )
+    let size = match fit(w, h, scale) {
+        Some(s) => [(w * s) as usize, (h * s) as usize],
+        None => [1, 1],
+    };
+    ColorImage::filled(size, egui::Color32::WHITE)
 }
 
 /// Most pixels a page image may have; bigger zooms are drawn smaller and stretched, like the
 /// canvas cap in PdfView.svelte.
 const MAX_PIXELS: f32 = 16e6;
+/// Longest side a texture may have (wgpu's default limit): egui refuses bigger ones.
+const MAX_SIDE: f32 = 8192.0;
+
+/// The scale to draw a `w` × `h` page at, near `scale` but within both caps. No floor: a page
+/// declared absurdly large is drawn tiny, never allocated at full size. None when the page's
+/// size is no size at all (zero, not finite) or comes out under a pixel.
+fn fit(w: f32, h: f32, scale: f32) -> Option<f32> {
+    let k = (MAX_PIXELS / (w * h * scale * scale))
+        .sqrt()
+        .min(MAX_SIDE / (w * scale))
+        .min(MAX_SIDE / (h * scale))
+        .min(1.0);
+    let s = scale * k;
+    (s.is_finite() && w * s >= 1.0 && h * s >= 1.0).then_some(s)
+}
 
 fn draw<'a>(
     page: &'a Page<'a>,
@@ -441,13 +470,9 @@ fn draw<'a>(
     dark: bool,
 ) -> ColorImage {
     let (w, h) = page.render_dimensions();
-    let k = (MAX_PIXELS / (w * h * scale * scale)).sqrt().min(1.0);
-    // No floor on the scale: a page declared absurdly large is simply drawn tiny, never
-    // allocated at full size.
-    let s = scale * k;
-    if !(s.is_finite() && w * s >= 1.0 && h * s >= 1.0) {
+    let Some(s) = fit(w, h, scale) else {
         return blank(page, scale);
-    }
+    };
     let pix = PixmapSettings {
         x_scale: s,
         y_scale: s,
@@ -844,6 +869,29 @@ pub(crate) fn text_of_pdf(bytes: Vec<u8>) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn page_images_stay_within_both_caps() {
+        for (w, h, scale) in [
+            (595.0, 842.0, 2.0),
+            (1e-6, 1e9, 1.0),
+            (1e9, 1e9, 8.0),
+            (14400.0, 40.0, 4.0),
+        ] {
+            if let Some(s) = fit(w, h, scale) {
+                assert!(
+                    w * s <= MAX_SIDE + 1.0 && h * s <= MAX_SIDE + 1.0,
+                    "{w}x{h}"
+                );
+                assert!(w * h * s * s <= MAX_PIXELS * 1.01, "{w}x{h}");
+            }
+        }
+        assert!(fit(0.0, 842.0, 1.0).is_none());
+        assert!(fit(f32::NAN, 842.0, 1.0).is_none());
+        assert!(fit(f32::INFINITY, 842.0, 1.0).is_none());
+        let s = fit(595.0, 842.0, 2.0).unwrap();
+        assert_eq!(s, 2.0, "an ordinary page keeps its zoom");
+    }
+
     fn g(t: &str, x: f32, y: f32) -> Glyph {
         Glyph {
             text: t.into(),
@@ -962,6 +1010,57 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    /// A load for a viewer that moved on at once sends a worker back to waiting for a document;
+    /// a render asked for meanwhile, for the document it had, still gets drawn.
+    #[test]
+    fn a_render_between_documents_is_not_lost() {
+        let one = Engine::new(egui::Context::default());
+        let two = Engine::new(egui::Context::default());
+        let bytes = Arc::new(include_bytes!("../../tests/pdf/type3-bitmap-fonts.pdf").to_vec());
+        let a = one.next_doc();
+        one.send(Job::Load {
+            doc: a,
+            bytes: bytes.clone(),
+        });
+        let wait = |e: &Engine, what: &str, f: &dyn Fn(&Done) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                assert!(std::time::Instant::now() < until, "no {what}");
+                if let Ok(d) = e.rx.recv_timeout(std::time::Duration::from_millis(50))
+                    && f(&d)
+                {
+                    return;
+                }
+            }
+        };
+        wait(
+            &one,
+            "load",
+            &|d| matches!(d, Done::Loaded { doc, .. } if *doc == a),
+        );
+        // Another viewer loads twice, the first at once superseded; then one asks for its page.
+        for _ in 0..2 {
+            let b = two.next_doc();
+            two.send(Job::Load {
+                doc: b,
+                bytes: bytes.clone(),
+            });
+        }
+        one.send(Job::Render {
+            doc: a,
+            page: 0,
+            scale: 0.5,
+            dark: false,
+            epoch: None,
+            thumb: false,
+        });
+        wait(
+            &one,
+            "render",
+            &|d| matches!(d, Done::Rendered { doc, .. } if *doc == a),
+        );
     }
 
     #[test]

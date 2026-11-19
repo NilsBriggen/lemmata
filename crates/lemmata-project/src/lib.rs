@@ -775,7 +775,9 @@ impl Walk<'_> {
             } else if name == "begin"
                 && let Some(env) = braced(after)
                 && env == "frame"
-                && let Some(title) = braced(skip_optional(&after[env.len() + 2..]))
+                // From where `braced` found it: `after` may start with (Unicode) white space.
+                && let Some(rest) = after.trim_start().get(env.len() + 2..)
+                && let Some(title) = braced(skip_optional(rest))
             {
                 self.out.headings.push(Heading {
                     level: 3,
@@ -1006,6 +1008,18 @@ mod tests {
         assert_eq!(p.main, PathBuf::from("a.tex"));
         assert_eq!(p.config.engine, Engine::Xelatex);
         assert!(!p.config.shell_escape);
+    }
+
+    #[test]
+    fn a_frame_after_unicode_space_doesnt_panic() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("main.tex"),
+            "\\documentclass{beamer}\n\\begin{document}\n\\begin\u{3000}\u{3000}\u{3000}{frame}{Title}\n\\end{frame}\n\\end{document}\n",
+        )
+        .unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let _ = outline(&p);
     }
 
     #[test]

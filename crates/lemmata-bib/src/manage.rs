@@ -2,7 +2,7 @@
 //! duplicates, and minimal edits (remove or rename exactly one entry).
 
 use crate::{Entry, Error, make_entry};
-use biblatex::{Bibliography, ChunksExt};
+use biblatex::ChunksExt;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -133,7 +133,7 @@ pub fn library(root: &Path, files: &[String], cited: &[String]) -> Library {
             continue;
         };
         for span in scan(&src) {
-            let parsed = Bibliography::parse(&src[span.start..span.end]).ok();
+            let parsed = crate::parse_bib(&src[span.start..span.end]).ok();
             let bib = parsed.as_ref().and_then(|b| b.iter().next());
             let mut entry = match bib {
                 Some(e) => make_entry(e, file),
