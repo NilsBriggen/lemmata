@@ -2,9 +2,9 @@
 
 All notable changes to Lemmata.
 
-## 3.2.0-rc.1 (2026-11-19)
+## 3.2.0 (2026-11-19)
 
-The first release candidate for 3.2.0. A security and reliability release. Opening a project you got from someone else can no longer run code on your computer or write outside the project's folder.
+A security and reliability release. Opening a project you got from someone else can no longer run code on your computer or write outside the project's folder.
 
 ### Changed
 - Opening a project for the first time asks whether you trust its authors, before anything in it is read or run. Your answer is kept per folder and can be changed in Project settings. Projects you create from a bundled template are trusted without asking, unless the template brings a `latexmkrc` or turns on shell escape. Projects you already use ask once after the update, except those you had allowed shell escape for, which stay trusted.
@@ -51,9 +51,9 @@ The first release candidate for 3.2.0. A security and reliability release. Openi
 - On Windows, the outline of a restricted project follows `\input` files in subfolders.
 - Security: project files that are crafted to harm, such as deeply nested or looping bibliographies, absurdly sized PDF pages and images, oversized SyncTeX files, links to endless files or named pipes, and unusual file names, can no longer crash the app, fill memory, hang it or reach outside the project; file saves can't be redirected by links planted in a project, and in a restricted project no write follows a link out of it; `lemmata://open` links refuse network paths; and the updater only installs a build signed after the running version.
 
-## 3.2.0 (unreleased)
+## 3.2.0-rc.1 (2026-11-19)
 
-A security and reliability release. Opening a project you got from someone else can no longer run code on your computer or write outside the project's folder.
+The first release candidate for 3.2.0. A security and reliability release. Opening a project you got from someone else can no longer run code on your computer or write outside the project's folder.
 
 ### Changed
 - Opening a project for the first time asks whether you trust its authors, before anything in it is read or run. Your answer is kept per folder and can be changed in Project settings. Projects you create from a bundled template are trusted without asking, unless the template brings a `latexmkrc` or turns on shell escape. Projects you already use ask once after the update, except those you had allowed shell escape for, which stay trusted.
