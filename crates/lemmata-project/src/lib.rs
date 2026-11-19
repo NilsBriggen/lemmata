@@ -802,8 +802,11 @@ impl Walk<'_> {
                 if child.extension().is_none() {
                     child.set_extension("tex");
                 }
-                if !self.trusted && lemmata_env::fs::inside_rel(&child.to_string_lossy()).is_none()
-                {
+                // `/` again: on Windows the parts were joined with `\`, which inside_rel refuses.
+                let rel = child
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/");
+                if !self.trusted && lemmata_env::fs::inside_rel(&rel).is_none() {
                     self.count(raw);
                     return;
                 }

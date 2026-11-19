@@ -15,6 +15,12 @@ PACKAGER_OUTPUT = {
         "lemmata-app_0.3.0_amd64.deb",
         "lemmata-0.3.0-1.x86_64.rpm",
     ],
+    "linux_aarch64": [
+        "lemmata-app_0.3.0_aarch64.AppImage",
+        "lemmata-app_0.3.0_aarch64.AppImage.sig",
+        "lemmata-app_0.3.0_arm64.deb",
+        "lemmata-0.3.0-1.aarch64.rpm",
+    ],
     "macos_universal": [
         "Lemmata_0.3.0_universal.dmg",
         "Lemmata.aarch64.dmg",
@@ -32,9 +38,11 @@ PACKAGER_OUTPUT = {
 }
 
 
-def run(version: str, tag: str, cli_name: str | None = None) -> Path:
+def run(version: str, tag: str, cli_name: str | None = None, skip: str | None = None) -> Path:
     tmp = Path(tempfile.mkdtemp())
     for label, files in PACKAGER_OUTPUT.items():
+        if label == skip:
+            continue
         for rel in files:
             p = tmp / "artifacts" / label / rel
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -73,7 +81,7 @@ def test_stable_release() -> None:
     ]:
         assert expected in names, f"{expected} missing from {names}"
     manifest = json.loads((out / "latest.json").read_text())
-    assert set(manifest["platforms"]) == {"linux-x86_64", "darwin-aarch64", "darwin-x86_64", "windows-x86_64"}
+    assert set(manifest["platforms"]) == {"linux-x86_64", "linux-aarch64", "darwin-aarch64", "darwin-x86_64", "windows-x86_64"}
     assert manifest["platforms"]["windows-x86_64"]["url"].endswith("/v0.3.0/Lemmata_0.3.0_windows_x86_64-setup.exe")
     # Each Mac downloads only its own architecture.
     assert manifest["platforms"]["darwin-aarch64"]["url"].endswith("_macos_universal_aarch64.app.tar.gz")
@@ -101,6 +109,15 @@ def test_a_misnamed_command_line_archive_stops_the_release() -> None:
     raise AssertionError("an archive for another version was published")
 
 
+def test_a_stable_release_missing_a_platform_stops() -> None:
+    # Its users would be left on the old version without a word.
+    try:
+        run("0.3.0", "v0.3.0", skip="linux_aarch64")
+    except subprocess.CalledProcessError:
+        return
+    raise AssertionError("a stable release went out without the Linux ARM build")
+
+
 def test_prerelease_never_writes_the_updater_manifest() -> None:
     out = run("0.3.0-beta.1", "v0.3.0-beta.1")
     assert not (out / "latest.json").exists()
@@ -112,5 +129,6 @@ def test_prerelease_never_writes_the_updater_manifest() -> None:
 if __name__ == "__main__":
     test_stable_release()
     test_a_misnamed_command_line_archive_stops_the_release()
+    test_a_stable_release_missing_a_platform_stops()
     test_prerelease_never_writes_the_updater_manifest()
     print("ok")

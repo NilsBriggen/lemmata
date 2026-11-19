@@ -8,6 +8,9 @@
 #   latexmk with Perl      the normal path
 #   Perl missing           latexmk cannot start; Lemmata builds with pdflatex itself
 #   Perl fails to start    a Perl that exits with an error (stands in for a blocked one)
+#   restricted             a project not trusted: the engine run directly, never latexmk
+#
+# The latexmk scenarios pass --trust, as the CLI treats a project as restricted otherwise.
 param([Parameter(Mandatory = $true)][string]$Cli)
 $ErrorActionPreference = "Stop"
 $Cli = (Resolve-Path $Cli).Path
@@ -15,6 +18,7 @@ $work = Join-Path $env:RUNNER_TEMP "smoke"
 New-Item -ItemType Directory -Force $work | Out-Null
 $results = @()
 $failures = @()
+$trust = @("--trust")
 
 function Fresh([string]$name) {
     $dir = Join-Path $work $name
@@ -26,7 +30,7 @@ function Fresh([string]$name) {
 
 function Build([string]$dir, [string]$scenario, [string]$step, [bool]$expectFallback) {
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    $text = (& $Cli build $dir 2>&1 | Out-String)
+    $text = (& $Cli @trust build $dir 2>&1 | Out-String)
     $code = $LASTEXITCODE
     $sw.Stop()
     # This build's own result: the PDF of an earlier build may still be there.
@@ -94,6 +98,13 @@ $dir = Fresh "failing-perl"
 Build $dir "Perl fails to start" "first build" $true
 Rebuild $dir "Perl fails to start"
 $env:PATH = $original
+
+# 4. Restricted: built without latexmk on purpose, so without the "could not run" note.
+$trust = @()
+$dir = Fresh "restricted"
+Build $dir "restricted" "first build" $false
+Rebuild $dir "restricted"
+$trust = @("--trust")
 
 $table = $results | Format-Table -AutoSize | Out-String
 Write-Host $table

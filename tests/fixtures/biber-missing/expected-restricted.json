@@ -1,0 +1,34 @@
+[
+  {
+    "file": "./main.tex",
+    "hint": "No entry with this key in your .bib files, or the bibliography hasn't been built yet.",
+    "kind": {
+      "key": "knuth1984",
+      "type": "undefined-citation"
+    },
+    "line": 5,
+    "message": "Citation 'knuth1984' on page 1 undefined.",
+    "severity": "warning"
+  },
+  {
+    "file": "./main.tex",
+    "hint": null,
+    "kind": {
+      "type": "other"
+    },
+    "line": 6,
+    "message": "Empty bibliography.",
+    "severity": "warning"
+  },
+  {
+    "file": null,
+    "hint": "Check the name in \\addbibresource{} or \\bibliography{}, and that the file is in the project.",
+    "kind": {
+      "name": "missing.bib",
+      "type": "missing-file"
+    },
+    "line": null,
+    "message": "Bibliography file 'missing.bib' was not found.",
+    "severity": "error"
+  }
+]

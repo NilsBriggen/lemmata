@@ -281,6 +281,29 @@ fn lint_json_has_located_diagnostics() {
     );
 }
 
+/// A second build with nothing changed reuses the PDF, and says so instead of "no PDF written".
+#[test]
+fn an_unchanged_project_reports_its_pdf_as_up_to_date() {
+    if !can_build() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    fs::write(
+        d.path().join("main.tex"),
+        "\\documentclass{article}\\begin{document}Hi\\end{document}\n",
+    )
+    .unwrap();
+    let o = lemmata(&["build", arg(d.path())]);
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    let o = lemmata(&["build", arg(d.path())]);
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    assert!(
+        stdout(&o).contains("main.pdf is up to date"),
+        "{}",
+        stdout(&o)
+    );
+}
+
 #[test]
 fn lint_passes_once_the_references_resolve() {
     if !can_build() {

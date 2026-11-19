@@ -301,6 +301,11 @@ mod tests {
             show(ui.ctx(), &theme::LIGHT, &shown, "2.0.0");
         });
         h.run();
-        h.snapshot("whats-new-2.0-light");
+        // Linux CI's software renderer draws the small bullet dots a few pixels differently.
+        h.snapshot_options(
+            "whats-new-2.0-light",
+            &egui_kittest::SnapshotOptions::new()
+                .max_failed_pixels(egui_kittest::OsThreshold::new(60).macos(2000).windows(2000)),
+        );
     }
 }

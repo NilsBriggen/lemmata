@@ -305,6 +305,12 @@ async fn build(dir: &Path, json: bool) -> anyhow::Result<Outcome> {
         print_diagnostics(&outcome.diagnostics);
         match &outcome.pdf {
             Some(p) => println!("{} in {} ms", p.display(), outcome.duration_ms),
+            // Nothing changed since the last good build, so TeX didn't write the PDF again.
+            None if outcome.status == Status::Success && project.pdf_path().is_file() => println!(
+                "{} is up to date ({} ms)",
+                project.pdf_path().display(),
+                outcome.duration_ms
+            ),
             None => println!("no PDF written ({} ms)", outcome.duration_ms),
         }
     }
