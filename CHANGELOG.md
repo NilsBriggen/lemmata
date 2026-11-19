@@ -2,6 +2,55 @@
 
 All notable changes to Lemmata.
 
+## 3.2.0-rc.1 (2026-11-19)
+
+The first release candidate for 3.2.0. A security and reliability release. Opening a project you got from someone else can no longer run code on your computer or write outside the project's folder.
+
+### Changed
+- Opening a project for the first time asks whether you trust its authors, before anything in it is read or run. Your answer is kept per folder and can be changed in Project settings. Projects you create from a bundled template are trusted without asking, unless the template brings a `latexmkrc` or turns on shell escape. Projects you already use ask once after the update, except those you had allowed shell escape for, which stay trusted.
+- A restricted (untrusted) project still builds, but runs nothing of its own: the TeX engine is run directly instead of through latexmk, shell escape is off whatever `lemmata.toml` says, texlab can't run the project's `latexmkrc`, and the Git panel and "PDF of the changes" are off until you trust it.
+- The command-line tool treats projects as restricted too: `lemmata build`, `watch`, `lint` and `export` honour a project's `latexmkrc` and shell escape only with `--trust`.
+- History only uses a snapshot store Lemmata created on this computer. A store a project brings along is used once you trust the project.
+- Git commands Lemmata runs on its own (snapshots, status, the Git panel's view) never run a repository's hooks or helpers and never reach the network.
+
+### Added
+- The command palette has the actions that only had a shortcut: Save, Close tab, Find, Go to line, Select all matches, Next and Previous problem, Next TODO, Next comment, Go to definition, Find references, Bold, Italic, heading level up and down, Fold all and Unfold all.
+- `.bib` files are highlighted: entry types, keys, field names, braces and comments.
+- Words in `\foreignlanguage` and `otherlanguage` are counted but not spell checked.
+- The window's zoom is kept for the next start.
+
+### Faster
+- Saving no longer reads and hashes every project file up to three times: a build hashes once, and files over 1 MB (figures, data) are compared by size and modification time.
+- Long lists draw only the rows in view: project search, the outline and the bibliography manager. The citation picker matches once per search instead of four times a frame.
+- Typing in very long files: renaming an environment in a 20,000-line file is about five times faster per key, and review comments no longer slow every key down.
+
+### Fixed
+- Two cursors whose deletions overlap (for example Ctrl+Backspace with two cursors in one word) no longer crash the app.
+- "Sync from Zotero" with Zotero closed no longer empties `zotero.bib`.
+- A file another program changed is reloaded without being counted as an unsaved edit, so it is no longer written back, and after a Git branch switch the old branch's text can't overwrite the new one.
+- Deleting a file saves what you typed since the last save first, so Undo brings back the latest version.
+- A main file with a dot in its name (`paper.v2.tex`) shows its PDF.
+- Deleted files leave the project's trash after a week, as the delete dialog says.
+- Replace all no longer replaces at stale positions after the text changed since the search.
+- Undo in the file tree waits for saves, so undoing a new file or a rename leaves no copy behind.
+- Cut with a selection and an empty cursor no longer deletes a character the clipboard never got.
+- Review comments move with a renamed or moved file.
+- Files that aren't UTF-8 (Latin-1 or Windows-1252) open, are saved back in Windows-1252, and are exported to arXiv unchanged.
+- An edit to a file outside the project that the document reads (`\input{../common}`, a `.sty` in TEXMFHOME, `~/library.bib`) counts as a change, and the fast rebuild reruns biber or BibTeX for a changed outside `.bib`.
+- Warnings point at the right file when its name contains spaces.
+- Session restore finishes when a tab's file can't be read or all tabs are images and PDFs.
+- F12 says why when texlab can't answer yet; renaming a label says when History can't undo it.
+- A cursor between the two characters of a Windows line break no longer crashes word moves or Enter, and a completion from before an edit is no longer applied at old positions.
+- A grammar check that answers after the text got shorter no longer crashes the app.
+- Saving a project as a template copies the files of linked folders.
+- `lemmata watch` keeps watching after a failed build.
+- `lemmata build` with nothing changed says the PDF is up to date instead of "no PDF written".
+- Opening the last project at start no longer says "TeX isn't installed yet" while TeX is still being found.
+- PDF pages sometimes stayed blank after switching documents quickly.
+- On Windows, moving a project to the trash right after closing it no longer fails because its language server or a background preamble build was still running in the folder.
+- On Windows, the outline of a restricted project follows `\input` files in subfolders.
+- Security: project files that are crafted to harm, such as deeply nested or looping bibliographies, absurdly sized PDF pages and images, oversized SyncTeX files, links to endless files or named pipes, and unusual file names, can no longer crash the app, fill memory, hang it or reach outside the project; file saves can't be redirected by links planted in a project, and in a restricted project no write follows a link out of it; `lemmata://open` links refuse network paths; and the updater only installs a build signed after the running version.
+
 ## 3.2.0 (unreleased)
 
 A security and reliability release. Opening a project you got from someone else can no longer run code on your computer or write outside the project's folder.
