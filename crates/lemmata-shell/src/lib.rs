@@ -926,6 +926,8 @@ impl Shell {
             *self.watcher.lock_safe() = None;
             *self.project.lock_safe() = None;
         }
+        // A precompiled preamble may still be in the making there, open or not.
+        lemmata_tex::stop_background(&dir);
         // Its thumbnail's name comes from the folder, which is gone afterwards.
         let thumb = thumbnail_path(self, &path);
         // Windows refuses while a process still has a file in the folder open: the language server

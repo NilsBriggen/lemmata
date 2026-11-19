@@ -11,7 +11,7 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 /// Folder inside the build folder.
 pub(crate) const DIR: &str = "fmt";
@@ -77,28 +77,41 @@ pub(crate) fn usable(project: &Project, engine: &Path) -> Option<String> {
     .then(|| format!("{}/{}", rel_dir(project), stem(project)))
 }
 
+/// The folders a format is being made in, each with the switch that stops it.
+static BUSY: Mutex<Vec<(PathBuf, watch::Sender<bool>)>> = Mutex::new(Vec::new());
+
 /// Makes and checks a format for the current preamble in the background, unless that was done already.
 pub(crate) fn spawn(project: Project, engine: PathBuf, path: Option<OsString>, limit: Duration) {
     if recorded(&project, &engine).is_some() {
         return;
     }
-    static BUSY: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
     let dir = dir(&project);
+    let (tx, stop) = watch::channel(false);
     {
         let mut busy = BUSY.lock().unwrap_or_else(|e| e.into_inner());
-        if busy.contains(&dir) {
+        if busy.iter().any(|(d, _)| d == &dir) {
             return;
         }
-        busy.push(dir.clone());
+        busy.push((dir.clone(), tx));
     }
     tokio::spawn(async move {
-        make(&project, &engine, path.as_ref(), limit).await;
+        make(&project, &engine, path.as_ref(), limit, &stop).await;
         let _ = std::fs::remove_dir_all(dir.join("tmp"));
         let _ = std::fs::remove_dir_all(dir.join("check"));
         BUSY.lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|d| d != &dir);
+            .retain(|(d, _)| d != &dir);
     });
+}
+
+/// Stops the background format runs of the project in `root`. Their TeX runs in the project's
+/// folder, and Windows won't move a folder to the trash while a process works in it.
+pub fn stop_background(root: &Path) {
+    for (dir, tx) in BUSY.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        if dir.starts_with(root) {
+            let _ = tx.send(true);
+        }
+    }
 }
 
 /// A build with the format failed where one without it worked: never use it for this preamble again.
@@ -220,7 +233,13 @@ fn inputs(fls: &str, project: &Project) -> Vec<String> {
     v
 }
 
-async fn make(project: &Project, engine: &Path, path: Option<&OsString>, limit: Duration) {
+async fn make(
+    project: &Project,
+    engine: &Path,
+    path: Option<&OsString>,
+    limit: Duration,
+    stop: &watch::Receiver<bool>,
+) {
     let Some(pre) = std::fs::read_to_string(project.main_abs())
         .ok()
         .and_then(|t| preamble(&t).map(String::from))
@@ -251,7 +270,7 @@ async fn make(project: &Project, engine: &Path, path: Option<&OsString>, limit: 
         "mylatexformat.ltx".into(),
         format!("{}/{SHIM_FILE}", rel_dir(project)),
     ]);
-    let status = run(cmd, limit).await;
+    let status = run(cmd, limit, stop).await;
     if matches!(status, Status::Cancelled | Status::Timeout) {
         return;
     }
@@ -272,7 +291,7 @@ async fn make(project: &Project, engine: &Path, path: Option<&OsString>, limit: 
     let fmt = format!("{stem}.fmt");
     // A failed dump still writes a format file; only a clean exit counts.
     let same = if status == Status::Success && tmp.join(&fmt).is_file() {
-        validate(project, engine, path, limit).await
+        validate(project, engine, path, limit, stop).await
     } else {
         Some(false)
     };
@@ -307,6 +326,7 @@ async fn validate(
     engine: &Path,
     path: Option<&OsString>,
     limit: Duration,
+    stop: &watch::Receiver<bool>,
 ) -> Option<bool> {
     let (outdir, check) = (project.outdir_abs(), dir(project).join("check"));
     let _ = std::fs::remove_dir_all(&check);
@@ -336,10 +356,14 @@ async fn validate(
         if let Some(f) = fmt {
             cmd.env("TEXFORMATS", texformats(f));
         }
-        run(cmd, limit)
+        run(cmd, limit, stop)
     };
     let (plain, with_fmt) = tokio::join!(run_side("plain", None), run_side("fmt", Some(&fmt)));
-    if sources(project) != read || [plain, with_fmt].contains(&Status::Timeout) {
+    if sources(project) != read
+        || [plain, with_fmt]
+            .iter()
+            .any(|s| matches!(s, Status::Timeout | Status::Cancelled))
+    {
         return None;
     }
     Some(
@@ -412,14 +436,26 @@ fn command(project: &Project, engine: &Path, path: Option<&OsString>) -> Command
     cmd
 }
 
-async fn run(cmd: Command, limit: Duration) -> Status {
-    // Nothing cancels a background run but its time limit; the sender must live as long as the run.
-    let (_keep, mut rx) = oneshot::channel();
-    run_step(cmd, limit, &mut rx)
+async fn run(cmd: Command, limit: Duration, stop: &watch::Receiver<bool>) -> Status {
+    // A background run ends at its time limit or when stop_background flips the switch. The
+    // oneshot's sender must live as long as the run: run_step takes a dropped one as a cancel.
+    let (tx, mut rx) = oneshot::channel();
+    let mut stop = stop.clone();
+    let relay = tokio::spawn(async move {
+        if stop.wait_for(|s| *s).await.is_ok() {
+            let _ = tx.send(());
+        } else {
+            let _keep = tx;
+            std::future::pending::<()>().await;
+        }
+    });
+    let status = run_step(cmd, limit, &mut rx)
         .await
         .ok()
         .flatten()
-        .unwrap_or(Status::Failed)
+        .unwrap_or(Status::Failed);
+    relay.abort();
+    status
 }
 
 /// Copies what TeX reads back from the build folder (.aux, .toc, .bbl, ...) with its subfolders, but not `skip`.
@@ -507,6 +543,36 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// stop_background ends a background run at once, not at its time limit; without a stop,
+    /// the run goes on (a dropped switch isn't a stop).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stopped_background_run_ends_at_once() {
+        let (tx, rx) = watch::channel(false);
+        let started = std::time::Instant::now();
+        let run_long = |rx: watch::Receiver<bool>| {
+            tokio::spawn(async move {
+                let mut cmd = Command::new("sleep");
+                cmd.arg("30");
+                run(cmd, Duration::from_secs(60), &rx).await
+            })
+        };
+        let stopped = run_long(rx);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tx.send(true).unwrap();
+        assert_eq!(stopped.await.unwrap(), Status::Cancelled);
+        assert!(started.elapsed() < Duration::from_secs(10));
+
+        let (tx, rx) = watch::channel(false);
+        let mut cmd = Command::new("true");
+        cmd.arg("");
+        drop(tx);
+        assert_eq!(
+            run(cmd, Duration::from_secs(60), &rx).await,
+            Status::Success
+        );
+    }
+
     use super::*;
 
     fn project(main: &str) -> (tempfile::TempDir, Project) {
