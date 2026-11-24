@@ -558,6 +558,17 @@ impl App {
             Msg::OpenPreflight(request, target, Ok(())) if request == self.open_request => {
                 let path = target.project_root.to_string_lossy().into_owned();
                 let file = target.file;
+                // A file of the project that is open: a tab, not closing and reopening it.
+                let same = self.project.as_ref().is_some_and(|ws| {
+                    lemmata_project::canonical(&target.project_root)
+                        .is_ok_and(|c| c.to_string_lossy() == ws.root)
+                });
+                if same {
+                    if let (Some(ws), Some(file)) = (&mut self.project, file) {
+                        ws.open_requested(&self.backend, &file);
+                    }
+                    return;
+                }
                 self.leave(
                     LEAVE_PROJECT,
                     Box::new(move |app| {
@@ -575,7 +586,11 @@ impl App {
                 {
                     self.no_main_in = Some(path);
                 }
-                self.open_error = Some(e);
+                // Only the library shows these: with a project open, say it there.
+                match &mut self.project {
+                    Some(ws) => ws.notice(e, workspace::Tone::Error),
+                    None => self.open_error = Some(e),
+                }
             }
             Msg::Tex(status) => {
                 self.checking = false;
@@ -612,7 +627,12 @@ impl App {
                 {
                     self.groups.save(&self.dirs);
                 }
-                self.open_project(dir);
+                // The dialog can answer while a project is open: that one is saved and closed first.
+                if self.project.is_some() {
+                    self.leave(LEAVE_PROJECT, Box::new(move |app| app.open_project(dir)));
+                } else {
+                    self.open_project(dir);
+                }
             }
             Msg::Picked(Pick::TexFolder, Some(dir)) => {
                 let dir = dir.to_string_lossy().into_owned();
@@ -646,6 +666,8 @@ impl App {
                 self.recents.forget(&path);
                 self.recents.save(&self.dirs);
                 // A project put in the same folder later must be asked about again.
+                self.settings
+                    .set_trust(&crate::store::trust_key(&path), None);
                 self.settings.set_trust(&path, None);
                 self.settings.save(&self.dirs);
             }
@@ -811,18 +833,18 @@ impl App {
     }
 
     fn on_prefs_msg(&mut self, ctx: &egui::Context, m: PrefsMsg) {
-        let Some(st) = &mut self.prefs else { return };
+        let Some(st) = &mut self.prefs else {
+            // Preferences were closed meanwhile: the chosen language still takes effect.
+            if let PrefsMsg::Downloaded(code, Ok(())) = m {
+                self.dictionary_ready(ctx, code);
+            }
+            return;
+        };
         match m {
             PrefsMsg::Dictionaries(d) => st.dicts = d,
             PrefsMsg::Downloaded(code, Ok(())) => {
                 st.downloading = None;
-                self.settings.spell_default = code;
-                self.save_settings(ctx);
-                self.backend.spawn(|shell| {
-                    Msg::Prefs(PrefsMsg::Dictionaries(
-                        shell.spell_available().unwrap_or_default(),
-                    ))
-                });
+                self.dictionary_ready(ctx, code);
             }
             PrefsMsg::Downloaded(_, Err(e)) => {
                 st.downloading = None;
@@ -832,6 +854,16 @@ impl App {
                 st.grammar_status = Some(r.err().unwrap_or_else(|| "connected".into()))
             }
         }
+    }
+
+    fn dictionary_ready(&mut self, ctx: &egui::Context, code: String) {
+        self.settings.spell_default = code;
+        self.save_settings(ctx);
+        self.backend.spawn(|shell| {
+            Msg::Prefs(PrefsMsg::Dictionaries(
+                shell.spell_available().unwrap_or_default(),
+            ))
+        });
     }
 
     fn show_prefs(&mut self, ctx: &egui::Context) {
@@ -1025,6 +1057,8 @@ impl App {
 
     /// Shows a project that has just been opened.
     fn opened(&mut self, analysis: lemmata_shell::ProjectAnalysis) {
+        // A welcome left armed (no TeX then) would take over the window when TeX turns up.
+        self.welcome = None;
         let ready = self.tex.as_ref().is_some_and(|t| t.detection.ready);
         let mut ws = Workspace::open(
             analysis,
@@ -1043,6 +1077,10 @@ impl App {
     /// Leaves the open project, then runs `then`. Unsaved files are saved first; when that can't
     /// happen silently (autosave off, a failed save, a conflict), `closing` asks.
     fn leave(&mut self, title: &'static str, then: Then) {
+        // Already asked what to do with the unsaved files: that answer stays about the first request.
+        if self.leaving.is_some() {
+            return;
+        }
         let unsaved = self
             .project
             .as_ref()
@@ -1110,6 +1148,8 @@ impl App {
                 self.recents.save(&self.dirs);
                 self.groups.forget(&path);
                 self.groups.save(&self.dirs);
+                self.settings
+                    .set_trust(&crate::store::trust_key(&path), None);
                 self.settings.set_trust(&path, None);
                 self.settings.save(&self.dirs);
             }
@@ -1119,7 +1159,9 @@ impl App {
             A::Welcome => self.welcome = Some(0),
             A::Reveal(path) => {
                 // shortcut: opens the project folder itself; Tauri's reveal selected it in its parent.
-                let _ = open::that_detached(&path);
+                if let Err(e) = open::that_detached(&path) {
+                    self.open_error = Some(format!("Couldn't open the folder {path}: {e}"));
+                }
             }
             A::Trash(path) => {
                 let p = path.clone();
@@ -1243,6 +1285,12 @@ impl App {
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         let ui = &mut ui;
 
+        // A first launch waits for TeX detection before the welcome or the TeX setup replaces the
+        // window: an empty library with live buttons would show meanwhile.
+        if self.welcome.is_some() && self.project.is_none() && self.tex.is_none() {
+            ui.centered_and_justified(|ui| ui.add(egui::Spinner::new()));
+            return;
+        }
         if let Some(step) = &mut self.welcome
             && let Some(tex) = self.tex.as_ref().filter(|t| t.detection.ready)
         {

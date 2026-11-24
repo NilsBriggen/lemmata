@@ -275,6 +275,16 @@ impl Settings {
     }
 }
 
+/// The key a project's trust answer is stored under: its canonical folder, found through the
+/// parent when the folder itself is already gone (trashed).
+pub fn trust_key(path: &str) -> String {
+    let p = Path::new(path);
+    let canonical = |p: &Path| lemmata_project::canonical(p).ok();
+    canonical(p)
+        .or_else(|| Some(canonical(p.parent()?)?.join(p.file_name()?)))
+        .map_or_else(|| path.to_owned(), |c| c.to_string_lossy().into_owned())
+}
+
 /// Settings saved by hand or by older versions may hold anything.
 fn valid_indent(v: &Value) -> Value {
     match v {
@@ -636,6 +646,20 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("groups.json.bak")).unwrap(),
             "{}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_trust_answer_is_found_through_a_linked_folder_even_after_the_project_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(real.join("proj")).unwrap();
+        std::os::unix::fs::symlink(&real, tmp.path().join("link")).unwrap();
+        let via_link = tmp.path().join("link/proj").to_string_lossy().into_owned();
+        let key = trust_key(&via_link);
+        assert!(key.ends_with("real/proj"), "{key}");
+        std::fs::remove_dir_all(real.join("proj")).unwrap();
+        assert_eq!(trust_key(&via_link), key);
     }
 
     #[test]

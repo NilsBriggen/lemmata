@@ -396,13 +396,14 @@ fn body(
     if picked {
         st.spell_error = None;
         match st.dicts.iter().find(|d| d.code == lang) {
-            Some(d) if !d.installed => {
-                st.downloading = Some(lang.clone());
-                *out = Some(Out::Download(lang));
-            }
-            _ => {
+            Some(d) if d.installed => {
                 s.spell_default = lang;
                 changed = true;
+            }
+            // Not installed, or the list of dictionaries didn't load: fetching says which.
+            _ => {
+                st.downloading = Some(lang.clone());
+                *out = Some(Out::Download(lang));
             }
         }
     }
