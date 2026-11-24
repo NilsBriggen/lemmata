@@ -451,6 +451,8 @@ pub fn import_zip(zip_path: &Path, parent: &Path, name: &str) -> Result<Vec<Path
             {
                 continue;
             }
+            // The limit is per project, not for the whole download.
+            let mut budget = Budget::default();
             let spool = parent.join(format!(".lemmata-import-{}-{i}.zip", std::process::id()));
             let copied = (|| {
                 let mut file = fs::OpenOptions::new()
