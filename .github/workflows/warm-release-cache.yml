@@ -42,4 +42,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-${{ matrix.target }}
-      - run: cargo build --release -p lemmata-app --target ${{ matrix.target }}
+      - run: cargo build --locked --release -p lemmata-app --target ${{ matrix.target }}

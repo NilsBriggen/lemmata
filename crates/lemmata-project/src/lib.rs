@@ -766,6 +766,11 @@ fn macro_text(project: &Project, sources: &Sources) -> String {
 pub fn outline(project: &Project) -> Outline {
     let mut walk = Walk {
         trusted: project.trusted,
+        top: project
+            .main
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
         ..Walk::default()
     };
     walk.file(&project.root, &project.main, 0, true);
@@ -779,6 +784,11 @@ fn outline_with(
     let mut walk = Walk {
         sources: Some(sources),
         trusted: project.trusted,
+        top: project
+            .main
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
         ..Walk::default()
     };
     walk.file(&project.root, &project.main, 0, true);
@@ -794,9 +804,16 @@ struct Walk<'a> {
     /// Follows `\input` out of the project only for a trusted project: on Windows, reading a
     /// network path (`\\server\share\x`) makes the computer contact that server.
     trusted: bool,
+    /// The main file's folder: `\input` and `\import` paths start there.
+    top: PathBuf,
 }
 
 impl Walk<'_> {
+    /// Whether the project has this file (as read for the analysis, or on disk).
+    fn has(&self, root: &Path, rel: &Path) -> bool {
+        self.sources.is_some_and(|s| s.contains_key(rel)) || root.join(rel).is_file()
+    }
+
     fn count(&mut self, line: &str) {
         let n = prose::words(line, &mut self.prose).len() as u32;
         self.out.total_words += n;
@@ -865,11 +882,27 @@ impl Walk<'_> {
                     words: 0,
                 });
             } else if let Some(target) = include_target(&name, after) {
-                let mut child: PathBuf = Path::new(target.trim())
+                // `\subimport` paths start in the including file's folder, the others in the main's.
+                let base = if name == "subimport" {
+                    Path::new(file)
+                        .parent()
+                        .unwrap_or(Path::new(""))
+                        .to_path_buf()
+                } else {
+                    self.top.clone()
+                };
+                let mut child: PathBuf = base
+                    .join(target.trim())
                     .components()
                     .filter(|c| !matches!(c, std::path::Component::CurDir))
                     .collect();
-                if child.extension().is_none() {
+                // LaTeX tries name.tex first, so `sec2.1` is sec2.1.tex.
+                let mut with_tex = child.clone().into_os_string();
+                with_tex.push(".tex");
+                let with_tex = PathBuf::from(with_tex);
+                if child.extension().is_none_or(|e| e != "tex") && self.has(root, &with_tex) {
+                    child = with_tex;
+                } else if child.extension().is_none() {
                     child.set_extension("tex");
                 }
                 // `/` again: on Windows the parts were joined with `\`, which inside_rel refuses.
@@ -1556,6 +1589,22 @@ mod tests {
                 (2, "Coda with style", "main.tex", 6),
             ]
         );
+    }
+
+    #[test]
+    fn the_outline_follows_dotted_names_and_subimport_like_latex_does() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "main.tex",
+            "\\documentclass{article}\n\\begin{document}\n\\input{sec2.1}\n\\input{chapters/a}\n\\end{document}\n",
+        );
+        write(d.path(), "sec2.1.tex", "\\section{Dotted}\n");
+        write(d.path(), "chapters/a.tex", "\\subimport{figs/}{b}\n");
+        write(d.path(), "chapters/figs/b.tex", "\\section{Imported}\n");
+        let o = outline(&Project::open(d.path()).unwrap());
+        let titles: Vec<_> = o.headings.iter().map(|h| h.title.as_str()).collect();
+        assert_eq!(titles, ["Dotted", "Imported"]);
     }
 
     #[test]

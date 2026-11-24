@@ -6,6 +6,9 @@ pub mod bib;
 pub mod export;
 pub mod figures;
 pub mod files;
+
+/// What `lsp_start` answers when a newer start took its place: not a failure to show.
+pub const LSP_SUPERSEDED: &str = "A newer language server was started.";
 pub mod git;
 pub mod grammar;
 pub mod history;
@@ -1064,6 +1067,15 @@ impl Shell {
         if self.current_project() != project || !still_open {
             drop(server);
             return Err("The project was closed.".into());
+        }
+        // A start made after this one (the trust answer changed) has the say, not the last to finish.
+        if self
+            .lsp_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != generation
+        {
+            drop(server);
+            return Err(LSP_SUPERSEDED.into());
         }
         *slot = Some(server);
         Ok(generation)

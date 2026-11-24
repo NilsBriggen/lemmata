@@ -45,6 +45,9 @@ pub struct Occurrence {
 static LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\label\s*\{([^{}]*)\}").unwrap());
 static REF: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\\([a-zA-Z]*ref)\*?(?:\[[^\]]*\])?\s*\{([^{}]*)\}").unwrap());
+/// `\hyperref[label]{text}`: the label is in the brackets.
+static HYPERREF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\\hyperref\s*\[([^\]]*)\]").unwrap());
 static CITE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\\[a-zA-Z]*cite[a-zA-Z]*\*?(?:\[[^\]]*\]){0,2}\s*\{([^{}]*)\}").unwrap()
 });
@@ -125,6 +128,13 @@ pub fn scan_text(file: &str, text: &str, is_bib: bool) -> Vec<Occurrence> {
                 }
             }
         }
+        for c in HYPERREF.captures_iter(code) {
+            if let Some(g) = c.get(1) {
+                for (n, s, e) in names_in(code, g) {
+                    out.push(make(Kind::Label, Role::Use, n, s, e));
+                }
+            }
+        }
         for c in CITE.captures_iter(code) {
             if let Some(g) = c.get(1) {
                 for (n, s, e) in names_in(code, g) {
@@ -200,6 +210,14 @@ mod tests {
         occ.iter()
             .map(|o| (o.kind, o.role, o.name.as_str()))
             .collect()
+    }
+
+    #[test]
+    fn a_label_in_hyperref_is_renamed_with_the_others() {
+        let tex = "\\label{sec:a}\n\\hyperref[sec:a]{see \\ref{sec:a}}\n";
+        let (new, n) = rename_in_text("a.tex", tex, false, Kind::Label, "sec:a", "sec:b");
+        assert_eq!(n, 3);
+        assert_eq!(new, "\\label{sec:b}\n\\hyperref[sec:b]{see \\ref{sec:b}}\n");
     }
 
     #[test]

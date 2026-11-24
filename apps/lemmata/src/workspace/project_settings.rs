@@ -48,11 +48,12 @@ fn outdir_error(d: &str) -> Option<&'static str> {
     }
 }
 
+/// What the build accepts: 0 (no limit, a day for a trusted project) or up to a day.
 fn timeout_ok(t: &str) -> Option<u64> {
     t.trim()
         .parse::<u64>()
         .ok()
-        .filter(|n| (10..=3600).contains(n))
+        .filter(|n| *n == 0 || (10..=86400).contains(n))
 }
 
 fn grants_shell_escape_trust(config: &Config, trusted: bool, was_on: bool) -> bool {
@@ -98,7 +99,7 @@ impl Workspace {
         let was_on = self.info.config.shell_escape;
         let invalid = outdir_error(&d.config.outdir).is_some() || timeout_ok(&d.timeout).is_none();
         let (mut save, mut cancel) = (false, false);
-        let r = widgets::modal_with(
+        let r = widgets::modal_editing(
             ctx,
             p,
             "Project settings",
@@ -252,6 +253,11 @@ fn body(
             }
         });
     });
+    // Tectonic can't run biber: the build would fail on the bibliography.
+    if c.engine == Engine::Tectonic || c.targets.iter().any(|t| t.engine == Some(Engine::Tectonic))
+    {
+        c.bib = Bib::Bibtex;
+    }
     ui.add_space(-8.0);
     hint(
         ui,
@@ -262,14 +268,18 @@ fn body(
         hint(
             ui,
             p,
-            "Tectonic downloads the packages a document needs on first use, so it needs an internet connection then. It runs BibTeX itself; biblatex with biber is not supported, so choose BibTeX above.",
+            "Tectonic downloads the packages a document needs on first use, so it needs an internet connection then. It runs BibTeX itself; biblatex with biber is not supported, so BibTeX is used.",
         );
     }
     ui.columns(2, |cols| {
         widgets::field(&mut cols[0], p, "Stop a build after N seconds", |ui| {
             widgets::text_input(ui, p, &mut d.timeout, "", false);
             if timeout_ok(&d.timeout).is_none() {
-                err(ui, p, "Enter a whole number from 10 to 3600.");
+                err(
+                    ui,
+                    p,
+                    "Enter a whole number of seconds, 10 to 86400, or 0 for no limit.",
+                );
             }
         });
         widgets::field(&mut cols[1], p, "Build folder", |ui| {
@@ -568,6 +578,8 @@ mod tests {
         assert!(outdir_error("./.").is_some());
         assert_eq!(timeout_ok("300"), Some(300));
         assert_eq!(timeout_ok("9"), None);
+        assert_eq!((timeout_ok("0"), timeout_ok("7200")), (Some(0), Some(7200)));
+        assert_eq!(timeout_ok("86401"), None);
         assert_eq!(timeout_ok("x"), None);
     }
 }

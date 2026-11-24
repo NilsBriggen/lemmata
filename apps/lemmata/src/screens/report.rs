@@ -11,15 +11,23 @@ use std::sync::LazyLock;
 
 pub const ISSUES: &str = "https://github.com/NilsBriggen/lemmata/issues/new";
 
-/// Replaces absolute paths (Unix, Windows, ~) with <path>.
+/// Replaces absolute paths (Unix, Windows, ~) with <path>. Folder names may hold spaces: a
+/// Windows path keeps going through them, and so does any path a quote or bracket opens.
 pub fn scrub_paths(text: &str) -> String {
-    static WIN: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"(?:[A-Za-z]:\\|\\\\)[^\s'"`]+"#).unwrap());
-    static UNIX: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?:~|/(?:home|Users|tmp|var|usr|opt|mnt|media|Volumes))/[^\s'"`]+"#).unwrap()
+    // C:\Users\Jane Doe\a.tex, D:/x/a.tex, \\server\share\a.tex
+    static WIN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(^|[\s'"`(=])(?:[A-Za-z]:[\\/]|\\\\)(?:[^\\/\n'"`)]*[\\/])*[^\s'"`)\\/]*"#)
+            .unwrap()
     });
-    UNIX.replace_all(&WIN.replace_all(text, "<path>"), "<path>")
-        .into_owned()
+    // `/home/jane/My Thesis/x.sty' : up to the closing quote or bracket
+    static QUOTED: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(['"`(])(?:~|/)[^'"`)\n]*"#).unwrap());
+    // /data/thesis/main.tex, ~/texlive: not "and/or", not ./relative/paths
+    static UNIX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(^|[\s=])(?:~|/[^\s'"`/]+)/[^\s'"`]+"#).unwrap());
+    let text = WIN.replace_all(text, "${1}<path>");
+    let text = QUOTED.replace_all(&text, "${1}<path>");
+    UNIX.replace_all(&text, "${1}<path>").into_owned()
 }
 
 pub fn system_summary(version: &str, tex: Option<&lemmata_shell::TexStatus>) -> String {
@@ -94,7 +102,7 @@ pub fn show(ctx: &egui::Context, p: &Palette, system: &str, log: &str) -> Option
         p,
         "Report a problem",
         Some(
-            "Opens a new GitHub issue with these details. You can edit everything before submitting; file paths are left out.",
+            "Opens a new GitHub issue with these details. You can edit everything before submitting; file paths are removed where Lemmata can tell, so read the text before you send it.",
         ),
         560.0,
         |ui| {
@@ -163,6 +171,25 @@ mod tests {
             "File <path> not found"
         );
         assert_eq!(scrub_paths("at C:\\Users\\Nils\\paper\\a.tex"), "at <path>");
+        // Spaces in folder names, forward-slash drives, and roots nobody listed.
+        assert_eq!(
+            scrub_paths("File `/home/jane/My Thesis/x.sty' not found"),
+            "File `<path>' not found"
+        );
+        assert_eq!(
+            scrub_paths("in C:\\Users\\Jane Doe\\thesis\\a.tex"),
+            "in <path>"
+        );
+        assert_eq!(scrub_paths("(D:/Documents/thesis/main.aux"), "(<path>");
+        assert_eq!(
+            scrub_paths("opened /data/thesis/main.tex ok"),
+            "opened <path> ok"
+        );
+        assert_eq!(scrub_paths("in /root/x.tex"), "in <path>");
+        assert_eq!(
+            scrub_paths("a and/or b, 3 / 4, https://x.org/a"),
+            "a and/or b, 3 / 4, https://x.org/a"
+        );
         assert_eq!(
             scrub_paths("see ~/texlive/2026 and ./chapters/a.tex"),
             "see <path> and ./chapters/a.tex"

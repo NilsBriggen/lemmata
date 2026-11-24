@@ -234,10 +234,29 @@ impl Shell {
         let p = project(self)?;
         let main = p.main_abs();
         let text = lemmata_env::fs::read_text(&main).map_err(crate::err)?;
-        let new = link_zotero(&text)?;
-        writable(&p, &main)?;
-        let bytes = lemmata_env::fs::encode_like_disk(&main, &new).map_err(crate::err)?;
-        lemmata_bib::manage::write_atomic(&main, bytes).map_err(crate::err)
+        // The bibliography may be declared in a file the main one includes.
+        let others = crate::files::text_files(&p)
+            .into_iter()
+            .filter(|f| f.ends_with(".tex"))
+            .map(|f| p.root.join(f))
+            .filter(|f| *f != main);
+        let mut first_error = None;
+        for (file, text) in std::iter::once((main.clone(), text))
+            .chain(others.filter_map(|f| lemmata_env::fs::read_text(&f).ok().map(|t| (f, t))))
+        {
+            match link_zotero(&text) {
+                Ok(new) => {
+                    writable(&p, &file)?;
+                    let bytes =
+                        lemmata_env::fs::encode_like_disk(&file, &new).map_err(crate::err)?;
+                    return lemmata_bib::manage::write_atomic(&file, bytes).map_err(crate::err);
+                }
+                Err(e) => {
+                    first_error.get_or_insert(e);
+                }
+            }
+        }
+        Err(first_error.unwrap_or_default())
     }
 }
 
@@ -290,5 +309,34 @@ mod link_tests {
             "\\addbibresource{refs.bib}\n\\addbibresource{zotero.bib}\nText"
         );
         assert!(link_zotero("% \\addbibresource{x.bib}").is_err());
+    }
+}
+
+#[cfg(test)]
+mod zotero_link_in_an_included_file_tests {
+    #[test]
+    fn the_bibliography_can_be_declared_in_an_included_file() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("p");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("main.tex"),
+            "\\documentclass{article}\\input{pre}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("pre.tex"), "\\addbibresource{refs.bib}\n").unwrap();
+        let dirs = crate::Dirs {
+            resources: d.path().into(),
+            data: d.path().into(),
+            cache: d.path().into(),
+            home: None,
+        };
+        let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
+        shell
+            .open_project(1, root.to_string_lossy().into_owned(), true)
+            .unwrap();
+        shell.zotero_link().unwrap();
+        let pre = std::fs::read_to_string(root.join("pre.tex")).unwrap();
+        assert!(pre.contains("\\addbibresource{zotero.bib}"), "{pre}");
     }
 }

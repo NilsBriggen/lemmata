@@ -150,9 +150,7 @@ impl Default for Settings {
 
 /// Saved values of the wrong type (a damaged or hand-edited file) fall back to the defaults, key by key.
 fn valid_settings(saved: &Map<String, Value>) -> Map<String, Value> {
-    let Value::Object(defaults) = serde_json::to_value(Settings::default()).unwrap() else {
-        unreachable!()
-    };
+    let defaults = default_settings();
     let kind = |v: &Value| std::mem::discriminant(v);
     saved
         .iter()
@@ -164,8 +162,29 @@ fn valid_settings(saved: &Map<String, Value>) -> Map<String, Value> {
             Some(Value::Null) => v.is_null() || v.is_string(),
             Some(d) => kind(d) == kind(v),
         })
+        // The right kind of value can still be the wrong shape inside (a snippet without its
+        // description): that key goes, not all of them.
+        .filter(|(k, v)| {
+            let mut one = defaults.clone();
+            one.insert((*k).clone(), (*v).clone());
+            serde_json::from_value::<Settings>(Value::Object(one)).is_ok()
+        })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
+}
+
+fn default_settings() -> Map<String, Value> {
+    let Value::Object(defaults) = serde_json::to_value(Settings::default()).unwrap() else {
+        unreachable!()
+    };
+    defaults
+}
+
+/// Keeps a file that could not be read as what it should hold before the next save replaces it.
+pub(crate) fn backup_unreadable(path: &Path) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > 0) {
+        let _ = std::fs::copy(path, path.with_extension("json.bak"));
+    }
 }
 
 impl Settings {
@@ -174,7 +193,14 @@ impl Settings {
         let saved = read_json(&path)
             .and_then(|v| v.get("settings").cloned())
             .and_then(|v| v.as_object().cloned());
-        let damaged = saved.is_none()
+        // A value of the wrong shape is dropped alone, but the file is kept as it was.
+        let defaults = default_settings();
+        let bad_value = saved.as_ref().is_some_and(|s| {
+            let valid = valid_settings(s);
+            s.keys()
+                .any(|k| defaults.contains_key(k) && !valid.contains_key(k))
+        });
+        let damaged = (saved.is_none() || bad_value)
             && std::fs::metadata(&path).is_ok_and(|m| m.len() > 0)
             && std::fs::copy(&path, path.with_extension("json.bak")).is_ok();
         Self {
@@ -249,6 +275,16 @@ impl Settings {
     }
 }
 
+/// The key a project's trust answer is stored under: its canonical folder, found through the
+/// parent when the folder itself is already gone (trashed).
+pub fn trust_key(path: &str) -> String {
+    let p = Path::new(path);
+    let canonical = |p: &Path| lemmata_project::canonical(p).ok();
+    canonical(p)
+        .or_else(|| Some(canonical(p.parent()?)?.join(p.file_name()?)))
+        .map_or_else(|| path.to_owned(), |c| c.to_string_lossy().into_owned())
+}
+
 /// Settings saved by hand or by older versions may hold anything.
 fn valid_indent(v: &Value) -> Value {
     match v {
@@ -275,7 +311,12 @@ pub struct Recents(pub Vec<Recent>);
 
 impl Recents {
     pub fn load(dirs: &Dirs) -> Self {
-        Self::parse(read_json(&dirs.config.join("recent.json")))
+        let path = dirs.config.join("recent.json");
+        let v = read_json(&path);
+        if !matches!(v, Some(Value::Array(_))) {
+            backup_unreadable(&path);
+        }
+        Self::parse(v)
     }
 
     /// Older versions stored plain paths; those still load. Anything damaged is skipped.
@@ -354,7 +395,15 @@ pub enum View {
 
 impl Groups {
     pub fn load(dirs: &Dirs) -> Self {
-        Self::parse(read_json(&dirs.config.join("groups.json")))
+        let path = dirs.config.join("groups.json");
+        let v = read_json(&path);
+        if !v
+            .as_ref()
+            .is_some_and(|v| v.get("groups").is_some_and(Value::is_array))
+        {
+            backup_unreadable(&path);
+        }
+        Self::parse(v)
     }
 
     pub(crate) fn parse(v: Option<Value>) -> Self {
@@ -547,6 +596,70 @@ mod tests {
         let got = valid_settings(json!({ "texDir": "/opt/tex" }).as_object().unwrap());
         assert_eq!(Value::Object(got), json!({ "texDir": "/opt/tex" }));
         assert!(Settings::default().trusted_projects.is_empty());
+    }
+
+    #[test]
+    fn one_badly_shaped_value_costs_only_itself_and_keeps_a_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = Dirs {
+            config: tmp.path().into(),
+            data: tmp.path().into(),
+            cache: tmp.path().into(),
+        };
+        let file = r#"{"settings":{"fontSize":17.0,"snippets":[{"trigger":"x","body":"y"}]}}"#;
+        std::fs::write(tmp.path().join("settings.json"), file).unwrap();
+        let s = Settings::load(&dirs);
+        assert_eq!(s.font_size, 17.0);
+        assert!(s.damaged);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("settings.json.bak")).unwrap(),
+            file
+        );
+    }
+
+    #[test]
+    fn unreadable_folder_and_recent_lists_are_kept_as_a_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = Dirs {
+            config: tmp.path().into(),
+            data: tmp.path().into(),
+            cache: tmp.path().into(),
+        };
+        for (name, bytes) in [("groups.json", "{"), ("recent.json", "[1,")] {
+            std::fs::write(tmp.path().join(name), bytes).unwrap();
+        }
+        std::fs::write(tmp.path().join("other.json"), "{}").unwrap();
+        Groups::load(&dirs);
+        Recents::load(&dirs);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("groups.json.bak")).unwrap(),
+            "{"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("recent.json.bak")).unwrap(),
+            "[1,"
+        );
+        // An object without folders is as unreadable as no JSON at all.
+        std::fs::write(tmp.path().join("groups.json"), "{}").unwrap();
+        Groups::load(&dirs);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("groups.json.bak")).unwrap(),
+            "{}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_trust_answer_is_found_through_a_linked_folder_even_after_the_project_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(real.join("proj")).unwrap();
+        std::os::unix::fs::symlink(&real, tmp.path().join("link")).unwrap();
+        let via_link = tmp.path().join("link/proj").to_string_lossy().into_owned();
+        let key = trust_key(&via_link);
+        assert!(key.ends_with("real/proj"), "{key}");
+        std::fs::remove_dir_all(real.join("proj")).unwrap();
+        assert_eq!(trust_key(&via_link), key);
     }
 
     #[test]

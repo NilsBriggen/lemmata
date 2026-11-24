@@ -21,12 +21,18 @@ pub struct Todo {
     pub text: String,
 }
 
+/// Where a `%` starts a comment: not one a backslash escapes, but one after a double backslash
+/// (a line break), whose backslashes pair up.
+fn percents(line: &str) -> impl Iterator<Item = usize> + '_ {
+    let b = line.as_bytes();
+    (0..b.len()).filter(move |&i| {
+        b[i] == b'%' && b[..i].iter().rev().take_while(|c| **c == b'\\').count() % 2 == 0
+    })
+}
+
 /// Everything before the first unescaped `%`.
 fn code_part(line: &str) -> &str {
-    let b = line.as_bytes();
-    (0..b.len())
-        .find(|&i| b[i] == b'%' && (i == 0 || b[i - 1] != b'\\'))
-        .map_or(line, |i| &line[..i])
+    percents(line).next().map_or(line, |i| &line[..i])
 }
 
 /// The text up to the `}` that closes an already-opened brace, or the end of the line.
@@ -56,12 +62,13 @@ fn clip(text: &str) -> String {
 
 /// The todos in one file's text. Line numbers start at 1.
 pub fn scan_text(file: &str, text: &str) -> Vec<Todo> {
-    let comment = Regex::new(r"(?i)(?:^|[^\\])%\s*(todo|fixme|xxx)\b:?\s*(.*)$").unwrap();
+    let comment = Regex::new(r"(?i)^%\s*(todo|fixme|xxx)\b:?\s*(.*)$").unwrap();
     let note = Regex::new(r"\\todo(?:\[[^\]]*\])?\s*\{").unwrap();
     let mut out = Vec::new();
-    for (i, line) in text.lines().enumerate() {
+    let lines: Vec<&str> = text.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
         let line_no = i + 1;
-        if let Some(c) = comment.captures(line) {
+        if let Some(c) = percents(line).find_map(|at| comment.captures(&line[at..])) {
             out.push(Todo {
                 file: file.to_string(),
                 line: line_no,
@@ -71,11 +78,17 @@ pub fn scan_text(file: &str, text: &str) -> Vec<Todo> {
         }
         let code = code_part(line);
         for m in note.find_iter(code) {
+            let rest = &code[m.end()..];
+            // `\todo{` ending its line: the note goes on the next one.
+            let text = match lines.get(i + 1) {
+                Some(next) if rest.trim().is_empty() => braced(code_part(next)),
+                _ => braced(rest),
+            };
             out.push(Todo {
                 file: file.to_string(),
                 line: line_no,
                 kind: "TODO".into(),
-                text: clip(braced(&code[m.end()..])),
+                text: clip(text),
             });
         }
     }
@@ -266,6 +279,19 @@ mod tests {
         assert!(kinds(r"100\% TODO not a comment").is_empty());
         assert!(kinds("% TODOS are a list").is_empty());
         assert!(kinds(r"% \todo{commented out}").is_empty());
+    }
+
+    #[test]
+    fn a_comment_after_a_line_break_counts_and_a_note_may_continue_on_the_next_line() {
+        assert_eq!(
+            kinds("Results\\\\% TODO: recheck"),
+            vec![(1, "TODO".into(), "recheck".into())]
+        );
+        assert!(kinds("a\\\\% \\todo{x}").is_empty());
+        assert_eq!(
+            kinds("\\todo{\n  Write the intro}\n"),
+            vec![(1, "TODO".into(), "Write the intro".into())]
+        );
     }
 
     #[test]

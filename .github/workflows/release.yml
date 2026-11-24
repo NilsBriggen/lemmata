@@ -35,6 +35,28 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match the version in Cargo.toml ($cargo_version)."
             exit 1
           fi
+      # What publishing needs, checked before 40 minutes of builds and before the release is public:
+      # a missing token or notes would otherwise leave a half-published release.
+      - name: Check the publishing secrets and the release notes
+        shell: bash
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          WEBSITE_DISPATCH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+          WEBSITE_REPO: ${{ vars.WEBSITE_REPO }}
+        run: |
+          # The website job runs for pre-releases too; the package managers only for stable ones.
+          needed="WEBSITE_DISPATCH_TOKEN WEBSITE_REPO"
+          [[ "$GITHUB_REF_NAME" == *-* ]] || needed="AUR_SSH_KEY TAP_TOKEN WINGET_TOKEN $needed"
+          missing=""
+          for name in $needed; do [[ -n "${!name}" ]] || missing="$missing $name"; done
+          if [[ -n "$missing" ]]; then
+            echo "::error::Not set:$missing. The release would be published only in part."
+            exit 1
+          fi
+          awk -v v="## ${GITHUB_REF_NAME#v} " 'index($0, v) == 1 {on = 1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md || { echo "::error::CHANGELOG.md has no section for ${GITHUB_REF_NAME#v}, or it is blank"; exit 1; }
 
   # The full CI on the tagged commit: nothing is published unless it passes. The builds run meanwhile.
   ci:
@@ -131,7 +153,7 @@ jobs:
           shared-key: release-${{ matrix.arch }}-apple-darwin
           save-if: false
       # LEMMATA_RELEASE_EPOCH: the updater only installs builds signed after this commit (update.rs).
-      - run: LEMMATA_RELEASE_EPOCH=$(git log -1 --format=%ct) cargo build --release -p lemmata-app --target ${{ matrix.arch }}-apple-darwin
+      - run: LEMMATA_RELEASE_EPOCH=$(git log -1 --format=%ct) cargo build --locked --release -p lemmata-app --target ${{ matrix.arch }}-apple-darwin
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-bin-${{ matrix.arch }}
@@ -259,12 +281,7 @@ jobs:
     needs: publish
     if: needs.publish.outputs.plain == 'true'
     runs-on: ubuntu-latest
-    env:
-      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
     steps:
-      - name: Check the AUR key is set
-        run: |
-          test -n "$AUR_SSH_KEY" || { echo "::error::the AUR_SSH_KEY secret is not set: lemmata-bin was not updated"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Render PKGBUILD
         env:
@@ -294,9 +311,6 @@ jobs:
     env:
       TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
     steps:
-      - name: Check the tap token is set
-        run: |
-          test -n "$TAP_TOKEN" || { echo "::error::the TAP_TOKEN secret is not set: the Homebrew cask was not updated"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Update the cask in NilsBriggen/homebrew-tap
         env:
@@ -321,13 +335,7 @@ jobs:
     needs: publish
     if: needs.publish.outputs.plain == 'true'
     runs-on: windows-latest
-    env:
-      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     steps:
-      - name: Check the winget token is set
-        shell: bash
-        run: |
-          test -n "$WINGET_TOKEN" || { echo "::error::the WINGET_TOKEN secret is not set: no winget PR was opened"; exit 1; }
       - name: Open a PR to microsoft/winget-pkgs
         uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2 (pinned: this step receives the winget token)
         with:
@@ -339,12 +347,8 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     env:
-      WEBSITE_DISPATCH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
       WEBSITE_REPO: ${{ vars.WEBSITE_REPO }}
     steps:
-      - name: Check the website token and repository are set
-        run: |
-          test -n "$WEBSITE_DISPATCH_TOKEN" -a -n "$WEBSITE_REPO" || { echo "::error::WEBSITE_DISPATCH_TOKEN or WEBSITE_REPO is not set: the website was not rebuilt"; exit 1; }
       - name: Ask the website to rebuild
         env:
           GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}

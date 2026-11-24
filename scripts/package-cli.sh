@@ -23,14 +23,14 @@ exe=lemmata
 [[ $target == *windows* ]] && exe=lemmata.exe
 
 if [[ $target == universal ]]; then
-  cargo build --release -p lemmata-cli --target aarch64-apple-darwin
-  cargo build --release -p lemmata-cli --target x86_64-apple-darwin
+  cargo build --locked --release -p lemmata-cli --target aarch64-apple-darwin
+  cargo build --locked --release -p lemmata-cli --target x86_64-apple-darwin
   lipo -create -output "$out/$exe" \
     target/aarch64-apple-darwin/release/$exe target/x86_64-apple-darwin/release/$exe
   # Apple silicon only runs signed code; the combined file gets an ad hoc signature.
   codesign --force --sign - "$out/$exe"
 else
-  cargo build --release -p lemmata-cli --target "$target"
+  cargo build --locked --release -p lemmata-cli --target "$target"
   cp "target/$target/release/$exe" "$out/"
 fi
 cp LICENSE "$out/"

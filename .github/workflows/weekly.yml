@@ -21,6 +21,6 @@ jobs:
         with:
           save-if: false
       - name: texlab
-        run: cargo test -p lemmata-shell -- --ignored downloads_and_verifies_texlab
+        run: cargo test --locked -p lemmata-shell -- --ignored downloads_and_verifies_texlab
       - name: Dictionaries
-        run: cargo test -p lemmata-spell -- --ignored downloads_every_dictionary
+        run: cargo test --locked -p lemmata-spell -- --ignored downloads_every_dictionary

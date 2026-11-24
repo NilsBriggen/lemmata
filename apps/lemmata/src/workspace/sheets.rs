@@ -86,6 +86,7 @@ impl Workspace {
                 self.words = None;
             }
         }
+        let mut told: Option<String> = None;
         if let Some(query) = &mut self.shortcut_sheet {
             // The next key press while a shortcut is recording is its new key; Escape stops,
             // before the dialog takes Escape for closing.
@@ -108,8 +109,13 @@ impl Workspace {
                     if key != egui::Key::Escape
                         && let Some(spec) = shortcuts::spec_of(mods, key)
                     {
-                        assign(settings, id, &spec);
-                        *action = Some(super::Action::Settings);
+                        match assign(settings, id, &spec) {
+                            Ok(note) => {
+                                *action = Some(super::Action::Settings);
+                                told = note;
+                            }
+                            Err(why) => told = Some(why),
+                        }
                     }
                 }
             }
@@ -139,6 +145,9 @@ impl Workspace {
                 self.shortcut_sheet = None;
                 set_recording(ctx, None);
             }
+        }
+        if let Some(text) = told {
+            self.notice(text, super::Tone::Info);
         }
     }
 }
@@ -242,19 +251,54 @@ fn set_recording(ctx: &egui::Context, id: Option<&'static str>) {
     });
 }
 
-/// Gives `id` the keys `spec`. Another shortcut of its group with the same keys loses them, so
-/// one key press never means two things there.
-fn assign(settings: &mut Settings, id: &str, spec: &str) {
-    let Some(me) = SHORTCUTS.iter().find(|s| s.id == id) else {
-        return;
-    };
-    for other in SHORTCUTS
-        .iter()
-        .filter(|s| s.group == me.group && s.id != id)
-    {
-        if shortcuts::specs(other).iter().any(|keys| keys == spec) {
-            settings.keybindings.insert(other.id.into(), String::new());
+/// Whether two groups of shortcuts can be pressed in the same place: the project and navigation
+/// ones work everywhere, the others where their group does (writing and editing, in the editor).
+fn overlap(a: &str, b: &str) -> bool {
+    fn scope(g: &str) -> &str {
+        match g {
+            "Writing" | "Editing" => "editor",
+            g => g,
         }
+    }
+    let global = |g: &str| matches!(g, "Project" | "Navigation");
+    global(a) || global(b) || scope(a) == scope(b)
+}
+
+/// Gives `id` the keys `spec`. Another shortcut that could be pressed in the same place with the
+/// same keys loses them, so one key press never means two things; one that can't be changed
+/// (Move line up), or a key every text field uses (copy, paste, undo), is refused.
+/// Ok holds what the user is told when another shortcut lost its keys.
+fn assign(settings: &mut Settings, id: &str, spec: &str) -> Result<Option<String>, String> {
+    let Some(me) = SHORTCUTS.iter().find(|s| s.id == id) else {
+        return Ok(None);
+    };
+    if ["Mod-c", "Mod-x", "Mod-v", "Mod-a", "Mod-z"].contains(&spec) {
+        return Err(format!(
+            "{spec} is for copy, paste and undo in every text field."
+        ));
+    }
+    let clash = |other: &&shortcuts::Shortcut| {
+        other.id != id
+            && overlap(other.group, me.group)
+            && shortcuts::specs(other).iter().any(|keys| keys == spec)
+    };
+    if let Some(fixed) = SHORTCUTS
+        .iter()
+        .filter(|s| !shortcuts::editable(s))
+        .find(|s| clash(s))
+    {
+        return Err(format!(
+            "{spec} is used by \"{}\", which can't be changed.",
+            fixed.label
+        ));
+    }
+    let mut note = None;
+    for other in SHORTCUTS.iter().filter(clash) {
+        settings.keybindings.insert(other.id.into(), String::new());
+        note = Some(format!(
+            "{spec} was used by \"{}\": that has no keys now.",
+            other.label
+        ));
     }
     if spec == me.keys {
         settings.keybindings.remove(id);
@@ -262,6 +306,7 @@ fn assign(settings: &mut Settings, id: &str, spec: &str) {
         settings.keybindings.insert(id.into(), spec.into());
     }
     shortcuts::choose(&settings.keybindings);
+    Ok(note)
 }
 
 /// The sheet; true when a key was reset.
@@ -421,6 +466,23 @@ fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String, settings: &mut S
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_in_use_in_the_same_place_is_taken_over_or_refused() {
+        let mut s = Settings::default();
+        // Save all files uses Mod-s, and works everywhere: "Find in file" can't have it too.
+        let note = assign(&mut s, "find", "Mod-s").unwrap();
+        assert!(note.is_some());
+        assert_eq!(s.keybindings.get("save").map(String::as_str), Some(""));
+        // Move line up can't be changed, and its key isn't handed to another shortcut.
+        assert!(assign(&mut s, "select-line", "Alt-ArrowUp").is_err());
+        assert!(!s.keybindings.contains_key("move-line-up"));
+        assert!(assign(&mut s, "find", "Mod-v").is_err());
+        // The keys in effect are shared by the whole process.
+        shortcuts::choose(&Default::default());
+    }
+
     #[test]
     fn digits_are_grouped() {
         assert_eq!(super::group_digits(0), "0");

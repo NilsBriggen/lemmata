@@ -31,17 +31,17 @@ impl Shell {
     }
 
     pub fn spell_set_language(&self, lang: String, words: Vec<String>) -> CmdResult<()> {
-        let mut slot = self.speller.lock_safe();
         if lang == "off" {
-            *slot = None;
+            *self.speller.lock_safe() = None;
             return Ok(());
         }
         let (bundled, downloaded) = (bundled_dir(self)?, downloaded_dir(self)?);
+        // Loaded before the lock is taken: the editor checks words under it while it paints.
         let mut speller = Speller::load(&[&bundled, &downloaded], &lang).map_err(crate::err)?;
         for w in &words {
             speller.add(w);
         }
-        *slot = Some(speller);
+        *self.speller.lock_safe() = Some(speller);
         Ok(())
     }
 

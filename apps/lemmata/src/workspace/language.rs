@@ -28,6 +28,16 @@ impl Workspace {
         if self.lsp.state != crate::lsp::State::Ready {
             return;
         }
+        for what in self.lsp.expire(std::time::Duration::from_secs(10)) {
+            match what {
+                crate::lsp::Pending::Hover { .. } => self.lookups.hover = None,
+                crate::lsp::Pending::Definition | crate::lsp::Pending::References => self.notice(
+                    "texlab didn't answer, so this can't be answered now. \"Go to a label or citation…\" in the command palette finds them by name.",
+                    Tone::Info,
+                ),
+                _ => {}
+            }
+        }
         let mut edits: HashMap<String, _> = self
             .editors
             .iter_mut()
@@ -90,6 +100,8 @@ impl Workspace {
                 references: true,
                 places,
             } => {
+                // Each unopened file is read once, not once per hit.
+                let mut disk: HashMap<String, Vec<String>> = HashMap::new();
                 let rows = places
                     .into_iter()
                     .map(|(path, line, col)| {
@@ -97,11 +109,15 @@ impl Workspace {
                             Some(e) if line >= 1 && line <= e.doc.line_count() => {
                                 e.doc.line(line - 1)
                             }
-                            _ => lemmata_env::fs::read_to_string(self.info.root.join(&path))
-                                .ok()
-                                .and_then(|t| {
-                                    t.lines().nth(line.saturating_sub(1)).map(str::to_owned)
+                            _ => disk
+                                .entry(path.clone())
+                                .or_insert_with(|| {
+                                    lemmata_env::fs::read_to_string(self.info.root.join(&path))
+                                        .map(|t| t.lines().map(str::to_owned).collect())
+                                        .unwrap_or_default()
                                 })
+                                .get(line.saturating_sub(1))
+                                .cloned()
                                 .unwrap_or_default(),
                         };
                         (path, line, col, text.trim().to_owned())
@@ -131,6 +147,8 @@ impl Workspace {
                 let init = self.lsp.initialize();
                 self.lsp_send(backend, vec![init]);
             }
+            // The newer start answers for itself.
+            Msg::LspStarted(Err(e)) if e == lemmata_shell::LSP_SUPERSEDED => {}
             Msg::LspStarted(Err(e)) => self.lsp.state = crate::lsp::State::Failed(e),
             Msg::LspLost(generation) => {
                 if Some(generation) == self.lsp.generation
@@ -155,6 +173,13 @@ impl Workspace {
             Msg::Event(lemmata_shell::Event::LspExit { generation })
                 if Some(generation) == self.lsp.generation =>
             {
+                // Said once: the lost-server message above only comes while it is Ready.
+                if self.lsp.state == crate::lsp::State::Ready {
+                    self.notice(
+                        "The language server (texlab) stopped, so completion and hover may be missing. Reopen the project to restart it.",
+                        Tone::Info,
+                    );
+                }
                 self.lsp.state = crate::lsp::State::Failed("texlab stopped.".into());
             }
             _ => {}

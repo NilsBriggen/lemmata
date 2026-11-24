@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const FILE: &str = "instance";
+/// Exists from the first launch until it listens: others wait instead of starting too.
+const STARTING: &str = "instance.starting";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Launch {
@@ -25,7 +27,45 @@ fn file(dir: &Path) -> PathBuf {
 }
 
 /// Hands this launch to a running Lemmata. True when one took it: this process should quit.
+/// Launches that start together (a file manager opening several files) don't all become first:
+/// one claims the start, the others wait for it to listen.
 pub fn forward(dir: &Path, args: &[String], cwd: &Path) -> bool {
+    if send(dir, args, cwd) {
+        return true;
+    }
+    let claim = dir.join(STARTING);
+    let _ = std::fs::create_dir_all(dir);
+    let fresh = |p: &Path| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t.elapsed().is_ok_and(|e| e < Duration::from_secs(10)))
+    };
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&claim)
+        .is_ok()
+    {
+        return false;
+    }
+    if !fresh(&claim) {
+        // Left by a launch that never got to listen.
+        let _ = std::fs::remove_file(&claim);
+        return false;
+    }
+    for _ in 0..30 {
+        std::thread::sleep(Duration::from_millis(100));
+        if send(dir, args, cwd) {
+            return true;
+        }
+        if !claim.exists() {
+            break;
+        }
+    }
+    false
+}
+
+fn send(dir: &Path, args: &[String], cwd: &Path) -> bool {
     let Ok(text) = lemmata_env::fs::read_to_string(file(dir)) else {
         return false;
     };
@@ -80,6 +120,7 @@ pub fn listen(
     let token = token().ok_or_else(|| std::io::Error::other("no secure random source"))?;
     std::fs::create_dir_all(dir)?;
     write_private(&file(dir), &format!("{port} {token}"))?;
+    let _ = std::fs::remove_file(dir.join(STARTING));
     let _ = OWN.set(token.clone());
     let shared = std::sync::Arc::new((token, on));
     std::thread::Builder::new()
@@ -212,6 +253,24 @@ pub fn register_scheme() {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn a_launch_that_starts_together_with_another_waits_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!forward(dir.path(), &["lemmata".into()], Path::new("/")));
+        let (tx, rx) = mpsc::channel();
+        let d = dir.path().to_path_buf();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            listen(&d, move |args, _| tx.send(args).unwrap()).unwrap();
+        });
+        let args = vec!["lemmata".to_owned(), "b.tex".to_owned()];
+        assert!(
+            forward(dir.path(), &args, Path::new("/")),
+            "handed over, not a second window"
+        );
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), args);
+    }
 
     #[test]
     fn a_second_launch_hands_over_its_arguments() {

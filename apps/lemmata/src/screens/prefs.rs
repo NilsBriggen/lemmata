@@ -396,13 +396,14 @@ fn body(
     if picked {
         st.spell_error = None;
         match st.dicts.iter().find(|d| d.code == lang) {
-            Some(d) if !d.installed => {
-                st.downloading = Some(lang.clone());
-                *out = Some(Out::Download(lang));
-            }
-            _ => {
+            Some(d) if d.installed => {
                 s.spell_default = lang;
                 changed = true;
+            }
+            // Not installed, or the list of dictionaries didn't load: fetching says which.
+            _ => {
+                st.downloading = Some(lang.clone());
+                *out = Some(Out::Download(lang));
             }
         }
     }
@@ -493,6 +494,15 @@ fn body(
             changed = true;
         }
     });
+    if s.trash_mode != "system" {
+        ui.label(
+            RichText::new(
+                "Deleted files stay in the project folder for 7 days (Recently deleted), then are removed for good.",
+            )
+            .size(12.5)
+            .color(p.muted),
+        );
+    }
     section_end(ui, p);
 
     heading(ui, p, "TeX");
@@ -572,9 +582,13 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
             || sn.body.trim().is_empty()
             || list.iter().position(|o| o.trigger == sn.trigger) != Some(i)
     };
-    let problems = (0..list.len()).filter(|&i| invalid(list, i)).count();
+    // A snippet nobody filled in is dropped without a word; the others must be put right to save.
+    let blank = |sn: &Snippet| sn.trigger.trim().is_empty() && sn.body.trim().is_empty();
+    let problems = (0..list.len())
+        .filter(|&i| invalid(list, i) && !blank(&list[i]))
+        .count();
     let (mut save, mut cancel) = (false, false);
-    let r = widgets::modal_with(
+    let r = widgets::modal_editing(
         ctx,
         p,
         "Snippets",
@@ -688,6 +702,7 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
         Some(&mut |ui: &mut Ui| {
             if Button::new("Save")
                 .kind(Kind::Primary)
+                .enabled(problems == 0)
                 .show(ui, p)
                 .clicked()
             {
@@ -699,8 +714,9 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
             if problems > 0 {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let t = format!(
-                        "{problems} snippet{} incomplete or repeated and will be skipped.",
-                        if problems == 1 { " is" } else { "s are" }
+                        "{problems} snippet{} incomplete or repeated: fix {} to save.",
+                        if problems == 1 { " is" } else { "s are" },
+                        if problems == 1 { "it" } else { "them" }
                     );
                     ui.label(RichText::new(t).size(12.5).color(p.warn));
                 });

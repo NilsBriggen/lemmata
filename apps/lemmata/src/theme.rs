@@ -92,7 +92,7 @@ pub const LIGHT: Palette = Palette {
     chrome_3: hex(0x2b3743),
     chrome_border: hex(0x33404d),
     chrome_ink: hex(0xdbe3ea),
-    chrome_muted: hex(0x8d9cab),
+    chrome_muted: hex(0x9aa8b6),
     chrome_hover: rgba(255, 255, 255, 0.06),
     chrome_active: rgba(111, 179, 227, 0.16),
 
@@ -511,5 +511,26 @@ mod tests {
         // rgba(255,255,255,.06) rounds to alpha 15.
         assert_eq!(LIGHT.chrome_hover.a(), 15);
         assert_eq!(DARK.chrome_ink, LIGHT.chrome_ink);
+    }
+
+    /// WCAG contrast of the muted chrome text (12 px) on the chrome's raised surfaces.
+    #[test]
+    fn muted_chrome_text_is_readable_on_the_chrome_surfaces() {
+        let lum = |c: Color32| {
+            let f = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+        };
+        for p in [&LIGHT, &DARK] {
+            let (a, b) = (lum(p.chrome_muted), lum(p.chrome_3));
+            let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+            assert!(ratio >= 4.5, "{ratio}");
+        }
     }
 }

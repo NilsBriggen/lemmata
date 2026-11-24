@@ -41,7 +41,9 @@ fn main() -> eframe::Result {
     // builds, so a test build can run next to an installed Lemmata.
     #[cfg(not(debug_assertions))]
     {
-        let args: Vec<String> = std::env::args().collect();
+        let args: Vec<String> = std::env::args_os()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         let cwd = std::env::current_dir().unwrap_or_default();
         if instance::forward(&store::Dirs::system().cache, &args, &cwd) {
             return Ok(());

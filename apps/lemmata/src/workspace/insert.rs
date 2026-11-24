@@ -8,6 +8,19 @@ use crate::widgets::{self, Button, Kind};
 use crate::writing::table;
 use eframe::egui::{self, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
+/// A figure at the selection, as a snippet. Returns where it ends.
+fn insert_figure(
+    ed: &mut crate::editor::view::Editor,
+    rel: &str,
+    indent: crate::editor::commands::Indent,
+) -> usize {
+    let sel = ed.doc.selection.main();
+    let (from, replaced, before) = (sel.from(), sel.to() - sel.from(), ed.doc.len());
+    ed.insert_template(&table::figure_snippet(rel), indent);
+    ed.refocus = true;
+    from + ed.doc.len() + replaced - before
+}
+
 const IMAGE_EXTS: [&str; 8] = ["png", "jpg", "jpeg", "pdf", "svg", "eps", "gif", "webp"];
 
 pub struct FigureDialog {
@@ -165,17 +178,22 @@ impl Workspace {
             },
             move |ws, b, results| {
                 let indent = ws.indent;
+                // Where the next figure goes: after the one before, not into its caption.
+                let mut next = None;
                 for r in results {
                     match r {
                         Ok(rel) => {
                             if let Some(ed) = ws.editors.get_mut(&file) {
-                                if Some(ed.doc.version) == version {
+                                if let Some(at) = next {
+                                    ed.doc.selection = crate::editor::buffer::Selection::cursor(
+                                        usize::min(at, ed.doc.len()),
+                                    );
+                                } else if Some(ed.doc.version) == version {
                                     ed.doc.selection = crate::editor::buffer::Selection::cursor(
                                         at.min(ed.doc.len()),
                                     );
                                 }
-                                ed.insert_template(&table::figure_snippet(&rel), indent);
-                                ed.refocus = true;
+                                next = Some(insert_figure(ed, &rel, indent));
                             }
                             ws.needs_package(b, "graphicx".into());
                         }
@@ -222,7 +240,7 @@ impl Workspace {
             images(&self.info.tree, &mut list);
             let (mut insert, mut cancel, mut browse) = (false, false, false);
             let can = !f.path.is_empty();
-            let r = widgets::modal_with(
+            let r = widgets::modal_editing(
                 ctx,
                 p,
                 "Insert figure",
@@ -269,7 +287,7 @@ impl Workspace {
         }
         if let Some(t) = &mut self.table {
             let (mut insert, mut cancel) = (false, false);
-            let r = widgets::modal_with(
+            let r = widgets::modal_editing(
                 ctx,
                 p,
                 "Insert table",
@@ -457,11 +475,18 @@ fn table_body(ui: &mut Ui, p: &Palette, t: &mut TableDialog) {
             widgets::text_input(ui, p, &mut t.rows_text, "", false);
         });
     });
+    // What is inserted is what the fields show: a number past the limit is written back as it.
     if let Ok(n) = t.cols_text.trim().parse::<usize>() {
         t.cols = n.clamp(1, 20);
+        if t.cols != n {
+            t.cols_text = t.cols.to_string();
+        }
     }
     if let Ok(n) = t.rows_text.trim().parse::<usize>() {
         t.rows = n.clamp(1, 100);
+        if t.rows != n {
+            t.rows_text = t.rows.to_string();
+        }
     }
     widgets::checkbox(ui, p, &mut t.header, "First row is a header");
     widgets::checkbox(ui, p, &mut t.booktabs, "Clean rules (booktabs)");
@@ -477,4 +502,30 @@ fn table_body(ui: &mut Ui, p: &Palette, t: &mut TableDialog) {
     widgets::field(ui, p, "Label", |ui| {
         widgets::text_input(ui, p, &mut t.label, "made from the caption", true)
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::buffer::Selection;
+    use crate::editor::commands::Indent;
+    use crate::editor::view::Editor;
+
+    #[test]
+    fn figures_dropped_together_follow_each_other_instead_of_nesting() {
+        let mut ed = Editor::new("para\n", true);
+        ed.doc.selection = Selection::cursor(0);
+        let end = insert_figure(&mut ed, "a.png", Indent::Spaces(2));
+        ed.doc.selection = Selection::cursor(end);
+        insert_figure(&mut ed, "b.png", Indent::Spaces(2));
+        let text = ed.doc.text();
+        let (first_end, second) = (
+            text.find("\\end{figure}").unwrap(),
+            text.rfind("\\begin{figure}").unwrap(),
+        );
+        assert!(
+            second > first_end,
+            "the second figure starts inside the first:\n{text}"
+        );
+    }
 }

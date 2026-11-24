@@ -199,7 +199,12 @@ impl Buffers {
             }
         };
         self.last_saved.retain(|p, _| !inside(p));
-        self.deadlines.retain(|p, _| !inside(p));
+        // A pending autosave moves with its file.
+        self.deadlines = self
+            .deadlines
+            .drain()
+            .map(|(p, t)| (moved(&p), t))
+            .collect();
         self.dirty = self.dirty.iter().map(|p| moved(p)).collect();
         self.conflicts = self.conflicts.iter().map(|p| moved(p)).collect();
     }
@@ -357,6 +362,16 @@ mod tests {
             "a closed file's pending save never runs"
         );
         assert_eq!(b.unsaved(), vec!["chapters/a.tex"]);
+    }
+
+    #[test]
+    fn a_renamed_file_still_autosaves() {
+        let t = Instant::now();
+        let mut b = Buffers::default();
+        b.loaded("ch/a.tex", "a");
+        b.edit("ch/a.tex", t, 600);
+        b.rename("ch", "chapters");
+        assert_eq!(b.due(ms(t, 700)), vec!["chapters/a.tex"]);
     }
 
     #[test]

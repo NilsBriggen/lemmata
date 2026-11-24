@@ -158,7 +158,7 @@ impl App {
             without_tex: false,
             library: library::State::default(),
             open_error: damaged.then(|| {
-                "Your settings couldn't be read, so Lemmata started with the defaults. The old file is kept beside them as settings.json.bak.".to_owned()
+                "Some of your settings couldn't be read, so those are back at their defaults. The old file is kept beside them as settings.json.bak.".to_owned()
             }),
             no_main_in: None,
             project: None,
@@ -467,6 +467,14 @@ impl App {
         };
         let Some(action) = action else { return };
         match (action, d) {
+            // The job goes on and its result has nowhere to go once the dialog is gone.
+            (
+                dialogs::Action::Close,
+                Dialog::NewProject(dialogs::NewProject { busy: true, .. })
+                | Dialog::Clone(dialogs::Clone { busy: true, .. })
+                | Dialog::Import(dialogs::Import { busy: true, .. })
+                | Dialog::SaveTemplate(dialogs::SaveTemplate { busy: true, .. }),
+            ) => {}
             (dialogs::Action::Close, _) => self.dialog = None,
             (dialogs::Action::Trust(trusted), Dialog::Trust(st)) => {
                 let (path, root) = (st.path.clone(), st.root.clone());
@@ -567,7 +575,11 @@ impl App {
                 {
                     self.no_main_in = Some(path);
                 }
-                self.open_error = Some(e);
+                // Only the library shows these: with a project open, say it there.
+                match &mut self.project {
+                    Some(ws) => ws.notice(e, workspace::Tone::Error),
+                    None => self.open_error = Some(e),
+                }
             }
             Msg::Tex(status) => {
                 self.checking = false;
@@ -594,13 +606,22 @@ impl App {
             }
             Msg::Picked(Pick::ProjectFolder, Some(dir)) => {
                 let dir = dir.to_string_lossy().into_owned();
-                if self
-                    .library
-                    .file(&mut self.groups, std::slice::from_ref(&dir))
+                // A project already in the library stays in its folder.
+                let known = self.recents.0.iter().any(|r| r.path == dir)
+                    || self.groups.members.contains_key(&dir);
+                if !known
+                    && self
+                        .library
+                        .file(&mut self.groups, std::slice::from_ref(&dir))
                 {
                     self.groups.save(&self.dirs);
                 }
-                self.open_project(dir);
+                // The dialog can answer while a project is open: that one is saved and closed first.
+                if self.project.is_some() {
+                    self.leave(LEAVE_PROJECT, Box::new(move |app| app.open_project(dir)));
+                } else {
+                    self.open_project(dir);
+                }
             }
             Msg::Picked(Pick::TexFolder, Some(dir)) => {
                 let dir = dir.to_string_lossy().into_owned();
@@ -634,6 +655,8 @@ impl App {
                 self.recents.forget(&path);
                 self.recents.save(&self.dirs);
                 // A project put in the same folder later must be asked about again.
+                self.settings
+                    .set_trust(&crate::store::trust_key(&path), None);
                 self.settings.set_trust(&path, None);
                 self.settings.save(&self.dirs);
             }
@@ -799,18 +822,18 @@ impl App {
     }
 
     fn on_prefs_msg(&mut self, ctx: &egui::Context, m: PrefsMsg) {
-        let Some(st) = &mut self.prefs else { return };
+        let Some(st) = &mut self.prefs else {
+            // Preferences were closed meanwhile: the chosen language still takes effect.
+            if let PrefsMsg::Downloaded(code, Ok(())) = m {
+                self.dictionary_ready(ctx, code);
+            }
+            return;
+        };
         match m {
             PrefsMsg::Dictionaries(d) => st.dicts = d,
             PrefsMsg::Downloaded(code, Ok(())) => {
                 st.downloading = None;
-                self.settings.spell_default = code;
-                self.save_settings(ctx);
-                self.backend.spawn(|shell| {
-                    Msg::Prefs(PrefsMsg::Dictionaries(
-                        shell.spell_available().unwrap_or_default(),
-                    ))
-                });
+                self.dictionary_ready(ctx, code);
             }
             PrefsMsg::Downloaded(_, Err(e)) => {
                 st.downloading = None;
@@ -820,6 +843,16 @@ impl App {
                 st.grammar_status = Some(r.err().unwrap_or_else(|| "connected".into()))
             }
         }
+    }
+
+    fn dictionary_ready(&mut self, ctx: &egui::Context, code: String) {
+        self.settings.spell_default = code;
+        self.save_settings(ctx);
+        self.backend.spawn(|shell| {
+            Msg::Prefs(PrefsMsg::Dictionaries(
+                shell.spell_available().unwrap_or_default(),
+            ))
+        });
     }
 
     fn show_prefs(&mut self, ctx: &egui::Context) {
@@ -1013,6 +1046,8 @@ impl App {
 
     /// Shows a project that has just been opened.
     fn opened(&mut self, analysis: lemmata_shell::ProjectAnalysis) {
+        // A welcome left armed (no TeX then) would take over the window when TeX turns up.
+        self.welcome = None;
         let ready = self.tex.as_ref().is_some_and(|t| t.detection.ready);
         let mut ws = Workspace::open(
             analysis,
@@ -1031,6 +1066,10 @@ impl App {
     /// Leaves the open project, then runs `then`. Unsaved files are saved first; when that can't
     /// happen silently (autosave off, a failed save, a conflict), `closing` asks.
     fn leave(&mut self, title: &'static str, then: Then) {
+        // Already asked what to do with the unsaved files: that answer stays about the first request.
+        if self.leaving.is_some() {
+            return;
+        }
         let unsaved = self
             .project
             .as_ref()
@@ -1061,6 +1100,8 @@ impl App {
             // Nothing more is saved; the session is still remembered.
             ws.stop_lsp(&self.backend);
             workspace::session::save(&self.dirs, &ws.root, &ws.session());
+            // It may have been built since: the library loads the first pages again.
+            self.library.thumbs.clear();
         }
         if let Some((_, then)) = self.leaving.take() {
             then(self);
@@ -1074,6 +1115,7 @@ impl App {
             ws.stop_build(&self.backend);
             ws.stop_lsp(&self.backend);
             workspace::session::save(&self.dirs, &ws.root, &ws.session());
+            self.library.thumbs.clear();
         }
     }
 
@@ -1096,6 +1138,8 @@ impl App {
                 self.recents.save(&self.dirs);
                 self.groups.forget(&path);
                 self.groups.save(&self.dirs);
+                self.settings
+                    .set_trust(&crate::store::trust_key(&path), None);
                 self.settings.set_trust(&path, None);
                 self.settings.save(&self.dirs);
             }
@@ -1105,7 +1149,9 @@ impl App {
             A::Welcome => self.welcome = Some(0),
             A::Reveal(path) => {
                 // shortcut: opens the project folder itself; Tauri's reveal selected it in its parent.
-                let _ = open::that_detached(&path);
+                if let Err(e) = open::that_detached(&path) {
+                    self.open_error = Some(format!("Couldn't open the folder {path}: {e}"));
+                }
             }
             A::Trash(path) => {
                 let p = path.clone();
@@ -1209,6 +1255,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        // From here a new launch is no longer handed to this window.
+        crate::instance::release(&crate::store::Dirs::system().cache);
         self.flush_settings();
         #[cfg(target_os = "linux")]
         if let Some(p) = &mut self.pinches {
@@ -1227,6 +1275,12 @@ impl App {
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         let ui = &mut ui;
 
+        // A first launch waits for TeX detection before the welcome or the TeX setup replaces the
+        // window: an empty library with live buttons would show meanwhile.
+        if self.welcome.is_some() && self.project.is_none() && self.tex.is_none() {
+            ui.centered_and_justified(|ui| ui.add(egui::Spinner::new()));
+            return;
+        }
         if let Some(step) = &mut self.welcome
             && let Some(tex) = self.tex.as_ref().filter(|t| t.detection.ready)
         {
@@ -1310,8 +1364,9 @@ impl App {
                 }
                 Some(workspace::Action::SaveTemplate(path)) => {
                     let name = library::name_of(&path).to_owned();
-                    self.dialog =
-                        Some(Dialog::SaveTemplate(dialogs::SaveTemplate::new(path, name)));
+                    let mut st = dialogs::SaveTemplate::new(path, name);
+                    st.open = true;
+                    self.dialog = Some(Dialog::SaveTemplate(st));
                 }
                 None => {}
             }
@@ -3564,8 +3619,12 @@ pub(crate) mod tests {
             file: None,
         };
         h.state_mut().handle_request(Request::Open(target));
+        // A project is open: the error is a notice there, not a message for the library.
         wait_for(&mut h, "the invalid project error", |h| {
-            h.state().open_error.is_some()
+            h.state()
+                .project
+                .as_ref()
+                .is_some_and(|ws| !ws.notices.is_empty())
         });
         assert_eq!(h.state().open_generation, generation);
         assert_eq!(h.state().project.as_ref().unwrap().root, project);
@@ -4701,6 +4760,112 @@ pub(crate) mod tests {
         );
     }
 
+    /// Many open files: the tabs narrow and the active one stays where it can be reached.
+    #[test]
+    fn the_active_tab_is_within_the_strip_with_many_files_open() {
+        use egui_kittest::kittest::Queryable;
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let names: Vec<String> = (0..30)
+            .map(|i| format!("long-chapter-name-{i:02}.tex"))
+            .collect();
+        for n in &names {
+            std::fs::write(project.join(n), "x\n").unwrap();
+        }
+        for n in &names {
+            let app = h.state_mut();
+            let ws = app.project.as_mut().unwrap();
+            ws.open_file(&app.backend, n);
+            wait_for(&mut h, "the file to open", |h| {
+                h.state().project.as_ref().unwrap().editors.contains_key(n)
+            });
+        }
+        h.run_steps(3);
+        let screen = h.ctx.content_rect();
+        let last = names.last().unwrap();
+        let tab = h.get_by_role_and_label(egui::Role::Tab, last);
+        let r = tab.rect();
+        assert!(
+            r.left() >= 0.0 && r.right() <= screen.right(),
+            "{r:?} outside {screen:?}"
+        );
+    }
+
+    /// Closing a tab goes to the one beside it, not to the last one.
+    #[test]
+    fn closing_a_tab_shows_its_neighbour() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let names = ["b.tex", "c.tex", "d.tex"];
+        for n in names {
+            std::fs::write(project.join(n), "x\n").unwrap();
+        }
+        for n in names {
+            let app = h.state_mut();
+            let ws = app.project.as_mut().unwrap();
+            ws.open_file(&app.backend, n);
+            wait_for(&mut h, "the file to open", |h| {
+                h.state().project.as_ref().unwrap().editors.contains_key(n)
+            });
+        }
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let ws = app.project.as_mut().unwrap();
+        ws.open_file(&app.backend, "c.tex");
+        ws.close_tab(&app.backend, "c.tex", &settings);
+        assert_eq!(ws.active.as_deref(), Some("d.tex"));
+        ws.close_tab(&app.backend, "d.tex", &settings);
+        assert_eq!(ws.active.as_deref(), Some("b.tex"));
+    }
+
+    /// A file in conflict can't be saved, so deleting it loses the typed text: it is said.
+    #[test]
+    fn deleting_a_file_in_conflict_says_its_edits_are_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let rel = "loose.tex";
+        std::fs::write(project.join(rel), "text\n").unwrap();
+        {
+            let app = h.state_mut();
+            let ws = app.project.as_mut().unwrap();
+            ws.open_file(&app.backend, rel);
+        }
+        wait_for(&mut h, "loose.tex open", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .editors
+                .contains_key(rel)
+        });
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let ws = app.project.as_mut().unwrap();
+        ws.editors
+            .get_mut(rel)
+            .unwrap()
+            .replace_range(0, 0, "typed ");
+        ws.buffers.conflict(rel);
+        ws.trash(&app.backend, &settings, vec![rel.into()]);
+        wait_for(&mut h, "the notice", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .notices
+                .iter()
+                .any(|n| n.text.contains("are not in the trash"))
+        });
+        let ws = h.state().project.as_ref().unwrap();
+        assert!(!ws.editors.contains_key(rel));
+    }
+
     /// Hits are kept by line; lines added in the editor since the search would move them, and
     /// an unticked hit could be replaced. The results are brought up to date instead.
     #[test]
@@ -4748,20 +4913,23 @@ pub(crate) mod tests {
         let settings = app.settings.clone();
         let ws = app.project.as_mut().unwrap();
         ws.replace_all(&app.backend, &settings);
-        h.run_steps(5);
-        let ws = h.state().project.as_ref().unwrap();
-        assert!(
-            ws.search
+        wait_for(&mut h, "the results brought up to date", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .search
                 .as_ref()
                 .unwrap()
                 .message()
                 .unwrap_or("")
                 .contains("changed since the search")
-        );
+        });
+        // The edit was saved first (the hits are lines of the saved text); nothing was replaced.
         assert_eq!(
             std::fs::read_to_string(project.join(rel)).unwrap(),
-            before,
-            "nothing replaced"
+            format!("% a line on top\n{before}"),
+            "only the typed line was saved"
         );
     }
 

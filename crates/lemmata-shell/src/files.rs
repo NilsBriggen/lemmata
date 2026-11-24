@@ -13,7 +13,8 @@ const TEXT_EXTS: &[&str] = &[
     "csv", "tsv", "json", "yaml", "yml", "xml", "ini", "cfg", "conf", "py", "r", "m", "jl", "sh",
     "lua",
 ];
-const MAX_MATCHES: usize = 2000;
+/// Matching lines a project search lists, at most (plus the rest of its last file).
+pub const MAX_MATCHES: usize = 2000;
 
 /// A project-relative path that can't escape the project.
 pub(crate) fn safe_rel(rel: &str) -> CmdResult<PathBuf> {
@@ -27,7 +28,7 @@ pub(crate) fn safe_rel(rel: &str) -> CmdResult<PathBuf> {
     Ok(p)
 }
 
-fn text_files(project: &lemmata_project::Project) -> Vec<String> {
+pub(crate) fn text_files(project: &lemmata_project::Project) -> Vec<String> {
     fn walk(entries: &[lemmata_project::Entry], out: &mut Vec<String>) {
         for e in entries {
             if e.is_dir {
@@ -369,8 +370,11 @@ pub(crate) fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let dest = to.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
             copy_dir(&entry.path(), &dest)?;
+        } else if kind.is_symlink() && entry.path().is_dir() {
+            // A link to a folder is left out: following it could loop, and `copy` can't read a folder.
         } else {
             std::fs::copy(entry.path(), dest)?;
         }
@@ -390,7 +394,10 @@ impl Shell {
             if dest.starts_with(&src) {
                 return Err("A folder can't be copied into itself.".into());
             }
-            copy_dir(&src, &dest).map_err(err)
+            // A copy that stops halfway is not left in the project.
+            copy_dir(&src, &dest).map_err(err).inspect_err(|_| {
+                let _ = std::fs::remove_dir_all(&dest);
+            })
         } else {
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent).map_err(err)?;
@@ -599,7 +606,10 @@ fn rename_on_disk(src: &Path, dst: &Path, to: &str) -> CmdResult<()> {
         let tmp = dst.with_file_name(format!(".{}.lemmata-rename", name.unwrap_or_default()));
         std::fs::rename(src, &tmp).map_err(err)?;
         return std::fs::rename(&tmp, dst).map_err(|e| {
-            let _ = std::fs::rename(&tmp, src);
+            if std::fs::rename(&tmp, src).is_err() {
+                // The file is under a name the tree hides: say where it is.
+                return format!("{} (the file is now at {})", err(e), tmp.display());
+            }
             err(e)
         });
     }
@@ -741,15 +751,20 @@ impl Shell {
 }
 
 pub fn trash_into(root: &Path, paths: &[String]) -> CmdResult<TrashBatch> {
-    let id = std::time::SystemTime::now()
+    let mut millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis())
-        .to_string();
+        .map_or(0, |d| d.as_millis());
+    // Two deletes in one millisecond must not share a folder (and a manifest).
+    while root.join(TRASH_DIR).join(millis.to_string()).exists() {
+        millis += 1;
+    }
+    let id = millis.to_string();
     let batch = root.join(TRASH_DIR).join(&id);
     let paths = top_level(paths);
     for rel in &paths {
         safe_rel(rel)?;
-        if !root.join(rel).exists() {
+        // A link counts, even one pointing nowhere.
+        if std::fs::symlink_metadata(root.join(rel)).is_err() {
             return Err(format!("{rel} no longer exists."));
         }
     }
@@ -903,7 +918,15 @@ impl Shell {
             .filter_map(|rel| lemmata_env::fs::read_text(p.root.join(rel)).ok())
             .collect();
         let main = p.main.to_string_lossy().replace('\\', "/");
-        Ok(unused_in(&all_files(&p), &sources, &main))
+        let mut unused = unused_in(&all_files(&p), &sources, &main);
+        // The main files of the other build targets are not referred to by name, and still used.
+        unused.retain(|f| {
+            !p.config
+                .targets
+                .iter()
+                .any(|t| t.main.replace('\\', "/") == *f)
+        });
+        Ok(unused)
     }
 }
 
@@ -1155,6 +1178,31 @@ mod tests {
         let full = root.join(rel);
         std::fs::create_dir_all(full.parent().unwrap()).unwrap();
         std::fs::write(full, text).unwrap();
+    }
+
+    #[test]
+    fn deletes_in_the_same_millisecond_keep_their_own_batches() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "a.tex", "a");
+        touch(d.path(), "b.tex", "b");
+        let ids: std::collections::HashSet<String> = ["a.tex", "b.tex"]
+            .iter()
+            .map(|f| trash_into(d.path(), &[f.to_string()]).unwrap().id)
+            .collect();
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_nowhere_can_be_deleted_and_a_linked_folder_does_not_stop_a_copy() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "f/a.tex", "a");
+        touch(d.path(), "shared/x.png", "x");
+        std::os::unix::fs::symlink("../shared", d.path().join("f/figs")).unwrap();
+        std::os::unix::fs::symlink("gone.tex", d.path().join("dead.tex")).unwrap();
+        copy_dir(&d.path().join("f"), &d.path().join("g")).unwrap();
+        assert!(d.path().join("g/a.tex").is_file());
+        trash_into(d.path(), &["dead.tex".to_string()]).unwrap();
     }
 
     #[test]

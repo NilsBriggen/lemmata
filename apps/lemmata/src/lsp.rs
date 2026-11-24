@@ -70,7 +70,7 @@ pub struct Lsp {
     pub state: State,
     pub generation: Option<u64>,
     next_id: i64,
-    pending: HashMap<i64, Pending>,
+    pending: HashMap<i64, (Pending, std::time::Instant)>,
     /// Open documents and the editor version texlab last saw.
     opened: HashMap<String, (i64, u64)>,
     root: String,
@@ -203,7 +203,7 @@ impl Lsp {
     fn request(&mut self, method: &str, params: Value, what: Pending) -> String {
         let id = self.next_id;
         self.next_id += 1;
-        self.pending.insert(id, what);
+        self.pending.insert(id, (what, std::time::Instant::now()));
         json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string()
     }
 
@@ -211,8 +211,27 @@ impl Lsp {
         json!({ "jsonrpc": "2.0", "method": method, "params": params }).to_string()
     }
 
-    /// The first message, once the process is up.
+    /// Requests texlab has not answered for this long are given up on, and returned.
+    pub fn expire(&mut self, after: std::time::Duration) -> Vec<Pending> {
+        let stale: Vec<i64> = self
+            .pending
+            .iter()
+            .filter(|(_, (_, at))| at.elapsed() > after)
+            .map(|(id, _)| *id)
+            .collect();
+        stale
+            .into_iter()
+            .filter_map(|id| self.pending.remove(&id).map(|(what, _)| what))
+            .collect()
+    }
+
+    /// The first message, once the process is up. A restarted texlab knows none of the documents
+    /// or requests of the one before.
     pub fn initialize(&mut self) -> String {
+        self.opened.clear();
+        self.diagnostics.clear();
+        self.pending.clear();
+        self.incremental = false;
         let root = to_uri(&self.root, "");
         let root = root.trim_end_matches('/').to_owned();
         self.request(
@@ -358,7 +377,9 @@ impl Lsp {
     fn on_diagnostics(&mut self, params: &Value) -> Option<Answer> {
         let path = from_uri(&self.root, params["uri"].as_str()?)?;
         // Only open files: a closed one's problems would never be cleared.
-        if !self.opened.contains_key(&path) {
+        let (version, _) = self.opened.get(&path)?;
+        // Computed for the text before the latest edit: the lines would be off until the next run.
+        if params["version"].as_i64().is_some_and(|v| v != *version) {
             return None;
         }
         let list = params["diagnostics"]
@@ -409,7 +430,7 @@ impl Lsp {
         let Some(id) = msg.get("id").and_then(Value::as_i64) else {
             return (None, Vec::new());
         };
-        let Some(what) = self.pending.remove(&id) else {
+        let Some((what, _)) = self.pending.remove(&id) else {
             return (None, Vec::new());
         };
         let result = &msg["result"];
@@ -571,6 +592,42 @@ mod tests {
         assert!(l.sync(&[("main.tex".into(), 1, &text, None)]).is_empty());
         assert!(l.sync(&[("main.tex".into(), 2, &text, None)])[0].contains("didChange"));
         assert!(l.sync(&[])[0].contains("didClose"));
+    }
+
+    #[test]
+    fn a_restarted_texlab_gets_the_open_files_again_and_late_problems_are_ignored() {
+        let text = || "x".to_string();
+        let mut l = Lsp::new("/p");
+        l.initialize();
+        l.on_message(r#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#);
+        assert!(l.sync(&[("main.tex".into(), 1, &text, None)])[0].contains("didOpen"));
+        l.sync(&[("main.tex".into(), 2, &text, None)]);
+        let late = r#"{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///p/main.tex","version":1,"diagnostics":[{"range":{"start":{"line":0}},"message":"old"}]}}"#;
+        assert_eq!(
+            l.on_message(late).0,
+            None,
+            "computed for the text before the edit"
+        );
+        // The new server starts: state is Starting, then Ready again.
+        l.state = State::Starting;
+        l.initialize();
+        l.on_message(r#"{"jsonrpc":"2.0","id":2,"result":{"capabilities":{}}}"#);
+        assert!(l.sync(&[("main.tex".into(), 2, &text, None)])[0].contains("didOpen"));
+    }
+
+    #[test]
+    fn requests_texlab_never_answers_are_given_up_on() {
+        let text = || "x".to_string();
+        let mut l = Lsp::new("/p");
+        l.initialize();
+        l.on_message(r#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#);
+        l.sync(&[("main.tex".into(), 1, &text, None)]);
+        l.definition("main.tex", 0, 0).unwrap();
+        assert!(l.expire(std::time::Duration::from_secs(60)).is_empty());
+        assert_eq!(
+            l.expire(std::time::Duration::ZERO),
+            vec![Pending::Definition]
+        );
     }
 
     #[test]

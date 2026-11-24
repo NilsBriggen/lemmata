@@ -13,6 +13,7 @@ pub const COMMENTS_FILE: &str = ".lemmata/comments.json";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Reply {
     pub body: String,
+    #[serde(default)]
     pub created: f64,
 }
 
@@ -30,8 +31,9 @@ pub struct Thread {
     pub replies: Vec<Reply>,
 }
 
-/// Threads from the file, skipping damaged entries. None when the file isn't JSON at all.
-pub fn parse(json: &str) -> Option<Vec<Thread>> {
+/// Threads from the file, and whether damaged ones were skipped (writing back would lose them).
+/// None when the file isn't JSON at all.
+pub fn parse(json: &str) -> Option<(Vec<Thread>, bool)> {
     let data = serde_json::from_str::<Value>(json).ok()?;
     let list = match &data {
         Value::Array(a) => a.clone(),
@@ -41,38 +43,39 @@ pub fn parse(json: &str) -> Option<Vec<Thread>> {
             .cloned()
             .unwrap_or_default(),
     };
-    Some(
-        list.iter()
-            .filter_map(|t| {
-                Some(Thread {
-                    id: t.get("id")?.as_str()?.to_owned(),
-                    file: t.get("file")?.as_str()?.to_owned(),
-                    body: t.get("body")?.as_str()?.to_owned(),
-                    line: t
-                        .get("line")
-                        .and_then(Value::as_i64)
-                        .filter(|l| *l > 0)
-                        .unwrap_or(1) as usize,
-                    quote: t
-                        .get("quote")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_owned(),
-                    created: t.get("created").and_then(Value::as_f64).unwrap_or(0.0),
-                    resolved: t.get("resolved").and_then(Value::as_bool) == Some(true),
-                    replies: t
-                        .get("replies")
-                        .and_then(Value::as_array)
-                        .map(|r| {
-                            r.iter()
-                                .filter_map(|r| serde_json::from_value(r.clone()).ok())
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                })
+    let threads: Vec<Thread> = list
+        .iter()
+        .filter_map(|t| {
+            Some(Thread {
+                id: t.get("id")?.as_str()?.to_owned(),
+                file: t.get("file")?.as_str()?.to_owned(),
+                body: t.get("body")?.as_str()?.to_owned(),
+                line: t
+                    .get("line")
+                    .and_then(Value::as_i64)
+                    .filter(|l| *l > 0)
+                    .unwrap_or(1) as usize,
+                quote: t
+                    .get("quote")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+                created: t.get("created").and_then(Value::as_f64).unwrap_or(0.0),
+                resolved: t.get("resolved").and_then(Value::as_bool) == Some(true),
+                replies: t
+                    .get("replies")
+                    .and_then(Value::as_array)
+                    .map(|r| {
+                        r.iter()
+                            .filter_map(|r| serde_json::from_value(r.clone()).ok())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
-            .collect(),
-    )
+        })
+        .collect();
+    let skipped = threads.len() < list.len();
+    Some((threads, skipped))
 }
 
 pub fn serialize(threads: &[Thread]) -> String {
@@ -169,6 +172,11 @@ fn excerpt(q: &str) -> String {
 }
 
 impl Review {
+    /// A new draft starts empty, whatever was typed into the last one.
+    pub fn clear_draft(&mut self) {
+        self.text.clear();
+    }
+
     pub fn show(
         &mut self,
         ui: &mut Ui,
@@ -247,6 +255,7 @@ impl Review {
                     self.text.clear();
                 }
                 if cancel {
+                    self.text.clear();
                     out.push(Action::CancelDraft);
                 }
             }
@@ -344,11 +353,18 @@ mod tests {
             body: "ok".into(),
             created: 2.0,
         });
-        assert_eq!(parse(&serialize(std::slice::from_ref(&t))), Some(vec![t]));
+        assert_eq!(
+            parse(&serialize(std::slice::from_ref(&t))),
+            Some((vec![t], false))
+        );
         assert_eq!(
             parse(r#"{"threads":[{"id":1},{"id":"b","file":"x.tex","body":"b","line":-3}]}"#),
-            Some(vec![thread("b", "x.tex", 1, "b", 0.0)])
+            Some((vec![thread("b", "x.tex", 1, "b", 0.0)], true))
         );
+        // A reply without a time still reads.
+        let (t, skipped) =
+            parse(r#"[{"id":"a","file":"x.tex","body":"b","replies":[{"body":"r"}]}]"#).unwrap();
+        assert!(!skipped && t[0].replies[0].created == 0.0);
         assert!(
             parse("not json").is_none(),
             "a broken file is told apart from an empty one"

@@ -102,25 +102,31 @@ fn normalize(p: &Path) -> PathBuf {
 
 /// The main file named by a `% !TeX root = ../main.tex` comment, if it exists.
 fn magic_root(file: &Path) -> Option<PathBuf> {
-    let text = lemmata_env::fs::read_to_string(file).ok()?;
-    text.lines().take(MAGIC_LINES).find_map(|line| {
-        let rest = line
-            .trim_start()
-            .strip_prefix('%')?
-            .trim_start()
-            .strip_prefix('!')?;
-        let rest = rest.trim_start();
-        // ASCII-only prefix, so slicing at its length is safe.
-        let rest = rest
-            .get(..8)
-            .filter(|p| p.eq_ignore_ascii_case("tex root"))
-            .map(|_| &rest[8..])?;
-        let value = rest.trim_start().strip_prefix('=')?.trim();
-        if value.is_empty() {
-            return None;
-        }
-        Some(normalize(&file.parent()?.join(value)))
-    })
+    use std::io::{BufRead, Read};
+    // Only the top of the file: a big .bib or .sty needn't be read through.
+    let head = std::fs::File::open(file).ok()?.take(16 << 10);
+    let lines = std::io::BufReader::new(head).lines();
+    lines
+        .take(MAGIC_LINES)
+        .map_while(Result::ok)
+        .find_map(|line| {
+            let rest = line
+                .trim_start()
+                .strip_prefix('%')?
+                .trim_start()
+                .strip_prefix('!')?;
+            let rest = rest.trim_start();
+            // ASCII-only prefix, so slicing at its length is safe.
+            let rest = rest
+                .get(..8)
+                .filter(|p| p.eq_ignore_ascii_case("tex root"))
+                .map(|_| &rest[8..])?;
+            let value = rest.trim_start().strip_prefix('=')?.trim();
+            if value.is_empty() {
+                return None;
+            }
+            Some(normalize(&file.parent()?.join(value)))
+        })
 }
 
 /// Project root for a file: the nearest folder above it with a `lemmata.toml`;
@@ -190,7 +196,10 @@ pub(crate) struct OpenRequest {
 impl OpenRequest {
     /// Remembers the target from this launch's command line.
     pub(crate) fn from_command_line() -> Self {
-        let args: Vec<String> = std::env::args().skip(1).collect();
+        let args: Vec<String> = std::env::args_os()
+            .skip(1)
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         let cwd = std::env::current_dir().unwrap_or_default();
         OpenRequest {
             pending: Mutex::new(request_from_args(&args, &cwd)),
@@ -204,11 +213,14 @@ impl Shell {
     /// otherwise. Focusing the window is the app's job.
     fn deliver(&self, target: Request) {
         let state = &self.open_request;
-        let ready = *state.page_ready.lock().unwrap_or_else(|e| e.into_inner());
-        if ready {
+        // Both under the pending lock, as in `take_open_request`: the target is either emitted or
+        // stored before the page takes it, never stored after.
+        let mut pending = state.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if *state.page_ready.lock().unwrap_or_else(|e| e.into_inner()) {
+            drop(pending);
             self.emit(Event::OpenRequest(target));
         } else {
-            *state.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(target);
+            *pending = Some(target);
         }
     }
 
@@ -237,12 +249,9 @@ impl Shell {
     /// The page calls this once, after registering its `open-request` listener.
     pub fn take_open_request(&self) -> Option<Request> {
         let state = &self.open_request;
+        let mut pending = state.pending.lock().unwrap_or_else(|e| e.into_inner());
         *state.page_ready.lock().unwrap_or_else(|e| e.into_inner()) = true;
-        state
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
+        pending.take()
     }
 }
 

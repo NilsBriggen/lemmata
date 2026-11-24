@@ -130,6 +130,8 @@ pub struct TreeSel {
     /// Letters typed to jump to a row, and when the last one came.
     typed: String,
     typed_at: Option<std::time::Instant>,
+    /// Where the cursor row was drawn last, for a menu opened from the keyboard.
+    pub(super) cursor_rect: Option<Rect>,
 }
 
 impl TreeSel {
@@ -279,6 +281,10 @@ impl Workspace {
     /// A file or folder was renamed or moved: its tabs, editors and marks follow (onRenamed).
     fn renamed(&mut self, backend: &Backend, from: &str, to: &str) {
         let moved = |p: &str| remap(p, from, to);
+        // A comment being written is for the file under its new name.
+        if let Some(d) = &mut self.comments.draft {
+            d.0 = moved(&d.0);
+        }
         // Review comments name their file: they move with it.
         if self
             .comments
@@ -530,9 +536,35 @@ impl Workspace {
         );
     }
 
+    /// Closing an editor whose file is in conflict or whose last save failed drops its edits.
+    fn warn_unsaved_lost(&mut self, paths: &[String]) {
+        let lost: Vec<String> = self
+            .buffers
+            .conflicts
+            .iter()
+            .chain(&self.buffers.failed)
+            .filter(|f| {
+                paths
+                    .iter()
+                    .any(|p| *f == p || f.starts_with(&format!("{p}/")))
+            })
+            .cloned()
+            .collect();
+        if !lost.is_empty() {
+            self.notice(
+                format!(
+                    "Unsaved edits to {} were not saved and are not in the trash.",
+                    lost.join(", ")
+                ),
+                Tone::Info,
+            );
+        }
+    }
+
     fn run_trash(&mut self, backend: &Backend, paths: Vec<String>, system: bool) {
-        // Their edits were saved before (`trash`, the dialog); a save from now on would bring
-        // the files back, so the editors close.
+        // Their edits were saved before (`trash`, the dialog), except where the save was refused
+        // or failed; a save from now on would bring the files back, so the editors close.
+        self.warn_unsaved_lost(&paths);
         self.trashed(backend, &paths);
         // After any save in flight: a late save would bring a deleted file back.
         self.after_writes.push(Box::new(move |_, backend| {
@@ -696,6 +728,11 @@ impl Workspace {
             taken.push(name.clone());
             pairs.push((p.clone(), join_path(&folder, &name)));
         }
+        if pairs.is_empty() {
+            self.sel.clipboard = None;
+            self.notice("The copied items are no longer in the project.", Tone::Info);
+            return;
+        }
         self.copy_into(backend, settings, pairs, Some(paths));
     }
 
@@ -709,6 +746,7 @@ impl Workspace {
         // is under way, or a late save would bring a file back (or leave a copy at an old name).
         self.save_all_quietly(backend, settings);
         if let Undo::Trash(paths) = &step {
+            self.warn_unsaved_lost(paths);
             self.trashed(backend, paths);
         }
         self.after_writes.push(Box::new(move |ws, backend| {
@@ -719,27 +757,37 @@ impl Workspace {
     fn undo_step(&mut self, backend: &Backend, label: String, step: Undo) {
         Workspace::job(
             backend,
+            // What was done, what is left to do, and what stopped it.
             move |s| match step {
                 Undo::Rename(pairs, update) => {
-                    let mut done = Vec::new();
+                    let (mut done, mut rest, mut error) = (Vec::new(), Vec::new(), None);
                     for (from, to) in pairs {
-                        s.rename_path(from.clone(), to.clone(), update)?;
-                        done.push((from, to));
-                    }
-                    Ok(done)
-                }
-                Undo::Trash(paths) => s.trash_paths(paths).map(|_| Vec::new()),
-                Undo::Restore(id) => s.restore_trash(id).map(|_| Vec::new()),
-            },
-            move |ws, b, r: Result<Vec<(String, String)>, String>| {
-                match r {
-                    Ok(done) => {
-                        for (from, to) in done {
-                            ws.renamed(b, &from, &to);
+                        if error.is_some() {
+                            rest.push((from, to));
+                        } else if let Err(e) = s.rename_path(from.clone(), to.clone(), update) {
+                            error = Some(e);
+                            rest.push((from, to));
+                        } else {
+                            done.push((from, to));
                         }
-                        ws.notice(format!("Undid: {}.", label.to_lowercase()), Tone::Ok);
                     }
-                    Err(e) => ws.file_failure(e),
+                    (done, (rest, update), error)
+                }
+                Undo::Trash(paths) => (vec![], (vec![], false), s.trash_paths(paths).err()),
+                Undo::Restore(id) => (vec![], (vec![], false), s.restore_trash(id).err()),
+            },
+            move |ws, b, (done, (rest, update), error)| {
+                // The ones renamed back have new names even when a later one failed.
+                for (from, to) in done {
+                    ws.renamed(b, &from, &to);
+                }
+                // What is left can be tried again.
+                if !rest.is_empty() {
+                    ws.push_undo(label.clone(), Undo::Rename(rest, update));
+                }
+                match error {
+                    None => ws.notice(format!("Undid: {}.", label.to_lowercase()), Tone::Ok),
+                    Some(e) => ws.file_failure(e),
                 }
                 ws.refresh_tree(b);
             },
@@ -765,7 +813,11 @@ impl Workspace {
                         Tone::Ok,
                     );
                 }
-                Err(e) => ws.file_failure(e),
+                // Those copied before the one that failed are in the project: the tree shows them.
+                Err(e) => {
+                    ws.refresh_tree(b);
+                    ws.file_failure(e);
+                }
             },
         );
     }
@@ -793,7 +845,10 @@ impl Workspace {
                         Tone::Ok,
                     );
                 }
-                Some(Err(e)) => ws.file_failure(e),
+                Some(Err(e)) => {
+                    ws.refresh_tree(b);
+                    ws.file_failure(e);
+                }
                 None => {}
             },
         );
@@ -987,7 +1042,13 @@ impl Workspace {
                 }
             }
             if menu {
-                let at = ctx.content_rect().center();
+                // At the cursor row, not the middle of the window.
+                let at = self
+                    .sel
+                    .cursor_rect
+                    .map_or(ctx.content_rect().center(), |r| {
+                        r.left_bottom() + vec2(24.0, 0.0)
+                    });
                 self.menu = Some(Menu::Tree(
                     Some(path.clone()),
                     Rect::from_min_size(at, vec2(0.0, 0.0)),
@@ -1002,7 +1063,10 @@ impl Workspace {
             i.events
                 .iter()
                 .filter_map(|e| match e {
-                    egui::Event::Text(t) if !i.modifiers.command && !i.modifiers.alt => {
+                    // Not a space: that opens a folder and must not start a search for " m".
+                    egui::Event::Text(t)
+                        if !i.modifiers.command && !i.modifiers.alt && !t.trim().is_empty() =>
+                    {
                         Some(t.to_lowercase())
                     }
                     _ => None,
@@ -1019,11 +1083,19 @@ impl Workspace {
             }
             self.sel.typed_at = Some(std::time::Instant::now());
             self.sel.typed.push_str(&typed);
-            let start = at.map_or(0, |a| a + usize::from(self.sel.typed.chars().count() == 1));
+            // The same letter again goes on to the next row with it, rather than looking for "cc".
+            let mut letters = self.sel.typed.chars();
+            let repeated = letters.next().is_some_and(|f| letters.all(|c| c == f));
+            let needle: String = if repeated {
+                self.sel.typed.chars().take(1).collect()
+            } else {
+                self.sel.typed.clone()
+            };
+            let start = at.map_or(0, |a| a + usize::from(needle.chars().count() == 1));
             let hit = rows[start.min(n)..]
                 .iter()
                 .chain(&rows[..start.min(n)])
-                .find(|r| base_name(r).to_lowercase().starts_with(&self.sel.typed))
+                .find(|r| base_name(r).to_lowercase().starts_with(&needle))
                 .cloned();
             if let Some(h) = hit {
                 self.tree_select(&h);
@@ -1160,7 +1232,9 @@ impl Workspace {
                     } else {
                         abs.parent().map(|d| d.to_path_buf()).unwrap_or(abs)
                     };
-                    let _ = open::that_detached(dir);
+                    if let Err(e) = open::that_detached(dir) {
+                        self.notice(format!("Couldn't open the file manager: {e}"), Tone::Error);
+                    }
                 }
             }
             12 => self.trash(backend, settings, picked),
@@ -1387,7 +1461,10 @@ impl Workspace {
                                 &format!("You can restore {it} from your system's trash."),
                             );
                         } else {
-                            muted(ui, &format!("You can bring {it} back with Undo."));
+                            muted(
+                                ui,
+                                &format!("You can bring {it} back with Undo for 7 days."),
+                            );
                         }
                         if !refs.is_empty() {
                             let these = if paths.len() == 1 { "it" } else { "these" };
