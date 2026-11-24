@@ -23,8 +23,20 @@ pub struct Span {
 }
 
 /// The entries of a .bib text, without `@comment`, `@string` and `@preamble`.
-/// Shortcut: braces inside quoted values must balance, as BibTeX itself needs.
 pub fn scan(src: &str) -> Vec<Span> {
+    let mut all = blocks(src);
+    all.retain(|s| {
+        !matches!(
+            s.kind.to_lowercase().as_str(),
+            "comment" | "string" | "preamble"
+        )
+    });
+    all
+}
+
+/// Every `@kind{…}` block of a .bib text, `@string` and the like included.
+/// Shortcut: braces inside quoted values must balance, as BibTeX itself needs.
+fn blocks(src: &str) -> Vec<Span> {
     let b = src.as_bytes();
     let mut out = Vec::new();
     let (mut i, mut line, mut counted) = (0, 1, 0);
@@ -68,13 +80,9 @@ pub fn scan(src: &str) -> Vec<Span> {
         }
         let end = (k + 1).min(b.len());
         i = end;
-        if matches!(
-            kind.to_lowercase().as_str(),
-            "comment" | "string" | "preamble"
-        ) {
-            continue;
-        }
-        let comma = src[body..end].find(',').map_or(end, |c| body + c);
+        // Up to the closing delimiter, so an entry without a comma (`@misc{k}`) has the key `k`.
+        let inner = k.min(b.len());
+        let comma = src[body..inner].find(',').map_or(inner, |c| body + c);
         let raw = &src[body..comma];
         let lead = raw.len() - raw.trim_start().len();
         let key = raw.trim().to_string();
@@ -129,26 +137,12 @@ pub fn library(root: &Path, files: &[String], cited: &[String]) -> Library {
     let cited_set: HashSet<&str> = cited.iter().map(String::as_str).collect();
     let mut entries = Vec::new();
     for file in files {
-        let Ok(src) = lemmata_env::fs::read_to_string(root.join(file)) else {
+        let Ok(src) = lemmata_env::fs::read_text(root.join(file)) else {
             continue;
         };
-        for span in scan(&src) {
-            let parsed = crate::parse_bib(&src[span.start..span.end]).ok();
-            let bib = parsed.as_ref().and_then(|b| b.iter().next());
-            let mut entry = match bib {
-                Some(e) => make_entry(e, file),
-                None => Entry {
-                    key: span.key.clone(),
-                    kind: span.kind.to_lowercase(),
-                    title: String::new(),
-                    authors: String::new(),
-                    year: String::new(),
-                    file: file.clone(),
-                },
-            };
-            // The text's own spelling of the key, which is what \cite must match.
-            entry.key = span.key.clone();
-            let fields: BTreeMap<String, String> = bib
+        for (span, parsed) in parse_spans(&src) {
+            let fields: BTreeMap<String, String> = parsed
+                .as_ref()
                 .map(|e| {
                     e.fields
                         .iter()
@@ -161,7 +155,7 @@ pub fn library(root: &Path, files: &[String], cited: &[String]) -> Library {
                 doi: fields.get("doi").cloned().unwrap_or_default(),
                 line: span.line,
                 fields,
-                entry,
+                entry: entry_of(&span, &parsed, file),
             });
         }
     }
@@ -180,7 +174,64 @@ pub fn library(root: &Path, files: &[String], cited: &[String]) -> Library {
     }
 }
 
-fn norm_doi(doi: &str) -> String {
+impl Library {
+    /// The entry whose DOI is `doi` (any spelling of it: a URL, `doi:`, upper case).
+    pub fn with_doi(&self, doi: &str) -> Option<&ManagedEntry> {
+        let want = norm_doi(doi);
+        self.entries
+            .iter()
+            .find(|e| !want.is_empty() && norm_doi(&e.doi) == want)
+    }
+}
+
+/// The `@string` definitions of `src`, to put before one entry so its `journal = jfm` resolves.
+fn strings(src: &str) -> String {
+    blocks(src)
+        .iter()
+        .filter(|s| s.kind.eq_ignore_ascii_case("string"))
+        .map(|s| &src[s.start..s.end])
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Each entry of `src` with its place, parsed on its own (after the file's `@string`s), so one
+/// bad entry, a duplicate key or an unknown abbreviation costs only that entry its fields.
+/// Shortcut: re-parses the @string prefix per entry, O(entries x strings); cache the prefix
+/// parse if scale.rs gets slow.
+pub(crate) fn parse_spans(src: &str) -> Vec<(Span, Option<biblatex::Entry>)> {
+    let prefix = strings(src);
+    scan(src)
+        .into_iter()
+        .map(|span| {
+            let slice = format!("{prefix}\n{}", &src[span.start..span.end]);
+            let parsed = crate::parse_bib(&slice)
+                .ok()
+                .and_then(|b| b.iter().next().cloned());
+            (span, parsed)
+        })
+        .collect()
+}
+
+/// The picker's entry for `span`; a blank one with the key and kind when it didn't parse.
+pub(crate) fn entry_of(span: &Span, parsed: &Option<biblatex::Entry>, file: &str) -> Entry {
+    let mut entry = match parsed {
+        Some(e) => make_entry(e, file),
+        None => Entry {
+            key: span.key.clone(),
+            kind: span.kind.to_lowercase(),
+            title: String::new(),
+            authors: String::new(),
+            names: String::new(),
+            year: String::new(),
+            file: file.to_string(),
+        },
+    };
+    // The text's own spelling of the key, which is what \cite must match.
+    entry.key = span.key.clone();
+    entry
+}
+
+pub fn norm_doi(doi: &str) -> String {
     let d = doi.trim().to_lowercase();
     let d = d
         .trim_start_matches("https://")
@@ -389,6 +440,44 @@ mod tests {
         assert_eq!(out, "@misc{k, title={One}}\n@misc{ k2 , title={Two}}\n");
         assert!(rename_entry(src, "k", 2, "bad key").is_err());
         assert_eq!(free_key("k", &["K".into(), "ka".into()]), "kb");
+    }
+
+    #[test]
+    fn entries_using_string_macros_keep_their_fields() {
+        let d = tempfile::tempdir().unwrap();
+        let src = "@string{jfm={J. Fluid Mech.}}\n@article{ok, title={A Long Enough Title}, author={Doe, Jane}, doi={10.1/x}, journal=jfm}\n@article{bad, journal=undefined_name}\n";
+        std::fs::write(d.path().join("r.bib"), src).unwrap();
+        let lib = library(d.path(), &["r.bib".to_string()], &[]);
+        let ok = &lib.entries[0];
+        assert_eq!(ok.entry.title, "A Long Enough Title");
+        assert_eq!(ok.fields["journal"], "J. Fluid Mech.");
+        assert_eq!(ok.doi, "10.1/x");
+        assert!(lib.entries[1].entry.title.is_empty());
+    }
+
+    #[test]
+    fn finds_an_entry_by_any_spelling_of_its_doi() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("r.bib"),
+            "@article{s17, doi={https://doi.org/10.48550/arXiv.1707.06347}}\n",
+        )
+        .unwrap();
+        let lib = library(d.path(), &["r.bib".to_string()], &[]);
+        let doi = crate::to_doi("arXiv:1707.06347").unwrap();
+        assert_eq!(lib.with_doi(&doi).unwrap().entry.key, "s17");
+        assert!(lib.with_doi("10.1/other").is_none());
+    }
+
+    #[test]
+    fn an_entry_without_a_comma_has_its_key_and_renames_cleanly() {
+        let src = "@misc{k}\n@misc{j, title={J}}\n";
+        let s = scan(src);
+        assert_eq!(s[0].key, "k");
+        assert_eq!(
+            rename_entry(src, "k", 1, "k2").unwrap(),
+            "@misc{k2}\n@misc{j, title={J}}\n"
+        );
     }
 
     #[test]
