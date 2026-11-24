@@ -233,7 +233,7 @@ fn checkerboard(painter: &egui::Painter, rect: Rect) {
     let mut row = ((visible.top() - rect.top()) / 8.0).floor().max(0.0) as u32;
     while rect.top() + row as f32 * 8.0 < visible.bottom() {
         let y = rect.top() + row as f32 * 8.0;
-        let off = if row % 2 == 0 { 8.0 } else { 0.0 };
+        let off = if row.is_multiple_of(2) { 8.0 } else { 0.0 };
         let first = ((visible.left() - rect.left() - off) / 16.0)
             .floor()
             .max(0.0);

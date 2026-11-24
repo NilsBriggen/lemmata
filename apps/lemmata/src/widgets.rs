@@ -1550,6 +1550,7 @@ mod tests {
     #[test]
     fn a_drop_menu_is_driven_by_the_arrow_keys() {
         let p = theme::LIGHT;
+        let id = egui::Id::unique("menu");
         let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
         let out = seen.clone();
         let mut h = Harness::builder()
@@ -1562,7 +1563,7 @@ mod tests {
                     MenuItem::plain("Three"),
                 ];
                 let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), Vec2::splat(20.0));
-                let r = drop_menu(ui.ctx(), &p, egui::Id::new("menu"), anchor, false, &items);
+                let r = drop_menu(ui.ctx(), &p, id, anchor, false, &items);
                 if let MenuResult::Clicked(i) = r {
                     *out.borrow_mut() = Some(i);
                 }
@@ -1579,6 +1580,7 @@ mod tests {
     #[test]
     fn escape_closes_a_drop_menu_and_is_used_up() {
         let p = theme::LIGHT;
+        let id = egui::Id::unique("menu");
         let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
         let out = seen.clone();
         let mut h = Harness::builder()
@@ -1587,7 +1589,7 @@ mod tests {
             .build_ui(move |ui| {
                 let items = [MenuItem::plain("One")];
                 let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), Vec2::splat(20.0));
-                let r = drop_menu(ui.ctx(), &p, egui::Id::new("menu"), anchor, false, &items);
+                let r = drop_menu(ui.ctx(), &p, id, anchor, false, &items);
                 if matches!(r, MenuResult::Closed) {
                     let left = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
                     *out.borrow_mut() = Some(left);

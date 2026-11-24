@@ -1064,7 +1064,7 @@ mod tests {
         pane.view.pages = vec![vec2(600.0, 800.0); 20];
         let mut h = egui_kittest::Harness::builder()
             .with_size([300.0, 200.0])
-            .with_context_setup(move |ctx| crate::theme::install_fonts(ctx))
+            .with_context_setup(crate::theme::install_fonts)
             .build_ui_state(
                 move |ui, pane: &mut Pane| {
                     pane.page_box(ui, &p, 3);
