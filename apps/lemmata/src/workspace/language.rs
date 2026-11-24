@@ -131,6 +131,8 @@ impl Workspace {
                 let init = self.lsp.initialize();
                 self.lsp_send(backend, vec![init]);
             }
+            // The newer start answers for itself.
+            Msg::LspStarted(Err(e)) if e == lemmata_shell::LSP_SUPERSEDED => {}
             Msg::LspStarted(Err(e)) => self.lsp.state = crate::lsp::State::Failed(e),
             Msg::LspLost(generation) => {
                 if Some(generation) == self.lsp.generation

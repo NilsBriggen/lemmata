@@ -215,9 +215,18 @@ pub async fn start(
         // First use: download it, off the async threads.
         None => {
             let data = data.to_owned();
-            tokio::task::spawn_blocking(move || install_texlab(&data))
-                .await
-                .map_err(|e| e.to_string())??
+            tokio::task::spawn_blocking(move || {
+                // One download at a time: a second start (trust changed meanwhile) waits for the
+                // first and finds texlab there, instead of deleting its half-written files.
+                static INSTALLING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+                let _one = INSTALLING.lock().unwrap_or_else(|e| e.into_inner());
+                match find_texlab(&data) {
+                    Some(t) => Ok(t),
+                    None => install_texlab(&data),
+                }
+            })
+            .await
+            .map_err(|e| e.to_string())??
         }
     };
     let mut cmd = Command::new(texlab);
