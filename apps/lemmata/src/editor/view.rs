@@ -602,7 +602,10 @@ fn col_pos(l: &LineLayout, col: usize, cw: f32, tab: usize) -> (Pos2, usize) {
             * cw;
         return (pos2(w, 0.0), 0);
     }
-    let r = l.galley.pos_from_cursor(CCursor::new(col - l.ws.len()));
+    // At a soft-wrap boundary the caret belongs at the start of the next row.
+    let mut c = CCursor::new(col - l.ws.len());
+    c.prefer_next_row = true;
+    let r = l.galley.pos_from_cursor(c);
     let row = l
         .galley
         .rows
@@ -625,7 +628,13 @@ fn col_at(l: &LineLayout, at: Vec2, cw: f32, tab: usize) -> usize {
         }
         return best;
     }
-    l.ws.len() + l.galley.cursor_from_pos(vec2(at.x - l.hang, at.y)).index.0
+    let c = l.galley.cursor_from_pos(vec2(at.x - l.hang, at.y));
+    let mut i = c.index.0;
+    // Past a wrapped row's end: before the space it wrapped at, so the caret stays on that row.
+    if !c.prefer_next_row && i > 0 && i < l.galley.end().index.0 {
+        i -= 1;
+    }
+    l.ws.len() + i
 }
 
 /// Indentation level of line `n`; a blank line takes the smaller level of the nearest text above and below.
@@ -824,6 +833,13 @@ pub fn show(
     }
     let total = y + area.height() * 0.4;
 
+    let hidden = ed.hidden.clone();
+    let mut geo = Geo {
+        lay: &lay,
+        layouts: HashMap::new(),
+        tab,
+        hidden: &hidden,
+    };
     let main = ed.doc.selection.main();
     let mut scroll = egui::ScrollArea::vertical()
         .id_salt(id.with("scroll"))
@@ -832,8 +848,12 @@ pub fn show(
         let n = n.min(tops.len() - 1);
         scroll = scroll.vertical_scroll_offset((tops[n] - area.height() / 2.0).max(0.0));
     } else if ed.reveal {
+        // The caret's row, not its whole line: a long wrapped paragraph would jump to its top.
         let line = ed.doc.line_of(main.head);
-        let (top, bottom) = (tops[line], tops[line] + ed.heights[line]);
+        let col = main.head - ed.doc.line_start(line);
+        let dy = col_pos(geo.line(ui, &ed.doc, line), col, lay.cw, tab).0.y;
+        let top = tops[line] + dy;
+        let bottom = (top + style.line_height).min(tops[line] + ed.heights[line]);
         // CodeMirror keeps 5 px between the cursor and the edge.
         if top < ed.scroll_y + 5.0 {
             scroll = scroll.vertical_scroll_offset((top - 5.0).max(0.0));
@@ -843,13 +863,6 @@ pub fn show(
     }
     ed.reveal = false;
 
-    let hidden = ed.hidden.clone();
-    let mut geo = Geo {
-        lay: &lay,
-        layouts: HashMap::new(),
-        tab,
-        hidden: &hidden,
-    };
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area));
     let now = ui.input(|i| i.time);
     let mods = ui.input(|i| i.modifiers);
@@ -3299,6 +3312,67 @@ mod tests {
     }
 
     /// Cut with a selection and an empty cursor took out a character the clipboard never got.
+    fn wrapped_harness(text: &str, caret: usize) -> egui_kittest::Harness<'static, Editor> {
+        let mut ed = Editor::new(text, true);
+        ed.doc.selection = Selection::cursor(caret);
+        let p = theme::LIGHT;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([300.0, 200.0])
+            .with_context_setup(move |ctx| {
+                theme::install_fonts(ctx);
+                theme::apply(ctx, &p);
+            })
+            .build_ui_state(
+                move |ui, ed: &mut Editor| {
+                    let rect = ui.ctx().content_rect();
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                    show(
+                        &mut child,
+                        &p,
+                        ed,
+                        &style(),
+                        egui::Id::unique("ed"),
+                        "Editor",
+                        &Lookups::default(),
+                        &mut crate::writing::Checks::default(),
+                    );
+                },
+                ed,
+            );
+        h.run();
+        h.get_by_label("Editor").focus();
+        h.run();
+        h
+    }
+
+    #[test]
+    fn down_walks_the_rows_of_a_wrapped_paragraph() {
+        let para = "word ".repeat(120);
+        let mut h = wrapped_harness(&format!("{para}\nend"), 0);
+        h.key_press(egui::Key::ArrowDown);
+        h.run();
+        let first = h.state().doc.selection.main().head;
+        h.key_press(egui::Key::ArrowDown);
+        h.run();
+        let second = h.state().doc.selection.main().head;
+        assert!(first > 0 && second > first && second < para.len(), "{first} {second}");
+    }
+
+    #[test]
+    fn typing_in_a_wrapped_paragraph_keeps_the_view_still() {
+        let para = "word ".repeat(400);
+        let text = format!("{para}\n{}", "line\n".repeat(40));
+        // The caret halfway through the paragraph, scrolled into view.
+        let mut h = wrapped_harness(&text, 1000);
+        h.state_mut().reveal = true;
+        h.run();
+        let before = h.state().scroll_y;
+        assert!(before > 0.0);
+        h.get_by_label("Editor").type_text("x");
+        h.run();
+        assert_eq!(h.state().scroll_y, before);
+    }
+
     #[test]
     fn cut_takes_out_only_what_it_copies() {
         let mut ed = Editor::new("abcdef\nghij\n", true);
