@@ -100,7 +100,8 @@ fn has_data(pdf: &Path) -> bool {
     pdf.with_extension("synctex.gz").is_file() || pdf.with_extension("synctex").is_file()
 }
 
-type Cache = Option<(PathBuf, SystemTime, Arc<Index>)>;
+/// `None` as the index: the file was rejected, and the synctex program answers for it.
+type Cache = Option<(PathBuf, SystemTime, Option<Arc<Index>>)>;
 static CACHE: Mutex<Cache> = Mutex::new(None);
 
 /// Lets go of the parsed file: a long document's index is tens of MB, and once another project is
@@ -111,26 +112,39 @@ pub fn forget() {
 
 /// The parsed synctex file of `pdf`, re-read only when its mtime changes.
 fn load(pdf: &Path) -> Option<Arc<Index>> {
+    load_in(&CACHE, pdf)
+}
+
+fn load_in(cache: &Mutex<Cache>, pdf: &Path) -> Option<Arc<Index>> {
     let (path, mtime) = [
         pdf.with_extension("synctex.gz"),
         pdf.with_extension("synctex"),
     ]
     .into_iter()
     .find_map(|p| Some((p.clone(), std::fs::metadata(&p).ok()?.modified().ok()?)))?;
-    let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((p, m, idx)) = cache.as_ref()
+    if let Some((p, m, idx)) = cache
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
         && *p == path
         && *m == mtime
     {
-        return Some(idx.clone());
+        return idx.clone();
     }
+    // Parsed without the lock: `forget` and other lookups don't wait for a big file.
+    let idx = parse_file(&path);
+    *cache.lock().unwrap_or_else(PoisonError::into_inner) = Some((path, mtime, idx.clone()));
+    idx
+}
+
+fn parse_file(path: &Path) -> Option<Arc<Index>> {
     // A thesis's synctex is tens of megabytes; past this it is something else (a file that
     // unpacks to gigabytes), and the synctex program answers instead.
     const LIMIT: u64 = 512 << 20;
-    if std::fs::metadata(&path).ok()?.len() > LIMIT {
+    if std::fs::metadata(path).ok()?.len() > LIMIT {
         return None;
     }
-    let mut bytes = lemmata_env::fs::read(&path).ok()?;
+    let mut bytes = lemmata_env::fs::read(path).ok()?;
     if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut text = Vec::new();
         flate2::read::GzDecoder::new(&bytes[..])
@@ -142,12 +156,7 @@ fn load(pdf: &Path) -> Option<Arc<Index>> {
         }
         bytes = text;
     }
-    let idx = Arc::new(Index::parse(
-        &String::from_utf8_lossy(&bytes),
-        path.parent()?,
-    )?);
-    *cache = Some((path, mtime, idx.clone()));
-    Some(idx)
+    Index::parse(&String::from_utf8_lossy(&bytes), path.parent()?).map(Arc::new)
 }
 
 fn run(synctex: &Path, args: &[&str]) -> Result<String> {
@@ -238,6 +247,37 @@ fn normalize(p: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rejected_synctex_file_is_not_parsed_again() {
+        let d = tempfile::tempdir().unwrap();
+        let pdf = d.path().join("main.pdf");
+        let file = d.path().join("main.synctex");
+        std::fs::write(&file, "not a synctex file\n").unwrap();
+        let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let cache = Mutex::new(None);
+        assert!(load_in(&cache, &pdf).is_none());
+        // Same mtime, so the verdict stands even though the content is now readable.
+        let good = format!(
+            "SyncTeX Version:1\nInput:1:{d}/./main.tex\nOutput:pdf\nMagnification:1000\nUnit:1\nX Offset:0\nY Offset:0\nContent:\n!1\n{{1\n[1,9:4736286,46220574:26673152,41484288,0\n(1,8:5000000,10000000:20000000,500000,100000\nx1,3:9000000,10000000\n)\n]\n}}1\nPostamble:\nCount:1\n",
+            d = d.path().display()
+        );
+        std::fs::write(&file, good).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        assert!(
+            cache
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|c| c.2.is_none())
+        );
+        assert!(load_in(&cache, &pdf).is_none());
+    }
+
     #[test]
     fn a_pdf_without_position_data_says_so() {
         let d = tempfile::tempdir().unwrap();
