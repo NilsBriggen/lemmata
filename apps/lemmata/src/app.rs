@@ -3751,6 +3751,42 @@ pub(crate) mod tests {
     /// project. Trusted, the latexmkrc runs, and git still runs nothing of the store's.
     #[cfg(unix)]
     #[test]
+    fn an_image_tab_closes_when_its_file_is_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("paper");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("main.tex"), "\\documentclass{article}\n").unwrap();
+        image::RgbaImage::new(2, 2)
+            .save(project.join("plot.png"))
+            .unwrap();
+        let root = canonical_str(&project);
+        let d = dirs(tmp.path());
+        let mut recents = Recents::default();
+        recents.remember(&root, 1.0);
+        recents.save(&d);
+        Settings {
+            first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
+            trusted_projects: vec![root],
+            ..Settings::default()
+        }
+        .save(&d);
+        let mut h = app(tmp.path());
+        wait_for(&mut h, "the project", |h| h.state().project.is_some());
+        let app = h.state_mut();
+        let ws = app.project.as_mut().unwrap();
+        ws.open_file(&app.backend, "plot.png");
+        wait_for(&mut h, "the image", |h| {
+            h.state().project.as_ref().unwrap().viewers.contains_key("plot.png")
+        });
+        std::fs::remove_file(project.join("plot.png")).unwrap();
+        wait_for(&mut h, "the tab to close", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            !ws.viewers.contains_key("plot.png") && !ws.tabs.iter().any(|t| t == "plot.png")
+        });
+    }
+
+    #[test]
     fn the_compile_menu_sets_what_its_items_say() {
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("paper");
