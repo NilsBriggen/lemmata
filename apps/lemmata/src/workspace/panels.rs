@@ -47,6 +47,8 @@ pub struct Git {
     pub branches: Vec<String>,
     pub commits: Vec<lemmata_git::Commit>,
     pub message: String,
+    /// The text of a commit under way: back in the box if the commit didn't happen.
+    sent: Option<String>,
     pub busy: Option<&'static str>,
     pub error: Option<String>,
     pub info: Option<String>,
@@ -671,6 +673,13 @@ impl Workspace {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0, p.surface_2);
         let busy = self.git.busy;
+        if busy.is_none()
+            && let Some(sent) = self.git.sent.take()
+            && self.git.info.as_deref() != Some("Committed.")
+            && self.git.message.is_empty()
+        {
+            self.git.message = sent;
+        }
         let mut refresh = false;
         let b = bar(ui, p, "Git", "Close Git", &mut |ui| {
             if let Some(b) = busy {
@@ -1186,6 +1195,7 @@ impl Workspace {
                 });
                 if commit {
                     let message = std::mem::take(&mut self.git.message);
+                    self.git.sent = Some(message.clone());
                     self.git_act(
                         backend,
                         &settings,
