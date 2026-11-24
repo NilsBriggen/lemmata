@@ -449,7 +449,7 @@ fn body(
         hint(
             ui,
             p,
-            "The project's lemmata.toml turns this on, but the project isn't trusted, so builds run without it. Saving with this on trusts the project.",
+            "The project's lemmata.toml turns this on, but the project isn't trusted, so builds run without it. Tick \"Trust this project\" above to use it.",
         );
     }
     if c.shell_escape {

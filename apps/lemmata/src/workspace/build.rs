@@ -673,6 +673,7 @@ impl Workspace {
             NoticeAction::DraftOff => self.set_config(backend, settings, |c| c.draft = false),
             NoticeAction::LinkZotero => self.link_zotero(backend, settings),
             NoticeAction::UndoFiles => self.undo_files(backend, settings),
+            NoticeAction::ProjectSettings => self.open_project_settings(),
             NoticeAction::PasteAsText(path, from, table, text) => {
                 if let Some(ed) = self.editors.get_mut(&path) {
                     let to = from + table.chars().count();

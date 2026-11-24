@@ -106,6 +106,8 @@ pub enum NoticeAction {
     PasteAsText(String, usize, String, String),
     /// Undoes the last file operation in the tree.
     UndoFiles,
+    /// Opens project settings (shell escape, trust).
+    ProjectSettings,
 }
 
 impl NoticeAction {
@@ -120,6 +122,7 @@ impl NoticeAction {
             NoticeAction::LinkZotero => "Add it",
             NoticeAction::PasteAsText(..) => "Paste as text instead",
             NoticeAction::UndoFiles => "Undo",
+            NoticeAction::ProjectSettings => "Project settings",
         }
     }
 }
@@ -131,6 +134,8 @@ pub enum Menu {
     Compile(Rect),
     Sort(Rect),
     Heading(Rect),
+    /// The edit bar's code-block languages.
+    Code(Rect),
     Tab(String, Rect),
     /// The tree's right-click menu: on a row, or on its empty space.
     Tree(Option<String>, Rect),
@@ -405,6 +410,7 @@ impl Workspace {
         // A session of images and PDFs only has no text file to wait for.
         ws.finish_restore();
         ws.apply_analysis(analysis, true);
+        ws.check_minted(backend);
         ws.spawn(backend, |shell| Msg::Packages(shell.package_names()));
         // Deleted files wait a week in the project's trash, as the delete dialog says.
         ws.spawn(backend, |shell| Msg::Done(shell.purge_trash(7).map(|_| ())));
@@ -552,6 +558,31 @@ impl Workspace {
         // A store the project brought (or its own repository) may be used now, or no longer.
         self.ensure_history(backend);
         self.build_soon(false, true);
+    }
+
+    /// Warns once, before a build fails, when the document loads minted but it can't run here.
+    fn check_minted(&mut self, backend: &Backend) {
+        const KEY: &str = "minted needs shell escape";
+        let Some(problem) = minted_problem(&self.info.config, self.trusted) else {
+            return;
+        };
+        if self.offered.contains(KEY) {
+            return;
+        }
+        Self::job(
+            backend,
+            |shell| shell.has_package("minted".into()).unwrap_or(false),
+            move |ws, _, minted| {
+                if minted && ws.offered.insert(KEY.into()) {
+                    let n = Notice::new(problem, Tone::Info);
+                    ws.notices.push(if problem.contains("Tectonic") {
+                        n
+                    } else {
+                        n.action(NoticeAction::ProjectSettings)
+                    });
+                }
+            },
+        );
     }
 
     pub fn refresh_analysis(&mut self, backend: &Backend) {
@@ -977,6 +1008,7 @@ impl Workspace {
                     analysis,
                     settings.auto_compile || self.build.outcome.is_none(),
                 );
+                self.check_minted(backend);
             }
             Msg::Analysis(_, _) => {}
             // Started for a project that has closed since.
@@ -1973,5 +2005,34 @@ mod tests {
             4
         );
         assert_eq!(super::count_words("Grüße, \\emph{Welt}!"), 2);
+    }
+}
+
+/// Why minted can't highlight code in this project, if it can't.
+fn minted_problem(config: &lemmata_project::Config, trusted: bool) -> Option<&'static str> {
+    if config.engine == lemmata_project::Engine::Tectonic {
+        Some("minted can't highlight code with Tectonic, which never allows shell escape. Use the Code button for listings instead, or another compiler.")
+    } else if !trusted {
+        Some("minted needs shell escape to highlight code, and this project isn't trusted, so the build will fail. Trust the project and turn on shell escape in Project settings.")
+    } else if !config.shell_escape {
+        Some("minted needs shell escape to highlight code, and it's off for this project, so the build will fail. Turn it on in Project settings.")
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod minted_tests {
+    use super::*;
+
+    #[test]
+    fn minted_is_warned_about_unless_shell_escape_can_run() {
+        let mut c = lemmata_project::Config::default();
+        assert!(minted_problem(&c, true).unwrap().contains("off"));
+        assert!(minted_problem(&c, false).unwrap().contains("trusted"));
+        c.shell_escape = true;
+        assert!(minted_problem(&c, true).is_none());
+        c.engine = lemmata_project::Engine::Tectonic;
+        assert!(minted_problem(&c, true).unwrap().contains("Tectonic"));
     }
 }
