@@ -11,7 +11,6 @@ static HEADING: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 static BEGIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\\begin\{([^{}]+)\}").unwrap());
-static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(begin|end)\{([^{}]+)\}").unwrap());
 static END_DOCUMENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*\\end\{document\}").unwrap());
 
@@ -58,22 +57,17 @@ pub fn fold_lines(d: &Doc, n: usize) -> Option<(usize, usize)> {
     if let Some(b) = BEGIN.captures(&text)
         && &b[1] != "document"
     {
-        let name = b[1].to_owned();
-        let mut depth = 0i32;
-        for k in n..lines {
-            let t = d.line(k);
-            for m in TOKEN.captures_iter(&t) {
-                if m[2] != name {
-                    continue;
-                }
-                depth += if &m[1] == "begin" { 1 } else { -1 };
-                if depth == 0 {
-                    // The \end line stays visible.
-                    return (k > n + 1).then_some((n + 1, k - 1));
-                }
-            }
-        }
-        return None;
+        // The pairing the editor already keeps (cached per version, comments and verbatim
+        // skipped), instead of scanning the rest of the file on every keystroke.
+        let (start, end) = (d.line_start(n), d.line_end(n));
+        let toks = super::envs::tokens(d);
+        let t = toks
+            .iter()
+            .find(|t| t.begin && t.from >= start && t.to <= end && t.name == b[1])?;
+        let p = t.partner.filter(|&p| toks[p].name == t.name)?;
+        let k = d.line_of(toks[p].from);
+        // The \end line stays visible.
+        return (k > n + 1).then_some((n + 1, k - 1));
     }
     if is_comment(&text) && (n == 0 || !is_comment(&d.line(n - 1))) {
         let mut last = n;
@@ -181,6 +175,11 @@ mod tests {
             Some("% b\n% c")
         );
         assert_eq!(hidden("\\begin{document}\nx\n\\end{document}", 1), None);
+        // A commented \end inside doesn't end the fold.
+        assert_eq!(
+            hidden("\\begin{a}\nx\n% \\end{a}\ny\n\\end{a}", 1).as_deref(),
+            Some("x\n% \\end{a}\ny")
+        );
     }
 
     #[test]

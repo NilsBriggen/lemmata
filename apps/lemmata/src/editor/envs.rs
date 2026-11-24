@@ -178,9 +178,10 @@ pub fn close_environment(d: &mut Doc, indent: Indent) -> bool {
 
 /// The `\begin{x}` / `\end{x}` spans (backslash to closing brace) that have no partner.
 pub fn unmatched(d: &Doc) -> Vec<(usize, usize)> {
-    tokens(d)
-        .iter()
-        .filter(|t| t.partner.is_none())
+    let toks = tokens(d);
+    toks.iter()
+        // Paired by nesting but named differently: `\begin{itemize}` … `\end{enumerate}`.
+        .filter(|t| t.partner.is_none_or(|p| toks[p].name != t.name))
         .map(|t| (t.from - if t.begin { 7 } else { 5 }, t.to + 1))
         .collect()
 }
@@ -252,6 +253,12 @@ mod tests {
         assert_eq!(d.text(), "\\begin{ab}\n\\end{ab}");
         d.undo();
         assert_eq!(d.text(), "\\begin{a}\n\\end{a}");
+    }
+
+    #[test]
+    fn mismatched_names_are_both_flagged() {
+        let d = Doc::new("\\begin{itemize}\n\\end{enumerate}");
+        assert_eq!(unmatched(&d), [(0, 15), (16, 31)]);
     }
 
     #[test]
