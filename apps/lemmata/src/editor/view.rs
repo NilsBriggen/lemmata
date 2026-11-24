@@ -2874,11 +2874,14 @@ fn math_preview(
                                 );
                             }
                             ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(e)
-                                    .font(FontId::monospace(12.0))
-                                    .color(p.error),
-                            );
+                            // Still drawing is not a mistake in the formula.
+                            ui.label(egui::RichText::new(e).font(FontId::monospace(12.0)).color(
+                                if e == render::PENDING {
+                                    p.muted
+                                } else {
+                                    p.error
+                                },
+                            ));
                         }
                     }
                 });
