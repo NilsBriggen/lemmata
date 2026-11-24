@@ -165,6 +165,10 @@ pub struct Editor {
     last_selection: Selection,
     /// Where the view is scrolled.
     pub scroll_y: f32,
+    /// Sideways, when lines don't wrap.
+    scroll_x: f32,
+    /// The widest line in pixels for a version, for scrolling sideways.
+    widest: (u64, f32),
     pub folds: Folds,
     /// Bumped when folds change, so heights are measured again.
     folds_gen: u64,
@@ -238,6 +242,8 @@ impl Editor {
             last_cursor_line: 1,
             last_selection: Selection::cursor(0),
             scroll_y: 0.0,
+            scroll_x: 0.0,
+            widest: (u64::MAX, 0.0),
             folds: Folds::default(),
             folds_gen: 0,
             heights_folds: u64::MAX,
@@ -617,6 +623,23 @@ fn col_pos(l: &LineLayout, col: usize, cw: f32, tab: usize) -> (Pos2, usize) {
     (pos2(l.hang + r.min.x, r.min.y), row)
 }
 
+/// The widest line in columns: tabs to their stops, wide (CJK, emoji) characters as two.
+fn widest_columns(d: &Doc, tab: usize) -> usize {
+    d.rope
+        .lines()
+        .map(|l| {
+            l.chars()
+                .filter(|c| *c != '\n' && *c != '\r')
+                .fold(0, |col, c| match c {
+                    '\t' => (col / tab + 1) * tab,
+                    c if c >= '\u{1100}' => col + 2,
+                    _ => col + 1,
+                })
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// The column nearest to a point relative to the line's top-left.
 fn col_at(l: &LineLayout, at: Vec2, cw: f32, tab: usize) -> usize {
     let first_row_h = l.galley.rows.first().map_or(l.height, |r| r.row.size.y);
@@ -843,9 +866,23 @@ pub fn show(
         hidden: &hidden,
     };
     let main = ed.doc.selection.main();
-    let mut scroll = egui::ScrollArea::vertical()
-        .id_salt(id.with("scroll"))
-        .auto_shrink(false);
+    let text_x = gutter_w + PAD + focus_offset;
+    // Without wrapping, long lines scroll sideways (the gutter goes with them).
+    let content_w = if style.wrap {
+        area.width()
+    } else {
+        if ed.widest.0 != ed.doc.version {
+            ed.widest = (ed.doc.version, widest_columns(&ed.doc, tab) as f32 * cw);
+        }
+        (text_x + ed.widest.1 + PAD_RIGHT + 2.0 * cw).max(area.width())
+    };
+    let mut scroll = if style.wrap {
+        egui::ScrollArea::vertical()
+    } else {
+        egui::ScrollArea::both()
+    }
+    .id_salt(id.with("scroll"))
+    .auto_shrink(false);
     if let Some(n) = ed.center_line.take() {
         let n = n.min(tops.len() - 1);
         scroll = scroll.vertical_scroll_offset((tops[n] - area.height() / 2.0).max(0.0));
@@ -853,8 +890,18 @@ pub fn show(
         // The caret's row, not its whole line: a long wrapped paragraph would jump to its top.
         let line = ed.doc.line_of(main.head);
         let col = main.head - ed.doc.line_start(line);
-        let dy = col_pos(geo.line(ui, &ed.doc, line), col, lay.cw, tab).0.y;
+        let caret = col_pos(geo.line(ui, &ed.doc, line), col, lay.cw, tab).0;
+        let dy = caret.y;
         let top = tops[line] + dy;
+        if !style.wrap {
+            let x = text_x + caret.x;
+            let w = area.width();
+            if x > ed.scroll_x + w - 20.0 {
+                scroll = scroll.horizontal_scroll_offset(x - w + 20.0);
+            } else if x < ed.scroll_x + text_x {
+                scroll = scroll.horizontal_scroll_offset((x - text_x - 20.0).max(0.0));
+            }
+        }
         let bottom = (top + style.line_height).min(tops[line] + ed.heights[line]);
         // CodeMirror keeps 5 px between the cursor and the edge.
         if top < ed.scroll_y + 5.0 {
@@ -931,13 +978,13 @@ pub fn show(
     }
     let mut popup_anchor: Option<Pos2> = None;
     let scrolled = scroll.show_viewport(&mut child, |ui, viewport| {
-        ui.set_min_size(vec2(area.width(), total));
+        ui.set_min_size(vec2(content_w, total));
         let origin = ui.min_rect().min;
         ed.scroll_y = viewport.min.y;
+        ed.scroll_x = viewport.min.x;
         let screen = |x: f32, y: f32| origin + vec2(x, y);
         let visible = Rect::from_min_size(screen(0.0, viewport.min.y), viewport.size());
         let painter = ui.painter_at(visible);
-        let text_x = gutter_w + PAD + focus_offset;
 
         let first = tops
             .partition_point(|&t| t <= viewport.min.y)
@@ -3376,6 +3423,10 @@ mod tests {
 
     /// Cut with a selection and an empty cursor took out a character the clipboard never got.
     fn wrapped_harness(text: &str, caret: usize) -> egui_kittest::Harness<'static, Editor> {
+        editor_harness(text, caret, true)
+    }
+
+    fn editor_harness(text: &str, caret: usize, wrap: bool) -> egui_kittest::Harness<'static, Editor> {
         let mut ed = Editor::new(text, true);
         ed.doc.selection = Selection::cursor(caret);
         let p = theme::LIGHT;
@@ -3393,7 +3444,7 @@ mod tests {
                         &mut child,
                         &p,
                         ed,
-                        &style(),
+                        &Style { wrap, ..style() },
                         egui::Id::unique("ed"),
                         "Editor",
                         &Lookups::default(),
@@ -3419,6 +3470,20 @@ mod tests {
         assert_eq!(h.state().doc.selection.main(), Range::new(0, text.chars().count()));
         assert!(h.state().spell_menu.is_some());
         assert!(h.query_by_label("Cut").is_some() && h.query_by_label("Paste").is_some());
+    }
+
+    #[test]
+    fn without_wrapping_long_lines_scroll_sideways_to_the_caret() {
+        let line = "x".repeat(400);
+        let mut h = editor_harness(&format!("{line}\nshort"), 0, false);
+        h.key_press(egui::Key::End);
+        h.run();
+        h.run();
+        assert!(h.state().scroll_x > 1000.0, "{}", h.state().scroll_x);
+        h.key_press(egui::Key::Home);
+        h.run();
+        h.run();
+        assert_eq!(h.state().scroll_x, 0.0);
     }
 
     #[test]
