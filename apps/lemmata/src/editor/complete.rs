@@ -982,6 +982,16 @@ pub fn rank(d: &Doc, found: Vec<Found>) -> Vec<(Item, Vec<usize>)> {
                     hits.iter_mut().for_each(|h| *h += 1);
                 }
                 out.push((score + it.boost, it, hits));
+            } else if it.kind == Kind::Text
+                && matches!(it.apply, Apply::Text(_))
+                && typed.chars().count() >= 2
+                && [&it.detail, &it.info]
+                    .into_iter()
+                    .flatten()
+                    .any(|s| s.to_lowercase().contains(&typed.to_lowercase()))
+            {
+                // A citation by its author or title (opaque keys), below every match on the key.
+                out.push((-5000 + it.boost, it, Vec::new()));
             }
         }
     }
@@ -1009,6 +1019,7 @@ mod tests {
                 kind: "book".into(),
                 title: "The TeXbook".into(),
                 authors: "Knuth, Donald and X".into(),
+                names: "Knuth, Donald and X".into(),
                 year: "1984".into(),
                 file: "refs.bib".into(),
             }],
@@ -1152,6 +1163,24 @@ mod tests {
             ["amsmath", "graphicx"]
         );
         assert!(complete("hello wor", None).is_none());
+    }
+
+    /// An opaque key is still found by what the entry shows beside it.
+    #[test]
+    fn a_citation_is_found_by_author_or_title() {
+        let ranked = |doc: &str| {
+            let mut d = Doc::new(doc);
+            d.selection = super::super::buffer::Selection::cursor(d.len());
+            let found = latex(&d, d.len(), &look(), false).unwrap();
+            rank(&d, vec![found])
+                .into_iter()
+                .map(|(i, _)| i.label)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ranked("\\cite{knuth"), ["knuth1984"]);
+        assert_eq!(ranked("\\cite{texb"), ["knuth1984"]);
+        assert_eq!(ranked("\\cite{donald"), ["knuth1984"]);
+        assert!(ranked("\\cite{zzz").is_empty());
     }
 
     #[test]
