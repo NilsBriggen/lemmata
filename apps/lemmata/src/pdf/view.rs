@@ -157,6 +157,8 @@ pub struct PdfView {
     searching: bool,
     /// Where a text selection started and ended, each as (page, glyph); it can run over pages.
     selection: Option<((usize, usize), (usize, usize))>,
+    /// Ctrl+C waits for the text layers of selected pages that weren't loaded yet.
+    copy_waiting: bool,
     png_wanted: bool,
     /// The pages have keyboard focus (Ctrl+F searches the PDF, Ctrl+C copies the selection).
     pub focused: bool,
@@ -218,6 +220,7 @@ impl PdfView {
             match_index: 0,
             searching: false,
             selection: None,
+            copy_waiting: false,
             png_wanted: false,
             focused: false,
             png: None,
@@ -1044,9 +1047,19 @@ impl PdfView {
             }
         }
         if resp.has_focus()
+            && !self.pages.is_empty()
+            && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::A))
+        {
+            self.select_all();
+        }
+        if resp.has_focus()
             && self.selection.is_some()
             && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)))
         {
+            self.copy_waiting = true;
+        }
+        if self.copy_waiting && !self.ask_selected_layers() {
+            self.copy_waiting = false;
             ctx.copy_text(self.selected_text());
         }
         if self.highlight.is_some() || !self.asked.is_empty() || !self.decorating.is_empty() {
@@ -1250,8 +1263,37 @@ impl PdfView {
         Some((a.min(b), a.max(b)))
     }
 
-    /// shortcut: a page whose text layer isn't loaded (scrolled past very fast) is left out, and
-    /// there is no Ctrl+A; ask the engine for the missing layers first if that shows up.
+    /// Ctrl+A: every page's text.
+    fn select_all(&mut self) {
+        self.selection = Some(((0, 0), (self.pages.len() - 1, usize::MAX)));
+    }
+
+    /// Asks the engine for the text layers of selected pages that aren't loaded (pages scrolled
+    /// past quickly, or all of them after Ctrl+A); true while some are still missing.
+    fn ask_selected_layers(&mut self) -> bool {
+        let Some((lo, hi)) = self.selected_span() else {
+            return false;
+        };
+        let mut missing = false;
+        for page in lo.0..=hi.0.min(self.pages.len().saturating_sub(1)) {
+            if self.deco.contains_key(&page) {
+                continue;
+            }
+            missing = true;
+            if let Some(engine) = &self.engine
+                && self.decorating.insert(page)
+            {
+                engine.send(Job::Decorate {
+                    doc: self.shown,
+                    page,
+                });
+            }
+        }
+        // Without an engine nothing more can come: copy what there is.
+        missing && self.engine.is_some()
+    }
+
+    /// The selected text, pages joined by a line break; a page without text adds nothing.
     pub fn selected_text(&self) -> String {
         let Some((lo, hi)) = self.selected_span() else {
             return String::new();
@@ -1799,6 +1841,68 @@ mod tests {
         // Dragged upwards, the same text.
         view.selection = Some(((1, 0), (0, 1)));
         assert_eq!(view.selected_text(), "bc\nd");
+    }
+
+    /// Ctrl+A over a real three-page PDF whose later pages were never on screen: Ctrl+C waits
+    /// for their text and copies all three.
+    #[test]
+    fn select_all_copies_pages_never_shown() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("t.tex"),
+            "\\documentclass{article}\\begin{document}Alpha\\newpage Beta\\newpage Gamma\\end{document}",
+        )
+        .unwrap();
+        let built = std::process::Command::new("pdflatex")
+            .args(["-interaction=nonstopmode", "t.tex"])
+            .current_dir(d.path())
+            .output();
+        if !built.is_ok_and(|o| o.status.success()) {
+            return; // no TeX here
+        }
+        let ctx = egui::Context::default();
+        let mut view = PdfView::new(&ctx, egui::Id::unique("select-all"));
+        view.load(std::fs::read(d.path().join("t.pdf")).unwrap());
+        let mut h = pdf_harness(view);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while h.state().page_count() < 3 {
+            assert!(std::time::Instant::now() < until, "the PDF never loaded");
+            h.run();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            !h.state().deco.contains_key(&2),
+            "page 3 was on screen, so this tests nothing"
+        );
+        // A click gives the pages focus; then the keys, as a user presses them.
+        let at = egui::pos2(400.0, 300.0);
+        h.event(egui::Event::PointerMoved(at));
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run();
+        }
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run();
+        assert_eq!(h.state().selection, Some(((0, 0), (2, usize::MAX))));
+        h.event(egui::Event::Copy);
+        h.run();
+        while h.state().copy_waiting {
+            assert!(
+                std::time::Instant::now() < until,
+                "the text layers never came"
+            );
+            h.run();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let text = h.state().selected_text();
+        for word in ["Alpha", "Beta", "Gamma"] {
+            assert!(text.contains(word), "{word} missing from {text:?}");
+        }
     }
 
     #[test]
