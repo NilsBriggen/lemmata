@@ -759,8 +759,29 @@ impl Workspace {
         change(&mut next);
         if next != self.info.config {
             self.info.config = next.clone();
-            self.spawn(backend, move |shell| Msg::Info(shell.set_config(next)));
+            self.write_config(backend, next);
         }
+    }
+
+    /// Writes lemmata.toml one write at a time, the newest choice last: two quick changes can't
+    /// land on disk in the wrong order, and an older write's answer can't undo the newer one.
+    fn write_config(&mut self, backend: &Backend, next: lemmata_project::Config) {
+        if self.config_writing {
+            self.config_queued = Some(next);
+            return;
+        }
+        self.config_writing = true;
+        Workspace::job(
+            backend,
+            move |shell| shell.set_config(next),
+            |ws, b, r| {
+                ws.config_writing = false;
+                match ws.config_queued.take() {
+                    Some(newer) => ws.write_config(b, newer),
+                    None => ws.on_info(b, r),
+                }
+            },
+        );
     }
 
     /// Changes lemmata.toml, then saves everything and builds with the new settings.
@@ -777,9 +798,7 @@ impl Workspace {
         }
         self.info.config = next.clone();
         self.build.after_config = true;
-        self.after_saving(backend, settings, move |ws, b| {
-            ws.spawn(b, move |shell| Msg::Info(shell.set_config(next)));
-        });
+        self.after_saving(backend, settings, move |ws, b| ws.write_config(b, next));
     }
 }
 

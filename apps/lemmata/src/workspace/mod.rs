@@ -216,6 +216,9 @@ pub struct Workspace {
     offered: HashSet<String>,
     /// Files whose disk version the user chose over theirs, until it's read.
     reloading: HashSet<String>,
+    /// A lemmata.toml write is under way, and the newest choice waiting for it.
+    config_writing: bool,
+    config_queued: Option<lemmata_project::Config>,
     /// The symbol palette, while open.
     pub symbols: Option<symbols::SymbolPalette>,
     pub cite: Option<bib::CitePicker>,
@@ -364,6 +367,8 @@ impl Workspace {
             lookups: Default::default(),
             offered: HashSet::new(),
             reloading: HashSet::new(),
+            config_writing: false,
+            config_queued: None,
             symbols: None,
             cite: None,
             search: None,
@@ -591,6 +596,25 @@ impl Workspace {
                 }
             },
         );
+    }
+
+    /// The project's state read again (after a settings write or a change on disk).
+    fn on_info(&mut self, backend: &Backend, r: Result<lemmata_shell::ProjectInfo, String>) {
+        match r {
+            Ok(mut info) => {
+                // Read while a settings write is under way: the choices made since stay.
+                if self.config_writing || self.config_queued.is_some() {
+                    info.config = self.info.config.clone();
+                }
+                self.info = info;
+                self.tree_rows = None;
+                self.refresh_lookups(backend, false);
+                if std::mem::take(&mut self.build.after_config) {
+                    self.build_soon(false, false);
+                }
+            }
+            Err(e) => self.notice(e, Tone::Error),
+        }
     }
 
     pub fn refresh_analysis(&mut self, backend: &Backend) {
@@ -1066,15 +1090,7 @@ impl Workspace {
                     );
                 }
             }
-            Msg::Info(Ok(info)) => {
-                self.info = info;
-                self.tree_rows = None;
-                self.refresh_lookups(backend, false);
-                if std::mem::take(&mut self.build.after_config) {
-                    self.build_soon(false, false);
-                }
-            }
-            Msg::Info(Err(e)) => self.notice(e, Tone::Error),
+            Msg::Info(r) => self.on_info(backend, r),
             Msg::Event(lemmata_shell::Event::FilesChanged { changed, removed }) => {
                 self.spawn(backend, |shell| Msg::Info(shell.project_info_cmd()));
                 self.removed_outside(backend, &removed);

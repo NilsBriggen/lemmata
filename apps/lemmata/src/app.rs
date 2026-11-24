@@ -3956,6 +3956,17 @@ pub(crate) mod tests {
         assert!(!config(&h).stop_on_error);
         pick(&mut h, "LuaLaTeX");
         assert_eq!(config(&h).engine, lemmata_project::Engine::Lualatex);
+        // The writes land in order: the file ends with the last choices, and so does the screen.
+        wait_for(&mut h, "lemmata.toml", |_| {
+            std::fs::read_to_string(project.join("lemmata.toml"))
+                .is_ok_and(|t| t.contains("lualatex") && !t.contains("stop_on_error"))
+        });
+        for _ in 0..20 {
+            h.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(config(&h).engine, lemmata_project::Engine::Lualatex);
+        assert!(!config(&h).draft && !config(&h).stop_on_error);
     }
 
     #[test]
