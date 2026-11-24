@@ -451,7 +451,8 @@ impl Workspace {
                 if p.to_lowercase().ends_with(".pdf") {
                     Ok(crate::backend::Viewed::Pdf(bytes))
                 } else {
-                    viewer::decode(&p, &bytes).map(crate::backend::Viewed::Image)
+                    viewer::decode_sized(&p, &bytes)
+                        .map(|(image, size)| crate::backend::Viewed::Image(image, size))
                 }
             });
             Msg::Viewed(p, r)
@@ -866,8 +867,8 @@ impl Workspace {
                             view.load(bytes);
                             viewer::Viewer::Pdf(Box::new(view))
                         }
-                        Ok(crate::backend::Viewed::Image(img)) => viewer::Viewer::Image {
-                            size: img.size,
+                        Ok(crate::backend::Viewed::Image(img, size)) => viewer::Viewer::Image {
+                            size,
                             image: Some(img),
                             tex: None,
                             actual: false,

@@ -115,7 +115,8 @@ pub enum Msg {
 
 pub enum Viewed {
     Pdf(Vec<u8>),
-    Image(egui::ColorImage),
+    /// The decoded picture (maybe scaled down), and its size in the file.
+    Image(egui::ColorImage, [usize; 2]),
 }
 
 /// The exports that ask where to save.

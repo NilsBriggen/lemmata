@@ -23,9 +23,18 @@ pub enum Viewer {
 const MAX_SIDE: u32 = 8192;
 
 /// Decodes an image file, off the UI thread.
+#[cfg(test)]
 pub fn decode(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
+    decode_sized(path, bytes).map(|(image, _)| image)
+}
+
+/// `decode`, and the picture's own size in pixels: the texture may be a scaled-down copy.
+pub fn decode_sized(path: &str, bytes: &[u8]) -> Result<(ColorImage, [usize; 2]), String> {
     if path.to_lowercase().ends_with(".svg") {
-        return decode_svg(path, bytes);
+        return decode_svg(path, bytes).map(|i| {
+            let size = i.size;
+            (i, size)
+        });
     }
     let bad = |e: image::ImageError| format!("Could not open {path}: {e}");
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
@@ -37,7 +46,15 @@ pub fn decode(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
     limits.max_image_height = Some(40_000);
     limits.max_alloc = Some(512 << 20);
     reader.limits(limits);
-    let img = reader.decode().map_err(bad)?;
+    use image::ImageDecoder;
+    let mut decoder = reader.into_decoder().map_err(bad)?;
+    // A phone's portrait photo is stored sideways, with a tag that says how to turn it.
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).map_err(bad)?;
+    img.apply_orientation(orientation);
+    let size = [img.width() as usize, img.height() as usize];
     // Textures are at most MAX_SIDE a side: a bigger image is shown scaled down.
     let img = if img.width() > MAX_SIDE || img.height() > MAX_SIDE {
         img.thumbnail(MAX_SIDE, MAX_SIDE)
@@ -45,9 +62,9 @@ pub fn decode(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
         img
     };
     let rgba = img.to_rgba8();
-    Ok(ColorImage::from_rgba_unmultiplied(
-        [rgba.width() as usize, rgba.height() as usize],
-        &rgba,
+    Ok((
+        ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], &rgba),
+        size,
     ))
 }
 
@@ -240,6 +257,28 @@ fn checkerboard(painter: &egui::Painter, rect: Rect) {
 mod tests {
     use super::*;
     use base64::Engine;
+
+    #[test]
+    fn tiff_and_bmp_open_and_a_huge_picture_reports_its_own_size() {
+        for format in [image::ImageFormat::Tiff, image::ImageFormat::Bmp] {
+            let mut bytes = Vec::new();
+            image::RgbImage::from_pixel(3, 2, image::Rgb([9, 9, 9]))
+                .write_to(&mut std::io::Cursor::new(&mut bytes), format)
+                .unwrap();
+            let (img, size) = decode_sized("f", &bytes).unwrap();
+            assert_eq!((img.size, size), ([3, 2], [3, 2]));
+        }
+        let mut wide = Vec::new();
+        image::RgbImage::new(9000, 1)
+            .write_to(
+                &mut std::io::Cursor::new(&mut wide),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        let (img, size) = decode_sized("wide.png", &wide).unwrap();
+        assert_eq!(size, [9000, 1]);
+        assert_eq!(img.size[0], 8192, "the texture is the scaled copy");
+    }
 
     #[test]
     fn svg_paths_text_and_transparency_render_offline() {

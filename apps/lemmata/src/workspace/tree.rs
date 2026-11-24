@@ -138,7 +138,10 @@ pub fn is_text_file(path: &str) -> bool {
 
 /// Images and PDFs open in a read-only viewer tab.
 pub fn is_viewer_file(path: &str) -> bool {
-    ["png", "jpg", "jpeg", "gif", "webp", "svg", "pdf"].contains(&ext(base_name(path)).as_str())
+    [
+        "png", "jpg", "jpeg", "gif", "webp", "svg", "pdf", "tif", "tiff", "bmp",
+    ]
+    .contains(&ext(base_name(path)).as_str())
 }
 
 pub fn is_tex(path: &str) -> bool {
@@ -157,7 +160,8 @@ pub fn count_files(e: &Entry) -> usize {
 pub fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
+    } else if bytes < 1024 * 1024 - 512 {
+        // Up to the last 512 bytes: those round to "1024 KB", and are shown as MB.
         let k = bytes as f64 / 1024.0;
         if bytes < 10 * 1024 {
             format!("{k:.1} KB")
@@ -196,7 +200,9 @@ pub fn kind(name: &str) -> Kind {
     match ext(name).as_str() {
         "tex" => Kind::Tex,
         "bib" => Kind::Bib,
-        "png" | "jpg" | "jpeg" | "pdf" | "eps" | "svg" | "gif" => Kind::Image,
+        "png" | "jpg" | "jpeg" | "pdf" | "eps" | "svg" | "gif" | "tif" | "tiff" | "bmp" => {
+            Kind::Image
+        }
         "sty" | "cls" | "bst" | "bbx" | "cbx" | "tikz" => Kind::Code,
         "toml" => Kind::Config,
         _ => Kind::File,
@@ -206,6 +212,12 @@ pub fn kind(name: &str) -> Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_size_just_below_a_megabyte_is_not_1024_kb() {
+        assert_eq!(format_size(1_048_575), "1.0 MB");
+        assert_eq!(format_size(1_040_000), "1016 KB");
+    }
 
     fn f(path: &str, size: u64, modified: u64) -> Entry {
         Entry {
