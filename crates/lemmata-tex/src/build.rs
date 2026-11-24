@@ -1428,8 +1428,12 @@ pub(crate) fn prepare_outdir(project: &Project) {
         }
     }
     let outdir = project.outdir_abs();
+    // Only a folder Lemmata made (or found empty) is marked as its own; someone's data folder is not.
+    let ours = std::fs::read_dir(&outdir).is_ok_and(|mut d| d.next().is_none()) || !outdir.exists();
     let _ = std::fs::create_dir_all(&outdir);
-    let _ = std::fs::write(outdir.join(MARKER), "");
+    if ours {
+        let _ = std::fs::write(outdir.join(MARKER), "");
+    }
     // A TeX run stopped part way leaves its file list as `pdflatex12345.fls`; one per cancel.
     for e in std::fs::read_dir(&outdir).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -2854,7 +2858,13 @@ mod tests {
         std::fs::write(p.outdir_abs().join("mine.log"), "keep me").unwrap();
         assert!(clean(&p).is_err());
         assert!(p.outdir_abs().join("mine.log").exists());
+        // A build into someone's folder does not make it Lemmata's.
         prepare_outdir(&p);
+        assert!(clean(&p).is_err());
+        assert!(p.outdir_abs().join("mine.log").exists());
+        std::fs::remove_file(p.outdir_abs().join("mine.log")).unwrap();
+        prepare_outdir(&p);
+        std::fs::write(p.outdir_abs().join("main.log"), "").unwrap();
         assert_eq!(clean(&p).unwrap(), 1);
         assert!(
             p.outdir_abs().join(MARKER).exists(),
