@@ -588,6 +588,9 @@ fn flatten_tex(
 /// and the files inlined are left out of the zip. Returns the number of files
 /// written.
 pub fn zip_arxiv(p: &Project, dest: &Path, strip: bool, flatten: bool) -> Result<usize, String> {
+    if p.config.draft {
+        return Err("Fast (draft) mode leaves figures out of the build, so they would be missing from the zip. Turn it off and build again.".into());
+    }
     let stem = p
         .main
         .file_stem()
@@ -754,6 +757,21 @@ mod tests {
             names(&p),
             ["ch/one.tex", "main.tex", "refs.bib", "same.tex"]
         );
+    }
+
+    #[test]
+    fn arxiv_export_refuses_a_draft_build() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        std::fs::write(p.outdir_abs().join("main.fls"), "INPUT main.tex\n").unwrap();
+        let dest = d.path().join("out.zip");
+        p.config.draft = true;
+        let err = zip_arxiv(&p, &dest, false, false).unwrap_err();
+        assert!(err.contains("draft") && !dest.exists(), "{err}");
+        p.config.draft = false;
+        assert!(zip_arxiv(&p, &dest, false, false).is_ok());
     }
 
     #[test]
