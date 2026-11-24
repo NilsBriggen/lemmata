@@ -572,7 +572,11 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
             || sn.body.trim().is_empty()
             || list.iter().position(|o| o.trigger == sn.trigger) != Some(i)
     };
-    let problems = (0..list.len()).filter(|&i| invalid(list, i)).count();
+    // A snippet nobody filled in is dropped without a word; the others must be put right to save.
+    let blank = |sn: &Snippet| sn.trigger.trim().is_empty() && sn.body.trim().is_empty();
+    let problems = (0..list.len())
+        .filter(|&i| invalid(list, i) && !blank(&list[i]))
+        .count();
     let (mut save, mut cancel) = (false, false);
     let r = widgets::modal_with(
         ctx,
@@ -688,6 +692,7 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
         Some(&mut |ui: &mut Ui| {
             if Button::new("Save")
                 .kind(Kind::Primary)
+                .enabled(problems == 0)
                 .show(ui, p)
                 .clicked()
             {
@@ -699,8 +704,9 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
             if problems > 0 {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let t = format!(
-                        "{problems} snippet{} incomplete or repeated and will be skipped.",
-                        if problems == 1 { " is" } else { "s are" }
+                        "{problems} snippet{} incomplete or repeated: fix {} to save.",
+                        if problems == 1 { " is" } else { "s are" },
+                        if problems == 1 { "it" } else { "them" }
                     );
                     ui.label(RichText::new(t).size(12.5).color(p.warn));
                 });
