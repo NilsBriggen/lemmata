@@ -14,6 +14,8 @@ use std::sync::LazyLock;
 static LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\label\s*\{([^{}]*)\}").unwrap());
 static REF: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\\([a-zA-Z]*ref)\*?(?:\[[^\]]*\])?\s*\{([^{}]*)\}").unwrap());
+static HYPERREF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\\hyperref\s*\[([^\]]*)\]").unwrap());
 static CITE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\\[a-zA-Z]*cite[a-zA-Z]*\*?(?:\[[^\]]*\]){0,2}\s*\{([^{}]*)\}").unwrap()
 });
@@ -66,6 +68,7 @@ pub fn symbol_at(line: &str, col: usize, is_bib: bool) -> Option<(SymbolKind, St
                 matches!(&m[1], "href" | "hyperref")
             })
         })
+        .or_else(|| scan(&HYPERREF, SymbolKind::Label, 1, &|_| false))
         .or_else(|| scan(&CITE, SymbolKind::Cite, 1, &|_| false))
 }
 
@@ -376,6 +379,14 @@ fn refs(ui: &mut Ui, p: &Palette, uses: &[Occurrence]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_label_of_a_hyperref_is_found() {
+        assert_eq!(
+            symbol_at("\\hyperref[sec:a]{x}", 12, false),
+            Some((SymbolKind::Label, "sec:a".into()))
+        );
+    }
 
     // symbolAt.test.ts
     #[test]
