@@ -121,7 +121,9 @@ fn workers() -> usize {
     std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 3))
 }
 
-type Routes = Arc<std::sync::Mutex<HashMap<u64, (u64, Sender<Done>)>>>;
+/// Document id: its viewer, where answers go, and whether it has loaded. A viewer's loaded
+/// document stays served until the next one loads, so a PDF that fails to parse changes nothing.
+type Routes = Arc<std::sync::Mutex<HashMap<u64, (u64, Sender<Done>, bool)>>>;
 
 struct Pool {
     tx: Vec<Sender<Job>>,
@@ -189,8 +191,8 @@ impl Engine {
         let page = match &job {
             Job::Load { doc, .. } => {
                 let mut routes = self.pool.routes.lock().unwrap_or_else(|e| e.into_inner());
-                routes.retain(|_, (owner, _)| *owner != self.owner);
-                routes.insert(*doc, (self.owner, self.done.clone()));
+                routes.retain(|_, (owner, _, loaded)| *owner != self.owner || *loaded);
+                routes.insert(*doc, (self.owner, self.done.clone(), false));
                 drop(routes);
                 for tx in &self.pool.tx {
                     let _ = tx.send(job.clone());
@@ -210,7 +212,7 @@ impl Drop for Engine {
             .routes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|_, (owner, _)| *owner != self.owner);
+            .retain(|_, (owner, _, _)| *owner != self.owner);
     }
 }
 
@@ -223,11 +225,19 @@ fn run(jobs: Receiver<Job>, routes: Routes, ctx: egui::Context, announce: bool) 
             | Done::Decorated { doc, .. }
             | Done::Png { doc, .. } => *doc,
         };
-        let tx = routes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&doc)
-            .map(|(_, tx)| tx.clone());
+        let mut routes = routes.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = routes.get(&doc).map(|(_, tx, _)| tx.clone());
+        if let Done::Loaded { result, .. } = &d {
+            if result.is_err() {
+                routes.remove(&doc);
+            } else if let Some(r) = routes.get_mut(&doc) {
+                r.2 = true;
+                let owner = r.0;
+                // The viewer has moved on to this document: its older ones are done with.
+                routes.retain(|id, (o, _, loaded)| !(*o == owner && *loaded && *id < doc));
+            }
+        }
+        drop(routes);
         if let Some(tx) = tx {
             let _ = tx.send(d);
             ctx.request_repaint();
@@ -340,7 +350,12 @@ fn run(jobs: Receiver<Job>, routes: Routes, ctx: egui::Context, announce: bool) 
             while let Ok(j) = jobs.try_recv() {
                 queue.push_back(j);
             }
-            let Some(job) = queue.pop_front() else {
+            // Loads and renders first: text layers can wait (a search asks for one per page).
+            let at = queue
+                .iter()
+                .position(|j| !matches!(j, Job::Decorate { .. }))
+                .unwrap_or(0);
+            let Some(job) = queue.remove(at) else {
                 continue;
             };
             let other_doc = match &job {
@@ -1066,6 +1081,81 @@ mod tests {
         );
     }
 
+    fn wait_for(e: &Engine, what: &str, f: &dyn Fn(&Done) -> bool) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            assert!(std::time::Instant::now() < until, "no {what}");
+            if let Ok(d) = e.rx.recv_timeout(std::time::Duration::from_millis(50))
+                && f(&d)
+            {
+                return;
+            }
+        }
+    }
+
+    fn render(doc: u64) -> Job {
+        Job::Render {
+            doc,
+            page: 0,
+            scale: 0.5,
+            dark: false,
+            epoch: None,
+            thumb: false,
+        }
+    }
+
+    /// A build that wrote a broken PDF: the page on screen keeps rendering, links and all.
+    #[test]
+    fn a_pdf_that_fails_to_load_leaves_the_old_one_working() {
+        let e = Engine::new(egui::Context::default());
+        let bytes = Arc::new(include_bytes!("../../tests/pdf/type3-bitmap-fonts.pdf").to_vec());
+        let (a, b) = (e.next_doc(), e.next_doc());
+        e.send(Job::Load { doc: a, bytes });
+        wait_for(
+            &e,
+            "load",
+            &|d| matches!(d, Done::Loaded { doc, result: Ok(_) } if *doc == a),
+        );
+        e.send(Job::Load {
+            doc: b,
+            bytes: Arc::new(vec![0]),
+        });
+        wait_for(
+            &e,
+            "the failure",
+            &|d| matches!(d, Done::Loaded { doc, result: Err(_) } if *doc == b),
+        );
+        e.send(render(a));
+        wait_for(
+            &e,
+            "a render of the old document",
+            &|d| matches!(d, Done::Rendered { doc, .. } if *doc == a),
+        );
+    }
+
+    #[test]
+    fn a_render_does_not_wait_for_queued_text_layers() {
+        let e = Engine::new(egui::Context::default());
+        let bytes = Arc::new(include_bytes!("../../tests/pdf/type3-bitmap-fonts.pdf").to_vec());
+        let a = e.next_doc();
+        e.send(Job::Load { doc: a, bytes });
+        wait_for(
+            &e,
+            "load",
+            &|d| matches!(d, Done::Loaded { doc, result: Ok(_) } if *doc == a),
+        );
+        for _ in 0..200 {
+            e.send(Job::Decorate { doc: a, page: 0 });
+        }
+        e.send(render(a));
+        let decorated = std::cell::Cell::new(0);
+        wait_for(&e, "the render", &|d| {
+            decorated.set(decorated.get() + matches!(d, Done::Decorated { .. }) as usize);
+            matches!(d, Done::Rendered { doc, .. } if *doc == a)
+        });
+        assert!(decorated.get() < 200, "{} text layers came first", decorated.get());
+    }
+
     #[test]
     fn superseded_pdf_routes_are_retired_per_viewer() {
         let one = Engine::new(egui::Context::default());
@@ -1083,19 +1173,19 @@ mod tests {
             bytes: Arc::new(vec![0]),
         });
         let routes = one.pool.routes.lock().unwrap();
-        assert_eq!(
+        assert!(
             routes
                 .values()
-                .filter(|(owner, _)| *owner == one.owner)
-                .count(),
-            1
+                .filter(|(owner, ..)| *owner == one.owner)
+                .count()
+                <= 1
         );
-        assert_eq!(
+        assert!(
             routes
                 .values()
-                .filter(|(owner, _)| *owner == two.owner)
-                .count(),
-            1
+                .filter(|(owner, ..)| *owner == two.owner)
+                .count()
+                <= 1
         );
     }
 
