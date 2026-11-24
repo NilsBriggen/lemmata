@@ -98,6 +98,8 @@ pub enum NoticeAction {
     ArxivAnyway(bool),
     BuildExport(crate::backend::Save),
     ExportOlder(crate::backend::Save),
+    /// Export the PDF of the latest build although it has errors.
+    ExportAnyway(crate::backend::Save),
     /// Build normally again after a draft export.
     DraftOff,
     /// Loads zotero.bib in the main file.
@@ -116,6 +118,7 @@ impl NoticeAction {
             NoticeAction::ArxivAnyway(_) => "Export anyway",
             NoticeAction::BuildExport(_) => "Build and export",
             NoticeAction::ExportOlder(_) => "Export older PDF",
+            NoticeAction::ExportAnyway(_) => "Export anyway",
             NoticeAction::DraftOff => "Switch to Normal",
             NoticeAction::LinkZotero => "Add it",
             NoticeAction::PasteAsText(..) => "Paste as text instead",

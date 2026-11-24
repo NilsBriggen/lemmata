@@ -9,6 +9,15 @@ use lemmata_log::{Diagnostic, Kind, Severity};
 use lemmata_tex::{Outcome, Status};
 use std::time::{Duration, Instant};
 
+/// The PDF's lines come from the last build: a file with unsaved changes may be off by some lines.
+const UNBUILT_EDITS: &str = "This file has changes that aren't built yet, so the position may be a few lines off.";
+
+/// Whether a SyncTeX hit is a file of the project the user can edit: not one the build wrote
+/// (the contents list, the bibliography) and not one outside it.
+fn is_editable_source(path: &str, inside_project: bool, outdir: &str) -> bool {
+    inside_project && !std::path::Path::new(path).starts_with(outdir.trim_start_matches("./"))
+}
+
 /// Automatic builds wait this long after the last autosave, so a build isn't started and
 /// cancelled again while typing.
 const AUTO_COMPILE_DELAY: Duration = Duration::from_millis(1500);
@@ -44,6 +53,21 @@ pub struct BuildState {
 }
 
 impl BuildState {
+    /// The exports waiting for build `seq`. When a newer build is running in its place, they wait
+    /// for that one; after a Stop they are dropped.
+    fn take_waiting(&mut self, seq: u64) -> (Option<(u64, bool)>, Option<(u64, Save)>) {
+        let arxiv = self.arxiv.filter(|(s, _)| *s == seq);
+        let export = self.export.filter(|(s, _)| *s == seq);
+        let newer = self.building.then_some(self.seq);
+        if let Some((_, f)) = arxiv {
+            self.arxiv = newer.map(|s| (s, f));
+        }
+        if let Some((_, w)) = export {
+            self.export = newer.map(|s| (s, w));
+        }
+        if seq == self.seq { (arxiv, export) } else { (None, None) }
+    }
+
     pub fn errors(&self) -> usize {
         self.diagnostics
             .iter()
@@ -281,6 +305,9 @@ impl Workspace {
         let Some(line) = self.editors.get(&path).map(|e| e.cursor_line()) else {
             return;
         };
+        if self.buffers.is_dirty(&path) {
+            self.notice(UNBUILT_EDITS, Tone::Info);
+        }
         self.spawn(backend, move |shell| {
             Msg::Synced(shell.synctex_forward(path, line as u32, 0))
         });
@@ -352,13 +379,10 @@ impl Workspace {
     ) -> bool {
         self.pane.view.dark = settings.pdf_dark && p.dark;
         self.pane.view.layout = crate::pdf::view::Layout::from_setting(&settings.pdf_layout);
-        let (editors, root) = (&self.editors, &self.info.root);
+        let root = &self.info.root;
         let (sources, generation) = (&self.build.sources, self.build.diag_gen);
         let source = |f: &str, from: usize, to: usize| -> Vec<String> {
-            if let Some(e) = editors.get(f) {
-                let to = to.min(e.doc.line_count());
-                return (from..=to).map(|n| e.doc.line(n - 1)).collect();
-            }
+            // The file as the build read it, not the editor: lines typed since shift the excerpt.
             let mut cache = sources.borrow_mut();
             if cache.0 != generation {
                 *cache = (generation, Default::default());
@@ -485,14 +509,7 @@ impl Workspace {
                 if seq == self.build.seq {
                     self.build.building = false;
                 }
-                let arxiv = self.build.arxiv.filter(|(s, _)| *s == seq);
-                if arxiv.is_some() {
-                    self.build.arxiv = None;
-                }
-                let export = self.build.export.filter(|(s, _)| *s == seq);
-                if export.is_some() {
-                    self.build.export = None;
-                }
+                let (arxiv, export) = self.build.take_waiting(seq);
                 if seq != self.build.seq {
                     return None;
                 }
@@ -543,6 +560,16 @@ impl Workspace {
                         if let Some((_, what)) = export {
                             if ok {
                                 backend.save(self.project, what, self.export_name(what));
+                            } else if wrote {
+                                // Built from the latest edits, with errors left: nothing is out of date.
+                                let n = self.build.errors();
+                                self.notices.push(
+                                    Notice::new(
+                                        format!("The PDF has {n} error{}, but it includes your latest edits.", if n == 1 { "" } else { "s" }),
+                                        Tone::Info,
+                                    )
+                                    .action(NoticeAction::ExportAnyway(what)),
+                                );
                             } else {
                                 self.offer_stale_export(what);
                             }
@@ -590,7 +617,12 @@ impl Workspace {
                 Tone::Info,
             ),
             Msg::SourceHit(Ok(Some(hit))) => {
-                if hit.inside_project {
+                if !is_editable_source(&hit.path, hit.inside_project, &self.info.config.outdir) {
+                    self.notice("That text comes from a generated or system file, not from your project.", Tone::Info);
+                } else {
+                    if self.buffers.is_dirty(&hit.path) {
+                        self.notice(UNBUILT_EDITS, Tone::Info);
+                    }
                     self.goto(backend, &hit.path, hit.line as usize);
                 }
             }
@@ -604,7 +636,7 @@ impl Workspace {
                 self.notice(if n > 0 { "Cleared the cached files." } else { "Nothing to clear." }, Tone::Ok);
                 self.after_saving(backend, settings, |ws, _| ws.build_soon(false, false));
             }
-            Msg::Cleaned(Err(e)) => self.notice(e, Tone::Info),
+            Msg::Cleaned(Err(e)) => self.notice(e, Tone::Error),
             Msg::SaveTo(project, _, None) if project == self.project => {}
             Msg::SaveTo(project, what, Some(dest)) if project == self.project => {
                 let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -628,7 +660,7 @@ impl Workspace {
                 Save::Arxiv { flatten: true } => self.notice(format!("Exported {n} files with the sources merged into one .tex file and comments removed."), Tone::Info),
                 Save::Arxiv { flatten: false } => self.notice(format!("Exported {n} files with comments removed, including the compiled bibliography."), Tone::Info),
             },
-            Msg::Exported(_, _, Err(e)) => self.notice(e, Tone::Info),
+            Msg::Exported(_, _, Err(e)) => self.notice(e, Tone::Error),
             Msg::PackageAdded(Ok(())) => {
                 // Read the main file again, with its new \usepackage; text typed meanwhile asks first.
                 let main = self.info.main.clone();
@@ -674,7 +706,7 @@ impl Workspace {
                     self.build_soon(false, false);
                 }
             }
-            NoticeAction::ExportOlder(what) => {
+            NoticeAction::ExportOlder(what) | NoticeAction::ExportAnyway(what) => {
                 backend.save(self.project, what, self.export_name(what))
             }
             NoticeAction::DraftOff => self.set_config(backend, settings, |c| c.draft = false),
@@ -737,5 +769,45 @@ impl Workspace {
         self.after_saving(backend, settings, move |ws, b| {
             ws.spawn(b, move |shell| Msg::Info(shell.set_config(next)));
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_export_waits_for_the_build_that_replaced_its_build() {
+        let mut b = BuildState {
+            seq: 5,
+            building: true,
+            export: Some((4, Save::Pdf)),
+            arxiv: Some((4, true)),
+            ..Default::default()
+        };
+        // Build 4 ended after build 5 started: its exports move over, and nothing is reported yet.
+        assert_eq!(b.take_waiting(4), (None, None));
+        assert_eq!((b.export, b.arxiv), (Some((5, Save::Pdf)), Some((5, true))));
+        // Build 5 itself finishing hands them out.
+        b.building = false;
+        assert_eq!(b.take_waiting(5), (Some((5, true)), Some((5, Save::Pdf))));
+        assert!(b.export.is_none() && b.arxiv.is_none());
+        // After a Stop nothing is waiting for a later build.
+        let mut b = BuildState {
+            seq: 6,
+            export: Some((5, Save::Pdf)),
+            ..Default::default()
+        };
+        assert_eq!(b.take_waiting(5), (None, None));
+        assert!(b.export.is_none());
+    }
+
+    #[test]
+    fn generated_and_outside_files_are_not_opened_from_the_pdf() {
+        assert!(is_editable_source("chapters/a.tex", true, ".lemmata/build"));
+        assert!(!is_editable_source(".lemmata/build/main.toc", true, ".lemmata/build"));
+        assert!(!is_editable_source("/usr/share/x.cls", false, ".lemmata/build"));
+        // "build" is the build folder, "builder.tex" is not in it.
+        assert!(is_editable_source("builder.tex", true, "build"));
     }
 }
