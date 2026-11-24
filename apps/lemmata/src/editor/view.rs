@@ -3847,6 +3847,33 @@ mod tests {
     }
 
     #[test]
+    fn typing_a_minted_block_key_by_key_and_enter_adds_its_end() {
+        for keys in ["\\begin{minted}{python}", "\\begin{minted}{python"] {
+            let mut h = harness(Editor::new("", true), [560.0, 320.0]);
+            h.run();
+            h.get_by_label("Editor").click();
+            h.run();
+            // One key at a time, as typed: braces close themselves and popups open.
+            for c in keys.chars() {
+                h.get_by_label("Editor").type_text(&c.to_string());
+                h.run();
+            }
+            // The language list may be open: Enter picks python, a second Enter is the new line.
+            if h.state().completion.is_some() {
+                h.key_press(egui::Key::Enter);
+                h.run();
+            }
+            h.key_press(egui::Key::Enter);
+            h.run();
+            let text = h.state().doc.text();
+            assert!(
+                text.starts_with("\\begin{minted}{python}\n") && text.ends_with("\n\\end{minted}"),
+                "{keys}: {text:?}"
+            );
+        }
+    }
+
+    #[test]
     fn typing_a_command_offers_completions_and_enter_inserts_a_snippet() {
         let mut h = harness(
             Editor::new("\\begin{document}\n\n\\end{document}", true),
