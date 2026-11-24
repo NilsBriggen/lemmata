@@ -1061,6 +1061,8 @@ impl App {
             // Nothing more is saved; the session is still remembered.
             ws.stop_lsp(&self.backend);
             workspace::session::save(&self.dirs, &ws.root, &ws.session());
+            // It may have been built since: the library loads the first pages again.
+            self.library.thumbs.clear();
         }
         if let Some((_, then)) = self.leaving.take() {
             then(self);
@@ -1073,6 +1075,7 @@ impl App {
             ws.save_all(&self.backend, &self.settings);
             ws.stop_lsp(&self.backend);
             workspace::session::save(&self.dirs, &ws.root, &ws.session());
+            self.library.thumbs.clear();
         }
     }
 

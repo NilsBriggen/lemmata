@@ -996,7 +996,10 @@ fn row_name(
     let x = rect.left() + 14.0 + 30.0 + 12.0;
     let font = FontId::new(13.0, theme::font::sans_500());
     let color = if hover { p.accent } else { p.ink };
-    let galley = painter.layout_no_wrap(name.into(), font, color);
+    let chip = chip.map(|c| painter.layout_no_wrap(c.into(), FontId::proportional(11.0), p.muted));
+    // The name stops at the end of its column, before the chip's room (or the location's).
+    let room = rect.right() - x - 8.0 - chip.as_ref().map_or(0.0, |g| g.size().x + 22.0);
+    let galley = one_line(painter, name, font, color, room);
     let pos = pos2(x, rect.center().y - galley.size().y / 2.0);
     let w = galley.size().x;
     if hover {
@@ -1007,8 +1010,7 @@ fn row_name(
         );
     }
     painter.galley(pos, galley, color);
-    if let Some(chip) = chip {
-        let g = painter.layout_no_wrap(chip.into(), FontId::proportional(11.0), p.muted);
+    if let Some(g) = chip {
         let r = Rect::from_min_size(
             pos2(x + w + 8.0, rect.center().y - 9.0),
             Vec2::new(g.size().x + 14.0, 18.0),
@@ -1318,22 +1320,35 @@ fn card_frame(
     rect
 }
 
+/// One line of text cut off with an ellipsis at `width`.
+fn one_line(
+    painter: &egui::Painter,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.into(), font, color);
+    job.wrap.max_width = width.max(0.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    painter.layout_job(job)
+}
+
 fn card_info(painter: &egui::Painter, p: &Palette, rect: Rect, title: &str, sub: &str) {
     let top = rect.top() + 1.0 + 210.0 + 1.0 + 10.0;
-    painter.text(
-        pos2(rect.left() + 12.0, top),
-        Align2::LEFT_TOP,
+    // A long name stops inside the card instead of running over the next one.
+    let width = rect.width() - 24.0;
+    let title = one_line(
+        painter,
         title,
         FontId::new(13.0, theme::font::sans_600()),
         p.ink,
+        width,
     );
-    painter.text(
-        pos2(rect.left() + 12.0, top + 19.0),
-        Align2::LEFT_TOP,
-        sub,
-        FontId::proportional(12.0),
-        p.muted,
-    );
+    painter.galley(pos2(rect.left() + 12.0, top), title, p.ink);
+    let sub = one_line(painter, sub, FontId::proportional(12.0), p.muted, width);
+    painter.galley(pos2(rect.left() + 12.0, top + 19.0), sub, p.muted);
 }
 
 fn commit(st: &mut State, action: &mut Option<Action>) {
@@ -1781,6 +1796,26 @@ mod snapshots {
         });
         h.run();
         h.try_snapshot(name)
+    }
+
+    #[test]
+    fn a_long_project_name_is_cut_to_the_width_it_has() {
+        let width = std::sync::Arc::new(std::sync::Mutex::new(0.0));
+        let w = width.clone();
+        let mut h = testing::harness(theme::LIGHT, move |ui| {
+            let long = "Master_Thesis_Final_Version_Corrected_2024_v3";
+            let g = one_line(
+                ui.painter(),
+                long,
+                FontId::proportional(13.0),
+                Color32::BLACK,
+                90.0,
+            );
+            *w.lock().unwrap() = g.size().x;
+        });
+        h.run();
+        let got = *width.lock().unwrap();
+        assert!(got > 0.0 && got <= 90.0, "{got}");
     }
 
     #[test]
