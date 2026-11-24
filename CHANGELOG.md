@@ -49,7 +49,8 @@ A release of fixes and smaller features from a review of the whole app: more tha
 - `!pdfTeX error`, font warnings and missing characters are reported, and errors after an overfull box point at the right file.
 - Switching projects during a build no longer waits for that build to finish.
 - Project replace with a pattern that can match nothing changes only what it found; editing the replacement keeps the lines you unticked.
-- Quick changes in the Compile menu land in `lemmata.toml` in order.
+- Quick changes in the Compile menu land in `lemmata.toml` in order and stay on screen.
+- A PDF no longer loses its selection and reloads its pages when another PDF is open at the same time (a PDF tab or a presentation).
 - Reloading a file changed outside keeps your cursors and folds; CRLF files keep CRLF line breaks; "Load the version on disk" that can't be read keeps your edits.
 - Image and PDF tabs reload when their file changes and close when it's deleted.
 - Deleting a file whose save failed says its edits are gone; a partial Undo of a move keeps the rest for later.
