@@ -65,10 +65,14 @@ fn safe_path(p: &str) -> Option<PathBuf> {
 }
 
 fn parse(json: &[u8]) -> Result<Vec<Entry>, String> {
-    let index: Index =
+    let mut index: Index =
         serde_json::from_slice(json).map_err(|e| format!("The template list is damaged: {e}"))?;
     if index.version != 1 {
         return Err("The template list needs a newer Lemmata. Update the app to see it.".into());
+    }
+    // A list with no templates (a bad publish) would have the cache emptied of all it holds.
+    if index.templates.is_empty() {
+        return Err("The template list is empty, so the templates were left as they are.".into());
     }
     for t in &index.templates {
         let bad = !valid_id(&t.id)
@@ -89,7 +93,25 @@ fn parse(json: &[u8]) -> Result<Vec<Entry>, String> {
             ));
         }
     }
+    // Checked against the lowercase hex `sha256` writes, whatever case the list was made in.
+    for t in &mut index.templates {
+        for f in t.files.iter_mut().chain([&mut t.preview]) {
+            f.sha256.make_ascii_lowercase();
+        }
+    }
     Ok(index.templates)
+}
+
+/// A path for a URL: each part with anything but letters, digits and `-._~` as %XX.
+fn url_path(path: &str) -> String {
+    path.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 fn is_sha256(s: &str) -> bool {
@@ -130,7 +152,8 @@ fn tidy(cache: &Path, entries: &[Entry]) -> std::io::Result<()> {
     let ids: HashSet<&str> = entries.iter().map(|t| t.id.as_str()).collect();
     for e in std::fs::read_dir(cache)?.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if e.path().is_dir() && !ids.contains(name.as_str()) {
+        // A dot folder is another refresh's staging.
+        if e.path().is_dir() && !name.starts_with('.') && !ids.contains(name.as_str()) {
             std::fs::remove_dir_all(e.path())?;
         }
     }
@@ -235,7 +258,9 @@ async fn download(
 ) -> Result<usize, String> {
     let save = |e: std::io::Error| format!("Couldn't save the templates: {e}");
     std::fs::create_dir_all(staging).map_err(save)?;
-    for template in entries {
+    // Only a template with something new is copied (to keep its other files) and replaced.
+    let changing: HashSet<&str> = missing(cache, entries).iter().map(|(id, _)| *id).collect();
+    for template in entries.iter().filter(|t| changing.contains(t.id.as_str())) {
         let old = cache.join(&template.id);
         if old.exists() {
             crate::files::copy_dir(&old, &staging.join(&template.id)).map_err(save)?;
@@ -253,7 +278,7 @@ async fn download(
                  (id, path, size, hash): (String, String, u64, String)| {
         let (client, url, target) = (
             client.clone(),
-            format!("{base}templates/{id}/{path}"),
+            format!("{base}templates/{id}/{}", url_path(&path)),
             staging.join(&id).join(&path),
         );
         running.spawn(async move {
@@ -289,6 +314,9 @@ async fn download(
 /// Brings the cache up to date with the template collection. Returns how many templates it has.
 /// Files that fail their check are not kept; a template then stays as it was, or absent.
 pub async fn refresh(cache: &Path) -> Result<usize, String> {
+    // One refresh at a time: a second would remove the first one's staging folder.
+    static ONE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _one = ONE.lock().await;
     let client = crate::http_client(Duration::from_secs(120))?;
     // Debug builds can point elsewhere (a local copy of the repository) to test changes before they're published.
     #[cfg(debug_assertions)]
@@ -348,6 +376,16 @@ mod tests {
         }
         assert!(parse(index(&file("chapters/a.tex", b"x")).as_bytes()).is_ok());
         assert!(parse(br#"{"version":2,"templates":[]}"#).is_err());
+    }
+
+    #[test]
+    fn an_empty_list_is_refused_and_uppercase_hashes_are_read() {
+        assert!(parse(br#"{"version":1,"templates":[]}"#).is_err());
+        let upper =
+            index(&file("a.tex", b"x")).replace(&sha256(b"x"), &sha256(b"x").to_uppercase());
+        let entries = parse(upper.as_bytes()).unwrap();
+        assert_eq!(entries[0].files[0].sha256, sha256(b"x"));
+        assert_eq!(url_path("a b/c?#.tex"), "a%20b/c%3F%23.tex");
     }
 
     fn serve(index: String) -> String {
