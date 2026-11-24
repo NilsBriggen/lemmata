@@ -494,6 +494,15 @@ fn body(
             changed = true;
         }
     });
+    if s.trash_mode != "system" {
+        ui.label(
+            RichText::new(
+                "Deleted files stay in the project folder for 7 days (Recently deleted), then are removed for good.",
+            )
+            .size(12.5)
+            .color(p.muted),
+        );
+    }
     section_end(ui, p);
 
     heading(ui, p, "TeX");

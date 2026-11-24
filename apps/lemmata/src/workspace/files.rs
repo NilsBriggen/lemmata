@@ -1418,7 +1418,10 @@ impl Workspace {
                                 &format!("You can restore {it} from your system's trash."),
                             );
                         } else {
-                            muted(ui, &format!("You can bring {it} back with Undo."));
+                            muted(
+                                ui,
+                                &format!("You can bring {it} back with Undo for 7 days."),
+                            );
                         }
                         if !refs.is_empty() {
                             let these = if paths.len() == 1 { "it" } else { "these" };
