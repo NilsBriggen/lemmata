@@ -63,6 +63,8 @@ pub(crate) fn eligible(project: &Project, miktex: bool) -> bool {
         && c.engine == Engine::Pdflatex
         && !c.shell_escape
         && !c.draft
+        // \includeonly must come before the preamble, which the format has already read.
+        && c.include_only_names().is_empty()
         && !miktex
         && plain(&c.outdir)
         && plain(&project.main.to_string_lossy())

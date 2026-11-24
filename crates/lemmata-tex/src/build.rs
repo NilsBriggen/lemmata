@@ -100,8 +100,9 @@ pub fn latexmk_args(project: &Project, miktex: bool) -> Vec<OsString> {
         };
         args.push(format!("{flag}={bin} --enable-installer %O %S").into());
     }
-    if c.draft {
-        args.push("-usepretex=\\PassOptionsToPackage{draft}{graphicx}".into());
+    let pretex = pretex(project);
+    if !pretex.is_empty() {
+        args.push(format!("-usepretex={pretex}").into());
     }
     // A project's latexmkrc is a Perl program: only a trusted project's runs. The user's own
     // rc files still apply.
@@ -114,6 +115,20 @@ pub fn latexmk_args(project: &Project, miktex: bool) -> Vec<OsString> {
     }
     args.push(main_arg(&project.main));
     args
+}
+
+/// TeX code that runs before the main file: draft mode and the chapters to build (`\includeonly`).
+fn pretex(project: &Project) -> String {
+    let c = &project.config;
+    let mut pre = String::new();
+    if c.draft {
+        pre.push_str("\\PassOptionsToPackage{draft}{graphicx}");
+    }
+    let names = c.include_only_names();
+    if !names.is_empty() {
+        pre.push_str(&format!("\\includeonly{{{}}}", names.join(",")));
+    }
+    pre
 }
 
 /// The main file as a command-line argument. A file named `-shell-escape.tex` would be read as
@@ -1010,11 +1025,15 @@ pub(crate) fn pass_args(
     }
     args.push(format!("-output-directory={outdir}"));
     let main = main_arg(&project.main).to_string_lossy().replace('\\', "/");
-    args.push(if c.draft {
-        format!("\\PassOptionsToPackage{{draft}}{{graphicx}}\\input{{{main}}}")
+    let pretex = pretex(project);
+    if pretex.is_empty() {
+        args.push(main);
     } else {
-        main
-    });
+        // Code before the file: its name is the job's, or the outputs would be texput.*.
+        let stem = project.main.file_stem().unwrap_or_default();
+        args.push(format!("-jobname={}", stem.to_string_lossy()));
+        args.push(format!("{pretex}\\input{{{main}}}"));
+    }
     args
 }
 
@@ -1661,6 +1680,37 @@ mod tests {
         assert!(args.contains(&"-halt-on-error".to_string()));
         assert!(!args.contains(&"-f".to_string()));
         assert!(args.contains(&"-usepretex=\\PassOptionsToPackage{draft}{graphicx}".to_string()));
+    }
+
+    #[test]
+    fn included_chapters_only_reach_both_build_paths() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        let latexmk = |p: &Project| -> Vec<String> {
+            latexmk_args(p, false)
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        // Nothing chosen, or names that are not plain paths: a normal build.
+        p.config.include_only = vec!["../x".into(), "a,b".into()];
+        assert!(!latexmk(&p).iter().any(|a| a.contains("includeonly")));
+        let plain = pass_args(&p, ".lemmata/build", None, false);
+        assert_eq!(plain.last().unwrap(), "main.tex");
+        assert!(!plain.iter().any(|a| a.starts_with("-jobname")));
+
+        p.config.include_only = vec!["chapters/a".into(), "b".into(), "../x".into()];
+        assert!(latexmk(&p).contains(&"-usepretex=\\includeonly{chapters/a,b}".to_string()));
+        let direct = pass_args(&p, ".lemmata/build", None, false);
+        assert_eq!(direct.last().unwrap(), "\\includeonly{chapters/a,b}\\input{main.tex}");
+        assert!(direct.contains(&"-jobname=main".to_string()));
+
+        p.config.draft = true;
+        assert!(latexmk(&p).contains(
+            &"-usepretex=\\PassOptionsToPackage{draft}{graphicx}\\includeonly{chapters/a,b}"
+                .to_string()
+        ));
     }
 
     /// A project whose latexmk and pdflatex only record that they ran (in `calls`) and write a log and PDF.
