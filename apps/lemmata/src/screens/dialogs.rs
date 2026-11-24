@@ -1033,6 +1033,8 @@ pub struct SaveTemplate {
     pub description: String,
     /// Then move the project to the trash.
     pub trash: bool,
+    /// The project is open in the editor: it can't be trashed from under it.
+    pub open: bool,
     pub busy: bool,
     pub error: Option<String>,
     focused: bool,
@@ -1045,6 +1047,7 @@ impl SaveTemplate {
             name: project_name,
             description: String::new(),
             trash: false,
+            open: false,
             busy: false,
             error: None,
             focused: false,
@@ -1081,7 +1084,9 @@ pub fn save_template(ctx: &egui::Context, p: &Palette, st: &mut SaveTemplate) ->
                     false,
                 )
             });
-            widgets::checkbox(ui, p, &mut st.trash, "Then move the project to the trash");
+            if !st.open {
+                widgets::checkbox(ui, p, &mut st.trash, "Then move the project to the trash");
+            }
             widgets::paragraph(
                 ui,
                 "Remove any text you don't want in every new project before saving. Templates you save appear when you create a new project.",

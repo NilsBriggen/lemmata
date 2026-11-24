@@ -530,9 +530,35 @@ impl Workspace {
         );
     }
 
+    /// Closing an editor whose file is in conflict or whose last save failed drops its edits.
+    fn warn_unsaved_lost(&mut self, paths: &[String]) {
+        let lost: Vec<String> = self
+            .buffers
+            .conflicts
+            .iter()
+            .chain(&self.buffers.failed)
+            .filter(|f| {
+                paths
+                    .iter()
+                    .any(|p| *f == p || f.starts_with(&format!("{p}/")))
+            })
+            .cloned()
+            .collect();
+        if !lost.is_empty() {
+            self.notice(
+                format!(
+                    "Unsaved edits to {} were not saved and are not in the trash.",
+                    lost.join(", ")
+                ),
+                Tone::Info,
+            );
+        }
+    }
+
     fn run_trash(&mut self, backend: &Backend, paths: Vec<String>, system: bool) {
-        // Their edits were saved before (`trash`, the dialog); a save from now on would bring
-        // the files back, so the editors close.
+        // Their edits were saved before (`trash`, the dialog), except where the save was refused
+        // or failed; a save from now on would bring the files back, so the editors close.
+        self.warn_unsaved_lost(&paths);
         self.trashed(backend, &paths);
         // After any save in flight: a late save would bring a deleted file back.
         self.after_writes.push(Box::new(move |_, backend| {
@@ -709,6 +735,7 @@ impl Workspace {
         // is under way, or a late save would bring a file back (or leave a copy at an old name).
         self.save_all_quietly(backend, settings);
         if let Undo::Trash(paths) = &step {
+            self.warn_unsaved_lost(paths);
             self.trashed(backend, paths);
         }
         self.after_writes.push(Box::new(move |ws, backend| {

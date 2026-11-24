@@ -1309,8 +1309,9 @@ impl App {
                 }
                 Some(workspace::Action::SaveTemplate(path)) => {
                     let name = library::name_of(&path).to_owned();
-                    self.dialog =
-                        Some(Dialog::SaveTemplate(dialogs::SaveTemplate::new(path, name)));
+                    let mut st = dialogs::SaveTemplate::new(path, name);
+                    st.open = true;
+                    self.dialog = Some(Dialog::SaveTemplate(st));
                 }
                 None => {}
             }
@@ -4583,6 +4584,50 @@ pub(crate) mod tests {
             h.state().project.as_ref().unwrap().shortcut_sheet.is_some(),
             "the sheet stays open"
         );
+    }
+
+    /// A file in conflict can't be saved, so deleting it loses the typed text: it is said.
+    #[test]
+    fn deleting_a_file_in_conflict_says_its_edits_are_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let rel = "loose.tex";
+        std::fs::write(project.join(rel), "text\n").unwrap();
+        {
+            let app = h.state_mut();
+            let ws = app.project.as_mut().unwrap();
+            ws.open_file(&app.backend, rel);
+        }
+        wait_for(&mut h, "loose.tex open", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .editors
+                .contains_key(rel)
+        });
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let ws = app.project.as_mut().unwrap();
+        ws.editors
+            .get_mut(rel)
+            .unwrap()
+            .replace_range(0, 0, "typed ");
+        ws.buffers.conflict(rel);
+        ws.trash(&app.backend, &settings, vec![rel.into()]);
+        wait_for(&mut h, "the notice", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .notices
+                .iter()
+                .any(|n| n.text.contains("are not in the trash"))
+        });
+        let ws = h.state().project.as_ref().unwrap();
+        assert!(!ws.editors.contains_key(rel));
     }
 
     /// Hits are kept by line; lines added in the editor since the search would move them, and
