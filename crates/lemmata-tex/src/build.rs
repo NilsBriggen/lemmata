@@ -1124,10 +1124,21 @@ fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
     if biber {
         std::fs::read(mirror("bcf")).ok()?.hash(&mut h);
     } else {
-        let aux = std::fs::read_to_string(mirror("aux")).ok()?;
+        let mut aux = std::fs::read_to_string(mirror("aux")).ok()?;
         if !aux.contains("\\bibdata") {
             return None;
         }
+        // \include sends its \citation lines to the chapter's own .aux, which main.aux names.
+        let chapters: Vec<String> = aux
+            .lines()
+            .filter_map(|l| l.strip_prefix("\\@input{")?.strip_suffix('}'))
+            .filter_map(lemmata_env::fs::inside_rel)
+            .map(|n| {
+                lemmata_env::fs::read_to_string(project.outdir_abs().join(n)).unwrap_or_default()
+            })
+            .collect();
+        aux.push('\n');
+        aux.push_str(&chapters.join("\n"));
         for line in aux.lines().filter(|l| {
             l.starts_with("\\citation") || l.starts_with("\\bibstyle") || l.starts_with("\\bibdata")
         }) {
@@ -1216,7 +1227,8 @@ async fn run_bibliography(
             ],
         )
     } else {
-        ("bibtex", vec![format!("{outdir}/{stem}")])
+        // From the build folder, as latexmk does: the chapters' .aux files are named relative to it.
+        ("bibtex", vec![stem])
     };
     let Some(path) = helper(opts, name) else {
         return Ok(Bib::Skipped);
@@ -1224,11 +1236,26 @@ async fn run_bibliography(
     let before = std::fs::read(&bbl).ok();
     let mut cmd = Command::new(path);
     cmd.args(args)
-        .current_dir(&project.root)
+        .current_dir(if biber {
+            project.root.clone()
+        } else {
+            project.outdir_abs()
+        })
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     set_path(&mut cmd, opts);
+    if !biber {
+        // The project's .bib and .bst files, then the user's own folders and the usual places.
+        for var in ["BIBINPUTS", "BSTINPUTS"] {
+            let mut dirs = vec![project.root.clone()];
+            if let Some(old) = std::env::var_os(var) {
+                dirs.extend(std::env::split_paths(&old).filter(|d| !d.as_os_str().is_empty()));
+            }
+            dirs.push(PathBuf::new());
+            cmd.env(var, std::env::join_paths(dirs).unwrap_or_default());
+        }
+    }
     // A failing bibliography run shows up in the .blg; the next pass still matters.
     // A tool that cannot start (blocked by a policy) is like a missing one: the PDF is still built.
     let Ok(status) = run_step(cmd, limit, cancel).await else {
@@ -1996,6 +2023,48 @@ mod tests {
         std::fs::write(d.path().join("r.bib"), "@misc{k, title={Changed}}").unwrap();
         mark_ok(&p, started, &files_hash(&p));
         assert_eq!(fp(), None, "the next build must not skip bibtex");
+    }
+
+    /// A \cite in an \include'd chapter lands in the chapter's .aux, which main.aux only names.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cite_in_an_included_chapter_runs_bibtex_from_the_build_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.config.bib = lemmata_project::Bib::Bibtex;
+        std::fs::create_dir_all(p.outdir_abs().join("chapters")).unwrap();
+        std::fs::write(
+            out_file(&p, "aux"),
+            "\\@input{chapters/a.aux}\n\\bibdata{r}\n\\bibstyle{plain}\n",
+        )
+        .unwrap();
+        let chapter = p.outdir_abs().join("chapters/a.aux");
+        std::fs::write(&chapter, "\\citation{k1}\n").unwrap();
+        let fp1 = bib_fingerprint(&p, false);
+        std::fs::write(&chapter, "\\citation{k1,k2}\n").unwrap();
+        assert_ne!(bib_fingerprint(&p, false), fp1);
+
+        let tools = d.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let bibtex = tools.join("bibtex");
+        std::fs::write(&bibtex, "#!/bin/sh\npwd > cwd\necho \"$@\" > args\n").unwrap();
+        std::fs::set_permissions(&bibtex, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let opts = BuildOptions {
+            latexmk: &tools,
+            bin_dir: Some(&tools),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let (_keep, mut rx) = oneshot::channel();
+        run_bibliography(&p, &opts, Duration::from_secs(5), &mut rx)
+            .await
+            .unwrap();
+        let out = p.outdir_abs();
+        assert_eq!(std::fs::read_to_string(out.join("args")).unwrap().trim(), "main");
+        assert!(out.join("cwd").is_file(), "bibtex ran in the build folder");
     }
 
     /// latexmk dies without a log (Perl blocked); the engine is run directly, twice because the first log asks for a rerun.
