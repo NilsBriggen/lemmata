@@ -2,6 +2,64 @@
 
 All notable changes to Lemmata.
 
+## 3.3.0-rc.1 (unreleased)
+
+A release of fixes and smaller features from a review of the whole app: more than 200 problems, from wrong clicks in the Compile menu to text that could be lost in rare cases.
+
+### Added
+- A Code block button in the edit bar. It lists common languages and inserts a `lstlisting` block, which needs no shell escape; when your document already loads minted, it inserts a minted block. The language names also complete after `\begin{minted}{`, `\mintinline{`, `\inputminted{` and `language=`.
+- A warning before building when your document loads minted but shell escape can't run (it is off, the project isn't trusted, or the engine is Tectonic), with a button to Project settings.
+- `\begin{` offers the environments of packages such as minted, algorithm, tcolorbox and mdframed, and offers to load the package.
+- Build only some chapters: Project settings lists the chapters your main file `\include`s, and ticking some builds only those (`\includeonly`), trusted or not.
+- Paste a BibTeX entry into the citation picker or the bibliography manager to add it. A key already taken gets a letter added; a DOI already in your library isn't added twice, also not from an online search.
+- Right-click in the editor keeps the selection and offers Cut, Copy and Paste, plus the suggestions on a misspelled word.
+- With word wrap off, long lines scroll sideways and the view follows the cursor.
+- PDF text selection runs over page breaks, Ctrl+A selects the whole PDF, and copying waits for the text of pages that weren't loaded yet. Email links in a PDF open, and links work in PDF tabs too.
+- TIFF and BMP figures open, pictures are turned as their camera recorded, and the real size is shown for pictures over 8192 pixels.
+- History pages back past the newest 200 snapshots, takes a snapshot when you open a project that changed outside Lemmata, and says when a manual snapshot had nothing new.
+- Citations are found by any co-author or title in the picker and in `\cite` completion.
+- The command palette lists Undo and Redo and hides editor commands when no file is open.
+- With many tabs open they narrow and scroll to the active one, show their folder when two have the same name, and show their path on hover. Closing a tab shows its neighbour.
+
+### Changed
+- Releases stop before publishing anything if a publishing secret or the release notes are missing, instead of publishing only in part.
+- Saving a latin1 (Windows-1252) file keeps it latin1, also after all its special characters were deleted.
+- Replace all saves unsaved edits and searches again first, so it changes exactly the lines it lists. When results stop at 2000, it says so and replaces only the listed ones.
+- Git commands get ten minutes before they're stopped, a stopped command gets to remove its lock files, and the Git panel lists and stages only the project's folder when the repository is bigger.
+- The raw log view shows the start and the end of logs over 1 MB.
+- Dialogs with unsaved changes no longer close on a click beside them, and their × button no longer gets focus first.
+
+### Faster
+- PDF: pages land on screen first after a far jump or while searching, a PDF that fails to reload keeps showing the old pages, and the presentation keeps fewer textures.
+- The editor no longer copies the whole text for screen readers when none is running, fold arrows don't scan whole sections on each key, and search no longer builds a table the size of the file.
+- Comparing two very different versions of a file in History no longer takes up to a gigabyte of memory.
+- Analysing the project after a save waits two seconds after the last one.
+
+### Fixed
+- The Compile menu did the wrong thing from "Normal" on: Fast (draft) turned draft off, Clear cached files turned on Stop at the first error, and Stop compiling did nothing.
+- Projects that use BibTeX and aren't trusted got no bibliography on TeX Live; citations in `\include`d chapters are now found too.
+- Enter after `\begin{X}` adds `\end{X}` also when arguments follow (`\begin{minted}{python}`, `\begin{figure}[h]`) and when the cursor is still before the closing brace.
+- Typing in a long wrapped paragraph no longer makes the view jump, and Down walks through its rows.
+- Code in verbatim, lstlisting and minted blocks and in `\verb` is no longer coloured or paired as LaTeX, and `\begin`/`\end` pairs with different names are underlined.
+- One duplicate key, undefined `@string` or broken entry no longer hides a whole `.bib` file, and entries using `@string` macros show their fields.
+- Arguments such as `[htbp]` and `{lcr}` after `\begin` are no longer spell checked, the spell-check language is read from `\documentclass` options and `main=`, and text sent for grammar keeps its numbers.
+- Latin1 files are found by project search, rename, Find unused files and the bibliography manager.
+- Restoring a snapshot never deletes a file just because Git couldn't read it.
+- Builds without latexmk rerun when the contents or the lists of figures change and keep going past errors when you asked them to; `.bib` errors from biber or BibTeX are shown; a fatal error with no other message is explained.
+- `!pdfTeX error`, font warnings and missing characters are reported, and errors after an overfull box point at the right file.
+- Switching projects during a build no longer waits for that build to finish.
+- Project replace with a pattern that can match nothing changes only what it found; editing the replacement keeps the lines you unticked.
+- Quick changes in the Compile menu land in `lemmata.toml` in order.
+- Reloading a file changed outside keeps your cursors and folds; CRLF files keep CRLF line breaks; "Load the version on disk" that can't be read keeps your edits.
+- Image and PDF tabs reload when their file changes and close when it's deleted.
+- Deleting a file whose save failed says its edits are gone; a partial Undo of a move keeps the rest for later.
+- Review comments pulled from Git are no longer overwritten by the next save.
+- Ctrl+Shift+7 comments lines on German and French keyboards.
+- Completion offers the open environment first after `\end{`, leaves `\href` alone and keeps snippets out of paths and key lists.
+- A clone can be left with Cancel again and is added to the library if it finishes later.
+- Settings files that can't be read are kept as `.bak` before being replaced, and one badly shaped setting no longer resets all of them.
+- Many smaller fixes in the editor, search, the file tree, the library, the PDF view, presentations, exports and the command-line tool.
+
 ## 3.2.0 (2026-11-19)
 
 A security and reliability release. Opening a project you got from someone else can no longer run code on your computer or write outside the project's folder.
