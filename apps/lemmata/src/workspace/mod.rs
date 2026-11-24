@@ -709,13 +709,19 @@ impl Workspace {
             self.closed.truncate(10);
         }
         self.pinned.retain(|p| p != path);
+        let at = self.tabs.iter().position(|t| t == path).unwrap_or(0);
         self.tabs.retain(|t| t != path);
         self.buffers.forget(path);
         self.editors.remove(path);
         self.viewers.remove(path);
         if self.active.as_deref() == Some(path) {
             self.active = None;
-            if let Some(next) = self.tabs.last().cloned() {
+            // The neighbour that took its place, not the last tab.
+            if let Some(next) = self
+                .tabs
+                .get(at.min(self.tabs.len().saturating_sub(1)))
+                .cloned()
+            {
                 self.open_file(backend, &next);
             }
         }
@@ -933,8 +939,14 @@ impl Workspace {
                             Self::set_macros(&written);
                             self.detected = crate::writing::spell::detect_language(&written);
                         }
-                        if self.closing_after_save.remove(&path) && !self.buffers.is_dirty(&path) {
-                            self.drop_tab(backend, &path);
+                        if self.closing_after_save.contains(&path) {
+                            if self.buffers.is_dirty(&path) {
+                                // Typed while it saved: once more, then it closes.
+                                self.write(backend, &path, settings);
+                            } else {
+                                self.closing_after_save.remove(&path);
+                                self.drop_tab(backend, &path);
+                            }
                         }
                     }
                     WriteResult::Conflict => {
@@ -1075,10 +1087,21 @@ impl Workspace {
             self.editors.remove(p);
         }
         let was_active = self.active.clone();
+        let at = self
+            .tabs
+            .iter()
+            .position(|t| Some(t) == was_active.as_ref())
+            .unwrap_or(0);
+        let before = self.tabs[..at].iter().filter(|t| gone(t)).count();
         self.tabs.retain(|t| !gone(t));
         if was_active.as_deref().is_some_and(gone) {
             self.active = None;
-            if let Some(next) = self.tabs.last().cloned() {
+            let at = at - before;
+            if let Some(next) = self
+                .tabs
+                .get(at.min(self.tabs.len().saturating_sub(1)))
+                .cloned()
+            {
                 self.open_file(backend, &next);
             }
         }

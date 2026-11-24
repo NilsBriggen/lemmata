@@ -4651,6 +4651,35 @@ pub(crate) mod tests {
         );
     }
 
+    /// Closing a tab goes to the one beside it, not to the last one.
+    #[test]
+    fn closing_a_tab_shows_its_neighbour() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let names = ["b.tex", "c.tex", "d.tex"];
+        for n in names {
+            std::fs::write(project.join(n), "x\n").unwrap();
+        }
+        for n in names {
+            let app = h.state_mut();
+            let ws = app.project.as_mut().unwrap();
+            ws.open_file(&app.backend, n);
+            wait_for(&mut h, "the file to open", |h| {
+                h.state().project.as_ref().unwrap().editors.contains_key(n)
+            });
+        }
+        let app = h.state_mut();
+        let settings = app.settings.clone();
+        let ws = app.project.as_mut().unwrap();
+        ws.open_file(&app.backend, "c.tex");
+        ws.close_tab(&app.backend, "c.tex", &settings);
+        assert_eq!(ws.active.as_deref(), Some("d.tex"));
+        ws.close_tab(&app.backend, "d.tex", &settings);
+        assert_eq!(ws.active.as_deref(), Some("b.tex"));
+    }
+
     /// A file in conflict can't be saved, so deleting it loses the typed text: it is said.
     #[test]
     fn deleting_a_file_in_conflict_says_its_edits_are_gone() {
