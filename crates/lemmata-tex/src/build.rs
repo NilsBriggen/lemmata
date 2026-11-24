@@ -19,8 +19,6 @@ pub enum Error {
         "Tectonic was not found. Use Tectonic from the start screen, or choose another compiler in the project settings."
     )]
     NoTectonic,
-    #[error("could not start latexmk: {0}")]
-    Spawn(std::io::Error),
     #[error("could not start {0}: {1}")]
     SpawnTool(String, std::io::Error),
     /// The project is set up in a way that could make a build act outside it.
@@ -273,9 +271,11 @@ pub async fn build_with(
         )
         .await
         {
-            Ok(s) => s.ok_or(Error::Spawn(std::io::Error::other("could not start")))?,
+            Ok(s) => s.ok_or_else(|| {
+                Error::SpawnTool("latexmk".into(), std::io::Error::other("could not start"))
+            })?,
             // Blocked from starting (a Windows policy): the direct build below can still work.
-            Err(Error::Spawn(e)) if can_go_direct => {
+            Err(Error::SpawnTool(_, e)) if can_go_direct => {
                 let _ = std::fs::write(&output_path, e.to_string());
                 Status::Failed
             }
@@ -698,9 +698,12 @@ pub(crate) async fn run_step(
     cmd.process_group(0);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let program = Path::new(cmd.as_std().get_program())
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return Err(Error::Spawn(e)),
+        Err(e) => return Err(Error::SpawnTool(program, e)),
     };
     Ok(Some(tokio::select! {
         res = child.wait() => match res {
@@ -1227,7 +1230,11 @@ async fn run_bibliography(
         .stderr(Stdio::null());
     set_path(&mut cmd, opts);
     // A failing bibliography run shows up in the .blg; the next pass still matters.
-    let status = run_step(cmd, limit, cancel).await?;
+    // A tool that cannot start (blocked by a policy) is like a missing one: the PDF is still built.
+    let Ok(status) = run_step(cmd, limit, cancel).await else {
+        let _ = std::fs::remove_file(&stamp);
+        return Ok(Bib::Skipped);
+    };
     if let Some(s @ (Status::Cancelled | Status::Timeout)) = status {
         return Ok(Bib::Stopped(s));
     }
@@ -2598,6 +2605,43 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    /// A bibliography tool that cannot start is named in the error and does not stop the build.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_bibliography_tool_that_cannot_start_is_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_keep, mut rx) = oneshot::channel();
+        let err = run_step(
+            Command::new("/nonexistent/biber"),
+            Duration::from_secs(1),
+            &mut rx,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("biber") && !err.contains("latexmk"), "{err}");
+
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        std::fs::write(out_file(&p, "bcf"), "<bcf/>").unwrap();
+        let tools = d.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let biber = tools.join("biber");
+        std::fs::write(&biber, "").unwrap(); // not executable
+        std::fs::set_permissions(&biber, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let opts = BuildOptions {
+            latexmk: &tools,
+            bin_dir: Some(&tools),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let r = run_bibliography(&p, &opts, Duration::from_secs(1), &mut rx).await;
+        assert!(matches!(r, Ok(Bib::Skipped)));
     }
 
     /// latexmk exits 1 without ever writing a log: the build must say why.
