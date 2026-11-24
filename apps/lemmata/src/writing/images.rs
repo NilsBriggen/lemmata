@@ -6,9 +6,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// The file's modified time when it was read: a changed one (a script wrote the plot again, or
+/// the file appeared) reads it again.
+type Stamp = Option<std::time::SystemTime>;
+
 enum Slot {
-    Loading(Arc<Mutex<Option<Option<ColorImage>>>>),
-    Ready(Option<TextureHandle>),
+    Loading(Arc<Mutex<Option<Option<ColorImage>>>>, Stamp),
+    Ready(Option<TextureHandle>, Stamp),
 }
 
 thread_local! {
@@ -39,9 +43,15 @@ fn shrink(img: ColorImage) -> ColorImage {
 
 /// The image's texture once it is decoded; None while loading or if it can't be read.
 pub fn get(ctx: &egui::Context, path: &Path) -> Option<TextureHandle> {
+    let stamp: Stamp = std::fs::metadata(path).and_then(|m| m.modified()).ok();
     CACHE.with_borrow_mut(|cache| {
         if cache.len() > 64 {
-            cache.retain(|_, s| matches!(s, Slot::Loading(_)));
+            cache.retain(|_, s| matches!(s, Slot::Loading(..)));
+        }
+        if let Some(Slot::Ready(_, then)) = cache.get(path)
+            && *then != stamp
+        {
+            cache.remove(path);
         }
         let slot = cache.entry(path.to_owned()).or_insert_with(|| {
             let cell = Arc::new(Mutex::new(None));
@@ -54,22 +64,30 @@ pub fn get(ctx: &egui::Context, path: &Path) -> Option<TextureHandle> {
                 *c.lock().unwrap() = Some(img);
                 ctx.request_repaint();
             });
-            Slot::Loading(cell)
+            Slot::Loading(cell, stamp)
         });
-        if let Slot::Loading(cell) = slot {
+        if let Slot::Loading(cell, then) = slot {
             let done = cell.lock().unwrap().take();
             match done {
                 Some(img) => {
-                    *slot = Slot::Ready(img.map(|i| {
-                        ctx.load_texture(path.to_string_lossy(), i, egui::TextureOptions::LINEAR)
-                    }))
+                    let then = *then;
+                    *slot = Slot::Ready(
+                        img.map(|i| {
+                            ctx.load_texture(
+                                path.to_string_lossy(),
+                                i,
+                                egui::TextureOptions::LINEAR,
+                            )
+                        }),
+                        then,
+                    )
                 }
                 None => return None,
             }
         }
         match slot {
-            Slot::Ready(t) => t.clone(),
-            Slot::Loading(_) => None,
+            Slot::Ready(t, _) => t.clone(),
+            Slot::Loading(..) => None,
         }
     })
 }
@@ -77,6 +95,35 @@ pub fn get(ctx: &egui::Context, path: &Path) -> Option<TextureHandle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_written_after_a_failed_read_or_changed_is_read_again() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("plot.png");
+        let ctx = egui::Context::default();
+        let wait = |want: Option<[usize; 2]>| {
+            let start = std::time::Instant::now();
+            loop {
+                let got = get(&ctx, &f).map(|t| t.size());
+                if got == want {
+                    return;
+                }
+                assert!(
+                    start.elapsed() < std::time::Duration::from_secs(5),
+                    "{got:?}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        assert!(get(&ctx, &f).is_none());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let png = |w: u32| image::RgbaImage::new(w, 2).save(&f).unwrap();
+        png(4);
+        wait(Some([4, 2]));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        png(6);
+        wait(Some([6, 2]));
+    }
 
     #[test]
     fn large_images_are_held_at_card_size() {
