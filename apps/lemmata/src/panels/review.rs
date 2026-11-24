@@ -172,6 +172,11 @@ fn excerpt(q: &str) -> String {
 }
 
 impl Review {
+    /// A new draft starts empty, whatever was typed into the last one.
+    pub fn clear_draft(&mut self) {
+        self.text.clear();
+    }
+
     pub fn show(
         &mut self,
         ui: &mut Ui,
@@ -250,6 +255,7 @@ impl Review {
                     self.text.clear();
                 }
                 if cancel {
+                    self.text.clear();
                     out.push(Action::CancelDraft);
                 }
             }

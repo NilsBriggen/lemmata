@@ -199,6 +199,7 @@ impl Workspace {
         match target {
             Some(t) => {
                 self.comments.draft = Some(t);
+                self.comments.ui.clear_draft();
                 self.open_panel(Panel::Review, backend, settings)
             }
             None => {

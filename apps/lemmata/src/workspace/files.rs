@@ -279,6 +279,10 @@ impl Workspace {
     /// A file or folder was renamed or moved: its tabs, editors and marks follow (onRenamed).
     fn renamed(&mut self, backend: &Backend, from: &str, to: &str) {
         let moved = |p: &str| remap(p, from, to);
+        // A comment being written is for the file under its new name.
+        if let Some(d) = &mut self.comments.draft {
+            d.0 = moved(&d.0);
+        }
         // Review comments name their file: they move with it.
         if self
             .comments
