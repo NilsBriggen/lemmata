@@ -77,7 +77,8 @@ pub fn sort_entries(entries: &[Entry], mode: &str, folders_first: bool) -> Vec<E
             };
         }
         let by_name = || natural_cmp(&a.name, &b.name);
-        if a.is_dir && b.is_dir {
+        // Mixed with files, folders sort by the same key, or the order isn't total.
+        if folders_first && a.is_dir && b.is_dir {
             return by_name();
         }
         match mode {
@@ -226,6 +227,20 @@ mod tests {
             modified: 0,
             children,
         }
+    }
+
+    #[test]
+    fn folders_mixed_with_files_sort_by_the_same_key() {
+        let mut a = d("a", vec![]);
+        a.modified = 1;
+        let mut b = d("b", vec![]);
+        b.modified = 5;
+        let tree = vec![a, f("f.tex", 1, 3), b];
+        let names: Vec<_> = sort_entries(&tree, "modified", false)
+            .iter()
+            .map(|e| e.name.clone())
+            .collect();
+        assert_eq!(names, ["b", "f.tex", "a"]);
     }
 
     #[test]
