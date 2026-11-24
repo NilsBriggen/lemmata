@@ -558,17 +558,6 @@ impl App {
             Msg::OpenPreflight(request, target, Ok(())) if request == self.open_request => {
                 let path = target.project_root.to_string_lossy().into_owned();
                 let file = target.file;
-                // A file of the project that is open: a tab, not closing and reopening it.
-                let same = self.project.as_ref().is_some_and(|ws| {
-                    lemmata_project::canonical(&target.project_root)
-                        .is_ok_and(|c| c.to_string_lossy() == ws.root)
-                });
-                if same {
-                    if let (Some(ws), Some(file)) = (&mut self.project, file) {
-                        ws.open_requested(&self.backend, &file);
-                    }
-                    return;
-                }
                 self.leave(
                     LEAVE_PROJECT,
                     Box::new(move |app| {
@@ -3618,8 +3607,12 @@ pub(crate) mod tests {
             file: None,
         };
         h.state_mut().handle_request(Request::Open(target));
+        // A project is open: the error is a notice there, not a message for the library.
         wait_for(&mut h, "the invalid project error", |h| {
-            h.state().open_error.is_some()
+            h.state()
+                .project
+                .as_ref()
+                .is_some_and(|ws| !ws.notices.is_empty())
         });
         assert_eq!(h.state().open_generation, generation);
         assert_eq!(h.state().project.as_ref().unwrap().root, project);
@@ -4804,20 +4797,23 @@ pub(crate) mod tests {
         let settings = app.settings.clone();
         let ws = app.project.as_mut().unwrap();
         ws.replace_all(&app.backend, &settings);
-        h.run_steps(5);
-        let ws = h.state().project.as_ref().unwrap();
-        assert!(
-            ws.search
+        wait_for(&mut h, "the results brought up to date", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .search
                 .as_ref()
                 .unwrap()
                 .message()
                 .unwrap_or("")
                 .contains("changed since the search")
-        );
+        });
+        // The edit was saved first (the hits are lines of the saved text); nothing was replaced.
         assert_eq!(
             std::fs::read_to_string(project.join(rel)).unwrap(),
-            before,
-            "nothing replaced"
+            format!("% a line on top\n{before}"),
+            "only the typed line was saved"
         );
     }
 
