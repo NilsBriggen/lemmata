@@ -155,6 +155,8 @@ pub struct Workspace {
     in_flight: HashSet<String>,
     /// Tabs that close once their save succeeds.
     closing_after_save: HashSet<String>,
+    /// The project is read and analysed again at this time: saves come in bursts while typing.
+    analysis_due: Option<Instant>,
     pub headings: Vec<Heading>,
     pub total_words: u32,
     pub collapsed: HashSet<String>,
@@ -314,6 +316,7 @@ impl Workspace {
             buffers: Buffers::default(),
             in_flight: HashSet::new(),
             closing_after_save: HashSet::new(),
+            analysis_due: None,
             headings: Vec::new(),
             total_words: 0,
             collapsed: HashSet::new(),
@@ -929,11 +932,10 @@ impl Workspace {
                         self.move_comments(backend, &path, &written);
                         self.snapshot_after_save(backend);
                         self.refresh_git_status(backend);
-                        if self.panel == Some(panels::Panel::Todos) {
-                            self.load_todos(backend);
-                        }
                         if path.ends_with(".tex") || path.ends_with(".bib") {
-                            self.refresh_analysis(backend);
+                            // Reading the whole project after every pause in typing would be
+                            // most of the work: once, a moment after the last save.
+                            self.analysis_due = Some(Instant::now() + Duration::from_secs(2));
                         }
                         if path == self.info.main {
                             Self::set_macros(&written);
@@ -1240,6 +1242,18 @@ impl Workspace {
             self.lookups.generation += 1;
         }
         self.run_autosaves(ui, backend, settings);
+        if let Some(due) = self.analysis_due {
+            let now = Instant::now();
+            if now >= due {
+                self.analysis_due = None;
+                if self.panel == Some(panels::Panel::Todos) {
+                    self.load_todos(backend);
+                }
+                self.refresh_analysis(backend);
+            } else {
+                ui.ctx().request_repaint_after(due - now);
+            }
+        }
         let ctx = ui.ctx().clone();
         self.poll_build(&ctx, backend);
 
