@@ -1620,22 +1620,36 @@ pub fn menus(
             match widgets::drop_menu(ctx, p, id, anchor, true, &items) {
                 MenuResult::Open => {}
                 MenuResult::Closed => ws.menu = None,
-                MenuResult::Clicked(i) => match i {
-                    1 | 2 => {
-                        settings.auto_compile = i == 1;
-                        *action = Some(Action::Settings);
-                    }
-                    5..=8 => ws.set_config(backend, settings, |c| c.engine = ENGINES[i - 5].0),
-                    12 | 13 => ws.set_config(backend, settings, |c| c.draft = i == 13),
-                    17 | 18 => ws.set_config(backend, settings, |c| c.stop_on_error = i == 18),
-                    20 => {
-                        ws.menu = None;
-                        ws.clean(backend);
-                    }
-                    21 => {
-                        ws.menu = None;
-                        ws.stop_build(backend);
-                    }
+                // By label: the positions shift with the engine list and the Stop item.
+                MenuResult::Clicked(i) => match items[i] {
+                    MenuItem::Item { label, .. } => match label {
+                        "As I type" | "With Ctrl+S" => {
+                            settings.auto_compile = label == "As I type";
+                            *action = Some(Action::Settings);
+                        }
+                        "Normal" | "Fast (draft)" => {
+                            ws.set_config(backend, settings, |c| c.draft = label == "Fast (draft)")
+                        }
+                        "Keep going" | "Stop at the first error" => {
+                            ws.set_config(backend, settings, |c| {
+                                c.stop_on_error = label == "Stop at the first error"
+                            })
+                        }
+                        "Clear cached files" => {
+                            ws.menu = None;
+                            ws.clean(backend);
+                        }
+                        "Stop compiling" => {
+                            ws.menu = None;
+                            ws.stop_build(backend);
+                        }
+                        _ => {
+                            if let Some((e, _)) = ENGINES.iter().find(|(_, l)| *l == label) {
+                                let e = *e;
+                                ws.set_config(backend, settings, |c| c.engine = e);
+                            }
+                        }
+                    },
                     _ => {}
                 },
             }

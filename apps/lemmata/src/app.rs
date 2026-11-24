@@ -1071,6 +1071,7 @@ impl App {
     fn close_project(&mut self) {
         if let Some(mut ws) = self.project.take() {
             ws.save_all(&self.backend, &self.settings);
+            ws.stop_build(&self.backend);
             ws.stop_lsp(&self.backend);
             workspace::session::save(&self.dirs, &ws.root, &ws.session());
         }
@@ -3749,6 +3750,49 @@ pub(crate) mod tests {
     /// typing, saving, building and a snapshot run none of it and change nothing outside the
     /// project. Trusted, the latexmkrc runs, and git still runs nothing of the store's.
     #[cfg(unix)]
+    #[test]
+    fn the_compile_menu_sets_what_its_items_say() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("paper");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("main.tex"), "\\documentclass{article}\n").unwrap();
+        let root = canonical_str(&project);
+        let d = dirs(tmp.path());
+        let mut recents = Recents::default();
+        recents.remember(&root, 1.0);
+        recents.save(&d);
+        Settings {
+            first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
+            trusted_projects: vec![root],
+            ..Settings::default()
+        }
+        .save(&d);
+        let mut h = app(tmp.path());
+        wait_for(&mut h, "the project", |h| h.state().project.is_some());
+        let pick = |h: &mut Harness<'_, App>, item: &str| {
+            h.state_mut().project.as_mut().unwrap().menu =
+                Some(crate::workspace::Menu::Compile(egui::Rect::from_min_size(
+                    egui::pos2(400.0, 40.0),
+                    egui::vec2(20.0, 20.0),
+                )));
+            h.run_steps(2);
+            h.get_by_label(item).click();
+            h.run_steps(2);
+        };
+        let config = |h: &Harness<'_, App>| h.state().project.as_ref().unwrap().info.config.clone();
+        pick(&mut h, "Fast (draft)");
+        assert!(config(&h).draft);
+        pick(&mut h, "Normal");
+        assert!(!config(&h).draft);
+        pick(&mut h, "Stop at the first error");
+        assert!(config(&h).stop_on_error);
+        pick(&mut h, "Keep going");
+        assert!(!config(&h).stop_on_error);
+        pick(&mut h, "LuaLaTeX");
+        assert_eq!(config(&h).engine, lemmata_project::Engine::Lualatex);
+    }
+
     #[test]
     fn a_hostile_project_runs_nothing_until_trusted() {
         use std::os::unix::fs::PermissionsExt;

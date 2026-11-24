@@ -336,12 +336,13 @@ impl Shell {
     ) -> CmdResult<ProjectAnalysis> {
         self.generation
             .fetch_max(generation, std::sync::atomic::Ordering::Relaxed);
+        // Before the lock: a running build holds it for its whole run.
+        cancel_running(self);
         let _opening = self.operation.blocking_write();
         if self.current_project() != generation {
             return Err("A newer project open superseded this one.".into());
         }
         lemmata_synctex::forget();
-        cancel_running(self);
         let (mut project, tree) = Project::open_with_tree(&path).map_err(err)?;
         project.trusted = trusted;
         let analysis = analysis_of(&project, tree);
