@@ -295,7 +295,7 @@ pub async fn build_with(
             deadline.saturating_duration_since(Instant::now()),
             &mut cancel,
             None,
-            false,
+            !project.config.stop_on_error,
         )
         .await
         {
@@ -2081,6 +2081,41 @@ mod tests {
                 .iter()
                 .any(|x| x.message.contains("built with pdflatex directly"))
         );
+    }
+
+    /// Without a working latexmk the engine still goes on past a nonfatal error, so references resolve.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_latexmk_fallback_goes_on_past_a_failed_pass() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let tools = d.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = tools.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let latexmk = script("latexmk", "exit 1\n");
+        script(
+            "pdflatex",
+            "out=.lemmata/build\necho x >> passes\nif [ $(wc -l < passes) -eq 1 ]; then echo 'Label(s) may have changed.' > $out/main.log; echo pdf > $out/main.pdf; exit 1; fi\necho done > $out/main.log\necho pdf > $out/main.pdf\n",
+        );
+        let mut p = Project::open(d.path()).unwrap();
+        p.trusted = true;
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: Some(&tools),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let (_tx, rx) = oneshot::channel();
+        build_with(&p, &opts, rx, false, false).await.unwrap();
+        let passes = std::fs::read_to_string(d.path().join("passes")).unwrap();
+        assert_eq!(passes.lines().count(), 2, "went on past the failed pass");
     }
 
     /// An untrusted project never reaches latexmk (it runs a project's latexmkrc and builds shell
