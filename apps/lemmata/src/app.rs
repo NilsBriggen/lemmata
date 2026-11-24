@@ -3831,7 +3831,6 @@ pub(crate) mod tests {
     /// config run programs, and a link where an old writer put its temporary file. Restricted,
     /// typing, saving, building and a snapshot run none of it and change nothing outside the
     /// project. Trusted, the latexmkrc runs, and git still runs nothing of the store's.
-    #[cfg(unix)]
     #[test]
     fn an_image_tab_closes_when_its_file_is_deleted() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3969,6 +3968,7 @@ pub(crate) mod tests {
         assert!(!config(&h).draft && !config(&h).stop_on_error);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_hostile_project_runs_nothing_until_trusted() {
         use std::os::unix::fs::PermissionsExt;
