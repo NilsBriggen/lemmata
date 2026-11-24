@@ -553,9 +553,9 @@ impl Pane {
                     self.query_at = Some(ui.input(|i| i.time));
                 }
                 if r.has_focus() || r.lost_focus() {
-                    let (esc, enter, shift) = ui.input(|i| {
+                    let (esc, enter, shift) = ui.input_mut(|i| {
                         (
-                            i.key_pressed(egui::Key::Escape),
+                            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
                             i.key_pressed(egui::Key::Enter),
                             i.modifiers.shift,
                         )

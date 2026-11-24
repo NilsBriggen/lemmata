@@ -1569,7 +1569,7 @@ impl Workspace {
             if let Some((path, line, _)) = go {
                 self.goto(backend, &path, line);
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.references = None;
             }
         }
