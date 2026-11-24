@@ -974,13 +974,14 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
 
 pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, backend: &Backend) {
     let rect = ui.max_rect();
+    // Scrolled tabs stop at the strip's edges.
+    ui.set_clip_rect(ui.clip_rect().intersect(rect));
     ui.painter().rect_filled(rect, 0, p.surface_2);
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 0.5,
         Stroke::new(1.0, p.border),
     );
-    let mut x = rect.left();
     let mut select = None;
     let mut close = None;
     let mut pin = None;
@@ -989,21 +990,74 @@ pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, b
     let mut drop_at = None;
     let tabs = ws.tabs.clone();
     let mut tab_rects = Vec::new();
-    for t in &tabs {
-        let name = tree::base_name(t).to_owned();
+    // Two open files with one name show their folder too.
+    let names: Vec<String> = tabs
+        .iter()
+        .map(|t| {
+            let base = tree::base_name(t);
+            if tabs.iter().filter(|o| tree::base_name(o) == base).count() > 1
+                && !super::files::parent_of(t).is_empty()
+            {
+                format!("{}/{base}", tree::base_name(super::files::parent_of(t)))
+            } else {
+                base.to_owned()
+            }
+        })
+        .collect();
+    let naturals: Vec<f32> = tabs
+        .iter()
+        .zip(&names)
+        .map(|(t, name)| {
+            let g = ui
+                .painter()
+                .layout_no_wrap(name.clone(), FontId::proportional(13.0), p.muted);
+            ((if ws.pinned.contains(t) { 10.0 } else { 14.0 })
+                + if tree::is_viewer_file(t) { 18.0 } else { 0.0 }
+                + g.size().x
+                + 4.0
+                + 26.0
+                + 4.0
+                + 1.0)
+                .min(220.0)
+        })
+        .collect();
+    // Too many tabs for the strip: they get narrower, and past that the strip scrolls (the wheel
+    // over it, and to the active tab when that changes).
+    let total: f32 = naturals.iter().sum();
+    let widths: Vec<f32> = if total > rect.width() {
+        let k = rect.width() / total;
+        naturals
+            .iter()
+            .map(|w| (w * k).max(72.0_f32.min(*w)))
+            .collect()
+    } else {
+        naturals
+    };
+    let full: f32 = widths.iter().sum();
+    let scroll_id = ui.make_persistent_id("tab-scroll");
+    let (mut off, seen): (f32, Option<String>) =
+        ui.data(|d| d.get_temp(scroll_id)).unwrap_or((0.0, None));
+    if seen != ws.active
+        && let Some(i) = tabs.iter().position(|t| Some(t) == ws.active.as_ref())
+    {
+        let (a0, a1) = (
+            widths[..i].iter().sum::<f32>(),
+            widths[..=i].iter().sum::<f32>(),
+        );
+        off = off.max(a1 - rect.width()).min(a0);
+    }
+    if full > rect.width() && ui.rect_contains_pointer(rect) {
+        let d = ui.input(|i| i.smooth_scroll_delta);
+        off -= d.x + d.y;
+    }
+    off = off.clamp(0.0, (full - rect.width()).max(0.0));
+    ui.data_mut(|d| d.insert_temp(scroll_id, (off, ws.active.clone())));
+    let mut x = rect.left() - off;
+    for (idx, t) in tabs.iter().enumerate() {
+        let name = names[idx].clone();
         let viewer = tree::is_viewer_file(t);
-        let g = ui
-            .painter()
-            .layout_no_wrap(name.clone(), FontId::proportional(13.0), p.muted);
         let pinned = ws.pinned.contains(t);
-        let w = ((if pinned { 10.0 } else { 14.0 })
-            + if viewer { 18.0 } else { 0.0 }
-            + g.size().x
-            + 4.0
-            + 26.0
-            + 4.0
-            + 1.0)
-            .min(220.0);
+        let w = widths[idx];
         let tr = Rect::from_min_size(pos2(x, rect.top()), vec2(w, rect.height() - 1.0));
         tab_rects.push(tr);
         let on = ws.active.as_deref() == Some(t.as_str());
@@ -1013,6 +1067,7 @@ pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, b
             Sense::click_and_drag(),
         );
         r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, on, &name));
+        r.clone().on_hover_text(t.as_str());
         let painter = ui.painter();
         if on {
             painter.rect_filled(tr.with_max_y(rect.bottom()), 0, p.code_bg);

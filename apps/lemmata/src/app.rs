@@ -4651,6 +4651,39 @@ pub(crate) mod tests {
         );
     }
 
+    /// Many open files: the tabs narrow and the active one stays where it can be reached.
+    #[test]
+    fn the_active_tab_is_within_the_strip_with_many_files_open() {
+        use egui_kittest::kittest::Queryable;
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let names: Vec<String> = (0..30)
+            .map(|i| format!("long-chapter-name-{i:02}.tex"))
+            .collect();
+        for n in &names {
+            std::fs::write(project.join(n), "x\n").unwrap();
+        }
+        for n in &names {
+            let app = h.state_mut();
+            let ws = app.project.as_mut().unwrap();
+            ws.open_file(&app.backend, n);
+            wait_for(&mut h, "the file to open", |h| {
+                h.state().project.as_ref().unwrap().editors.contains_key(n)
+            });
+        }
+        h.run_steps(3);
+        let screen = h.ctx.content_rect();
+        let last = names.last().unwrap();
+        let tab = h.get_by_role_and_label(egui::Role::Tab, last);
+        let r = tab.rect();
+        assert!(
+            r.left() >= 0.0 && r.right() <= screen.right(),
+            "{r:?} outside {screen:?}"
+        );
+    }
+
     /// Closing a tab goes to the one beside it, not to the last one.
     #[test]
     fn closing_a_tab_shows_its_neighbour() {
