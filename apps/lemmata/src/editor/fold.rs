@@ -11,6 +11,7 @@ static HEADING: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 static BEGIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\\begin\{([^{}]+)\}").unwrap());
+static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(begin|end)\{([^{}]+)\}").unwrap());
 static END_DOCUMENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*\\end\{document\}").unwrap());
 
@@ -77,17 +78,28 @@ pub fn fold_lines(d: &Doc, n: usize) -> Option<(usize, usize)> {
     if let Some(b) = BEGIN.captures(&text)
         && &b[1] != "document"
     {
-        // The pairing the editor already keeps (cached per version, comments and verbatim
-        // skipped), instead of scanning the rest of the file on every keystroke.
-        let (start, end) = (d.line_start(n), d.line_end(n));
-        let toks = super::envs::tokens(d);
-        let t = toks
-            .iter()
-            .find(|t| t.begin && t.from >= start && t.to <= end && t.name == b[1])?;
-        let p = t.partner.filter(|&p| toks[p].name == t.name)?;
-        let k = d.line_of(toks[p].from);
-        // The \end line stays visible.
-        return (k > n + 1).then_some((n + 1, k - 1));
+        // From this line on, as far as its \end: a fold arrow is asked for on every key, so the
+        // whole file's pairing (envs::tokens, a full scan per edit) would be too slow here.
+        let name = b[1].to_owned();
+        let mut depth = 0i32;
+        for k in n..lines {
+            let t = d.line(k);
+            // A commented `% \end{x}` doesn't end it.
+            let cut = super::commands::comment_start(&t)
+                .and_then(|c| t.char_indices().nth(c).map(|(b, _)| b))
+                .unwrap_or(t.len());
+            for m in TOKEN.captures_iter(&t[..cut]) {
+                if m[2] != name {
+                    continue;
+                }
+                depth += if &m[1] == "begin" { 1 } else { -1 };
+                if depth == 0 {
+                    // The \end line stays visible.
+                    return (k > n + 1).then_some((n + 1, k - 1));
+                }
+            }
+        }
+        return None;
     }
     if is_comment(&text) && (n == 0 || !is_comment(&d.line(n - 1))) {
         let mut last = n;
