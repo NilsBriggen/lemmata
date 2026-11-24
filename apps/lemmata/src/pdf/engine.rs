@@ -245,6 +245,8 @@ fn run(jobs: Receiver<Job>, routes: Routes, ctx: egui::Context, announce: bool) 
     };
     let mut queue: VecDeque<Job> = VecDeque::new();
     let mut documents = HashMap::new();
+    // Documents already reported: one taken up again to serve a job isn't a new load.
+    let mut announced: std::collections::HashSet<u64> = Default::default();
     loop {
         // Wait for a document.
         let (doc, bytes) = loop {
@@ -287,6 +289,8 @@ fn run(jobs: Receiver<Job>, routes: Routes, ctx: egui::Context, announce: bool) 
             .copied()
             .collect();
         documents.retain(|doc, _| active.contains(doc));
+        announced.retain(|doc| active.contains(doc));
+        let announce = announce && announced.insert(doc);
         let pdf = match guard(|| Pdf::new(bytes.clone())) {
             Some(Ok(p)) => p,
             Some(Err(e)) => {

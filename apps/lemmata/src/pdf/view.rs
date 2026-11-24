@@ -308,7 +308,8 @@ impl PdfView {
             };
             match d {
                 Done::Loaded { doc, result } => {
-                    if doc != self.sent {
+                    // Not ours, or one already shown: a repeat must not clear what's on screen.
+                    if doc != self.sent || doc == self.shown {
                         continue;
                     }
                     match result {
@@ -1886,11 +1887,20 @@ mod tests {
             });
             h.run();
         }
+        // Ctrl+A and Ctrl+C in one frame: on a slow machine a late click or drag would clear a
+        // selection made a frame earlier.
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-        h.run();
-        assert_eq!(h.state().selection, Some(((0, 0), (2, usize::MAX))));
         h.event(egui::Event::Copy);
         h.run();
+        assert_eq!(h.state().selection, Some(((0, 0), (2, usize::MAX))));
+        let s = h.state();
+        assert!(
+            s.copy_waiting || !s.selected_text().is_empty(),
+            "the copy wasn't taken: focus {}, layers {:?}, asked {:?}",
+            s.focused,
+            s.deco.keys().collect::<Vec<_>>(),
+            s.decorating
+        );
         while h.state().copy_waiting {
             assert!(
                 std::time::Instant::now() < until,
@@ -1901,7 +1911,14 @@ mod tests {
         }
         let text = h.state().selected_text();
         for word in ["Alpha", "Beta", "Gamma"] {
-            assert!(text.contains(word), "{word} missing from {text:?}");
+            assert!(
+                text.contains(word),
+                "{word} missing from {text:?}: selection {:?}, layers {:?}, asked {:?}, shown {}",
+                h.state().selection,
+                h.state().deco.keys().collect::<Vec<_>>(),
+                h.state().decorating,
+                h.state().shown
+            );
         }
     }
 

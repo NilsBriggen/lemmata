@@ -766,6 +766,7 @@ impl Workspace {
     /// Writes lemmata.toml one write at a time, the newest choice last: two quick changes can't
     /// land on disk in the wrong order, and an older write's answer can't undo the newer one.
     fn write_config(&mut self, backend: &Backend, next: lemmata_project::Config) {
+        self.config_waiting = false;
         if self.config_writing {
             self.config_queued = Some(next);
             return;
@@ -797,6 +798,7 @@ impl Workspace {
             return;
         }
         self.info.config = next.clone();
+        self.config_waiting = true;
         self.build.after_config = true;
         self.after_saving(backend, settings, move |ws, b| ws.write_config(b, next));
     }

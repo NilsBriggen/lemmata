@@ -219,6 +219,8 @@ pub struct Workspace {
     /// A lemmata.toml write is under way, and the newest choice waiting for it.
     config_writing: bool,
     config_queued: Option<lemmata_project::Config>,
+    /// A settings change made on screen whose write waits for the saves before it.
+    config_waiting: bool,
     /// The symbol palette, while open.
     pub symbols: Option<symbols::SymbolPalette>,
     pub cite: Option<bib::CitePicker>,
@@ -369,6 +371,7 @@ impl Workspace {
             reloading: HashSet::new(),
             config_writing: false,
             config_queued: None,
+            config_waiting: false,
             symbols: None,
             cite: None,
             search: None,
@@ -603,7 +606,7 @@ impl Workspace {
         match r {
             Ok(mut info) => {
                 // Read while a settings write is under way: the choices made since stay.
-                if self.config_writing || self.config_queued.is_some() {
+                if self.config_writing || self.config_queued.is_some() || self.config_waiting {
                     info.config = self.info.config.clone();
                 }
                 self.info = info;
@@ -626,7 +629,11 @@ impl Workspace {
     }
 
     fn apply_analysis(&mut self, analysis: lemmata_shell::ProjectAnalysis, build: bool) {
+        // The settings stay: an analysis started before a Compile menu change would put the old
+        // ones back. Settings come from the opening analysis, settings writes and on_info.
+        let config = std::mem::take(&mut self.info.config);
         self.info = analysis.info;
+        self.info.config = config;
         self.headings = analysis.outline.headings;
         self.total_words = analysis.outline.total_words;
         self.lookups.labels = analysis.labels;
