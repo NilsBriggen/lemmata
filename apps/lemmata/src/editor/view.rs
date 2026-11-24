@@ -437,7 +437,7 @@ impl Editor {
             .foldable
             .1
             .entry(n)
-            .or_insert_with(|| fold::fold_lines(doc, n).is_some())
+            .or_insert_with(|| fold::can_fold(doc, n))
     }
 
     /// The text of the main selection.
@@ -794,7 +794,7 @@ pub fn show(
         // Only folds that moved change which lines are hidden; without any, the heights are
         // patched after the edit instead of measured again.
         if !ed.folds.0.is_empty() {
-            ed.folds.map(&journal);
+            ed.folds.map(&journal, &ed.doc);
             ed.folds_gen += 1;
         }
         if let Some(s) = &mut ed.snippet {

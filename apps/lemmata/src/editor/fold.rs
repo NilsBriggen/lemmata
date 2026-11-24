@@ -32,6 +32,26 @@ fn is_comment(t: &str) -> bool {
     t.trim_start().starts_with('%')
 }
 
+/// Whether line `n` can fold, without looking for where the fold ends (asked for every
+/// visible line on each keystroke, so a heading stops at the first line of content).
+pub fn can_fold(d: &Doc, n: usize) -> bool {
+    let text = d.line(n);
+    let Some(h) = HEADING.captures(&text) else {
+        return fold_lines(d, n).is_some();
+    };
+    let lv = level(&h[1]);
+    for k in n + 1..d.line_count() {
+        let t = d.line(k);
+        if HEADING.captures(&t).is_some_and(|x| level(&x[1]) <= lv) || END_DOCUMENT.is_match(&t) {
+            return false;
+        }
+        if !t.trim().is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
 /// The lines (0-based, inclusive) a fold starting on line `n` hides, if it can fold.
 pub fn fold_lines(d: &Doc, n: usize) -> Option<(usize, usize)> {
     let lines = d.line_count();
@@ -84,15 +104,18 @@ pub fn fold_lines(d: &Doc, n: usize) -> Option<(usize, usize)> {
 pub struct Folds(pub Vec<(usize, usize)>);
 
 impl Folds {
-    /// Moves the folds with the text; a fold whose range collapsed is dropped.
-    pub fn map(&mut self, journal: &[super::buffer::ChangeSet]) {
+    /// Moves the folds with the text (`d` as it is after the changes). A fold whose range
+    /// collapsed, or whose ends are no longer at line ends (its last line was joined to the next
+    /// heading), opens.
+    pub fn map(&mut self, journal: &[super::buffer::ChangeSet], d: &Doc) {
         for f in &mut self.0 {
             *f = (
                 Doc::map_through(journal, f.0, 1),
                 Doc::map_through(journal, f.1, -1),
             );
         }
-        self.0.retain(|f| f.1 > f.0);
+        let at_end = |p: usize| p <= d.len() && d.line_end(d.line_of(p)) == p;
+        self.0.retain(|f| f.1 > f.0 && at_end(f.0) && at_end(f.1));
     }
 
     /// Folds the block starting on line `n`; false when it can't fold or already is.
@@ -183,6 +206,24 @@ mod tests {
     }
 
     #[test]
+    fn joining_a_folds_last_line_to_the_next_heading_opens_it() {
+        let mut d = Doc::new("\\section{A}\na\n\\section{B}");
+        let mut f = Folds::default();
+        assert!(f.fold(&d, 0));
+        assert!(can_fold(&d, 0) && !can_fold(&d, 2));
+        // Backspace at the start of \section{B}.
+        d.selection = super::super::buffer::Selection::cursor(14);
+        d.apply(
+            super::super::buffer::ChangeSet::new(vec![super::super::buffer::Change::delete(13, 14)]),
+            super::super::buffer::Selection::cursor(13),
+            super::super::buffer::EditKind::Other,
+        );
+        let journal = std::mem::take(&mut d.journal);
+        f.map(&journal, &d);
+        assert!(f.0.is_empty());
+    }
+
+    #[test]
     fn folds_follow_edits_and_hide_lines() {
         let mut d = Doc::new("x\n\\section{A}\na\nb\n\\section{B}");
         let mut f = Folds::default();
@@ -197,7 +238,7 @@ mod tests {
             super::super::buffer::Selection::cursor(0),
             super::super::buffer::EditKind::Other,
         );
-        f.map(&d.journal[journal_from..]);
+        f.map(&d.journal[journal_from..], &d);
         assert_eq!(f.lines(&d), [3]);
         assert!(f.unfold_line(&d, 2));
         assert!(f.0.is_empty());
