@@ -579,7 +579,7 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
         .filter(|&i| invalid(list, i) && !blank(&list[i]))
         .count();
     let (mut save, mut cancel) = (false, false);
-    let r = widgets::modal_with(
+    let r = widgets::modal_editing(
         ctx,
         p,
         "Snippets",

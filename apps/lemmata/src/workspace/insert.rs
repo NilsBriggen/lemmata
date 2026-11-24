@@ -240,7 +240,7 @@ impl Workspace {
             images(&self.info.tree, &mut list);
             let (mut insert, mut cancel, mut browse) = (false, false, false);
             let can = !f.path.is_empty();
-            let r = widgets::modal_with(
+            let r = widgets::modal_editing(
                 ctx,
                 p,
                 "Insert figure",
@@ -283,7 +283,7 @@ impl Workspace {
         }
         if let Some(t) = &mut self.table {
             let (mut insert, mut cancel) = (false, false);
-            let r = widgets::modal_with(
+            let r = widgets::modal_editing(
                 ctx,
                 p,
                 "Insert table",

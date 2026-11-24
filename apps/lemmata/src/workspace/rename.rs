@@ -230,7 +230,7 @@ impl Workspace {
         } else {
             "Changes every use in the project. History is off (git isn't installed), so this can't be undone."
         };
-        let r = widgets::modal_with(
+        let r = widgets::modal_editing(
             ctx,
             p,
             "Rename label or citation key",

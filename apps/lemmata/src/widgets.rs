@@ -32,6 +32,8 @@ pub struct Button<'a> {
     kind: Kind,
     size: Size,
     on: bool,
+    /// `.on()` was called: announced as a toggle. An ordinary button is not.
+    toggle: bool,
     enabled: bool,
     trailing: Option<Icon>,
     ink: Option<Color32>,
@@ -51,6 +53,7 @@ impl<'a> Button<'a> {
             kind: Kind::Default,
             size: Size::Md,
             on: false,
+            toggle: false,
             enabled: true,
             trailing: None,
             ink: None,
@@ -119,6 +122,7 @@ impl<'a> Button<'a> {
     /// `.chrome .btn.on`: a toggled toolbar button.
     pub fn on(mut self, on: bool) -> Self {
         self.on = on;
+        self.toggle = true;
         self
     }
     /// `.pill`: a count after the label (open comments, git changes).
@@ -182,7 +186,11 @@ impl<'a> Button<'a> {
         let width = width.max(self.min_width);
         let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), sense);
         response.widget_info(|| {
-            WidgetInfo::selected(egui::Role::Button, self.enabled, self.on, self.text)
+            if self.toggle {
+                WidgetInfo::selected(egui::Role::Button, self.enabled, self.on, self.text)
+            } else {
+                WidgetInfo::labeled(egui::Role::Button, self.enabled, self.text)
+            }
         });
 
         if ui.is_rect_visible(rect) {
@@ -994,6 +1002,20 @@ pub fn modal_with<R>(
     modal_placed(ctx, p, title, subtitle, width, false, body, footer)
 }
 
+/// `modal_with` for a dialog the user types into: a click beside the panel doesn't close it (and
+/// drop the edits); Esc, × and the buttons do.
+pub fn modal_editing<R>(
+    ctx: &egui::Context,
+    p: &Palette,
+    title: &str,
+    subtitle: Option<&str>,
+    width: f32,
+    body: impl FnOnce(&mut Ui) -> R,
+    footer: Option<&mut dyn FnMut(&mut Ui)>,
+) -> ModalResponse {
+    modal_full(ctx, p, title, subtitle, width, false, false, body, footer)
+}
+
 /// `top`: `.backdrop.top`, the panel near the top (11 % down) instead of centred, for dialogs
 /// whose height changes while typing.
 #[allow(clippy::too_many_arguments)]
@@ -1007,11 +1029,36 @@ pub fn modal_placed<R>(
     body: impl FnOnce(&mut Ui) -> R,
     footer: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> ModalResponse {
+    modal_full(ctx, p, title, subtitle, width, top, true, body, footer)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modal_full<R>(
+    ctx: &egui::Context,
+    p: &Palette,
+    title: &str,
+    subtitle: Option<&str>,
+    width: f32,
+    top: bool,
+    backdrop_closes: bool,
+    body: impl FnOnce(&mut Ui) -> R,
+    footer: Option<&mut dyn FnMut(&mut Ui)>,
+) -> ModalResponse {
     let screen = ctx.content_rect();
     let any_popup_open = egui::Popup::is_any_open(ctx);
     let entered_id = egui::Id::unique(("modal-entered", title));
     let restore_id = egui::Id::unique(("modal-restore", title));
-    let entered = ctx.data_mut(|d| d.get_temp::<bool>(entered_id).unwrap_or(false));
+    // Closed by a footer button the caller handled: the dialog was not drawn since, so this is a
+    // new opening (first focus, and the focus to return to, are taken again).
+    let seen_id = egui::Id::unique(("modal-seen", title));
+    let pass = ctx.cumulative_pass_nr();
+    let drawn_just_before = ctx.data_mut(|d| {
+        let last = d.get_temp::<u64>(seen_id);
+        d.insert_temp(seen_id, pass);
+        last.is_some_and(|l| l + 1 >= pass)
+    });
+    let entered =
+        drawn_just_before && ctx.data_mut(|d| d.get_temp::<bool>(entered_id).unwrap_or(false));
     let previous_focus = if entered {
         ctx.data_mut(|d| {
             d.get_temp::<Option<egui::Id>>(restore_id)
@@ -1092,12 +1139,11 @@ pub fn modal_placed<R>(
                                 }
                             });
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                // Not given the first focus: Enter or Space right after opening
+                                // would close a dialog that only wants an answer.
                                 let close = Button::icon(icons::X, "Close")
                                     .size(Size::Sm)
                                     .show_icon(ui, p);
-                                if !entered {
-                                    close.request_focus();
-                                }
                                 if close.clicked() {
                                     closed = true;
                                 }
@@ -1153,6 +1199,7 @@ pub fn modal_placed<R>(
             .response
             .rect
             .contains(backdrop.inner.interact_pointer_pos().unwrap_or_default())
+        && backdrop_closes
     {
         closed = true;
     }
@@ -1483,7 +1530,35 @@ pub fn splitter(
 ) -> Option<f32> {
     let rect = egui::Rect::from_x_y_ranges((x - 3.0)..=(x + 3.0), y_range);
     let r = ui.interact(rect, id, Sense::click_and_drag());
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Splitter, true, label));
+    r.widget_info(|| {
+        let mut info = egui::WidgetInfo::labeled(egui::Role::Splitter, true, label);
+        info.value = Some(f64::from(size));
+        info
+    });
+    focus_ring(ui, &r, rect, p, 2);
+    // From the keyboard: arrows move the edge 16 px (64 with Shift).
+    if r.has_focus() {
+        let step = ui.input_mut(|i| {
+            let big = if i.modifiers.shift { 64.0 } else { 16.0 };
+            if i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowLeft)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
+            {
+                -big
+            } else if i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowRight)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
+            {
+                big
+            } else {
+                0.0
+            }
+        });
+        if step != 0.0 {
+            let next = (size + if after { -step } else { step }).clamp(min, max);
+            if next != size {
+                return Some(next);
+            }
+        }
+    }
     if r.hovered() || r.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
         ui.painter()
@@ -1587,6 +1662,11 @@ mod tests {
         harness.get_by_label("Settings");
         use eframe::egui::accesskit::Toggled;
         assert_eq!(
+            harness.get_by_label("Cancel").accesskit_node().toggled(),
+            None,
+            "an ordinary button is not a toggle"
+        );
+        assert_eq!(
             harness.get_by_label("Git").accesskit_node().toggled(),
             Some(Toggled::True)
         );
@@ -1647,6 +1727,44 @@ mod tests {
         h.run();
         h.run();
         assert_eq!(h.ctx.memory(|m| m.focused()), expected_focus);
+    }
+
+    #[test]
+    fn a_click_beside_a_dialog_with_edits_keeps_it_open() {
+        for (editing, closes) in [(true, false), (false, true)] {
+            let p = theme::LIGHT;
+            let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = closed.clone();
+            let mut h = egui_kittest::Harness::builder()
+                .with_size([640.0, 480.0])
+                .with_context_setup(move |ctx| {
+                    theme::install_fonts(ctx);
+                    theme::apply(ctx, &p);
+                })
+                .build_ui(move |ui| {
+                    let r = if editing {
+                        modal_editing(ui.ctx(), &p, "Edit", None, 300.0, |_| {}, None)
+                    } else {
+                        modal(ui.ctx(), &p, "Edit", 300.0, |_| {}, None)
+                    };
+                    if r.closed {
+                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                });
+            h.run();
+            let pos = egui::pos2(5.0, 5.0);
+            h.hover_at(pos);
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            h.run();
+            assert_eq!(closed.load(std::sync::atomic::Ordering::Relaxed), closes);
+        }
     }
 
     #[test]

@@ -92,7 +92,7 @@ impl Workspace {
         let was_on = self.info.config.shell_escape;
         let invalid = outdir_error(&d.config.outdir).is_some() || timeout_ok(&d.timeout).is_none();
         let (mut save, mut cancel) = (false, false);
-        let r = widgets::modal_with(
+        let r = widgets::modal_editing(
             ctx,
             p,
             "Project settings",
