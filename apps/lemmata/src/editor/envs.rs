@@ -10,8 +10,11 @@ use std::sync::{Arc, LazyLock};
 static TOKEN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\\(begin|end)\{([^{}\n]*)\}").unwrap());
 static NEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(?:begin|end)\s*\{").unwrap());
-static OPENING: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\s*)\\begin\{([^{}]+)\}$").unwrap());
+/// A line that is only `\begin{X}`, maybe with arguments: `[h]`, `{python}`, `{p{3cm}l}`.
+static OPENING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(\s*)\\begin\{([^{}]+)\}(?:\s*\[[^\]\n]*\]|\s*\{(?:[^{}\n]|\{[^{}\n]*\})*\})*\s*$")
+        .unwrap()
+});
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Token {
@@ -135,7 +138,9 @@ pub fn close_environment(d: &mut Doc, indent: Indent) -> bool {
     let Some(m) = OPENING.captures(&line) else {
         return false;
     };
-    if sel.head != d.line_end(n) {
+    // Typing `\begin{` closes the brace, so the caret often still sits before it.
+    let end = d.line_end(n);
+    if !matches!(d.slice(sel.head, end).trim_end(), "" | "}" | "]") {
         return false;
     }
     let start = d.line_start(n);
@@ -152,9 +157,9 @@ pub fn close_environment(d: &mut Doc, indent: Indent) -> bool {
     let lead = &m[1];
     let body = format!("\n{lead}{}", indent.unit());
     let insert = format!("{body}\n{lead}\\end{{{}}}", &m[2]);
-    let at = sel.head + body.chars().count();
+    let at = end + body.chars().count();
     d.apply(
-        ChangeSet::new(vec![Change::insert(sel.head, insert)]),
+        ChangeSet::new(vec![Change::insert(end, insert)]),
         Selection::single(Range::cursor(at)),
         EditKind::Other,
     );
@@ -252,6 +257,27 @@ mod tests {
         assert_eq!(d.text(), "\\begin{itemize}\n\t\n\\end{itemize}");
         let mut d = Doc::new("\\begin{itemize}\n\\end{itemize}");
         d.selection = Selection::cursor(15);
+        assert!(!close_environment(&mut d, Indent::Spaces(2)));
+        // Arguments after the name, and the caret still before an auto-closed brace.
+        for (text, caret, closed) in [
+            ("\\begin{minted}{python}", 22, "\\begin{minted}{python}\n  \n\\end{minted}"),
+            ("\\begin{minted}{python}", 21, "\\begin{minted}{python}\n  \n\\end{minted}"),
+            ("\\begin{minted}", 13, "\\begin{minted}\n  \n\\end{minted}"),
+            ("\\begin{figure}[h]", 16, "\\begin{figure}[h]\n  \n\\end{figure}"),
+            (
+                "  \\begin{tabular}{p{3cm}l}",
+                26,
+                "  \\begin{tabular}{p{3cm}l}\n    \n  \\end{tabular}",
+            ),
+        ] {
+            let mut d = Doc::new(text);
+            d.selection = Selection::cursor(caret);
+            assert!(close_environment(&mut d, Indent::Spaces(2)), "{text} at {caret}");
+            assert_eq!(d.text(), closed);
+        }
+        // Not in the middle of the name, nor before text that isn't a closing brace.
+        let mut d = Doc::new("\\begin{minted} x");
+        d.selection = Selection::cursor(14);
         assert!(!close_environment(&mut d, Indent::Spaces(2)));
         assert_eq!(
             unmatched(&Doc::new("\\begin{a}\n\\begin{b}\n\\end{b}")),
