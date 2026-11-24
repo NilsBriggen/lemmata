@@ -1208,6 +1208,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        // From here a new launch is no longer handed to this window.
+        crate::instance::release(&crate::store::Dirs::system().cache);
         self.flush_settings();
         #[cfg(target_os = "linux")]
         if let Some(p) = &mut self.pinches {
