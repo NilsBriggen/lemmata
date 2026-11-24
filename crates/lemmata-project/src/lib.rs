@@ -851,6 +851,25 @@ impl Walk<'_> {
     }
 }
 
+/// The names the main file's text gives to `\include`, as written (what `\includeonly` takes).
+pub fn included_chapters(main: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in main.lines() {
+        let mut rest = strip_comment(raw);
+        while let Some(pos) = rest.find('\\') {
+            rest = &rest[pos + 1..];
+            let name: String = rest.chars().take_while(char::is_ascii_alphabetic).collect();
+            if name == "include"
+                && let Some(t) = braced(&rest[name.len()..])
+                && !out.contains(&t.trim().to_string())
+            {
+                out.push(t.trim().to_string());
+            }
+        }
+    }
+    out
+}
+
 /// The file named by `\input`, `\include`, `\subfile` or `\import{dir}{file}`.
 /// `\input file` without braces is accepted too.
 fn include_target(name: &str, after: &str) -> Option<String> {
@@ -1418,6 +1437,12 @@ mod tests {
         p.save_config().unwrap();
         let text = fs::read_to_string(d.path().join(CONFIG_FILE)).unwrap();
         assert!(!text.contains("fast_preamble"), "{text}");
+    }
+
+    #[test]
+    fn the_chapters_a_main_file_includes_are_listed_once() {
+        let main = "\\include{a}\n% \\include{b}\n\\include{chapters/c} \\input{d} \\include{a}\n";
+        assert_eq!(included_chapters(main), ["a", "chapters/c"]);
     }
 
     #[test]

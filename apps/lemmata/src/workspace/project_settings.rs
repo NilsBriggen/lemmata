@@ -15,6 +15,8 @@ pub struct ProjectSettings {
     timeout: String,
     words_open: bool,
     rules_open: bool,
+    /// The chapters the main file `\include`s, for "Build only these chapters".
+    chapters: Vec<String>,
     /// "Trust this project", kept on this computer rather than in lemmata.toml.
     trusted: bool,
     pub(super) busy: bool,
@@ -61,7 +63,11 @@ impl Workspace {
     pub fn open_project_settings(&mut self) {
         let mut config = self.info.config.clone();
         config.main.get_or_insert_with(|| self.info.main.clone());
+        let chapters = lemmata_env::fs::read_to_string(self.info.root.join(&self.info.main))
+            .map(|t| lemmata_project::included_chapters(&t))
+            .unwrap_or_default();
         self.project_settings = Some(ProjectSettings {
+            chapters,
             timeout: config.timeout_secs.to_string(),
             config,
             words_open: false,
@@ -422,6 +428,24 @@ fn body(
             });
         }
     });
+    if !d.chapters.is_empty() {
+        widgets::field(ui, p, "Build only these chapters", |ui| {
+            hint(
+                ui,
+                p,
+                "Optional. Tick the chapters you are working on to build just those (\\includeonly); the others keep their numbers. Tick none to build everything.",
+            );
+            for ch in &d.chapters {
+                let mut on = c.include_only.contains(ch);
+                if widgets::checkbox(ui, p, &mut on, ch).clicked() {
+                    c.include_only.retain(|x| x != ch);
+                    if on {
+                        c.include_only.push(ch.clone());
+                    }
+                }
+            }
+        });
+    }
     widgets::checkbox(
         ui,
         p,
