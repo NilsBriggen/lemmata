@@ -726,6 +726,11 @@ impl Workspace {
             taken.push(name.clone());
             pairs.push((p.clone(), join_path(&folder, &name)));
         }
+        if pairs.is_empty() {
+            self.sel.clipboard = None;
+            self.notice("The copied items are no longer in the project.", Tone::Info);
+            return;
+        }
         self.copy_into(backend, settings, pairs, Some(paths));
     }
 
@@ -750,27 +755,37 @@ impl Workspace {
     fn undo_step(&mut self, backend: &Backend, label: String, step: Undo) {
         Workspace::job(
             backend,
+            // What was done, what is left to do, and what stopped it.
             move |s| match step {
                 Undo::Rename(pairs, update) => {
-                    let mut done = Vec::new();
+                    let (mut done, mut rest, mut error) = (Vec::new(), Vec::new(), None);
                     for (from, to) in pairs {
-                        s.rename_path(from.clone(), to.clone(), update)?;
-                        done.push((from, to));
-                    }
-                    Ok(done)
-                }
-                Undo::Trash(paths) => s.trash_paths(paths).map(|_| Vec::new()),
-                Undo::Restore(id) => s.restore_trash(id).map(|_| Vec::new()),
-            },
-            move |ws, b, r: Result<Vec<(String, String)>, String>| {
-                match r {
-                    Ok(done) => {
-                        for (from, to) in done {
-                            ws.renamed(b, &from, &to);
+                        if error.is_some() {
+                            rest.push((from, to));
+                        } else if let Err(e) = s.rename_path(from.clone(), to.clone(), update) {
+                            error = Some(e);
+                            rest.push((from, to));
+                        } else {
+                            done.push((from, to));
                         }
-                        ws.notice(format!("Undid: {}.", label.to_lowercase()), Tone::Ok);
                     }
-                    Err(e) => ws.file_failure(e),
+                    (done, (rest, update), error)
+                }
+                Undo::Trash(paths) => (vec![], (vec![], false), s.trash_paths(paths).err()),
+                Undo::Restore(id) => (vec![], (vec![], false), s.restore_trash(id).err()),
+            },
+            move |ws, b, (done, (rest, update), error)| {
+                // The ones renamed back have new names even when a later one failed.
+                for (from, to) in done {
+                    ws.renamed(b, &from, &to);
+                }
+                // What is left can be tried again.
+                if !rest.is_empty() {
+                    ws.push_undo(label.clone(), Undo::Rename(rest, update));
+                }
+                match error {
+                    None => ws.notice(format!("Undid: {}.", label.to_lowercase()), Tone::Ok),
+                    Some(e) => ws.file_failure(e),
                 }
                 ws.refresh_tree(b);
             },
@@ -796,7 +811,11 @@ impl Workspace {
                         Tone::Ok,
                     );
                 }
-                Err(e) => ws.file_failure(e),
+                // Those copied before the one that failed are in the project: the tree shows them.
+                Err(e) => {
+                    ws.refresh_tree(b);
+                    ws.file_failure(e);
+                }
             },
         );
     }
@@ -824,7 +843,10 @@ impl Workspace {
                         Tone::Ok,
                     );
                 }
-                Some(Err(e)) => ws.file_failure(e),
+                Some(Err(e)) => {
+                    ws.refresh_tree(b);
+                    ws.file_failure(e);
+                }
                 None => {}
             },
         );
