@@ -1861,8 +1861,11 @@ pub fn show(
             // Dragging past an edge scrolls.
             if pos.y < visible.top() {
                 ui.scroll_with_delta(vec2(0.0, lh));
+                ui.ctx().request_repaint();
             } else if pos.y > visible.bottom() {
                 ui.scroll_with_delta(vec2(0.0, -lh));
+                // Keeps scrolling while the pointer rests past the edge.
+                ui.ctx().request_repaint();
             }
         }
         // A double or triple click arrives after the press: widen the selection then.
@@ -1959,6 +1962,10 @@ pub fn show(
         ui.memory_mut(|m| m.request_focus(id));
     }
     let focused = ui.memory(|m| m.has_focus(id));
+    // A composition the editor lost focus in is over; left set, it would swallow typing.
+    if !focused {
+        ed.preedit = None;
+    }
     if !focused || !main.is_empty() || ed.doc.selection.ranges.len() > 1 {
         ed.completion = None;
     } else if let Some(explicit) = wanted
@@ -2217,7 +2224,8 @@ fn drag_to(ed: &mut Editor, geo: &mut Geo, ui: &Ui, at: usize, line: usize, x: f
         (Some((l0, x0)), _) => {
             // One range per line between the press and here, from x0 to x.
             let (a, b) = (l0.min(line), l0.max(line));
-            for n in a..=b {
+            // Folded lines can't be seen, so they aren't selected.
+            for n in (a..=b).filter(|&n| !geo.hidden.get(n).copied().unwrap_or(false)) {
                 let from = geo.at(ui, &ed.doc, n, 0, x0.min(x));
                 let to = geo.at(ui, &ed.doc, n, 0, x0.max(x));
                 ranges.push(if x < x0 {

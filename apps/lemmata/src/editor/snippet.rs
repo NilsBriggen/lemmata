@@ -100,9 +100,11 @@ pub struct Active {
 }
 
 impl Active {
-    /// Starts stepping through `fields`; a snippet with one field (or none) has nothing to step to.
+    /// Starts stepping through `fields`. One field with linked copies starts too, so leaving it
+    /// drops the extra cursors; a single plain field has nothing to step to.
     pub fn start(fields: Vec<Vec<(usize, usize)>>) -> Option<Self> {
-        (fields.len() > 1).then_some(Self { fields, current: 0 })
+        (fields.len() > 1 || fields.first().is_some_and(|f| f.len() > 1))
+            .then_some(Self { fields, current: 0 })
     }
 
     /// Fields grow with what is typed at their edges.
@@ -142,6 +144,12 @@ impl Active {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_linked_field_is_still_a_snippet() {
+        assert!(Active::start(vec![vec![(1, 1), (5, 5)]]).is_some());
+        assert!(Active::start(vec![vec![(1, 1)]]).is_none());
+    }
 
     #[test]
     fn named_fields_link_and_empty_ones_stand_alone() {

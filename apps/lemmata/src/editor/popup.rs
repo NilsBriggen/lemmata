@@ -267,8 +267,9 @@ pub fn show(
                 );
                 let frac = rows as f32 / c.items.len() as f32;
                 let h = (track.height() * frac).max(12.0);
+                // Grows only rightwards: to the left it would take clicks meant for the rows.
                 let grab = ui.interact(
-                    track.expand2(vec2(4.0, 0.0)),
+                    track.with_max_x(rect.right()),
                     ui.scope_id().with("completion-bar"),
                     Sense::click_and_drag(),
                 );
