@@ -273,13 +273,12 @@ pub fn select_next_occurrence(d: &mut Doc) -> bool {
     let needle: Vec<char> = d.slice(main.from(), main.to()).chars().collect();
     let hay: Vec<char> = d.text().chars().collect();
     let last = d.selection.ranges.iter().map(|r| r.to()).max().unwrap_or(0);
-    let find = |from: usize| {
-        (from..=hay.len().saturating_sub(needle.len()))
-            .find(|&i| hay[i..i + needle.len()] == needle[..])
-    };
-    let hit = find(last)
-        .or_else(|| find(0))
-        .filter(|&i| !d.selection.ranges.iter().any(|r| r.from() == i));
+    let end = hay.len().saturating_sub(needle.len());
+    // After the last selection, then from the top: the first occurrence not selected yet.
+    let hit = (last..=end).chain(0..last.min(end + 1)).find(|&i| {
+        hay[i..i + needle.len()] == needle[..]
+            && !d.selection.ranges.iter().any(|r| r.from() == i)
+    });
     match hit {
         Some(i) => {
             let mut ranges = d.selection.ranges.clone();
@@ -498,16 +497,22 @@ pub fn delete_group_forward(d: &mut Doc) {
     d.apply(c, s, EditKind::Delete);
 }
 
+/// The last line a range covers: one ending at a line's start doesn't include that line.
+fn last_line(d: &Doc, r: &Range) -> usize {
+    let (first, last) = (d.line_of(r.from()), d.line_of(r.to()));
+    if !r.is_empty() && last > first && r.to() == d.line_start(last) {
+        last - 1
+    } else {
+        last
+    }
+}
+
 /// The 0-based line spans the ranges cover, merged when they touch.
 fn line_blocks(d: &Doc) -> Vec<(usize, usize)> {
     let mut out: Vec<(usize, usize)> = Vec::new();
     for r in &d.selection.ranges {
         let first = d.line_of(r.from());
-        // A selection ending at a line's start doesn't include that line.
-        let mut last = d.line_of(r.to());
-        if !r.is_empty() && last > first && r.to() == d.line_start(last) {
-            last -= 1;
-        }
+        let last = last_line(d, r);
         match out.last_mut() {
             Some(b) if first <= b.1 + 1 => b.1 = b.1.max(last),
             _ => out.push((first, last)),
@@ -702,7 +707,7 @@ pub fn toggle_comment(d: &mut Doc) {
     let all_commented = !nonblank.is_empty()
         && nonblank
             .iter()
-            .all(|&i| texts[i].trim_start().starts_with('%'));
+            .all(|&i| texts[i][leading_ws(&texts[i]).len()..].starts_with('%'));
     let mut changes = Vec::new();
     if all_commented {
         for &i in &nonblank {
@@ -748,10 +753,15 @@ fn env_tokens(d: &Doc, upto: usize) -> Vec<(bool, String, usize, usize)> {
             if comment.is_some_and(|c| i >= c) {
                 break;
             }
-            let rest: String = chars[i..].iter().collect();
-            for (kw, begin) in [("\\begin{", true), ("\\end{", false)] {
-                if rest.starts_with(kw) {
-                    let name_from = i + kw.chars().count();
+            if chars[i] != '\\' {
+                i += 1;
+                continue;
+            }
+            const BEGIN: [char; 7] = ['\\', 'b', 'e', 'g', 'i', 'n', '{'];
+            const END: [char; 5] = ['\\', 'e', 'n', 'd', '{'];
+            for (kw, begin) in [(&BEGIN[..], true), (&END[..], false)] {
+                if chars[i..].starts_with(kw) {
+                    let name_from = i + kw.len();
                     if let Some(close) = chars[name_from..].iter().position(|&c| c == '}') {
                         let name: String = chars[name_from..name_from + close].iter().collect();
                         if !name.contains('{') {
@@ -831,7 +841,7 @@ pub fn reindent_lines(d: &mut Doc, indent: Indent) -> bool {
     let (first, last) = if r.is_empty() {
         (0, d.line_count() - 1)
     } else {
-        (d.line_of(r.from()), d.line_of(r.to()))
+        (d.line_of(r.from()), last_line(d, &r))
     };
     let tokens = env_tokens(d, d.len());
     let mut next = 0;
@@ -902,7 +912,7 @@ pub fn reindent_lines(d: &mut Doc, indent: Indent) -> bool {
 /// the lines move in one level, and the cursor lands after `\\begin{name}`.
 pub fn wrap_in_environment(d: &mut Doc, name: &str, indent: Indent) {
     let r = d.selection.main();
-    let (first, last) = (d.line_of(r.from()), d.line_of(r.to()));
+    let (first, last) = (d.line_of(r.from()), last_line(d, &r));
     let from = d.line_start(first);
     let to = d.line_end(last);
     let lead = leading_ws(&d.line(first)).to_owned();
@@ -1008,13 +1018,34 @@ pub fn insert_newline_and_indent(d: &mut Doc, indent: Indent) {
 // ── Formatting (editor/shortcuts.ts) ──────────────────────────────────────
 
 /// Wraps each range in `\cmd{…}`, or unwraps it when it already is (Ctrl+B on bold text removes it).
+/// Whether every `{` in `s` closes inside it, and no `}` closes something outside (`\{` is text).
+fn balanced(s: &str) -> bool {
+    let mut depth = 0i32;
+    let mut escaped = false;
+    for c in s.chars() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
 pub fn toggle_wrap(d: &mut Doc, command: &str) {
     let open = format!("\\{command}{{");
     let n = open.chars().count();
     let (c, s) = d.change_by_range(|d, r| {
         let before = d.slice(r.from().saturating_sub(n), r.from());
         let after = d.slice(r.to(), r.to() + 1);
-        if before == open && after == "}" {
+        if before == open && after == "}" && balanced(&d.slice(r.from(), r.to())) {
             return (
                 vec![
                     Change::delete(r.from() - n, r.from()),
@@ -1024,12 +1055,17 @@ pub fn toggle_wrap(d: &mut Doc, command: &str) {
             );
         }
         let text = d.slice(r.from(), r.to());
-        if text.starts_with(&open) && text.ends_with('}') && text.chars().count() > n {
-            let inner: String = text
-                .chars()
-                .skip(n)
-                .take(text.chars().count() - n - 1)
-                .collect();
+        let inner: String = text
+            .chars()
+            .skip(n)
+            .take(text.chars().count().saturating_sub(n + 1))
+            .collect();
+        // `\emph{x} and \emph{y}` starts and ends like one command but isn't one.
+        if text.starts_with(&open)
+            && text.ends_with('}')
+            && text.chars().count() > n
+            && balanced(&inner)
+        {
             let len = inner.chars().count();
             return (
                 vec![Change {
@@ -1198,6 +1234,9 @@ pub fn matching_bracket(d: &Doc, pos: usize) -> Option<(usize, usize)> {
             continue;
         }
         let Some(c) = at(p) else { continue };
+        if p > 0 && at(p - 1) == Some('\\') && !(p > 1 && at(p - 2) == Some('\\')) {
+            continue;
+        }
         for &(o, cl) in &BRACKETS {
             if c == o {
                 return scan(d, p, o, cl, true).map(|m| (p, m));
@@ -1236,8 +1275,19 @@ fn scan(d: &Doc, from: usize, open: char, close: char, forward: bool) -> Option<
     } else {
         from.saturating_sub(10_000)
     };
+    // `\{` and `\}` are characters, not brackets.
+    let escaped = |p: usize| {
+        let before = |q: usize| match q.checked_sub(base) {
+            Some(i) => chars.get(i).copied(),
+            None => d.slice(q, q + 1).chars().next(),
+        };
+        p > 0 && before(p - 1) == Some('\\') && !(p > 1 && before(p - 2) == Some('\\'))
+    };
     for p in range {
         let c = chars[p - base];
+        if (c == open || c == close) && escaped(p) {
+            continue;
+        }
         if c == open {
             depth += if forward { 1 } else { -1 };
         } else if c == close {
@@ -1364,6 +1414,11 @@ mod tests {
             "  \\begin{center}\n    a\n    b\n  \\end{center}\n\nc"
         );
         assert_eq!(d.selection.main().head, 2 + "\\begin{center}".len());
+        // A selection ending at the start of a line leaves that line out.
+        let mut d = doc("a\nb\nc", 0);
+        d.selection = Selection::single(Range::new(0, 4));
+        wrap_in_environment(&mut d, "center", Indent::Spaces(2));
+        assert_eq!(d.text(), "\\begin{center}\n  a\n  b\n\\end{center}\nc");
     }
 
     #[test]
@@ -1506,6 +1561,17 @@ mod tests {
     }
 
     #[test]
+    fn next_occurrence_wraps_past_selected_ones() {
+        // From the last foo: the first, then the middle one.
+        let mut d = doc("foo bar foo foo", 13);
+        for _ in 0..3 {
+            assert!(select_next_occurrence(&mut d));
+        }
+        assert_eq!(d.selection.ranges.len(), 3);
+        assert!(!select_next_occurrence(&mut d));
+    }
+
+    #[test]
     fn bold_toggles_and_headings_shift() {
         let mut d = doc("word", 0);
         d.selection = Selection::single(Range::new(0, 4));
@@ -1517,6 +1583,11 @@ mod tests {
         );
         toggle_wrap(&mut d, "textbf");
         assert_eq!(d.text(), "word");
+        // Two commands selected together are not one to take apart.
+        let mut d = doc("\\emph{x} and \\emph{y}", 0);
+        d.selection = Selection::single(Range::new(0, 20));
+        toggle_wrap(&mut d, "emph");
+        assert_eq!(d.text(), "\\emph{\\emph{x} and \\emph{y}}");
         let mut d = doc("  \\section{Intro}", 5);
         assert!(shift_heading(&mut d, 1));
         assert_eq!(d.text(), "  \\subsection{Intro}");
@@ -1554,5 +1625,9 @@ mod tests {
         let d = doc("\\frac{a}{\\sqrt{b}}", 8);
         assert_eq!(matching_bracket(&d, 8), Some((8, 17)));
         assert_eq!(matching_bracket(&d, 18), Some((17, 8)));
+        // Escaped braces are text: {\{x\}} pairs its outer braces.
+        let d = doc("{\\{x\\}}", 0);
+        assert_eq!(matching_bracket(&d, 0), Some((0, 6)));
+        assert_eq!(matching_bracket(&d, 2), None);
     }
 }
