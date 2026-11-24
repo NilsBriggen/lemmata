@@ -100,6 +100,8 @@ impl Workspace {
                 references: true,
                 places,
             } => {
+                // Each unopened file is read once, not once per hit.
+                let mut disk: HashMap<String, Vec<String>> = HashMap::new();
                 let rows = places
                     .into_iter()
                     .map(|(path, line, col)| {
@@ -107,11 +109,15 @@ impl Workspace {
                             Some(e) if line >= 1 && line <= e.doc.line_count() => {
                                 e.doc.line(line - 1)
                             }
-                            _ => lemmata_env::fs::read_to_string(self.info.root.join(&path))
-                                .ok()
-                                .and_then(|t| {
-                                    t.lines().nth(line.saturating_sub(1)).map(str::to_owned)
+                            _ => disk
+                                .entry(path.clone())
+                                .or_insert_with(|| {
+                                    lemmata_env::fs::read_to_string(self.info.root.join(&path))
+                                        .map(|t| t.lines().map(str::to_owned).collect())
+                                        .unwrap_or_default()
                                 })
+                                .get(line.saturating_sub(1))
+                                .cloned()
                                 .unwrap_or_default(),
                         };
                         (path, line, col, text.trim().to_owned())
