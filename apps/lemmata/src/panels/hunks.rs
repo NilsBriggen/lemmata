@@ -28,9 +28,13 @@ fn diff(a: &[&str], b: &[&str]) -> (Vec<bool>, Vec<bool>) {
     let max = (n + m) as usize;
     let off = max as isize;
     let mut v = vec![0isize; 2 * max + 2];
+    // Per step only the diagonals -d..=d, which are all that step reads.
     let mut trace: Vec<Vec<isize>> = Vec::new();
-    'outer: for d in 0..=max as isize {
-        trace.push(v.clone());
+    let mut found = false;
+    // shortcut: diffs needing more than MAX_D edits fall back to one hunk, raise it or go linear-space if users need finer hunks.
+    const MAX_D: isize = 2000;
+    'outer: for d in 0..=(max as isize).min(MAX_D) {
+        trace.push(v[(off - d) as usize..=(off + d) as usize].to_vec());
         let mut k = -d;
         while k <= d {
             let i = (k + off) as usize;
@@ -46,10 +50,14 @@ fn diff(a: &[&str], b: &[&str]) -> (Vec<bool>, Vec<bool>) {
             }
             v[i] = x;
             if x >= n && y >= m {
+                found = true;
                 break 'outer;
             }
             k += 2;
         }
+    }
+    if !found {
+        return (vec![false; a.len()], vec![false; b.len()]);
     }
     // Walk back through the trace, marking the diagonals as kept.
     let (mut keep_a, mut keep_b) = (vec![false; a.len()], vec![false; b.len()]);
@@ -57,7 +65,7 @@ fn diff(a: &[&str], b: &[&str]) -> (Vec<bool>, Vec<bool>) {
     for d in (0..trace.len() as isize).rev() {
         let v = &trace[d as usize];
         let k = x - y;
-        let i = (k + off) as usize;
+        let i = (k + d) as usize;
         let prev_k = if k == -d || (k != d && v[i - 1] < v[i + 1]) {
             k + 1
         } else {
@@ -66,7 +74,7 @@ fn diff(a: &[&str], b: &[&str]) -> (Vec<bool>, Vec<bool>) {
         let prev_x = if d == 0 {
             0
         } else {
-            v[(prev_k + off) as usize]
+            v[(prev_k + d) as usize]
         };
         let prev_y = prev_x - prev_k;
         while x > prev_x && y > prev_y {
@@ -248,6 +256,16 @@ mod tests {
             assert_eq!(reject(&b, &h), a);
             assert!(compute(&a, &reject(&b, &h[h.len().min(1)..])).len() <= 1);
         }
+    }
+
+    #[test]
+    fn a_file_with_every_line_changed_is_one_hunk_not_a_gigabyte() {
+        let old: String = (0..3000).map(|i| format!("a{i}\r\n")).collect();
+        let new = old.replace("\r\n", "\n");
+        let h = compute(&old, &new);
+        assert_eq!(h.len(), 1);
+        assert_eq!((h[0].old_text.as_str(), h[0].new_text.as_str()), (old.as_str(), new.as_str()));
+        assert_eq!(reject(&new, &h), old);
     }
 
     #[test]
