@@ -197,6 +197,8 @@ pub struct Editor {
     /// Paragraphs for grammar checking, for a document version, and when to ask about them.
     grammar_paras: (u64, Vec<crate::writing::grammar::Paragraph>),
     grammar_due: f64,
+    /// The first visible line when paragraphs were last sent, so scrolling far sends new ones.
+    grammar_window: usize,
     /// Grammar findings in the source, for a (document version, findings generation).
     grammar_marks: ((u64, u64), Vec<GrammarMark>),
     /// A completion asked of texlab: the cursor and whether it was Ctrl-Space; its answer opens
@@ -265,6 +267,7 @@ impl Editor {
             grammar_tip: None,
             grammar_paras: (u64::MAX, Vec::new()),
             grammar_due: 0.0,
+            grammar_window: 0,
             grammar_marks: ((u64::MAX, u64::MAX), Vec::new()),
         }
     }
@@ -1032,9 +1035,14 @@ pub fn show(
         let mut fold_clicks: Vec<(Rect, usize)> = Vec::new();
         let mut lint_marks: Vec<(Rect, usize)> = Vec::new();
         let mut spell_words: Vec<(usize, usize, String)> = Vec::new();
-        // Paragraphs near the screen (40 lines around it) go to LanguageTool once.
+        // Paragraphs near the screen (40 lines around it) go to LanguageTool once, also those
+        // scrolled to without an edit.
+        if ed.grammar_paras.0 == ed.doc.version && first.abs_diff(ed.grammar_window) > 20 {
+            ed.grammar_due = now_t.max(f64::MIN_POSITIVE);
+        }
         if ed.grammar_due > 0.0 && checks.grammar.target.is_some() {
             ed.grammar_due = 0.0;
+            ed.grammar_window = first;
             let lo = ed.doc.line_start(first.saturating_sub(40));
             let hi = ed.doc.line_end((last + 40).min(ed.doc.line_count()) - 1);
             for para in ed
@@ -4048,6 +4056,49 @@ mod tests {
         h.run();
         assert_eq!(ACCESSKIT_TEXT_CONVERSIONS.with(std::cell::Cell::get), 4);
         assert_eq!(ACCESSKIT_LENGTH_CONSTRUCTIONS.with(std::cell::Cell::get), 4);
+    }
+
+    #[test]
+    fn paragraphs_scrolled_to_are_sent_for_grammar_without_an_edit() {
+        let p = theme::LIGHT;
+        let text: String = (0..300).map(|i| format!("Paragraph {i} has words.\n\n")).collect();
+        let mut checks = crate::writing::Checks::default();
+        checks.grammar.configure("local", "", "en");
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let log = sent.clone();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([520.0, 300.0])
+            .with_context_setup(move |ctx| {
+                theme::install_fonts(ctx);
+                theme::apply(ctx, &p);
+            })
+            .build_ui_state(
+                move |ui, ed: &mut Editor| {
+                    let rect = ui.ctx().content_rect();
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                    let out = show(
+                        &mut child,
+                        &p,
+                        ed,
+                        &style(),
+                        egui::Id::unique("ed"),
+                        "Editor",
+                        &Lookups::default(),
+                        &mut checks,
+                    );
+                    log.borrow_mut().extend(out.grammar_check);
+                },
+                Editor::new(&text, true),
+            );
+        h.run();
+        h.run();
+        assert!(sent.borrow().iter().any(|t| t.contains("Paragraph 0 ")));
+        assert!(!sent.borrow().iter().any(|t| t.contains("Paragraph 250 ")));
+        h.state_mut().center_line = Some(500);
+        h.run();
+        h.run();
+        h.run();
+        assert!(sent.borrow().iter().any(|t| t.contains("Paragraph 250 ")));
     }
 
     #[test]
