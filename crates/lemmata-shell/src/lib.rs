@@ -296,7 +296,7 @@ fn project_info_with_tree(p: &Project, tree: Vec<Entry>) -> ProjectInfo {
 
 fn analysis_of(p: &Project, tree: Vec<Entry>) -> ProjectAnalysis {
     analysis_of_with(p, tree, |path| {
-        lemmata_env::fs::read(path).map(|b| files::decode_text(b).0)
+        lemmata_env::fs::read(path).map(|b| lemmata_env::fs::decode_text(b).0)
     })
 }
 
@@ -474,7 +474,7 @@ impl Shell {
         }
         let bytes =
             lemmata_env::fs::read(&abs).map_err(|e| format!("Could not open {path}: {e}"))?;
-        Ok(files::decode_text(bytes).0)
+        Ok(lemmata_env::fs::decode_text(bytes).0)
     }
 }
 
@@ -499,23 +499,9 @@ impl Shell {
             let _ = std::fs::create_dir_all(dir);
         }
         // A file that is in Windows-1252 (see `read_text`) stays in it.
-        let disk = lemmata_env::fs::read(&abs).ok();
-        let (disk_text, cp1252) = match disk {
-            Some(d) => {
-                let (t, c) = files::decode_text(d);
-                (Some(t), c)
-            }
-            None => (None, false),
-        };
-        let bytes = if cp1252 {
-            files::encode_cp1252(&content).map_err(|c| {
-                format!(
-                    "Could not save {path}: it is written in Windows-1252 (latin1), which has no {c:?}. Remove the character, or convert the file to UTF-8."
-                )
-            })?
-        } else {
-            content.as_bytes().to_vec()
-        };
+        let disk_text = lemmata_env::fs::read_text(&abs).ok();
+        let bytes = lemmata_env::fs::encode_like_disk(&abs, &content)
+            .map_err(|e| format!("Could not save {path}: {e}."))?;
         // Beside the file first, so a crash never leaves half of it; through a link (a preamble
         // shared between projects) to the file it names, out of the project only when trusted.
         let trusted = self
@@ -1181,6 +1167,47 @@ mod tests {
             )
             .unwrap_err();
         assert!(e.contains("Windows-1252"), "{e}");
+    }
+
+    /// A latin1 thesis: its chapters are still used, and a rename keeps them latin1.
+    #[test]
+    fn project_wide_readers_and_renames_handle_windows_1252_files() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::write(
+            root.join("main.tex"),
+            b"\\documentclass{article}\\usepackage[latin1]{inputenc}\n\\input{ch}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("ch.tex"), b"\\label{sec:a} Gr\xfc\xdfe\n").unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let dirs = crate::Dirs {
+            resources: data.path().into(),
+            data: data.path().into(),
+            cache: data.path().into(),
+            home: None,
+        };
+        let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
+        shell
+            .open_project(1, root.to_string_lossy().into_owned(), false)
+            .unwrap();
+        assert!(
+            !shell
+                .unused_files()
+                .unwrap()
+                .contains(&"ch.tex".to_string())
+        );
+        shell
+            .rename_symbol(
+                lemmata_project::symbols::Kind::Label,
+                "sec:a".into(),
+                "sec:b".into(),
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::read(root.join("ch.tex")).unwrap(),
+            b"\\label{sec:b} Gr\xfc\xdfe\n"
+        );
     }
 
     #[test]

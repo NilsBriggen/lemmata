@@ -212,7 +212,7 @@ fn export_bytes(p: &Project, rel: &str) -> Result<Option<Vec<u8>>, String> {
     else {
         return Ok(None);
     };
-    let path = p.root.join(rel);
+    let path = p.root.join(&rel);
     if !p.trusted {
         let inside = crate::canonical(&path)
             .is_ok_and(|real| crate::canonical(&p.root).is_ok_and(|root| real.starts_with(root)));
@@ -220,7 +220,9 @@ fn export_bytes(p: &Project, rel: &str) -> Result<Option<Vec<u8>>, String> {
             return Ok(None);
         }
     }
-    lemmata_env::fs::read(path).map(Some).map_err(io)
+    lemmata_env::fs::read(path)
+        .map(Some)
+        .map_err(|e| format!("{}: {e}", rel.display()))
 }
 
 fn io(e: impl std::fmt::Display) -> String {
@@ -564,7 +566,12 @@ fn flatten_tex(
     read: &dyn Fn(&Path) -> Option<String>,
     bbl: Option<&str>,
 ) -> Result<Flattened, String> {
-    let text = read(main).ok_or_else(|| format!("Can't read {}.", main.display()))?;
+    let text = read(main).ok_or_else(|| {
+        format!(
+            "Can't flatten {}: it can't be read as UTF-8 text (latin1?). Export without flatten.",
+            main.display()
+        )
+    })?;
     let top = main.parent().unwrap_or(Path::new("")).to_path_buf();
     let mut f = Flattener {
         read,
@@ -713,8 +720,24 @@ mod tests {
         p.trusted = true;
         let dest = d.path().join("paper.zip");
         std::fs::write(&dest, b"known good").unwrap();
-        assert!(zip_project(&p, &dest, false).is_err());
+        let e = zip_project(&p, &dest, false).unwrap_err();
+        assert!(e.contains("bad.tex"), "{e}");
         assert_eq!(std::fs::read(&dest).unwrap(), b"known good");
+    }
+
+    /// A colon is an ordinary name character off Windows: the figure is not left out.
+    #[cfg(unix)]
+    #[test]
+    fn a_name_with_a_colon_is_exported() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::fs::create_dir(d.path().join("figures")).unwrap();
+        std::fs::write(d.path().join("figures/Fig: results.pdf"), "pdf").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let dest = d.path().join("out.zip");
+        zip_project(&p, &dest, false).unwrap();
+        let z = zip::ZipArchive::new(std::fs::File::open(&dest).unwrap()).unwrap();
+        assert!(z.file_names().any(|n| n.unwrap() == "figures/Fig: results.pdf"));
     }
 
     /// A project from elsewhere can't get a private file into a zip the user sends out, nor a name

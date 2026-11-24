@@ -44,6 +44,68 @@ pub fn read_to_string(path: impl AsRef<Path>) -> std::io::Result<String> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
+/// Windows-1252's characters for 0x80..=0x9F; the five it leaves out stay the C1 controls of
+/// the same number, so every byte comes back as it was.
+const CP1252_HIGH: [char; 32] = [
+    '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
+    '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+];
+
+/// A text file's text: UTF-8, else Windows-1252, which older documents with
+/// `\usepackage[latin1]{inputenc}` (or cp1252) are written in. True when it was the latter.
+pub fn decode_text(bytes: Vec<u8>) -> (String, bool) {
+    match String::from_utf8(bytes) {
+        Ok(text) => (text, false),
+        Err(e) => {
+            let text = e
+                .as_bytes()
+                .iter()
+                .map(|&b| match b {
+                    0x80..=0x9f => CP1252_HIGH[usize::from(b - 0x80)],
+                    _ => char::from(b),
+                })
+                .collect();
+            (text, true)
+        }
+    }
+}
+
+/// `text` in Windows-1252, or the first character it can't hold.
+pub fn encode_cp1252(text: &str) -> Result<Vec<u8>, char> {
+    text.chars()
+        .map(|c| match u32::from(c) {
+            n @ (0..=0x7f | 0xa0..=0xff) => Ok(n as u8),
+            _ => CP1252_HIGH
+                .iter()
+                .position(|&h| h == c)
+                .map(|i| 0x80 + i as u8)
+                .ok_or(c),
+        })
+        .collect()
+}
+
+/// A project's text file as the editor reads it: UTF-8, else Windows-1252 (see `decode_text`).
+/// Unlike `read_to_string`, an old latin1 document is not an error.
+pub fn read_text(path: impl AsRef<Path>) -> std::io::Result<String> {
+    Ok(decode_text(read_limited(path.as_ref(), TEXT_LIMIT)?).0)
+}
+
+/// `text` as the bytes to write over `path`: in Windows-1252 when the file on disk is not UTF-8,
+/// so an edit keeps the encoding the document declares.
+pub fn encode_like_disk(path: &Path, text: &str) -> std::io::Result<Vec<u8>> {
+    if read(path).is_ok_and(|d| std::str::from_utf8(&d).is_err()) {
+        return encode_cp1252(text).map_err(|c| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "it is written in Windows-1252 (latin1), which has no {c:?}. Remove the character, or convert the file to UTF-8"
+                ),
+            )
+        });
+    }
+    Ok(text.as_bytes().to_vec())
+}
+
 /// `std::fs::copy` for files a project may have planted: only a regular file, as copying a link to
 /// /dev/zero would fill the disk and one to a named pipe would wait forever.
 pub fn copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<u64> {
@@ -57,13 +119,14 @@ pub fn copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<u64
 }
 
 /// `rel` as a path inside a folder: relative, made only of plain names (no `..`, no `.`, nothing
-/// empty), and without a backslash or a colon, which are a separator and a drive letter on
-/// Windows. Names from snapshots, archives and documents go through this before they are joined
+/// empty), and without a backslash (a separator on Windows) or, on Windows, a colon (a drive
+/// letter). Names from snapshots, archives and documents go through this before they are joined
 /// onto a project folder.
 pub fn inside_rel(rel: &str) -> Option<PathBuf> {
     let p = Path::new(rel);
     let plain = !rel.is_empty()
-        && !rel.contains(['\\', ':'])
+        && !rel.contains('\\')
+        && !(cfg!(windows) && rel.contains(':'))
         && !rel.chars().any(char::is_control)
         && !p.is_absolute()
         && p.components().all(|c| matches!(c, Component::Normal(_)));
@@ -220,7 +283,6 @@ mod tests {
             "a/../../x",
             "./a",
             "a\\..\\b",
-            "C:x",
             "a\nb",
         ] {
             assert!(inside_rel(bad).is_none(), "{bad:?}");
@@ -233,6 +295,22 @@ mod tests {
         ] {
             assert_eq!(inside_rel(good), Some(PathBuf::from(good)), "{good:?}");
         }
+        // A colon is a drive letter only on Windows; elsewhere it is a name like any other.
+        assert_eq!(inside_rel("C:x").is_none(), cfg!(windows));
+        assert_eq!(inside_rel("Fig: a.pdf").is_none(), cfg!(windows));
+    }
+
+    #[test]
+    fn a_latin1_file_reads_as_text_and_is_written_back_as_latin1() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.tex");
+        std::fs::write(&f, b"M\xfcller").unwrap();
+        assert!(read_to_string(&f).is_err());
+        assert_eq!(read_text(&f).unwrap(), "M\u{fc}ller");
+        assert_eq!(encode_like_disk(&f, "M\u{fc}ller!").unwrap(), b"M\xfcller!");
+        assert!(encode_like_disk(&f, "\u{4e2d}").is_err());
+        std::fs::write(&f, "plain").unwrap();
+        assert_eq!(encode_like_disk(&f, "M\u{fc}").unwrap(), "M\u{fc}".as_bytes());
     }
 
     #[test]

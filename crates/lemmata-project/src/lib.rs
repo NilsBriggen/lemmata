@@ -472,7 +472,7 @@ fn has_documentclass(text: &str) -> bool {
 /// Prefers `main.tex`, then the shallowest candidate.
 /// A `% !TeX <key> = value` comment (also `TS-program`) near the top of a file, as TeXShop, TeXstudio and VS Code read them.
 fn magic(file: &Path, key: &str) -> Option<String> {
-    let text = lemmata_env::fs::read_to_string(file).ok()?;
+    let text = lemmata_env::fs::read_text(file).ok()?;
     text.lines().take(40).find_map(|line| {
         let rest = line
             .trim_start()
@@ -650,13 +650,13 @@ pub type Sources = std::collections::HashMap<PathBuf, String>;
 
 pub fn analyze(project: &Project, entries: &[Entry]) -> Analysis {
     analyze_with(project, entries, |path| {
-        lemmata_env::fs::read_to_string(path)
+        lemmata_env::fs::read_text(path)
     })
 }
 
 pub fn source_snapshot(project: &Project, entries: &[Entry]) -> Sources {
     source_snapshot_with(project, entries, |path| {
-        lemmata_env::fs::read_to_string(path)
+        lemmata_env::fs::read_text(path)
     })
 }
 
@@ -754,7 +754,7 @@ impl Walk<'_> {
             .sources
             .and_then(|sources| sources.get(rel).map(std::borrow::Cow::Borrowed))
             .or_else(|| {
-                lemmata_env::fs::read_to_string(root.join(rel))
+                lemmata_env::fs::read_text(root.join(rel))
                     .ok()
                     .map(std::borrow::Cow::Owned)
             });

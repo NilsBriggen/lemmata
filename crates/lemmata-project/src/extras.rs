@@ -126,7 +126,7 @@ pub(crate) fn labels_with(
             .get(Path::new(&file))
             .map(std::borrow::Cow::Borrowed)
             .or_else(|| {
-                lemmata_env::fs::read_to_string(project.root.join(&file))
+                lemmata_env::fs::read_text(project.root.join(&file))
                     .ok()
                     .map(std::borrow::Cow::Owned)
             });
@@ -276,7 +276,7 @@ impl Counter {
         if depth > 16 || !self.seen.insert(rel.to_path_buf()) {
             return;
         }
-        let Ok(text) = lemmata_env::fs::read_to_string(root.join(rel)) else {
+        let Ok(text) = lemmata_env::fs::read_text(root.join(rel)) else {
             return;
         };
         let name = rel.to_string_lossy().replace('\\', "/");
