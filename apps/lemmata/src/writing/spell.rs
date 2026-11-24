@@ -37,44 +37,21 @@ pub fn label(code: &str) -> &str {
         .map_or(code, |(_, l)| l)
 }
 
-/// Guesses the language from babel or polyglossia in the preamble.
-pub fn detect_language(source: &str) -> &'static str {
-    static BABEL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\\usepackage\[([^\]]*)\]\{babel\}").unwrap());
-    static POLY: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"\\set(?:default|main)language(?:\[[^\]]*\])?\{([^}]*)\}").unwrap()
-    });
-    let babel = BABEL
-        .captures(source)
-        .map(|c| c[1].to_owned())
-        .unwrap_or_default();
-    let poly = POLY
-        .captures(source)
-        .map(|c| c[1].to_owned())
-        .unwrap_or_default();
-    // babel's last option is the main language.
-    let main = if poly.is_empty() {
-        babel
-            .split(',')
-            .map(str::trim)
-            .rfind(|s| !s.is_empty())
-            .unwrap_or("")
-            .to_lowercase()
-    } else {
-        poly.to_lowercase()
-    };
+/// The dictionary a language name stands for (`ngerman`, `swissgerman`, `brazilian`).
+fn lang_of(name: &str) -> Option<&'static str> {
+    let main = name.to_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| main.contains(w));
     if has(&["swiss"]) {
-        return "de-CH";
+        return Some("de-CH");
     }
     if has(&["german", "deutsch"]) {
-        return "de";
+        return Some("de");
     }
     if has(&["french", "francais"]) {
-        return "fr";
+        return Some("fr");
     }
     if has(&["british", "ukenglish"]) {
-        return "en-GB";
+        return Some("en-GB");
     }
     const OTHER: &[(&[&str], &str)] = &[
         (&["spanish", "espanol"], "es"),
@@ -91,8 +68,42 @@ pub fn detect_language(source: &str) -> &'static str {
         (&["ukrainian"], "uk"),
         (&["turkish"], "tr"),
         (&["greek"], "el"),
+        (&["english", "american"], "en"),
     ];
-    OTHER.iter().find(|(w, _)| has(w)).map_or("en", |(_, c)| c)
+    OTHER.iter().find(|(w, _)| has(w)).map(|(_, c)| *c)
+}
+
+/// The main language of an option list: `main=german`, else the last language named.
+fn lang_in_options(opts: &str) -> Option<&'static str> {
+    let items: Vec<&str> = opts.split(',').map(str::trim).collect();
+    items
+        .iter()
+        .find_map(|o| o.strip_prefix("main=").and_then(lang_of))
+        .or_else(|| items.iter().rev().find_map(|o| lang_of(o)))
+}
+
+/// Guesses the language from polyglossia, babel or the document class options in the preamble.
+/// shortcut: the main file only, so a preamble in an \input'd file isn't read.
+pub fn detect_language(source: &str) -> &'static str {
+    static BABEL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\\usepackage(?:\[([^\]]*)\])?\{babel\}").unwrap());
+    static CLASS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\\documentclass\[([^\]]*)\]").unwrap());
+    static POLY: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\\set(?:default|main)language(?:\[[^\]]*\])?\{([^}]*)\}").unwrap()
+    });
+    let source = super::math::strip_comments(source);
+    let opts = |re: &Regex| {
+        re.captures(&source)
+            .and_then(|c| c.get(1))
+            .and_then(|m| lang_in_options(m.as_str()))
+    };
+    POLY.captures(&source)
+        .and_then(|c| lang_of(&c[1]))
+        .or_else(|| opts(&BABEL))
+        // \documentclass[ngerman]{scrartcl} with a plain \usepackage{babel}.
+        .or_else(|| opts(&CLASS))
+        .unwrap_or("en")
 }
 
 /// "de_DE" → "de", "en_GB" → "en-GB", "de-CH" → "de-CH"; None when unsupported.
@@ -199,6 +210,22 @@ mod tests {
         assert_eq!(detect_language("\\usepackage[british]{babel}"), "en-GB");
         assert_eq!(detect_language("\\usepackage[brazilian]{babel}"), "pt-BR");
         assert_eq!(detect_language("nothing"), "en");
+        assert_eq!(
+            detect_language("\\documentclass[a4paper,ngerman]{scrartcl}\n\\usepackage{babel}"),
+            "de"
+        );
+        assert_eq!(
+            detect_language("% \\usepackage[german]{babel}\n\\usepackage[english]{babel}"),
+            "en"
+        );
+        assert_eq!(
+            detect_language("\\usepackage[main=german,english]{babel}"),
+            "de"
+        );
+        assert_eq!(
+            detect_language("\\usepackage[ngerman,shorthands=off]{babel}"),
+            "de"
+        );
         assert_eq!(normalize_language("de_DE").as_deref(), Some("de"));
         assert_eq!(normalize_language("en_GB").as_deref(), Some("en-GB"));
         assert_eq!(normalize_language("de-CH").as_deref(), Some("de-CH"));

@@ -266,7 +266,7 @@ pub struct Span {
 }
 
 /// Drops `%` comments, which the renderer would choke on.
-fn strip_comments(tex: &str) -> String {
+pub(super) fn strip_comments(tex: &str) -> String {
     tex.split('\n')
         .map(|l| {
             let c: Vec<char> = l.chars().collect();
