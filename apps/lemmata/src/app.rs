@@ -4396,6 +4396,20 @@ pub(crate) mod tests {
         h.run_steps(2);
 
         std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o555)).unwrap();
+        /// Makes the folder writable again when the test ends, also when an assert fails: a
+        /// read-only folder can't be cleaned up.
+        struct Writable(std::path::PathBuf);
+        impl Drop for Writable {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+        let _writable = Writable(project.clone());
+        // Root ignores the permission bits, so nothing here would fail to save.
+        if std::fs::File::create(project.join(".probe")).is_ok() {
+            eprintln!("skipping the rest: the folder is writable although read-only (root)");
+            return;
+        }
         h.get_by_role_and_label(egui::accesskit::Role::Button, "Retry save")
             .click();
         wait_for(&mut h, "the repeated failure", |h| {
@@ -4560,6 +4574,14 @@ pub(crate) mod tests {
         let Some((mut h, _)) = in_article(tmp.path()) else {
             return;
         };
+        /// The keys are global to the test run: back to the default, also when an assert fails.
+        struct DefaultKeys;
+        impl Drop for DefaultKeys {
+            fn drop(&mut self) {
+                crate::shortcuts::choose(&Default::default());
+            }
+        }
+        let _keys = DefaultKeys;
         h.state_mut().project.as_mut().unwrap().shortcut_sheet = Some(String::new());
         h.run_steps(2);
         h.get_by_label("Keys for Reopen the last closed tab")
