@@ -115,13 +115,19 @@ impl Workspace {
     // ── Comments ──────────────────────────────────────────────────────────
 
     pub fn load_comments(&mut self, backend: &Backend) {
+        let gen_then = self.comments.generation;
         Self::job(
             backend,
             |shell| shell.read_text(review::COMMENTS_FILE.into()),
-            |ws, _, r| {
+            move |ws, _, r| {
+                // A save or another load came first: this read is older than what is held.
+                if ws.comments.generation != gen_then {
+                    return;
+                }
                 let exists = ws.info.root.join(review::COMMENTS_FILE).exists();
                 let (threads, broken) = match r.map(|t| review::parse(&t)) {
-                    Ok(Some(t)) => (t, None),
+                    Ok(Some((t, false))) => (t, None),
+                    Ok(Some((t, true))) => (t, Some("has entries Lemmata can't read".to_owned())),
                     Ok(None) => (Vec::new(), Some("isn't valid JSON".to_owned())),
                     Err(e) if exists => (Vec::new(), Some(e)),
                     Err(_) => (Vec::new(), None),
@@ -652,6 +658,7 @@ impl Workspace {
                         crate::backend::Msg::DiskText(p.clone(), shell.read_text(p))
                     });
                 }
+                ws.load_comments(b);
                 ws.refresh_outline(b);
                 ws.build_soon(false, false);
             },
