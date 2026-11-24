@@ -19,8 +19,6 @@ pub enum Error {
         "Tectonic was not found. Use Tectonic from the start screen, or choose another compiler in the project settings."
     )]
     NoTectonic,
-    #[error("could not start latexmk: {0}")]
-    Spawn(std::io::Error),
     #[error("could not start {0}: {1}")]
     SpawnTool(String, std::io::Error),
     /// The project is set up in a way that could make a build act outside it.
@@ -102,8 +100,9 @@ pub fn latexmk_args(project: &Project, miktex: bool) -> Vec<OsString> {
         };
         args.push(format!("{flag}={bin} --enable-installer %O %S").into());
     }
-    if c.draft {
-        args.push("-usepretex=\\PassOptionsToPackage{draft}{graphicx}".into());
+    let pretex = pretex(project);
+    if !pretex.is_empty() {
+        args.push(format!("-usepretex={pretex}").into());
     }
     // A project's latexmkrc is a Perl program: only a trusted project's runs. The user's own
     // rc files still apply.
@@ -116,6 +115,20 @@ pub fn latexmk_args(project: &Project, miktex: bool) -> Vec<OsString> {
     }
     args.push(main_arg(&project.main));
     args
+}
+
+/// TeX code that runs before the main file: draft mode and the chapters to build (`\includeonly`).
+fn pretex(project: &Project) -> String {
+    let c = &project.config;
+    let mut pre = String::new();
+    if c.draft {
+        pre.push_str("\\PassOptionsToPackage{draft}{graphicx}");
+    }
+    let names = c.include_only_names();
+    if !names.is_empty() {
+        pre.push_str(&format!("\\includeonly{{{}}}", names.join(",")));
+    }
+    pre
 }
 
 /// The main file as a command-line argument. A file named `-shell-escape.tex` would be read as
@@ -273,9 +286,11 @@ pub async fn build_with(
         )
         .await
         {
-            Ok(s) => s.ok_or(Error::Spawn(std::io::Error::other("could not start")))?,
+            Ok(s) => s.ok_or_else(|| {
+                Error::SpawnTool("latexmk".into(), std::io::Error::other("could not start"))
+            })?,
             // Blocked from starting (a Windows policy): the direct build below can still work.
-            Err(Error::Spawn(e)) if can_go_direct => {
+            Err(Error::SpawnTool(_, e)) if can_go_direct => {
                 let _ = std::fs::write(&output_path, e.to_string());
                 Status::Failed
             }
@@ -295,7 +310,7 @@ pub async fn build_with(
             deadline.saturating_duration_since(Instant::now()),
             &mut cancel,
             None,
-            false,
+            !project.config.stop_on_error,
         )
         .await
         {
@@ -354,7 +369,7 @@ pub async fn build_with(
     for d in &mut diagnostics {
         if d.file
             .as_deref()
-            .is_some_and(|f| f.trim_start_matches("./").starts_with(outdir))
+            .is_some_and(|f| Path::new(f.trim_start_matches("./")).starts_with(outdir))
         {
             d.file = None;
             d.line = None;
@@ -521,7 +536,7 @@ pub(crate) fn cached_outcome_with(
     for d in &mut diagnostics {
         if d.file
             .as_deref()
-            .is_some_and(|f| f.trim_start_matches("./").starts_with(&outdir))
+            .is_some_and(|f| Path::new(f.trim_start_matches("./")).starts_with(&outdir))
         {
             d.file = None;
             d.line = None;
@@ -543,11 +558,19 @@ pub(crate) fn merge_blg(
     started_at: SystemTime,
 ) {
     let blg_path = out_file(project, "blg");
-    let blg_fresh = written_since(&blg_path, started_at);
-    if blg_fresh && let Ok(bytes) = lemmata_env::fs::read(&blg_path) {
+    // The tool is rightly skipped when its input is unchanged: its log from the last run still holds.
+    let biber = project.config.bib == lemmata_project::Bib::Biber;
+    let blg_ok = written_since(&blg_path, started_at)
+        || (blg_path.is_file()
+            && bib_fingerprint(project, biber).is_some_and(|fp| {
+                std::fs::read_to_string(out_file(project, "lemmata-bib")).is_ok_and(|s| s == fp)
+            }));
+    if blg_ok && let Ok(bytes) = lemmata_env::fs::read(&blg_path) {
         for d in lemmata_log::parse_blg(&String::from_utf8_lossy(&bytes)) {
             // A missing key is already reported from the main log.
-            if !diagnostics.iter().any(|x| x.kind == d.kind) {
+            let known = matches!(d.kind, lemmata_log::Kind::UndefinedCitation { .. })
+                && diagnostics.iter().any(|x| x.kind == d.kind);
+            if !known {
                 diagnostics.push(d);
             }
         }
@@ -690,9 +713,12 @@ pub(crate) async fn run_step(
     cmd.process_group(0);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let program = Path::new(cmd.as_std().get_program())
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return Err(Error::Spawn(e)),
+        Err(e) => return Err(Error::SpawnTool(program, e)),
     };
     Ok(Some(tokio::select! {
         res = child.wait() => match res {
@@ -999,11 +1025,15 @@ pub(crate) fn pass_args(
     }
     args.push(format!("-output-directory={outdir}"));
     let main = main_arg(&project.main).to_string_lossy().replace('\\', "/");
-    args.push(if c.draft {
-        format!("\\PassOptionsToPackage{{draft}}{{graphicx}}\\input{{{main}}}")
+    let pretex = pretex(project);
+    if pretex.is_empty() {
+        args.push(main);
     } else {
-        main
-    });
+        // Code before the file: its name is the job's, or the outputs would be texput.*.
+        let stem = project.main.file_stem().unwrap_or_default();
+        args.push(format!("-jobname={}", stem.to_string_lossy()));
+        args.push(format!("{pretex}\\input{{{main}}}"));
+    }
     args
 }
 
@@ -1039,6 +1069,7 @@ async fn direct_build(
 
     for pass in 0..MAX_PASSES {
         let pass_started = SystemTime::now();
+        let before = toc_state(project);
         let mut cmd = Command::new(&engine_path);
         cmd.args(pass_args(project, &project.config.outdir, fmt, opts.miktex));
         if let Some(f) = fmt {
@@ -1068,12 +1099,14 @@ async fn direct_build(
             "Rerun to get",
             "Please rerun LaTeX",
             "Label(s) may have changed",
+            "Rerun LaTeX",
         ]
         .iter()
         .any(|m| log.contains(m));
 
         // The bibliography tool runs at most once, and only when what it reads has changed.
-        let mut again = rerun;
+        // A contents list that changed in this pass needs another one to print it.
+        let mut again = rerun || toc_state(project) != before;
         if !bib_checked && pass < MAX_PASSES - 1 {
             bib_checked = true;
             match run_bibliography(
@@ -1097,6 +1130,14 @@ async fn direct_build(
     Ok(if failed { Status::Failed } else { status })
 }
 
+/// The contents, figure and table lists, which a pass writes for the next one to print.
+fn toc_state(project: &Project) -> Vec<Vec<u8>> {
+    ["toc", "lof", "lot"]
+        .iter()
+        .map(|e| read_capped(&out_file(project, e)))
+        .collect()
+}
+
 enum Bib {
     Skipped,
     Ran { changed: bool },
@@ -1113,10 +1154,21 @@ fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
     if biber {
         std::fs::read(mirror("bcf")).ok()?.hash(&mut h);
     } else {
-        let aux = std::fs::read_to_string(mirror("aux")).ok()?;
+        let mut aux = std::fs::read_to_string(mirror("aux")).ok()?;
         if !aux.contains("\\bibdata") {
             return None;
         }
+        // \include sends its \citation lines to the chapter's own .aux, which main.aux names.
+        let chapters: Vec<String> = aux
+            .lines()
+            .filter_map(|l| l.strip_prefix("\\@input{")?.strip_suffix('}'))
+            .filter_map(lemmata_env::fs::inside_rel)
+            .map(|n| {
+                lemmata_env::fs::read_to_string(project.outdir_abs().join(n)).unwrap_or_default()
+            })
+            .collect();
+        aux.push('\n');
+        aux.push_str(&chapters.join("\n"));
         for line in aux.lines().filter(|l| {
             l.starts_with("\\citation") || l.starts_with("\\bibstyle") || l.starts_with("\\bibdata")
         }) {
@@ -1205,7 +1257,8 @@ async fn run_bibliography(
             ],
         )
     } else {
-        ("bibtex", vec![format!("{outdir}/{stem}")])
+        // From the build folder, as latexmk does: the chapters' .aux files are named relative to it.
+        ("bibtex", vec![stem])
     };
     let Some(path) = helper(opts, name) else {
         return Ok(Bib::Skipped);
@@ -1213,13 +1266,32 @@ async fn run_bibliography(
     let before = std::fs::read(&bbl).ok();
     let mut cmd = Command::new(path);
     cmd.args(args)
-        .current_dir(&project.root)
+        .current_dir(if biber {
+            project.root.clone()
+        } else {
+            project.outdir_abs()
+        })
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     set_path(&mut cmd, opts);
+    if !biber {
+        // The project's .bib and .bst files, then the user's own folders and the usual places.
+        for var in ["BIBINPUTS", "BSTINPUTS"] {
+            let mut dirs = vec![project.root.clone()];
+            if let Some(old) = std::env::var_os(var) {
+                dirs.extend(std::env::split_paths(&old).filter(|d| !d.as_os_str().is_empty()));
+            }
+            dirs.push(PathBuf::new());
+            cmd.env(var, std::env::join_paths(dirs).unwrap_or_default());
+        }
+    }
     // A failing bibliography run shows up in the .blg; the next pass still matters.
-    let status = run_step(cmd, limit, cancel).await?;
+    // A tool that cannot start (blocked by a policy) is like a missing one: the PDF is still built.
+    let Ok(status) = run_step(cmd, limit, cancel).await else {
+        let _ = std::fs::remove_file(&stamp);
+        return Ok(Bib::Skipped);
+    };
     if let Some(s @ (Status::Cancelled | Status::Timeout)) = status {
         return Ok(Bib::Stopped(s));
     }
@@ -1375,8 +1447,12 @@ pub(crate) fn prepare_outdir(project: &Project) {
         }
     }
     let outdir = project.outdir_abs();
+    // Only a folder Lemmata made (or found empty) is marked as its own; someone's data folder is not.
+    let ours = std::fs::read_dir(&outdir).is_ok_and(|mut d| d.next().is_none()) || !outdir.exists();
     let _ = std::fs::create_dir_all(&outdir);
-    let _ = std::fs::write(outdir.join(MARKER), "");
+    if ours {
+        let _ = std::fs::write(outdir.join(MARKER), "");
+    }
     // A TeX run stopped part way leaves its file list as `pdflatex12345.fls`; one per cancel.
     for e in std::fs::read_dir(&outdir).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -1604,6 +1680,42 @@ mod tests {
         assert!(args.contains(&"-halt-on-error".to_string()));
         assert!(!args.contains(&"-f".to_string()));
         assert!(args.contains(&"-usepretex=\\PassOptionsToPackage{draft}{graphicx}".to_string()));
+    }
+
+    #[test]
+    fn included_chapters_only_reach_both_build_paths() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        let latexmk = |p: &Project| -> Vec<String> {
+            latexmk_args(p, false)
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        // Nothing chosen, or names that are not plain paths: a normal build.
+        p.config.include_only = vec!["../x".into(), "a,b".into()];
+        assert!(!latexmk(&p).iter().any(|a| a.contains("includeonly")));
+        let plain = pass_args(&p, ".lemmata/build", None, false);
+        assert_eq!(plain.last().unwrap(), "main.tex");
+        assert!(!plain.iter().any(|a| a.starts_with("-jobname")));
+
+        p.config.include_only = vec!["chapters/a".into(), "b".into(), "../x".into()];
+        assert!(latexmk(&p).contains(&"-usepretex=\\includeonly{chapters/a,b}".to_string()));
+        let direct = pass_args(&p, ".lemmata/build", None, false);
+        assert_eq!(
+            direct.last().unwrap(),
+            "\\includeonly{chapters/a,b}\\input{main.tex}"
+        );
+        assert!(direct.contains(&"-jobname=main".to_string()));
+
+        p.config.draft = true;
+        assert!(
+            latexmk(&p).contains(
+                &"-usepretex=\\PassOptionsToPackage{draft}{graphicx}\\includeonly{chapters/a,b}"
+                    .to_string()
+            )
+        );
     }
 
     /// A project whose latexmk and pdflatex only record that they ran (in `calls`) and write a log and PDF.
@@ -1983,6 +2095,51 @@ mod tests {
         assert_eq!(fp(), None, "the next build must not skip bibtex");
     }
 
+    /// A \cite in an \include'd chapter lands in the chapter's .aux, which main.aux only names.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cite_in_an_included_chapter_runs_bibtex_from_the_build_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.config.bib = lemmata_project::Bib::Bibtex;
+        std::fs::create_dir_all(p.outdir_abs().join("chapters")).unwrap();
+        std::fs::write(
+            out_file(&p, "aux"),
+            "\\@input{chapters/a.aux}\n\\bibdata{r}\n\\bibstyle{plain}\n",
+        )
+        .unwrap();
+        let chapter = p.outdir_abs().join("chapters/a.aux");
+        std::fs::write(&chapter, "\\citation{k1}\n").unwrap();
+        let fp1 = bib_fingerprint(&p, false);
+        std::fs::write(&chapter, "\\citation{k1,k2}\n").unwrap();
+        assert_ne!(bib_fingerprint(&p, false), fp1);
+
+        let tools = d.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let bibtex = tools.join("bibtex");
+        std::fs::write(&bibtex, "#!/bin/sh\npwd > cwd\necho \"$@\" > args\n").unwrap();
+        std::fs::set_permissions(&bibtex, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let opts = BuildOptions {
+            latexmk: &tools,
+            bin_dir: Some(&tools),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let (_keep, mut rx) = oneshot::channel();
+        run_bibliography(&p, &opts, Duration::from_secs(5), &mut rx)
+            .await
+            .unwrap();
+        let out = p.outdir_abs();
+        assert_eq!(
+            std::fs::read_to_string(out.join("args")).unwrap().trim(),
+            "main"
+        );
+        assert!(out.join("cwd").is_file(), "bibtex ran in the build folder");
+    }
+
     /// latexmk dies without a log (Perl blocked); the engine is run directly, twice because the first log asks for a rerun.
     #[cfg(unix)]
     #[tokio::test]
@@ -2073,6 +2230,90 @@ mod tests {
                 .iter()
                 .any(|x| x.message.contains("built with pdflatex directly"))
         );
+    }
+
+    /// Without a working latexmk the engine still goes on past a nonfatal error, so references resolve.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_latexmk_fallback_goes_on_past_a_failed_pass() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let tools = d.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = tools.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let latexmk = script("latexmk", "exit 1\n");
+        script(
+            "pdflatex",
+            "out=.lemmata/build\necho x >> passes\nif [ $(wc -l < passes) -eq 1 ]; then echo 'Label(s) may have changed.' > $out/main.log; echo pdf > $out/main.pdf; exit 1; fi\necho done > $out/main.log\necho pdf > $out/main.pdf\n",
+        );
+        let mut p = Project::open(d.path()).unwrap();
+        p.trusted = true;
+        let opts = BuildOptions {
+            latexmk: &latexmk,
+            bin_dir: Some(&tools),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let (_tx, rx) = oneshot::channel();
+        build_with(&p, &opts, rx, false, false).await.unwrap();
+        let passes = std::fs::read_to_string(d.path().join("passes")).unwrap();
+        assert_eq!(passes.lines().count(), 2, "went on past the failed pass");
+    }
+
+    /// A pass that writes a new contents list, or a log asking for "Rerun LaTeX.", gets another pass.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_changed_contents_list_or_a_rerun_request_runs_the_engine_again() {
+        use std::os::unix::fs::PermissionsExt;
+        // (what the engine writes to the log, a contents list from an earlier build, passes expected)
+        let cases = [
+            ("ok", None, 2),
+            ("ok", Some("a"), 1),
+            ("Table widths have changed. Rerun LaTeX.", Some("a"), 2),
+        ];
+        for (log, old_toc, passes) in cases {
+            let d = tempfile::tempdir().unwrap();
+            std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+            let tools = d.path().join("tools");
+            std::fs::create_dir_all(&tools).unwrap();
+            let engine = tools.join("pdflatex");
+            // The second pass of the "rerun" case is silent, so it ends the build.
+            std::fs::write(
+                &engine,
+                format!(
+                    "#!/bin/sh\nout=.lemmata/build\necho x >> passes\nprintf a > $out/main.toc\necho pdf > $out/main.pdf\nif [ $(wc -l < passes) -eq 1 ]; then echo '{log}' > $out/main.log; else echo ok > $out/main.log; fi\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let p = Project::open(d.path()).unwrap();
+            assert!(!p.trusted);
+            std::fs::create_dir_all(p.outdir_abs()).unwrap();
+            if let Some(t) = old_toc {
+                std::fs::write(out_file(&p, "toc"), t).unwrap();
+            }
+            let opts = BuildOptions {
+                latexmk: &tools,
+                bin_dir: Some(&tools),
+                installer: None,
+                miktex: false,
+                perl_dir: None,
+            };
+            let (_tx, rx) = oneshot::channel();
+            build_with(&p, &opts, rx, false, false).await.unwrap();
+            let n = std::fs::read_to_string(d.path().join("passes"))
+                .unwrap()
+                .lines()
+                .count();
+            assert_eq!(n, passes, "{log:?} with toc {old_toc:?}");
+        }
     }
 
     /// An untrusted project never reaches latexmk (it runs a project's latexmkrc and builds shell
@@ -2557,6 +2798,43 @@ mod tests {
         );
     }
 
+    /// A bibliography tool that cannot start is named in the error and does not stop the build.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_bibliography_tool_that_cannot_start_is_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_keep, mut rx) = oneshot::channel();
+        let err = run_step(
+            Command::new("/nonexistent/biber"),
+            Duration::from_secs(1),
+            &mut rx,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("biber") && !err.contains("latexmk"), "{err}");
+
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        std::fs::write(out_file(&p, "bcf"), "<bcf/>").unwrap();
+        let tools = d.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let biber = tools.join("biber");
+        std::fs::write(&biber, "").unwrap(); // not executable
+        std::fs::set_permissions(&biber, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let opts = BuildOptions {
+            latexmk: &tools,
+            bin_dir: Some(&tools),
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let r = run_bibliography(&p, &opts, Duration::from_secs(1), &mut rx).await;
+        assert!(matches!(r, Ok(Bib::Skipped)));
+    }
+
     /// latexmk exits 1 without ever writing a log: the build must say why.
     #[cfg(unix)]
     #[tokio::test]
@@ -2641,7 +2919,13 @@ mod tests {
         std::fs::write(p.outdir_abs().join("mine.log"), "keep me").unwrap();
         assert!(clean(&p).is_err());
         assert!(p.outdir_abs().join("mine.log").exists());
+        // A build into someone's folder does not make it Lemmata's.
         prepare_outdir(&p);
+        assert!(clean(&p).is_err());
+        assert!(p.outdir_abs().join("mine.log").exists());
+        std::fs::remove_file(p.outdir_abs().join("mine.log")).unwrap();
+        prepare_outdir(&p);
+        std::fs::write(p.outdir_abs().join("main.log"), "").unwrap();
         assert_eq!(clean(&p).unwrap(), 1);
         assert!(
             p.outdir_abs().join(MARKER).exists(),
@@ -2702,6 +2986,122 @@ mod tests {
                 .any(|x| x.message.contains("refs.bib")),
             "{:?}",
             out.diagnostics
+        );
+    }
+
+    /// With the build folder "build", an error in builder.tex keeps its file and line.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_that_only_starts_like_the_build_folder_keeps_its_location() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::fs::write(d.path().join("lemmata.toml"), "outdir = \"build\"\n").unwrap();
+        let fake = d.path().join("fake-latexmk");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nprintf './builder.tex:12: Undefined control sequence.\\nl.12 \\\\foo\\n' > build/main.log\necho pdf > build/main.pdf\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.trusted = true;
+        let (_tx, rx) = oneshot::channel();
+        let opts = BuildOptions {
+            latexmk: &fake,
+            bin_dir: None,
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let out = build(&p, &opts, rx).await.unwrap();
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|x| x.file.as_deref() == Some("./builder.tex") && x.line == Some(12)),
+            "{:?}",
+            out.diagnostics
+        );
+    }
+
+    fn blg_project(d: &Path) -> Project {
+        std::fs::write(d.join("main.tex"), "\\documentclass{article}").unwrap();
+        let p = Project::open(d).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        p
+    }
+
+    fn undefined_cite() -> Diagnostic {
+        Diagnostic {
+            severity: lemmata_log::Severity::Warning,
+            kind: lemmata_log::Kind::UndefinedCitation { key: "k".into() },
+            file: None,
+            line: None,
+            message: "Citation `k' undefined".into(),
+            hint: None,
+            fix: None,
+        }
+    }
+
+    #[test]
+    fn a_bib_error_is_kept_next_to_any_other_warning() {
+        let d = tempfile::tempdir().unwrap();
+        let p = blg_project(d.path());
+        std::fs::write(
+            out_file(&p, "blg"),
+            "ERROR - BibTeX subsystem: Cannot find 'refs.bib'",
+        )
+        .unwrap();
+        let mut diags = vec![Diagnostic {
+            kind: lemmata_log::Kind::Other,
+            message: "There were undefined references.".into(),
+            ..undefined_cite()
+        }];
+        merge_blg(&p, &mut diags, SystemTime::now() - Duration::from_secs(60));
+        assert!(
+            diags.iter().any(|x| x.message.contains("refs.bib")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn the_blg_of_a_skipped_biber_run_is_still_read() {
+        let d = tempfile::tempdir().unwrap();
+        let mut p = blg_project(d.path());
+        p.config.bib = lemmata_project::Bib::Biber;
+        std::fs::write(out_file(&p, "bcf"), "cites").unwrap();
+        std::fs::write(
+            out_file(&p, "blg"),
+            "WARN - I didn't find a database entry for 'k'",
+        )
+        .unwrap();
+        let old = SystemTime::now() - Duration::from_secs(600);
+        let run = |p: &Project| {
+            let mut diags = vec![undefined_cite()];
+            merge_blg(p, &mut diags, SystemTime::now());
+            diags
+        };
+        std::fs::File::options()
+            .write(true)
+            .open(out_file(&p, "blg"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        // No stamp: biber did not run on this input.
+        let diags = run(&p);
+        assert!(diags[0].hint.as_deref().unwrap().contains("did not run"));
+        std::fs::write(
+            out_file(&p, "lemmata-bib"),
+            bib_fingerprint(&p, true).unwrap(),
+        )
+        .unwrap();
+        let diags = run(&p);
+        assert!(
+            !diags[0]
+                .hint
+                .clone()
+                .unwrap_or_default()
+                .contains("did not run")
         );
     }
 

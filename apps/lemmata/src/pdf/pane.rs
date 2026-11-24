@@ -49,6 +49,8 @@ pub enum Action {
     /// Opens the log through the backend; answered with `set_log`.
     ReadLog,
     OpenTerminal(String),
+    /// Runs the install command a problem shows, in a terminal.
+    OpenCommand(String),
 }
 
 #[derive(Clone, Copy, PartialEq)]

@@ -23,7 +23,7 @@ pub fn launcher_failure(output: &str) -> Diagnostic {
         (
             "Windows blocked a program that latexmk needs.".to_string(),
             Some(
-                "An application control policy (Smart App Control, AppLocker or similar) refuses to run it, often Perl. Lemmata builds with pdflatex directly instead, so nothing needs to change. To use latexmk, someone with admin rights has to allow the blocked program; turning Smart App Control off for this is permanent until Windows is reinstalled, so it is not recommended."
+                "An application control policy (Smart App Control, AppLocker or similar) refuses to run it, often Perl. Lemmata then builds with the TeX engine directly. To use latexmk, someone with admin rights has to allow the blocked program; turning Smart App Control off for this is permanent until Windows is reinstalled, so it is not recommended."
                     .to_string(),
             ),
             None,
@@ -44,7 +44,7 @@ pub fn launcher_failure(output: &str) -> Diagnostic {
         )
     } else if mentions_miktex_updates(&lower) {
         (
-            "MiKTeX says it has not checked for updates, which can stop its tools.".to_string(),
+            format!("MiKTeX says it has not checked for updates, which can stop its tools:\n{text}"),
             Some("MiKTeX may stop its tools until its package database has been refreshed (it prints this line on every run, so it is not always the cause). Open MiKTeX Console, choose Updates, and check for updates (installing them is optional). Then compile again.".to_string()),
             Some(Fix {
                 explanation: "Refresh MiKTeX's package database from a terminal (the same as Check for updates in MiKTeX Console).".into(),
@@ -85,15 +85,10 @@ fn mentions_app_control(lower: &str) -> bool {
         || lower.contains("result: 4551")
 }
 
-/// MiKTeX's "you have not checked for updates" stop, in the language of the
-/// user's Windows ("MiKTeX-Updates" in German, "mises à jour" in French, ...).
-/// The marker "major issue" next to MiKTeX stays English in every language.
+/// MiKTeX's "you have not checked for updates" stop. Its line mentioning updates is printed on
+/// every run, so only the marker "major issue" (English in every language) counts.
 fn mentions_miktex_updates(lower: &str) -> bool {
-    lower.contains("miktex")
-        && (lower.contains("major issue")
-            || lower.contains("update required")
-            || lower.contains("updates")
-            || lower.contains("mises à jour"))
+    lower.contains("miktex") && (lower.contains("major issue") || lower.contains("update required"))
 }
 
 fn mentions_perl(lower: &str) -> bool {
@@ -154,6 +149,15 @@ mod tests {
         assert!(d.fix.is_none());
         // On its own, the update line still gets its own explanation.
         assert!(launcher_failure("ERROR latexmk - major issue: Bis jetzt haben Sie noch nicht nach MiKTeX-Updates gesucht.").message.contains("checked for updates"));
+    }
+
+    #[test]
+    fn a_fatal_error_beside_an_update_line_shows_its_own_text() {
+        let d = launcher_failure(
+            "MiKTeX-Updates sind verfügbar\nFATAL latexmk - The system cannot find the file specified",
+        );
+        assert!(d.message.contains("cannot find the file"), "{}", d.message);
+        assert!(d.fix.is_none());
     }
 
     #[test]

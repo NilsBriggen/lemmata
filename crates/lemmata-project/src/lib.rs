@@ -127,6 +127,25 @@ pub struct Config {
     /// Each precompiled preamble is checked once against a normal build before it is used.
     #[serde(skip_serializing_if = "is_true")]
     pub fast_preamble: bool,
+    /// Build only these `\include`d chapters (`\includeonly`), named as in `\include{...}`.
+    /// Empty builds everything.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub include_only: Vec<String>,
+}
+
+impl Config {
+    /// The `include_only` names that can go into `\includeonly{...}`: plain relative paths with
+    /// nothing TeX would read as code or as a list separator. Others are ignored.
+    pub fn include_only_names(&self) -> Vec<&str> {
+        self.include_only
+            .iter()
+            .map(String::as_str)
+            .filter(|n| {
+                lemmata_env::fs::inside_rel(n).is_some()
+                    && !n.contains(['{', '}', ',', '%', '#', '~', '^', '&', '$', ' '])
+            })
+            .collect()
+    }
 }
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -210,6 +229,7 @@ impl Default for Config {
             timeout_secs: DEFAULT_TIMEOUT_SECS,
             targets: Vec::new(),
             fast_preamble: true,
+            include_only: Vec::new(),
         }
     }
 }
@@ -369,6 +389,7 @@ const CONFIG_KEYS: &[&str] = &[
     "timeout_secs",
     "targets",
     "fast_preamble",
+    "include_only",
 ];
 
 /// A crash mid-write must not leave a half-written file: see `lemmata_env::fs::write_atomic`.
@@ -828,6 +849,25 @@ impl Walk<'_> {
         }
         self.count(raw);
     }
+}
+
+/// The names the main file's text gives to `\include`, as written (what `\includeonly` takes).
+pub fn included_chapters(main: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in main.lines() {
+        let mut rest = strip_comment(raw);
+        while let Some(pos) = rest.find('\\') {
+            rest = &rest[pos + 1..];
+            let name: String = rest.chars().take_while(char::is_ascii_alphabetic).collect();
+            if name == "include"
+                && let Some(t) = braced(&rest[name.len()..])
+                && !out.contains(&t.trim().to_string())
+            {
+                out.push(t.trim().to_string());
+            }
+        }
+    }
+    out
 }
 
 /// The file named by `\input`, `\include`, `\subfile` or `\import{dir}{file}`.
@@ -1397,6 +1437,30 @@ mod tests {
         p.save_config().unwrap();
         let text = fs::read_to_string(d.path().join(CONFIG_FILE)).unwrap();
         assert!(!text.contains("fast_preamble"), "{text}");
+    }
+
+    #[test]
+    fn the_chapters_a_main_file_includes_are_listed_once() {
+        let main = "\\include{a}\n% \\include{b}\n\\include{chapters/c} \\input{d} \\include{a}\n";
+        assert_eq!(included_chapters(main), ["a", "chapters/c"]);
+    }
+
+    #[test]
+    fn include_only_is_saved_and_only_plain_names_are_used() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "main.tex", "\\documentclass{article}");
+        let mut p = Project::open(d.path()).unwrap();
+        p.config.include_only = ["chapters/a", "../x", "/etc/passwd", "a,b", "c}\\input{x"]
+            .map(String::from)
+            .to_vec();
+        p.save_config().unwrap();
+        let again = Project::open(d.path()).unwrap();
+        assert_eq!(again.config.include_only.len(), 5);
+        assert_eq!(again.config.include_only_names(), ["chapters/a"]);
+        p.config.include_only.clear();
+        p.save_config().unwrap();
+        let text = fs::read_to_string(d.path().join(CONFIG_FILE)).unwrap();
+        assert!(!text.contains("include_only"), "{text}");
     }
 
     #[test]

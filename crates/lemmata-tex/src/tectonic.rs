@@ -161,6 +161,9 @@ pub fn tectonic_args(project: &Project) -> Vec<OsString> {
 }
 
 /// Tectonic's package cache. Empty on first use, when the first build downloads the format and packages.
+/// Written into Tectonic's cache by the first build that succeeds: until then packages may still be downloading.
+const FIRST_BUILD_DONE: &str = ".lemmata-first-build";
+
 fn cache_dir() -> Option<PathBuf> {
     let home = || std::env::var_os("HOME").map(PathBuf::from);
     if cfg!(windows) {
@@ -220,7 +223,8 @@ pub async fn build(
         };
     let mut limit = crate::build::time_limit(project);
     // The first build downloads the format and packages, which a short limit would cut off.
-    if cache_dir().is_none_or(|c| !c.join("formats").is_dir()) {
+    // The format is made early, so a cancelled first build leaves it behind with the packages still to fetch.
+    if cache_dir().is_none_or(|c| !c.join(FIRST_BUILD_DONE).is_file()) {
         limit = limit.max(Duration::from_secs(15 * 60));
     }
     let mut cmd = Command::new(exe);
@@ -301,7 +305,7 @@ pub async fn build(
     for d in &mut diagnostics {
         if d.file
             .as_deref()
-            .is_some_and(|f| f.trim_start_matches("./").starts_with(rel_outdir))
+            .is_some_and(|f| Path::new(f.trim_start_matches("./")).starts_with(rel_outdir))
         {
             d.file = None;
             d.line = None;
@@ -334,6 +338,9 @@ pub async fn build(
     let fresh = written_since(&pdf, started_at);
     if status == Status::Success && fresh {
         mark_ok(project, started_at, &files);
+        if let Some(c) = cache_dir() {
+            let _ = std::fs::write(c.join(FIRST_BUILD_DONE), "");
+        }
     }
     Ok(outcome(status, fresh.then_some(pdf), diagnostics))
 }
@@ -563,8 +570,13 @@ fn install_release(rel: &Release, url: &str, dir: &Path) -> Result<PathBuf, Inst
             "2",
             "--connect-timeout",
             "20",
-            "--max-time",
-            "900",
+            // No wall-clock cap: a slow link finishes, a dead one is dropped. A retry resumes.
+            "--speed-limit",
+            "1",
+            "--speed-time",
+            "60",
+            "--continue-at",
+            "-",
             "--output",
         ]
         .map(OsString::from)

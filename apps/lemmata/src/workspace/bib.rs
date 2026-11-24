@@ -1305,7 +1305,7 @@ impl Workspace {
                     } else if !r.missing.is_empty() {
                         ws.notice(
                             format!("Not in Zotero: {}.", r.missing.join(", ")),
-                            Tone::Info,
+                            Tone::Error,
                         );
                     } else if report {
                         let s = if r.written == 1 { "" } else { "s" };
