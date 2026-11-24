@@ -543,11 +543,19 @@ pub(crate) fn merge_blg(
     started_at: SystemTime,
 ) {
     let blg_path = out_file(project, "blg");
-    let blg_fresh = written_since(&blg_path, started_at);
-    if blg_fresh && let Ok(bytes) = lemmata_env::fs::read(&blg_path) {
+    // The tool is rightly skipped when its input is unchanged: its log from the last run still holds.
+    let biber = project.config.bib == lemmata_project::Bib::Biber;
+    let blg_ok = written_since(&blg_path, started_at)
+        || (blg_path.is_file()
+            && bib_fingerprint(project, biber).is_some_and(|fp| {
+                std::fs::read_to_string(out_file(project, "lemmata-bib")).is_ok_and(|s| s == fp)
+            }));
+    if blg_ok && let Ok(bytes) = lemmata_env::fs::read(&blg_path) {
         for d in lemmata_log::parse_blg(&String::from_utf8_lossy(&bytes)) {
             // A missing key is already reported from the main log.
-            if !diagnostics.iter().any(|x| x.kind == d.kind) {
+            let known = matches!(d.kind, lemmata_log::Kind::UndefinedCitation { .. })
+                && diagnostics.iter().any(|x| x.kind == d.kind);
+            if !known {
                 diagnostics.push(d);
             }
         }
@@ -2703,6 +2711,75 @@ mod tests {
             "{:?}",
             out.diagnostics
         );
+    }
+
+    fn blg_project(d: &Path) -> Project {
+        std::fs::write(d.join("main.tex"), "\\documentclass{article}").unwrap();
+        let p = Project::open(d).unwrap();
+        std::fs::create_dir_all(p.outdir_abs()).unwrap();
+        p
+    }
+
+    fn undefined_cite() -> Diagnostic {
+        Diagnostic {
+            severity: lemmata_log::Severity::Warning,
+            kind: lemmata_log::Kind::UndefinedCitation { key: "k".into() },
+            file: None,
+            line: None,
+            message: "Citation `k' undefined".into(),
+            hint: None,
+            fix: None,
+        }
+    }
+
+    #[test]
+    fn a_bib_error_is_kept_next_to_any_other_warning() {
+        let d = tempfile::tempdir().unwrap();
+        let p = blg_project(d.path());
+        std::fs::write(
+            out_file(&p, "blg"),
+            "ERROR - BibTeX subsystem: Cannot find 'refs.bib'",
+        )
+        .unwrap();
+        let mut diags = vec![Diagnostic {
+            kind: lemmata_log::Kind::Other,
+            message: "There were undefined references.".into(),
+            ..undefined_cite()
+        }];
+        merge_blg(&p, &mut diags, SystemTime::now() - Duration::from_secs(60));
+        assert!(diags.iter().any(|x| x.message.contains("refs.bib")), "{diags:?}");
+    }
+
+    #[test]
+    fn the_blg_of_a_skipped_biber_run_is_still_read() {
+        let d = tempfile::tempdir().unwrap();
+        let mut p = blg_project(d.path());
+        p.config.bib = lemmata_project::Bib::Biber;
+        std::fs::write(out_file(&p, "bcf"), "cites").unwrap();
+        std::fs::write(out_file(&p, "blg"), "WARN - I didn't find a database entry for 'k'")
+            .unwrap();
+        let old = SystemTime::now() - Duration::from_secs(600);
+        let run = |p: &Project| {
+            let mut diags = vec![undefined_cite()];
+            merge_blg(p, &mut diags, SystemTime::now());
+            diags
+        };
+        std::fs::File::options()
+            .write(true)
+            .open(out_file(&p, "blg"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        // No stamp: biber did not run on this input.
+        let diags = run(&p);
+        assert!(diags[0].hint.as_deref().unwrap().contains("did not run"));
+        std::fs::write(
+            out_file(&p, "lemmata-bib"),
+            bib_fingerprint(&p, true).unwrap(),
+        )
+        .unwrap();
+        let diags = run(&p);
+        assert!(!diags[0].hint.clone().unwrap_or_default().contains("did not run"));
     }
 
     #[test]
