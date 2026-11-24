@@ -252,6 +252,8 @@ impl Pane {
 
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(body));
         if b.logs_open {
+            // Not drawn, so it can't tell that it lost focus: Ctrl+F is the logs' own meanwhile.
+            self.view.focused = false;
             out.extend(self.problems.show(&mut c, p, b));
         } else if has_pdf {
             match self.view.show(&mut c, p) {
@@ -462,12 +464,14 @@ impl Pane {
             Stroke::new(1.0, border),
             StrokeKind::Inside,
         );
-        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            if let Ok(n) = self.page_input.trim().parse::<usize>()
+        if r.lost_focus() {
+            if ui.input(|i| i.key_pressed(egui::Key::Enter))
+                && let Ok(n) = self.page_input.trim().parse::<usize>()
                 && n > 0
             {
                 self.view.goto_page(n);
             }
+            // Clicking away drops what was typed: the box shows the page the viewer is on.
             self.page_input.clear();
         }
     }
@@ -593,7 +597,6 @@ impl Pane {
                 .show(ui);
             return None;
         }
-        let nodes = self.view.outline.clone();
         let mut go = None;
         egui::ScrollArea::vertical()
             .id_salt("pdf-outline")
@@ -603,7 +606,7 @@ impl Pane {
                 outline_nodes(
                     ui,
                     p,
-                    &nodes,
+                    &self.view.outline,
                     &mut Vec::new(),
                     &mut self.outline_closed,
                     &mut go,
@@ -749,6 +752,9 @@ impl Pane {
                 }
             }
             Menu::More(anchor) => {
+                // The page buttons drop out of a narrow bar (the page box is skipped at 420 px).
+                let (cur, n) = (self.view.current_page, self.view.page_count());
+                let place = format!("{cur} / {n}");
                 let items = [
                     MenuItem::new(icons::ZOOM_IN, "Zoom in"),
                     MenuItem::new(icons::ZOOM_OUT, "Zoom out"),
@@ -756,6 +762,8 @@ impl Pane {
                     MenuItem::check("Page thumbnails", self.side == Some(Side::Thumbs)),
                     MenuItem::new(icons::PRESENTATION, "Present full screen"),
                     MenuItem::new(icons::EXTERNAL_LINK, "Open in external viewer"),
+                    MenuItem::new(icons::CHEVRON_LEFT, "Previous page").hint(&place),
+                    MenuItem::new(icons::CHEVRON_RIGHT, "Next page").hint(&place),
                 ];
                 match widgets::drop_menu(ctx, p, id, anchor, true, &items) {
                     MenuResult::Open => {}
@@ -768,7 +776,9 @@ impl Pane {
                             2 => self.toggle_side(Side::Outline),
                             3 => self.toggle_side(Side::Thumbs),
                             4 => out.push(Action::Present),
-                            _ => out.push(Action::OpenExternally),
+                            5 => out.push(Action::OpenExternally),
+                            6 => self.view.goto_page(cur.saturating_sub(1).max(1)),
+                            _ => self.view.goto_page((cur + 1).min(n)),
                         }
                     }
                 }
@@ -1044,6 +1054,39 @@ mod tests {
                 },
                 pane,
             )
+    }
+
+    #[test]
+    fn a_page_typed_but_not_entered_is_dropped_when_focus_leaves() {
+        use egui_kittest::kittest::Queryable;
+        let p = crate::theme::LIGHT;
+        let mut pane = Pane::new(&egui::Context::default());
+        pane.view.pages = vec![vec2(600.0, 800.0); 20];
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([300.0, 200.0])
+            .with_context_setup(move |ctx| crate::theme::install_fonts(ctx))
+            .build_ui_state(
+                move |ui, pane: &mut Pane| {
+                    pane.page_box(ui, &p, 3);
+                },
+                pane,
+            );
+        h.run();
+        h.get_by_label("Page").click();
+        h.run();
+        h.get_by_label("Page").type_text("12");
+        h.run();
+        assert_eq!(h.state().page_input, "12");
+        for pressed in [true, false] {
+            h.input_mut().events.push(egui::Event::PointerButton {
+                pos: pos2(250.0, 150.0),
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run();
+        }
+        assert_eq!(h.state().page_input, "");
     }
 
     #[test]
