@@ -23,7 +23,6 @@ pub enum Viewer {
 const MAX_SIDE: u32 = 8192;
 
 /// Decodes an image file, off the UI thread.
-#[cfg(test)]
 pub fn decode(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
     decode_sized(path, bytes).map(|(image, _)| image)
 }
