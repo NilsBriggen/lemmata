@@ -112,6 +112,9 @@ pub struct Shell {
     watcher: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
     /// What the app last wrote to each file, so its own saves aren't reported as outside edits.
     written: files::Written,
+    /// Files opened as Windows-1252: one saved with only plain letters left keeps that encoding
+    /// for the next umlaut instead of turning UTF-8 halfway.
+    latin1: Mutex<std::collections::HashSet<PathBuf>>,
     /// The open request from the command line or a second launch, until the UI takes it.
     open_request: open_with::OpenRequest,
     /// Project jobs share a read guard; opening another project takes the write guard.
@@ -141,6 +144,7 @@ impl Shell {
             speller: Default::default(),
             watcher: Default::default(),
             written: Default::default(),
+            latin1: Default::default(),
             open_request: open_with::OpenRequest::from_command_line(),
             operation: Default::default(),
             generation: Default::default(),
@@ -487,7 +491,11 @@ impl Shell {
         }
         let bytes =
             lemmata_env::fs::read(&abs).map_err(|e| format!("Could not open {path}: {e}"))?;
-        Ok(lemmata_env::fs::decode_text(bytes).0)
+        let (text, latin1) = lemmata_env::fs::decode_text(bytes);
+        if latin1 {
+            self.latin1.lock_safe().insert(abs);
+        }
+        Ok(text)
     }
 }
 
@@ -513,8 +521,18 @@ impl Shell {
         }
         // A file that is in Windows-1252 (see `read_text`) stays in it.
         let disk_text = lemmata_env::fs::read_text(&abs).ok();
-        let bytes = lemmata_env::fs::encode_like_disk(&abs, &content)
-            .map_err(|e| format!("Could not save {path}: {e}."))?;
+        // shortcut: remembered by path for this run; a new file made at a latin1 file's old name
+        // would be written latin1 until the app restarts.
+        let latin1 = self.latin1.lock_safe().contains(&abs)
+            && lemmata_env::fs::read(&abs).is_ok_and(|b| b.is_ascii());
+        let bytes = if latin1 {
+            lemmata_env::fs::encode_cp1252(&content).map_err(|c| {
+                format!("Could not save {path}: it is written in Windows-1252 (latin1), which has no {c:?}. Remove the character, or convert the file to UTF-8.")
+            })?
+        } else {
+            lemmata_env::fs::encode_like_disk(&abs, &content)
+                .map_err(|e| format!("Could not save {path}: {e}."))?
+        };
         // Beside the file first, so a crash never leaves half of it; through a link (a preamble
         // shared between projects) to the file it names, out of the project only when trusted.
         let trusted = self
@@ -1236,6 +1254,37 @@ mod tests {
             std::fs::read(root.join("ch.tex")).unwrap(),
             b"\\label{sec:b} Gr\xfc\xdfe\n"
         );
+    }
+
+    /// Saving a latin1 file as it was is byte-exact, and one whose umlauts were all deleted
+    /// stays latin1 for the next one.
+    #[test]
+    fn a_latin1_file_stays_latin1_through_saves() {
+        let d = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(d.path()).unwrap();
+        std::fs::write(root.join("main.tex"), b"\\documentclass{article}\n").unwrap();
+        std::fs::write(root.join("ch.tex"), b"Gr\xfc\xdfe\n").unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let dirs = crate::Dirs {
+            resources: data.path().into(),
+            data: data.path().into(),
+            cache: data.path().into(),
+            home: None,
+        };
+        let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
+        shell
+            .open_project(1, root.to_string_lossy().into_owned(), true)
+            .unwrap();
+        let text = shell.read_text("ch.tex".into()).unwrap();
+        let save = |t: &str| shell.write_text(&root, "ch.tex".into(), t.into(), None);
+        save(&text).unwrap();
+        assert_eq!(
+            std::fs::read(root.join("ch.tex")).unwrap(),
+            b"Gr\xfc\xdfe\n"
+        );
+        save("Grosse\n").unwrap();
+        save("Gr\u{fc}n\n").unwrap();
+        assert_eq!(std::fs::read(root.join("ch.tex")).unwrap(), b"Gr\xfcn\n");
     }
 
     #[test]

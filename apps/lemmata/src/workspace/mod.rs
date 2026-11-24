@@ -214,6 +214,8 @@ pub struct Workspace {
     pub lookups: crate::editor::complete::Lookups,
     /// Packages already offered this session, so the offer comes once.
     offered: HashSet<String>,
+    /// Files whose disk version the user chose over theirs, until it's read.
+    reloading: HashSet<String>,
     /// The symbol palette, while open.
     pub symbols: Option<symbols::SymbolPalette>,
     pub cite: Option<bib::CitePicker>,
@@ -361,6 +363,7 @@ impl Workspace {
             indent: Indent::Spaces(2),
             lookups: Default::default(),
             offered: HashSet::new(),
+            reloading: HashSet::new(),
             symbols: None,
             cite: None,
             search: None,
@@ -1003,6 +1006,7 @@ impl Workspace {
                 }
             }
             Msg::DiskText(path, Ok(disk)) => {
+                self.reloading.remove(&path);
                 let current = self.editors.get(&path).map(|e| e.doc.text());
                 if self
                     .buffers
@@ -1018,10 +1022,18 @@ impl Workspace {
                     self.buffers.dirty.remove(&path);
                 }
             }
-            Msg::DiskText(path, Err(e)) => self.notice(
-                format!("{path} changed outside Lemmata but could not be read: {e}"),
-                Tone::Error,
-            ),
+            Msg::DiskText(path, Err(e)) => {
+                // "Load the version on disk" that can't be read: the editor still has the user's
+                // text, so it is theirs again to keep or to try loading once more.
+                if self.reloading.remove(&path) {
+                    self.buffers.dirty.insert(path.clone());
+                    self.buffers.conflict(&path);
+                }
+                self.notice(
+                    format!("{path} changed outside Lemmata but could not be read: {e}"),
+                    Tone::Error,
+                );
+            }
             Msg::Analysis(seq, Ok(analysis)) if seq == self.analysis_seq => {
                 self.apply_analysis(
                     analysis,
@@ -1919,6 +1931,7 @@ impl Workspace {
                     self.write(backend, &path, settings);
                 }
                 Some(false) => {
+                    self.reloading.insert(path.clone());
                     self.buffers.resolve(&path, false);
                     // Read again; the editor takes the disk's text as one undo step.
                     self.buffers.dirty.remove(&path);

@@ -4879,6 +4879,63 @@ pub(crate) mod tests {
     }
 
     /// A file in conflict can't be saved, so deleting it loses the typed text: it is said.
+    #[cfg(unix)]
+    #[test]
+    fn a_disk_version_that_cannot_be_read_keeps_the_conflict() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let Some((mut h, project)) = in_article(tmp.path()) else {
+            return;
+        };
+        let rel = "loose.tex";
+        let file = project.join(rel);
+        std::fs::write(&file, "text\n").unwrap();
+        {
+            let app = h.state_mut();
+            let ws = app.project.as_mut().unwrap();
+            ws.open_file(&app.backend, rel);
+        }
+        wait_for(&mut h, "loose.tex open", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .editors
+                .contains_key(rel)
+        });
+        {
+            let ws = h.state_mut().project.as_mut().unwrap();
+            ws.editors
+                .get_mut(rel)
+                .unwrap()
+                .replace_range(0, 0, "typed ");
+            ws.buffers.dirty.insert(rel.into());
+            ws.buffers.conflict(rel);
+        }
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&file).is_ok() {
+            return; // root reads anything
+        }
+        wait_for(&mut h, "the conflict bar", |h| {
+            h.query_by_label("Load the version on disk").is_some()
+        });
+        h.get_by_label("Load the version on disk").click();
+        wait_for(&mut h, "the read to fail", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .notices
+                .iter()
+                .any(|n| n.text.contains("could not be read"))
+        });
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let ws = h.state().project.as_ref().unwrap();
+        assert!(ws.buffers.conflicts.iter().any(|c| c == rel));
+        assert!(ws.buffers.dirty.contains(rel));
+        assert!(ws.editors[rel].doc.text().starts_with("typed "));
+    }
+
     #[test]
     fn deleting_a_file_in_conflict_says_its_edits_are_gone() {
         let tmp = tempfile::tempdir().unwrap();
