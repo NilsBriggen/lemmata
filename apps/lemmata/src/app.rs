@@ -602,9 +602,13 @@ impl App {
             }
             Msg::Picked(Pick::ProjectFolder, Some(dir)) => {
                 let dir = dir.to_string_lossy().into_owned();
-                if self
-                    .library
-                    .file(&mut self.groups, std::slice::from_ref(&dir))
+                // A project already in the library stays in its folder.
+                let known = self.recents.0.iter().any(|r| r.path == dir)
+                    || self.groups.members.contains_key(&dir);
+                if !known
+                    && self
+                        .library
+                        .file(&mut self.groups, std::slice::from_ref(&dir))
                 {
                     self.groups.save(&self.dirs);
                 }
