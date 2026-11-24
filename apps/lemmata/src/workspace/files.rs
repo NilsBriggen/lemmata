@@ -1725,6 +1725,56 @@ fn boxed(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_partial_undo_of_a_move_keeps_the_rest_for_later() {
+        use crate::app::tests::{app, canonical_str, dirs, wait_for};
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("paper");
+        std::fs::create_dir_all(project.join("parts")).unwrap();
+        std::fs::write(project.join("main.tex"), "\\documentclass{article}\n").unwrap();
+        std::fs::write(project.join("parts/a.tex"), "a").unwrap();
+        std::fs::write(project.join("parts/b.tex"), "b").unwrap();
+        // Something else took b.tex's old place, so moving it back fails.
+        std::fs::write(project.join("b.tex"), "other").unwrap();
+        let root = canonical_str(&project);
+        let d = dirs(tmp.path());
+        let mut recents = crate::store::Recents::default();
+        recents.remember(&root, 1.0);
+        recents.save(&d);
+        crate::store::Settings {
+            first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
+            trusted_projects: vec![root],
+            ..crate::store::Settings::default()
+        }
+        .save(&d);
+        let mut h = app(tmp.path());
+        wait_for(&mut h, "the project", |h| h.state().project.is_some());
+        let app = h.state_mut();
+        let ws = app.project.as_mut().unwrap();
+        ws.push_undo(
+            "Move 2 files".into(),
+            Undo::Rename(
+                vec![
+                    ("parts/a.tex".into(), "a.tex".into()),
+                    ("parts/b.tex".into(), "b.tex".into()),
+                ],
+                false,
+            ),
+        );
+        ws.undo_files(&app.backend, &app.settings);
+        wait_for(&mut h, "the undo", |_| project.join("a.tex").exists());
+        wait_for(&mut h, "what is left in the log", |h| {
+            h.state().project.as_ref().unwrap().files.log.len() == 1
+        });
+        let ws = h.state().project.as_ref().unwrap();
+        assert!(matches!(
+            &ws.files.log[0].1,
+            Undo::Rename(rest, false) if rest == &[("parts/b.tex".to_owned(), "b.tex".to_owned())]
+        ));
+        assert!(project.join("parts/b.tex").exists());
+    }
+
     // treeModel.test.ts
     #[test]
     fn names_paths_and_ranges() {

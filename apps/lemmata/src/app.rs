@@ -12,12 +12,12 @@ use lemmata_shell::{Event, InstallRequest, TexStatus};
 
 pub struct App {
     dirs: Dirs,
-    settings: Settings,
+    pub(crate) settings: Settings,
     settings_dirty: Option<std::time::Instant>,
     recents: Recents,
     groups: Groups,
     palette: Palette,
-    backend: Backend,
+    pub(crate) backend: Backend,
     tex: Option<TexStatus>,
     checking: bool,
     was_focused: Option<bool>,
@@ -29,7 +29,7 @@ pub struct App {
     library: library::State,
     open_error: Option<String>,
     no_main_in: Option<String>,
-    project: Option<Workspace>,
+    pub(crate) project: Option<Workspace>,
     /// The latest project open request; older answers are discarded.
     open_generation: u64,
     /// Whether the project being opened is trusted (the answer `open_project_as` went by).
