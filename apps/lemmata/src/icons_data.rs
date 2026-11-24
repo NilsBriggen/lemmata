@@ -17,6 +17,7 @@ pub const CHEVRON_RIGHT: &[&str] = &["m9 18 6-6-6-6"];
 pub const CHEVRON_UP: &[&str] = &["m18 15-6-6-6 6"];
 pub const CHEVRONS_DOWN_UP: &[&str] = &["m7 20 5-5 5 5", "m7 4 5 5 5-5"];
 pub const CHEVRONS_UP_DOWN: &[&str] = &["m7 15 5 5 5-5", "m7 9 5-5 5 5"];
+pub const CODE: &[&str] = &["m16 18 6-6-6-6", "m8 6-6 6 6 6"];
 pub const CIRCLE: &[&str] = &["M2 12A10 10 0 1 0 22 12A10 10 0 1 0 2 12Z"];
 pub const CIRCLE_ALERT: &[&str] = &["M2 12A10 10 0 1 0 22 12A10 10 0 1 0 2 12Z", "M12 8L12 12", "M12 16L12.01 16"];
 pub const CIRCLE_CHECK: &[&str] = &["M2 12A10 10 0 1 0 22 12A10 10 0 1 0 2 12Z", "m16 9-5.5 5.5L8 12"];

@@ -1261,6 +1261,11 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> (bool, bool, bo
             if ibtn(c, icons::TABLE, "Table").clicked() {
                 todo = Some(Box::new(|ws| ws.open_table()));
             }
+            let code = ibtn(c, icons::CODE, "Code block");
+            let at = code.rect;
+            if code.on_hover_text("Code block").clicked() {
+                todo = Some(Box::new(move |ws| ws.menu = Some(Menu::Code(at))));
+            }
             if Button::new("Cite")
                 .with_icon(icons::BOOK_OPEN_TEXT)
                 .kind(Kind::Ghost)
@@ -1721,6 +1726,29 @@ pub fn menus(
                     ws.menu = None;
                     let name = hs[i].0;
                     with_editor(ws, |e, ind| heading(e, name, ind));
+                }
+            }
+        }
+        Menu::Code(anchor) => {
+            let langs = crate::editor::complete::CODE_LANGUAGES;
+            let mut items = vec![MenuItem::Heading("Code block")];
+            items.extend(langs.iter().map(|(l, _, _)| MenuItem::plain(l)));
+            match widgets::drop_menu(ctx, p, id, anchor, false, &items) {
+                MenuResult::Open => {}
+                MenuResult::Closed => ws.menu = None,
+                MenuResult::Clicked(i) => {
+                    ws.menu = None;
+                    let lang = langs[i - 1].0;
+                    // minted when the document already loads it; listings needs no shell escape.
+                    Workspace::job(
+                        backend,
+                        |shell| shell.has_package("minted".into()).unwrap_or(false),
+                        move |ws, b, minted| {
+                            let (t, pkg) = crate::editor::complete::code_block(lang, minted);
+                            with_editor(ws, |e, i| e.insert_template(&t, i));
+                            ws.needs_package(b, pkg.into());
+                        },
+                    );
                 }
             }
         }

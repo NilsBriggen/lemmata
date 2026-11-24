@@ -350,6 +350,7 @@ mod tests {
             ARROW_DOWN,
             BOLD,
             CIRCLE_CHECK,
+            CODE,
             GIT_BRANCH,
             HISTORY,
             SETTINGS,

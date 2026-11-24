@@ -550,6 +550,58 @@ static FILE: LazyLock<Regex> = LazyLock::new(|| {
 static PKG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\\(?:usepackage|RequirePackage)(?:\[[^\]\n]*\])?\{([^{}\n]*)$").unwrap()
 });
+/// `\begin{minted}{py`, `\mintinline[opts]{py`: a minted language.
+static MINTED_LANG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\\(?:begin\{minted\}|mintinline|inputminted)(?:\[[^\]\n]*\])?\{([A-Za-z0-9+#-]*)$")
+        .unwrap()
+});
+/// `language=Py` in the options of a listings command.
+static LST_LANG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\\(?:begin\{lstlisting\}|lstinline|lstset|lstinputlisting)\s*[\[{][^\]}\n]*\blanguage\s*=\s*([A-Za-z+]*)$")
+        .unwrap()
+});
+
+/// Languages for code blocks: the name shown, minted's lexer, and the listings name when
+/// listings knows the language.
+pub const CODE_LANGUAGES: &[(&str, &str, Option<&str>)] = &[
+    ("Python", "python", Some("Python")),
+    ("C", "c", Some("C")),
+    ("C++", "cpp", Some("C++")),
+    ("Java", "java", Some("Java")),
+    ("JavaScript", "javascript", None),
+    ("TypeScript", "typescript", None),
+    ("Rust", "rust", None),
+    ("Go", "go", None),
+    ("R", "r", Some("R")),
+    ("MATLAB", "matlab", Some("Matlab")),
+    ("Bash", "bash", Some("bash")),
+    ("SQL", "sql", Some("SQL")),
+    ("HTML", "html", Some("HTML")),
+    ("LaTeX", "latex", Some("TeX")),
+    ("Haskell", "haskell", Some("Haskell")),
+    ("Ruby", "ruby", Some("Ruby")),
+    ("Fortran", "fortran", Some("Fortran")),
+    ("JSON", "json", None),
+    ("YAML", "yaml", None),
+    ("Plain text", "text", None),
+];
+
+/// A code block in `language` (a shown name from CODE_LANGUAGES) and the package it needs:
+/// minted when the document loads it, else listings, which needs no shell escape.
+pub fn code_block(language: &str, minted: bool) -> (String, &'static str) {
+    let (_, lexer, lst) = CODE_LANGUAGES
+        .iter()
+        .find(|(n, _, _)| *n == language)
+        .copied()
+        .unwrap_or(("", "text", None));
+    if minted {
+        (format!("\\begin{{minted}}{{{lexer}}}\n${{}}\n\\end{{minted}}"), "minted")
+    } else {
+        let opts = lst.map(|l| format!("[language={l}]")).unwrap_or_default();
+        (format!("\\begin{{lstlisting}}{opts}\n${{}}\n\\end{{lstlisting}}"), "listings")
+    }
+}
+
 static ENV: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\\(begin|end)\{([A-Za-z*]*)$").unwrap());
 static CMD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\[A-Za-z]*$").unwrap());
@@ -741,6 +793,27 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
         });
     }
 
+    let langs = if let Some(m) = MINTED_LANG.captures(&before) {
+        Some((m.get(1).unwrap().as_str().to_owned(), true))
+    } else {
+        LST_LANG
+            .captures(&before)
+            .map(|m| (m.get(1).unwrap().as_str().to_owned(), false))
+    };
+    if let Some((typed, minted)) = langs {
+        let items = CODE_LANGUAGES
+            .iter()
+            .filter_map(|(shown, lexer, lst)| {
+                let name = if minted { Some(*lexer) } else { *lst }?;
+                Some(Item::new(name, Kind::Constant, Apply::Text(name.into())).detail(*shown))
+            })
+            .collect();
+        return Some(Found {
+            items: at(items, pos - chars(&typed), pos),
+            filter: true,
+        });
+    }
+
     if let Some(m) = PKG.captures(&before) {
         let (from, _) = list_item(&m[1], pos);
         let items = look
@@ -876,7 +949,7 @@ pub fn wants_server(d: &Doc, pos: usize, explicit: bool) -> bool {
     if chars(c.as_str()) < 2 && !explicit {
         return false;
     }
-    ![&*ENV, &*REF, &*CITE, &*FILE, &*PKG]
+    ![&*ENV, &*REF, &*CITE, &*FILE, &*PKG, &*MINTED_LANG, &*LST_LANG]
         .iter()
         .any(|r| r.is_match(&before))
 }
@@ -1082,6 +1155,25 @@ mod tests {
         f.as_ref()
             .map(|f| f.items.iter().map(|i| i.label.clone()).collect())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn code_languages_after_minted_and_listings() {
+        let l = labels(&complete("\\begin{minted}{py", None));
+        assert!(l.contains(&"python".into()) && l.contains(&"rust".into()));
+        let l = labels(&complete("\\mintinline[fontsize=\\small]{", None));
+        assert!(l.contains(&"cpp".into()));
+        let l = labels(&complete("\\begin{lstlisting}[caption=x, language=", None));
+        assert!(l.contains(&"Python".into()) && !l.contains(&"Rust".into()));
+        assert_eq!(
+            code_block("Python", false).0,
+            "\\begin{lstlisting}[language=Python]\n${}\n\\end{lstlisting}"
+        );
+        assert_eq!(code_block("Rust", false).0, "\\begin{lstlisting}\n${}\n\\end{lstlisting}");
+        assert_eq!(
+            code_block("Rust", true),
+            ("\\begin{minted}{rust}\n${}\n\\end{minted}".into(), "minted")
+        );
     }
 
     #[test]
