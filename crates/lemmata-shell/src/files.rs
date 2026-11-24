@@ -13,7 +13,8 @@ const TEXT_EXTS: &[&str] = &[
     "csv", "tsv", "json", "yaml", "yml", "xml", "ini", "cfg", "conf", "py", "r", "m", "jl", "sh",
     "lua",
 ];
-const MAX_MATCHES: usize = 2000;
+/// Matching lines a project search lists, at most (plus the rest of its last file).
+pub const MAX_MATCHES: usize = 2000;
 
 /// A project-relative path that can't escape the project.
 pub(crate) fn safe_rel(rel: &str) -> CmdResult<PathBuf> {

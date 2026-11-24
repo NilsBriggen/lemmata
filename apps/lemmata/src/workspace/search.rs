@@ -32,6 +32,10 @@ pub struct ProjectSearch {
     /// The search runs 200 ms after the last keystroke.
     due: Option<Instant>,
     seq: u64,
+    /// The newest search that has come back.
+    got: u64,
+    /// The query and options the results are for: lines left out stay left out while they hold.
+    searched: String,
     focus: bool,
 }
 
@@ -64,6 +68,33 @@ impl ProjectSearch {
             case_sensitive: self.case_sensitive,
             whole_word: self.whole_word,
         }
+    }
+
+    /// What the hits depend on, apart from the replacement text.
+    fn key(&self) -> String {
+        format!(
+            "{}\u{0}{}{}{}",
+            self.query, self.regex, self.case_sensitive, self.whole_word
+        )
+    }
+
+    /// The search hit the file's limit: more lines match than are listed.
+    fn truncated(&self) -> bool {
+        self.results.iter().map(|f| f.matches.len()).sum::<usize>()
+            >= lemmata_shell::files::MAX_MATCHES
+    }
+
+    /// New results. A new replacement text finds the same lines: the ones left out stay out.
+    fn take_results(&mut self, key: String, res: Vec<FileMatches>) {
+        if self.searched != key {
+            self.searched = key;
+            self.excluded.clear();
+        }
+        self.excluded.retain(|(p, l)| {
+            res.iter()
+                .any(|f| f.path == *p && f.matches.iter().any(|m| m.line == *l))
+        });
+        self.results = res;
     }
 
     fn soon(&mut self) {
@@ -181,7 +212,7 @@ impl Workspace {
         let Some(s) = &mut self.search else { return };
         s.due = None;
         s.seq += 1;
-        let (seq, options) = (s.seq, s.options());
+        let (seq, options, key) = (s.seq, s.options(), s.key());
         let replacement = s.show_replace.then(|| s.replacement.clone());
         Workspace::job(
             backend,
@@ -192,12 +223,12 @@ impl Workspace {
                 if s.seq != seq {
                     return;
                 }
+                s.got = seq;
                 s.versions = versions;
                 s.error = None;
                 s.message = note;
-                s.excluded.clear();
                 match r {
-                    Ok(res) => s.results = res,
+                    Ok(res) => s.take_results(key, res),
                     Err(e) => {
                         s.error = Some(e);
                         s.results.clear();
@@ -219,7 +250,8 @@ impl Workspace {
         let versions = self.editor_versions();
         let Some(s) = &mut self.search else { return };
         let (targets, _) = s.chosen();
-        if targets.is_empty() {
+        // The results must be those of the fields as they are now.
+        if targets.is_empty() || s.due.is_some() || s.got != s.seq {
             return;
         }
         // Lines added or removed since the search would move the hits (and the ones left out)
@@ -230,11 +262,15 @@ impl Workspace {
                 .get(&t.path)
                 .is_some_and(|v| s.versions.get(&t.path).copied().unwrap_or(0) != *v)
         });
-        if moved {
-            self.run_search(
-                backend,
-                Some("The files changed since the search, so the results were updated. Check them and Replace again.".into()),
-            );
+        // Unsaved edits: the hits are lines of the disk text, so save and search again first.
+        let unsaved = targets.iter().any(|t| self.buffers.is_dirty(&t.path));
+        if moved || unsaved {
+            let note = Some("The files changed since the search, so the results were updated. Check them and Replace again.".to_owned());
+            if unsaved {
+                self.after_saving(backend, settings, move |ws, b| ws.run_search(b, note));
+            } else {
+                self.run_search(backend, note);
+            }
             return;
         }
         let (options, replacement) = (s.options(), s.replacement.clone());
@@ -244,7 +280,8 @@ impl Workspace {
             Workspace::job(
                 b,
                 move |shell| {
-                    let saved = matches!(shell.history_snapshot("Before replace".into()), Ok(Some(_)));
+                    // An empty snapshot still means History holds the state.
+                    let saved = shell.history_snapshot("Before replace".into()).is_ok();
                     let n = shell.replace_in_files(options.clone(), replacement.clone(), targets);
                     (saved, n, shell.search_project(options, Some(replacement)))
                 },
@@ -427,8 +464,10 @@ impl Workspace {
         if s.show_replace {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                let label = if chosen == total {
+                let label = if chosen == total && !s.truncated() {
                     "Replace all".to_owned()
+                } else if chosen == total {
+                    "Replace listed".to_owned()
                 } else {
                     format!("Replace {chosen}")
                 };
@@ -523,9 +562,14 @@ impl Workspace {
             note(
                 ui,
                 &format!(
-                    "{total} result{} in {n} file{}",
+                    "{total} result{} in {n} file{}{}",
                     if total == 1 { "" } else { "s" },
-                    if n == 1 { "" } else { "s" }
+                    if n == 1 { "" } else { "s" },
+                    if s.truncated() {
+                        " (the first ones; more match)"
+                    } else {
+                        ""
+                    }
                 ),
                 p.chrome_muted,
                 11.5,
@@ -716,5 +760,23 @@ mod tests {
         let p = parts(&long, &[(50, 51)]);
         assert_eq!(p[0].0.chars().count(), 31);
         assert!(p[0].0.starts_with('…'));
+    }
+
+    #[test]
+    fn a_new_replacement_keeps_the_lines_left_out_but_a_new_query_does_not() {
+        let hits = || {
+            let re = regex::Regex::new("foo").unwrap();
+            vec![FileMatches {
+                path: "a.tex".into(),
+                matches: lemmata_shell::files::search_in("foo\nfoo\n", &re),
+            }]
+        };
+        let mut s = ProjectSearch::default();
+        s.take_results("foo".into(), hits());
+        s.excluded.insert(("a.tex".into(), 2));
+        s.take_results("foo".into(), hits());
+        assert!(s.excluded.contains(&("a.tex".into(), 2)));
+        s.take_results("bar".into(), hits());
+        assert!(s.excluded.is_empty());
     }
 }
