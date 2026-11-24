@@ -158,7 +158,16 @@ fn key_path(project: &Project) -> PathBuf {
 
 /// The main file up to `\begin{document}`, which mylatexformat needs to find in the main file itself.
 fn preamble(main: &str) -> Option<&str> {
-    main.find("\\begin{document}").map(|i| &main[..i])
+    // Not one in a comment: TeX dumps at the real one.
+    main.match_indices("\\begin{document}")
+        .map(|(i, _)| i)
+        .find(|&i| {
+            let line = &main[main[..i].rfind('\n').map_or(0, |n| n + 1)..i];
+            !line
+                .char_indices()
+                .any(|(j, c)| c == '%' && !line[..j].ends_with('\\'))
+        })
+        .map(|i| &main[..i])
 }
 
 /// What the format depends on: any change means a new format, checked again. `inputs` are the
@@ -176,7 +185,12 @@ fn key(project: &Project, engine: &Path, preamble: &str, inputs: &[String]) -> S
         .map_or(0, |d| d.as_secs() / 86_400);
     (SHIM, preamble, &project.main, stat(engine), day).hash(&mut h);
     for i in inputs {
-        (i, stat(&project.root.join(i))).hash(&mut h);
+        let path = project.root.join(i);
+        // The project's own files by content: on FAT/exFAT a same-size edit can keep its time.
+        match Path::new(i).is_relative().then(|| lemmata_env::fs::read(&path)) {
+            Some(Ok(bytes)) => (i, bytes).hash(&mut h),
+            _ => (i, stat(&path)).hash(&mut h),
+        }
     }
     // A file the preamble looks for but doesn't find yet leaves no trace in the .fls.
     tex_files(&lemmata_project::tree(
@@ -298,6 +312,8 @@ async fn make(
     let Some(same) = same else {
         return;
     };
+    // The old key must not outlive the format it described, if writing the new one fails.
+    let _ = std::fs::remove_file(key_path(project));
     let good = same
         && std::fs::rename(tmp.join(&fmt), dir.join(&fmt)).is_ok()
         && std::fs::rename(
@@ -737,5 +753,29 @@ mod tests {
         assert_eq!(SHIM.matches("@MAIN@").count(), 1);
         assert_eq!(preamble("a\n\\begin{document}\nb"), Some("a\n"));
         assert_eq!(preamble("a\n\\input{x}"), None);
+        // A commented-out marker is not where the preamble ends.
+        let main = "%\\begin{document} old\n\\geometry{}\n\\begin{document}\nb";
+        assert_eq!(preamble(main), Some("%\\begin{document} old\n\\geometry{}\n"));
+    }
+
+    #[test]
+    fn a_same_size_edit_with_the_same_time_changes_the_key() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let macros = d.path().join("m.sty");
+        std::fs::write(&macros, "\\def\\v{1}").unwrap();
+        let time = std::fs::metadata(&macros).unwrap().modified().unwrap();
+        let inputs = ["m.sty".to_string()];
+        let engine = d.path().join("main.tex");
+        let before = key(&p, &engine, "", &inputs);
+        std::fs::write(&macros, "\\def\\v{2}").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&macros)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+        assert_ne!(key(&p, &engine, "", &inputs), before);
     }
 }
