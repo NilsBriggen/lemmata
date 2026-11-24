@@ -10,7 +10,8 @@ use lemmata_tex::{Outcome, Status};
 use std::time::{Duration, Instant};
 
 /// The PDF's lines come from the last build: a file with unsaved changes may be off by some lines.
-const UNBUILT_EDITS: &str = "This file has changes that aren't built yet, so the position may be a few lines off.";
+const UNBUILT_EDITS: &str =
+    "This file has changes that aren't built yet, so the position may be a few lines off.";
 
 /// Whether a SyncTeX hit is a file of the project the user can edit: not one the build wrote
 /// (the contents list, the bibliography) and not one outside it.
@@ -65,7 +66,11 @@ impl BuildState {
         if let Some((_, w)) = export {
             self.export = newer.map(|s| (s, w));
         }
-        if seq == self.seq { (arxiv, export) } else { (None, None) }
+        if seq == self.seq {
+            (arxiv, export)
+        } else {
+            (None, None)
+        }
     }
 
     pub fn errors(&self) -> usize {
@@ -448,9 +453,11 @@ impl Workspace {
                 }
                 PaneAction::OpenCommand(command) => {
                     self.spawn(backend, move |shell| {
-                        Msg::Done(shell.open_install_terminal(
-                            lemmata_shell::InstallRequest::Command(command),
-                        ))
+                        Msg::Done(
+                            shell.open_install_terminal(lemmata_shell::InstallRequest::Command(
+                                command,
+                            )),
+                        )
                     });
                 }
                 PaneAction::OpenTerminal(file) => {
@@ -805,8 +812,16 @@ mod tests {
     #[test]
     fn generated_and_outside_files_are_not_opened_from_the_pdf() {
         assert!(is_editable_source("chapters/a.tex", true, ".lemmata/build"));
-        assert!(!is_editable_source(".lemmata/build/main.toc", true, ".lemmata/build"));
-        assert!(!is_editable_source("/usr/share/x.cls", false, ".lemmata/build"));
+        assert!(!is_editable_source(
+            ".lemmata/build/main.toc",
+            true,
+            ".lemmata/build"
+        ));
+        assert!(!is_editable_source(
+            "/usr/share/x.cls",
+            false,
+            ".lemmata/build"
+        ));
         // "build" is the build folder, "builder.tex" is not in it.
         assert!(is_editable_source("builder.tex", true, "build"));
     }

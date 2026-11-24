@@ -68,18 +68,16 @@ static FILE_LINE_ERROR: LazyLock<Regex> = LazyLock::new(|| {
 // "! message", or pdfTeX's own "!pdfTeX error: ..." with no space.
 static BANG_ERROR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^!(?: (.*)|(pdfTeX error.*))$").unwrap());
-static MISSING_CHAR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^Missing character: There is no (.+?) in font (.+?)!").unwrap()
-});
+static MISSING_CHAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^Missing character: There is no (.+?) in font (.+?)!").unwrap());
 static CONTEXT_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^l\.(\d+)").unwrap());
 static CONTEXT_TEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^l\.\d+ (.*)$").unwrap());
-static LATEX_WARNING: LazyLock<Regex> =
-    LazyLock::new(|| {
-        Regex::new(
+static LATEX_WARNING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
             r"^(?:(?:LaTeX(?: Font)?|Class \S+|Package \S+) Warning|pdfTeX warning(?: \(\w+\))?): (.*)$",
         )
         .unwrap()
-    });
+});
 static PACKAGE_CONT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\(\S+\)\s+(.*)$").unwrap());
 static INPUT_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"on input line (\d+)\.?").unwrap());
@@ -134,7 +132,12 @@ pub fn parse(log: &str) -> Vec<Diagnostic> {
 
         if let Some(c) = BANG_ERROR.captures(line) {
             quoting = true;
-            let msg = c.get(1).or(c.get(2)).map_or("", |m| m.as_str()).trim().to_string();
+            let msg = c
+                .get(1)
+                .or(c.get(2))
+                .map_or("", |m| m.as_str())
+                .trim()
+                .to_string();
             if !NOISE.contains(&msg.as_str()) {
                 // Without -file-line-error the line comes from the "l.<n>" context, which
                 // TeX may print after a follow-up "file:line:" message.
@@ -210,7 +213,8 @@ pub fn parse(log: &str) -> Vec<Diagnostic> {
     {
         let msg = format!("TeX stopped: {}", l.trim_start_matches("*** "));
         let mut d = error(None, None, &msg, &[], &engine);
-        d.hint.get_or_insert("The main file is probably missing \\end{document}.".into());
+        d.hint
+            .get_or_insert("The main file is probably missing \\end{document}.".into());
         out.push(d);
     }
 
@@ -598,8 +602,13 @@ mod tests {
 
     #[test]
     fn pdftex_errors_font_and_missing_character_warnings_are_reported() {
-        let d = parse("!pdfTeX error: pdflatex (file fig.pdf): PDF inclusion: bad\n\nLaTeX Font Warning: Font shape `OT1/cmr/bx/sc' undefined.\n\npdfTeX warning (ext4): destination with the same identifier has been already used, duplicate ignored\n\nMissing character: There is no \u{2713} (U+2713) in font cmr10!\n");
-        let has = |sev, text: &str| d.iter().any(|x| x.severity == sev && x.message.contains(text));
+        let d = parse(
+            "!pdfTeX error: pdflatex (file fig.pdf): PDF inclusion: bad\n\nLaTeX Font Warning: Font shape `OT1/cmr/bx/sc' undefined.\n\npdfTeX warning (ext4): destination with the same identifier has been already used, duplicate ignored\n\nMissing character: There is no \u{2713} (U+2713) in font cmr10!\n",
+        );
+        let has = |sev, text: &str| {
+            d.iter()
+                .any(|x| x.severity == sev && x.message.contains(text))
+        };
         assert!(has(Severity::Error, "PDF inclusion"), "{d:?}");
         assert!(has(Severity::Warning, "Font shape"), "{d:?}");
         assert!(has(Severity::Warning, "duplicate ignored"), "{d:?}");
@@ -609,18 +618,30 @@ mod tests {
     #[test]
     fn parentheses_in_a_box_excerpt_do_not_unbalance_the_file_stack() {
         let log = "(./main.tex (./chapters/a.tex\nOverfull \\hbox (3.0pt too wide) in paragraph at lines 5--6\n[]\\OT1/cmr/m/n/10 see Smith (2020\n\n)\n! Undefined control sequence.\nl.9 \\foo\n\n";
-        let e = parse(log).into_iter().find(|d| d.severity == Severity::Error).unwrap();
+        let e = parse(log)
+            .into_iter()
+            .find(|d| d.severity == Severity::Error)
+            .unwrap();
         assert_eq!(e.file.as_deref(), Some("./main.tex"));
     }
 
     #[test]
     fn an_error_at_the_wrap_width_and_a_warning_before_an_error_keep_their_own_lines() {
-        let long = format!("./chapters/{}.tex:14: Undefined control sequence.", "a".repeat(32));
+        let long = format!(
+            "./chapters/{}.tex:14: Undefined control sequence.",
+            "a".repeat(32)
+        );
         assert_eq!(long.len(), WRAP);
         let d = parse(&format!("{long}\nl.14 \\mathbb\n"));
         assert_eq!(d[0].line, Some(14));
-        let d = parse("LaTeX Warning: Label `a' multiply defined.\n! Undefined control sequence.\nl.4 \\foo\n");
-        assert!(d.iter().any(|x| x.severity == Severity::Error && x.line == Some(4)), "{d:?}");
+        let d = parse(
+            "LaTeX Warning: Label `a' multiply defined.\n! Undefined control sequence.\nl.4 \\foo\n",
+        );
+        assert!(
+            d.iter()
+                .any(|x| x.severity == Severity::Error && x.line == Some(4)),
+            "{d:?}"
+        );
     }
 
     #[test]
@@ -633,7 +654,8 @@ mod tests {
 
     #[test]
     fn a_job_abort_without_any_error_is_explained() {
-        let d = parse("! Emergency stop.\n<*> main.tex\n\n*** (job aborted, no legal \\end found)\n");
+        let d =
+            parse("! Emergency stop.\n<*> main.tex\n\n*** (job aborted, no legal \\end found)\n");
         assert_eq!(d.len(), 1, "{d:?}");
         assert_eq!(d[0].severity, Severity::Error);
         assert!(d[0].message.contains("no legal"));

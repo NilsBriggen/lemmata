@@ -189,7 +189,10 @@ fn key(project: &Project, engine: &Path, preamble: &str, inputs: &[String]) -> S
     for i in inputs {
         let path = project.root.join(i);
         // The project's own files by content: on FAT/exFAT a same-size edit can keep its time.
-        match Path::new(i).is_relative().then(|| lemmata_env::fs::read(&path)) {
+        match Path::new(i)
+            .is_relative()
+            .then(|| lemmata_env::fs::read(&path))
+        {
             Some(Ok(bytes)) => (i, bytes).hash(&mut h),
             _ => (i, stat(&path)).hash(&mut h),
         }
@@ -757,7 +760,10 @@ mod tests {
         assert_eq!(preamble("a\n\\input{x}"), None);
         // A commented-out marker is not where the preamble ends.
         let main = "%\\begin{document} old\n\\geometry{}\n\\begin{document}\nb";
-        assert_eq!(preamble(main), Some("%\\begin{document} old\n\\geometry{}\n"));
+        assert_eq!(
+            preamble(main),
+            Some("%\\begin{document} old\n\\geometry{}\n")
+        );
     }
 
     #[test]

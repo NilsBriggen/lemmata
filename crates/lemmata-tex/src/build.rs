@@ -1703,14 +1703,19 @@ mod tests {
         p.config.include_only = vec!["chapters/a".into(), "b".into(), "../x".into()];
         assert!(latexmk(&p).contains(&"-usepretex=\\includeonly{chapters/a,b}".to_string()));
         let direct = pass_args(&p, ".lemmata/build", None, false);
-        assert_eq!(direct.last().unwrap(), "\\includeonly{chapters/a,b}\\input{main.tex}");
+        assert_eq!(
+            direct.last().unwrap(),
+            "\\includeonly{chapters/a,b}\\input{main.tex}"
+        );
         assert!(direct.contains(&"-jobname=main".to_string()));
 
         p.config.draft = true;
-        assert!(latexmk(&p).contains(
-            &"-usepretex=\\PassOptionsToPackage{draft}{graphicx}\\includeonly{chapters/a,b}"
-                .to_string()
-        ));
+        assert!(
+            latexmk(&p).contains(
+                &"-usepretex=\\PassOptionsToPackage{draft}{graphicx}\\includeonly{chapters/a,b}"
+                    .to_string()
+            )
+        );
     }
 
     /// A project whose latexmk and pdflatex only record that they ran (in `calls`) and write a log and PDF.
@@ -2128,7 +2133,10 @@ mod tests {
             .await
             .unwrap();
         let out = p.outdir_abs();
-        assert_eq!(std::fs::read_to_string(out.join("args")).unwrap().trim(), "main");
+        assert_eq!(
+            std::fs::read_to_string(out.join("args")).unwrap().trim(),
+            "main"
+        );
         assert!(out.join("cwd").is_file(), "bibtex ran in the build folder");
     }
 
@@ -2300,7 +2308,10 @@ mod tests {
             };
             let (_tx, rx) = oneshot::channel();
             build_with(&p, &opts, rx, false, false).await.unwrap();
-            let n = std::fs::read_to_string(d.path().join("passes")).unwrap().lines().count();
+            let n = std::fs::read_to_string(d.path().join("passes"))
+                .unwrap()
+                .lines()
+                .count();
             assert_eq!(n, passes, "{log:?} with toc {old_toc:?}");
         }
     }
@@ -3047,7 +3058,10 @@ mod tests {
             ..undefined_cite()
         }];
         merge_blg(&p, &mut diags, SystemTime::now() - Duration::from_secs(60));
-        assert!(diags.iter().any(|x| x.message.contains("refs.bib")), "{diags:?}");
+        assert!(
+            diags.iter().any(|x| x.message.contains("refs.bib")),
+            "{diags:?}"
+        );
     }
 
     #[test]
@@ -3056,8 +3070,11 @@ mod tests {
         let mut p = blg_project(d.path());
         p.config.bib = lemmata_project::Bib::Biber;
         std::fs::write(out_file(&p, "bcf"), "cites").unwrap();
-        std::fs::write(out_file(&p, "blg"), "WARN - I didn't find a database entry for 'k'")
-            .unwrap();
+        std::fs::write(
+            out_file(&p, "blg"),
+            "WARN - I didn't find a database entry for 'k'",
+        )
+        .unwrap();
         let old = SystemTime::now() - Duration::from_secs(600);
         let run = |p: &Project| {
             let mut diags = vec![undefined_cite()];
@@ -3079,7 +3096,13 @@ mod tests {
         )
         .unwrap();
         let diags = run(&p);
-        assert!(!diags[0].hint.clone().unwrap_or_default().contains("did not run"));
+        assert!(
+            !diags[0]
+                .hint
+                .clone()
+                .unwrap_or_default()
+                .contains("did not run")
+        );
     }
 
     #[test]
