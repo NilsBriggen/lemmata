@@ -122,6 +122,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("save", "Save all files", "save"),
     ("close-tab", "Close tab", "close-tab"),
+    ("undo", "Undo", "undo"),
+    ("redo", "Redo", "redo"),
     ("find", "Find in file", "find"),
     ("goto-line", "Go to line…", "goto-line"),
     (
@@ -154,6 +156,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
 
 /// The palette's commands the editor runs (`Editor::queued`).
 const EDITOR: &[&str] = &[
+    "undo",
+    "redo",
     "find",
     "goto-line",
     "select-all-matches",
@@ -230,6 +234,15 @@ impl Palette {
                 self.selected = self.selected.saturating_sub(1);
                 self.scroll = true;
             }
+            // Home and End stay with the text field's caret.
+            if i.consume_key(Modifiers::NONE, Key::PageDown) {
+                self.selected = (self.selected + 8).min(n.saturating_sub(1));
+                self.scroll = true;
+            }
+            if i.consume_key(Modifiers::NONE, Key::PageUp) {
+                self.selected = self.selected.saturating_sub(8);
+                self.scroll = true;
+            }
             if i.consume_key(Modifiers::NONE, Key::Escape) {
                 picked = Some(None);
             }
@@ -285,6 +298,8 @@ impl Palette {
                         }
                         if self.query != before {
                             self.selected = 0;
+                            // The list starts over: row 0 must be in view.
+                            self.scroll = true;
                         }
                         ui.painter().hline(
                             r.rect.x_range(),
@@ -334,6 +349,14 @@ impl Palette {
                                                     self.selected = i;
                                                 }
                                                 if i == self.selected {
+                                                    // The input keeps the focus: it points at the option.
+                                                    ui.ctx().accesskit_node_builder(r.id, |n| {
+                                                        n.set_active_descendant(
+                                                            egui::accesskit::NodeId::from(
+                                                                row.id.value(),
+                                                            ),
+                                                        )
+                                                    });
                                                     ui.painter().rect_filled(
                                                         rect,
                                                         CornerRadius::same(theme::R),
@@ -402,8 +425,17 @@ impl Workspace {
         let items = match kind {
             Kind::Commands => {
                 let show_pdf = settings.layout != "editor" && !self.focus_mode;
+                // The editor's commands do nothing without an open file: not offered then.
+                let has_file = self
+                    .active
+                    .as_ref()
+                    .is_some_and(|a| self.editors.contains_key(a));
                 COMMANDS
                     .iter()
+                    .filter(|c| {
+                        has_file
+                            || !(EDITOR.contains(&c.0) || matches!(c.0, "reindent" | "close-tab"))
+                    })
                     // Only while the PDF pane is there: presenting needs its loaded document.
                     .filter(|c| c.0 != "present" || show_pdf)
                     .map(|(id, _, key)| Item {
@@ -691,6 +723,14 @@ mod tests {
         assert_eq!(rank("main")[0], "main.tex");
         assert_eq!(rank("intro").len(), 2);
         assert_eq!(score("", "anything"), Some(0.0));
+    }
+
+    #[test]
+    fn undo_and_redo_are_commands_the_editor_runs() {
+        for id in ["undo", "redo"] {
+            assert!(COMMANDS.iter().any(|c| c.0 == id) && EDITOR.contains(&id));
+        }
+        assert!(EDITOR.iter().all(|e| COMMANDS.iter().any(|c| c.0 == *e)));
     }
 
     #[test]
