@@ -14,7 +14,7 @@
 \newcommand{\cvsection}[1]{\par\vspace{1.2em}{\large\bfseries\color{accent}#1}\par\vspace{0.2em}\hrule\vspace{0.6em}}
 \newcommand{\entry}[4]{%
   \begin{tabularx}{\linewidth}{@{}p{2.6cm}X@{}}
-    #1 & \textbf{#2}, #3\par\small #4
+    #1 & \textbf{#2}\ifx\relax#3\relax\else, #3\fi\par\small #4
   \end{tabularx}\par\vspace{0.4em}}
 
 \begin{document}
