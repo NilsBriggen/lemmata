@@ -690,6 +690,47 @@ fn restoring_a_snapshot_brings_no_unsaved_edits_back() {
 }
 
 #[test]
+fn the_history_list_shows_older_snapshots_on_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((mut h, _)) = in_article(tmp.path()) else {
+        return;
+    };
+    no_automatic_snapshot(&mut h);
+    for label in ["One", "Two", "Three"] {
+        type_at(&mut h, 0, &format!("% {label}\n"));
+        save(&mut h);
+        snapshot(&mut h, label);
+    }
+    let all = ws(&h).history.snapshots.len();
+    assert!(all >= 3);
+    ws_mut(&mut h).0.history.limit = 2;
+    let (w, backend, _) = ws_mut(&mut h);
+    w.load_history(backend);
+    wait_for(&mut h, "the short list", |h| ws(h).history.snapshots.len() == 2);
+    ws_mut(&mut h).0.history.limit = all;
+    let (w, backend, _) = ws_mut(&mut h);
+    w.load_history(backend);
+    wait_for(&mut h, "the whole list", |h| ws(h).history.snapshots.len() == all);
+}
+
+#[test]
+fn changes_made_outside_between_sessions_get_a_snapshot_on_opening() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((mut h, project)) = in_article(tmp.path()) else {
+        return;
+    };
+    no_automatic_snapshot(&mut h);
+    std::fs::write(project.join("main.tex"), "% changed outside\n").unwrap();
+    let (w, backend, _) = ws_mut(&mut h);
+    w.ensure_history(backend);
+    wait_for(&mut h, "the opening snapshot", |h| {
+        ws(h).history.snapshots.first().is_some_and(|s| {
+            s.label == "Automatic snapshot" && s.changes.iter().any(|c| c.path == "main.tex")
+        })
+    });
+}
+
+#[test]
 fn rejecting_a_reviewed_change_undoes_it() {
     let tmp = tempfile::tempdir().unwrap();
     let Some((mut h, project)) = in_article(tmp.path()) else {

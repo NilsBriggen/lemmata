@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 /// While the user edits, a snapshot every ten minutes.
 const AUTO_SNAPSHOT: Duration = Duration::from_secs(10 * 60);
 const REVIEWED: &str = "Reviewed";
+/// Snapshots listed at first, and added by each "Show older snapshots".
+const PAGE: usize = 200;
 
 pub struct ReviewFile {
     pub path: String,
@@ -40,6 +42,8 @@ pub struct History {
     #[cfg(test)]
     diff_computes: usize,
     confirm_restore: bool,
+    /// The snapshot has no copy of the open diff's file, so restoring it removes the file.
+    restore_removes: bool,
     editing: Option<(String, String)>,
     confirm_all: Option<String>,
     /// "": since the last snapshot marked as reviewed.
@@ -53,6 +57,8 @@ pub struct History {
     /// When the last snapshot was taken (None: none yet this session, so the first save takes one).
     pub last: Option<Instant>,
     pub edited: bool,
+    /// How many of the newest snapshots are listed.
+    pub limit: usize,
 }
 
 impl Default for History {
@@ -70,6 +76,7 @@ impl Default for History {
             #[cfg(test)]
             diff_computes: 0,
             confirm_restore: false,
+            restore_removes: false,
             editing: None,
             confirm_all: None,
             since: String::new(),
@@ -80,6 +87,7 @@ impl Default for History {
             label: None,
             last: None,
             edited: false,
+            limit: PAGE,
         }
     }
 }
@@ -158,6 +166,10 @@ impl Workspace {
                 let s = shell.history_status()?;
                 if matches!(s, HistoryStatus::NotARepo) {
                     shell.history_enable()?;
+                } else if matches!(s, HistoryStatus::On) {
+                    // Outside changes made since the last session (a pull, a sync) get a snapshot
+                    // of their own, apart from the first edit. A no-op if nothing changed.
+                    let _ = shell.history_snapshot("Automatic snapshot".into());
                 }
                 Ok::<_, String>(!matches!(s, HistoryStatus::NoGit { .. }))
             },
@@ -175,12 +187,13 @@ impl Workspace {
     }
 
     pub fn load_history(&mut self, backend: &Backend) {
+        let limit = self.history.limit;
         Self::job(
             backend,
-            |shell| {
+            move |shell| {
                 let s = shell.history_status()?;
                 let list = if matches!(s, HistoryStatus::On) {
-                    shell.history_list()?
+                    shell.history_list(limit)?
                 } else {
                     Vec::new()
                 };
@@ -199,12 +212,22 @@ impl Workspace {
     pub fn take_snapshot(&mut self, backend: &Backend, label: String) {
         self.history.last = Some(Instant::now());
         self.history.edited = false;
+        let manual = label != "Automatic snapshot";
+        let name = label.clone();
         Self::job(
             backend,
             move |shell| shell.history_snapshot(label),
-            |ws, b, r| {
-                if matches!(r, Ok(Some(_))) {
-                    ws.load_history(b);
+            move |ws, b, r| match r {
+                Ok(Some(_)) => ws.load_history(b),
+                Ok(None) if manual => ws.notice(
+                    format!("Nothing changed since the last snapshot, so “{name}” wasn't saved. Rename the newest one instead."),
+                    Tone::Info,
+                ),
+                Ok(None) => {}
+                Err(e) => {
+                    // The next timer tick tries again.
+                    ws.history.edited = true;
+                    ws.notice(format!("Couldn't save a snapshot: {e}"), Tone::Error);
                 }
             },
         );
@@ -622,6 +645,12 @@ impl Workspace {
                     }
                 }
             }
+            if snapshots.len() >= self.history.limit
+                && Button::new("Show older snapshots").kind(Kind::Ghost).size(Size::Sm).show(ui, p).clicked()
+            {
+                self.history.limit += PAGE;
+                self.load_history(backend);
+            }
         });
         if let Some((id, path)) = show_diff {
             let other = self.history.compare.clone();
@@ -633,11 +662,9 @@ impl Workspace {
             Self::job(
                 backend,
                 move |sh| {
-                    let then = sh
-                        .history_file(id.clone(), path.clone())
-                        .ok()
-                        .flatten()
-                        .unwrap_or_default();
+                    let then = sh.history_file(id.clone(), path.clone()).ok().flatten();
+                    let removes = then.is_none();
+                    let then = then.unwrap_or_default();
                     let now = match &other {
                         Some(o) => sh
                             .history_file(o.clone(), path.clone())
@@ -646,10 +673,11 @@ impl Workspace {
                             .unwrap_or_default(),
                         None => now.unwrap_or_default(),
                     };
-                    (id, path, other, then, now)
+                    ((id, path, other, then, now), removes)
                 },
-                |ws, _, d| {
+                |ws, _, (d, removes)| {
                     ws.history.diff = Some(d);
+                    ws.history.restore_removes = removes;
                     ws.history.diff_cache = None;
                     ws.history.confirm_restore = false;
                 },
@@ -684,7 +712,12 @@ impl Workspace {
                 }
                 ui.label(egui::RichText::new(&path).font(FontId::monospace(12.0)).color(p.muted));
                 if self.history.confirm_restore {
-                    ui.label(egui::RichText::new("Replace the current file? The current version is kept as a snapshot.").size(12.0).color(p.ink));
+                    let ask = if self.history.restore_removes {
+                        "This file didn't exist then, so restoring removes it. The current version is kept as a snapshot."
+                    } else {
+                        "Replace the current file? The current version is kept as a snapshot."
+                    };
+                    ui.label(egui::RichText::new(ask).size(12.0).color(p.ink));
                     if Button::new("Cancel").size(Size::Sm).show(ui, p).clicked() {
                         self.history.confirm_restore = false;
                     }
@@ -741,6 +774,11 @@ impl Workspace {
         }
         let rest = ui.available_rect_before_wrap();
         ui.painter().rect_filled(rest, 0, p.code_bg);
+        if !hunks::is_text_path(&path) {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("This file isn't text, so there is no diff to show.").size(12.0).color(p.muted));
+            return;
+        }
         let rows = self.history.diff_rows_cached();
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(rest));
         egui::ScrollArea::vertical()
@@ -809,8 +847,12 @@ impl Workspace {
                 move |sh| {
                     // The work since the last snapshot counts too.
                     let _ = sh.history_snapshot("Before review".into());
-                    let list = sh.history_list().unwrap_or(snapshots);
-                    let idx = list.iter().position(|s| s.id == base.id).unwrap_or(0);
+                    // The window the user sees, plus the snapshot just taken and a timer one.
+                    let list = sh.history_list(snapshots.len() + 2)?;
+                    let idx = list
+                        .iter()
+                        .position(|s| s.id == base.id)
+                        .ok_or("That snapshot is no longer in the list. Reload History and try again.")?;
                     let mut paths: Vec<String> = list[..idx]
                         .iter()
                         .flat_map(|s| s.changes.iter().map(|c| c.path.clone()))
@@ -821,9 +863,7 @@ impl Workspace {
                     let mut files = Vec::new();
                     for path in paths {
                         let old = sh
-                            .history_file(base.id.clone(), path.clone())
-                            .ok()
-                            .flatten()
+                            .history_file(base.id.clone(), path.clone())?
                             .unwrap_or_default();
                         let now = texts
                             .iter()
@@ -840,13 +880,18 @@ impl Workspace {
                             });
                         }
                     }
-                    (base, list, files)
+                    Ok::<_, String>((base, list, files))
                 },
-                |ws, _, (base, list, files)| {
+                |ws, _, r| {
                     ws.history.busy = None;
-                    ws.history.snapshots = list;
-                    ws.history.accepted.clear();
-                    ws.history.review = Some((base, files));
+                    match r {
+                        Ok((base, list, files)) => {
+                            ws.history.snapshots = list;
+                            ws.history.accepted.clear();
+                            ws.history.review = Some((base, files));
+                        }
+                        Err(e) => ws.history.error = Some(e),
+                    }
                 },
             );
         });

@@ -76,8 +76,8 @@ impl Shell {
         with(self, |h| h.snapshot(&label))
     }
 
-    pub fn history_list(&self) -> CmdResult<Vec<Snapshot>> {
-        with(self, |h| h.list(200))
+    pub fn history_list(&self, limit: usize) -> CmdResult<Vec<Snapshot>> {
+        with(self, |h| h.list(limit))
     }
 
     pub fn history_file(&self, id: String, path: String) -> CmdResult<Option<String>> {
