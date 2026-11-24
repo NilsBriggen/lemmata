@@ -330,11 +330,16 @@ pub fn insert_text(d: &mut Doc, text: &str) {
 /// Pasted text: one line per cursor when the line count matches the cursors, as CodeMirror does.
 pub fn paste(d: &mut Doc, text: &str) {
     let text = text.replace("\r\n", "\n");
+    let eol = d.eol;
     let lines: Vec<&str> = text.split('\n').collect();
     let per_range = d.selection.ranges.len() > 1 && lines.len() == d.selection.ranges.len();
     let mut i = 0;
     let (c, s) = d.change_by_range(|_, r| {
-        let piece = if per_range { lines[i] } else { text.as_str() };
+        let piece = if per_range {
+            lines[i].to_owned()
+        } else {
+            text.replace('\n', eol)
+        };
         i += 1;
         let n = piece.chars().count();
         (
@@ -563,23 +568,25 @@ pub fn move_lines(d: &mut Doc, down: bool) -> bool {
     }
     let mut changes = Vec::new();
     let mut shifts = Vec::new();
+    let eol = d.eol;
+    let nl = eol.len() as isize;
     for &(a, b) in &blocks {
-        let block = (a..=b).map(|l| d.line(l)).collect::<Vec<_>>().join("\n");
+        let block = (a..=b).map(|l| d.line(l)).collect::<Vec<_>>().join(eol);
         let (from, to, text, delta) = if down {
             let other = d.line(b + 1);
             (
                 d.line_start(a),
                 d.line_end(b + 1),
-                format!("{other}\n{block}"),
-                other.chars().count() as isize + 1,
+                format!("{other}{eol}{block}"),
+                other.chars().count() as isize + nl,
             )
         } else {
             let other = d.line(a - 1);
             (
                 d.line_start(a - 1),
                 d.line_end(b),
-                format!("{block}\n{other}"),
-                -(other.chars().count() as isize + 1),
+                format!("{block}{eol}{other}"),
+                -(other.chars().count() as isize + nl),
             )
         };
         changes.push(Change {
@@ -615,10 +622,11 @@ pub fn copy_lines(d: &mut Doc, down: bool) {
     let mut changes = Vec::new();
     let mut total = 0isize;
     let mut shift_for = Vec::new();
+    let eol = d.eol;
     for &(a, b) in &blocks {
-        let block = (a..=b).map(|l| d.line(l)).collect::<Vec<_>>().join("\n");
-        let len = block.chars().count() as isize + 1;
-        changes.push(Change::insert(d.line_end(b), format!("\n{block}")));
+        let block = (a..=b).map(|l| d.line(l)).collect::<Vec<_>>().join(eol);
+        let len = (block.chars().count() + eol.len()) as isize;
+        changes.push(Change::insert(d.line_end(b), format!("{eol}{block}")));
         if down {
             shift_for.push((d.line_start(a), d.line_end(b), total + len));
         } else {
@@ -1001,7 +1009,7 @@ pub fn insert_newline_and_indent(d: &mut Doc, indent: Indent) {
             .chars()
             .take_while(|c| *c == ' ' || *c == '\t')
             .count();
-        let insert = format!("\n{ws}");
+        let insert = format!("{}{ws}", d.eol);
         let n = insert.chars().count();
         (
             vec![Change {
@@ -1558,6 +1566,22 @@ mod tests {
         assert!(!select_next_occurrence(&mut d));
         insert_text(&mut d, "x");
         assert_eq!(d.text(), "x bar x x");
+    }
+
+    #[test]
+    fn crlf_files_keep_their_line_breaks() {
+        let mut d = doc("a\r\nb\r\nc", 0);
+        assert!(move_lines(&mut d, true));
+        assert_eq!(d.text(), "b\r\na\r\nc");
+        let mut d = doc("a\r\nb", 0);
+        copy_lines(&mut d, true);
+        assert_eq!(d.text(), "a\r\na\r\nb");
+        let mut d = doc("a\r\nb", 1);
+        insert_newline_and_indent(&mut d, Indent::Spaces(2));
+        assert_eq!(d.text(), "a\r\n\r\nb");
+        let mut d = doc("a\r\n", 3);
+        paste(&mut d, "x\ny");
+        assert_eq!(d.text(), "a\r\nx\r\ny");
     }
 
     #[test]

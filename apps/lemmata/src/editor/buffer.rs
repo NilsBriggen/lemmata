@@ -226,6 +226,8 @@ pub struct Doc {
     /// Every change since the view last looked, in order (undo and redo too), so positions it
     /// keeps (folds, snippet fields, problems) can follow the text.
     pub journal: Vec<ChangeSet>,
+    /// The file's line break (`"\r\n"` when its first line ends so), for new lines.
+    pub eol: &'static str,
     /// The changes since texlab last heard, as it wants them; `None` once too many piled up
     /// (texlab was off), so it gets the whole text instead.
     lsp_edits: Option<Vec<LspEdit>>,
@@ -293,6 +295,10 @@ impl Doc {
             version: 0,
             edit: None,
             journal: Vec::new(),
+            eol: match text.find('\n') {
+                Some(i) if text[..i].ends_with('\r') => "\r\n",
+                _ => "\n",
+            },
             lsp_edits: Some(Vec::new()),
             env_tokens: Default::default(),
         }
@@ -492,18 +498,37 @@ impl Doc {
     }
 
     /// Replaces the whole text, keeping the history (an outside reload of an open file is one undo step).
+    /// Only the part between the common start and end changes, so cursors and folds outside it stay.
+    // shortcut: one middle change, so marks between two distant changes move to the first;
+    // diff by line if reloads with several far-apart changes matter.
     pub fn replace_all(&mut self, text: &str) {
-        let len = self.len();
-        let main = self.selection.main().head.min(text.chars().count());
-        self.apply(
-            ChangeSet::new(vec![Change {
-                from: 0,
-                to: len,
-                insert: text.into(),
-            }]),
-            Selection::cursor(main),
-            EditKind::Other,
-        );
+        let old: Vec<char> = self.text().chars().collect();
+        let new: Vec<char> = text.chars().collect();
+        let pre = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+        if pre == old.len() && pre == new.len() {
+            return;
+        }
+        let room = old.len().min(new.len()) - pre;
+        let suf = old
+            .iter()
+            .rev()
+            .zip(new.iter().rev())
+            .take(room)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let cs = ChangeSet::new(vec![Change {
+            from: pre,
+            to: old.len() - suf,
+            insert: new[pre..new.len() - suf].iter().collect(),
+        }]);
+        let ranges = self
+            .selection
+            .ranges
+            .iter()
+            .map(|r| Range::new(cs.map(r.anchor, -1), cs.map(r.head, -1)))
+            .collect();
+        let sel = Selection::normalized(ranges, self.selection.main);
+        self.apply(cs, sel, EditKind::Other);
     }
 
     /// CodeMirror's changeByRange: `f` sees each range and returns its changes (in the coordinates
@@ -618,6 +643,19 @@ mod tests {
         check(&mut d);
         d.replace_all("new\ntext");
         check(&mut d);
+    }
+
+    #[test]
+    fn a_reload_changes_only_what_differs_and_keeps_the_cursors() {
+        let mut d = doc("one\ntwo\nthree", &[(1, 1), (10, 10)]);
+        d.replace_all("one\n2\nthree");
+        assert_eq!(d.text(), "one\n2\nthree");
+        let heads: Vec<usize> = d.selection.ranges.iter().map(|r| r.head).collect();
+        assert_eq!(heads, [1, 8]);
+        assert_eq!(d.journal.last().unwrap().0[0].from, 4);
+        let v = d.version;
+        d.replace_all("one\n2\nthree");
+        assert_eq!(d.version, v);
     }
 
     #[test]
