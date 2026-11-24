@@ -883,16 +883,18 @@ pub fn show(
         }
         let key = (ed.grammar_paras.0, checks.grammar.generation);
         if ed.grammar_marks.0 != key {
-            let src: Vec<char> = ed.doc.text().chars().collect();
+            // The document's chars are made only once a finding needs them.
+            let mut src: Option<Vec<char>> = None;
             let mut marks = Vec::new();
             for para in &ed.grammar_paras.1 {
                 let text: String = para.text.iter().collect();
                 for m in checks.grammar.found(&text).unwrap_or_default() {
+                    let src = src.get_or_insert_with(|| ed.doc.text().chars().collect());
                     let off = crate::writing::grammar::utf16_to_char(&para.text, m.offset);
                     let end =
                         crate::writing::grammar::utf16_to_char(&para.text, m.offset + m.length);
                     if let Some((from, to, editable)) =
-                        crate::writing::grammar::to_source(para, off, end - off, &src)
+                        crate::writing::grammar::to_source(para, off, end - off, src)
                     {
                         marks.push(GrammarMark {
                             from,
