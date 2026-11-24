@@ -128,7 +128,7 @@ cargo run -p lemmata-app
 | `crates/lemmata-env` | Gives programs started from the AppImage the system's libraries |
 | `crates/lemmata-cli` | The `lemmata` command-line tool |
 | `data/install.toml` | TeX install commands per system |
-| `packaging/` | AUR and Homebrew templates, the Linux desktop entry |
+| `packaging/` | The Linux desktop entry |
 | `tests/fixtures` | Sample projects and real TeX logs |
 
 ### Releasing

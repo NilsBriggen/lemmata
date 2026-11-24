@@ -68,7 +68,6 @@ macOS has no end-to-end tests in CI, so these get extra care:
 - [ ] `lemmata://` links from Safari reach the running app.
 - [ ] Tectonic downloads and compiles on Apple silicon (and Intel, if available).
 - [ ] Shortcuts use ⌘ where the guide says so; the menu bar works.
-- [ ] Homebrew: `brew install --cask nilsbriggen/tap/lemmata` installs this version.
 
 ## Sign-off
 
