@@ -217,6 +217,11 @@ pub fn for_command(name: &str) -> Option<&'static str> {
     COMMANDS.iter().find(|(c, _)| *c == name).map(|(_, p)| *p)
 }
 
+/// Every environment this table knows, with the package that defines it.
+pub fn environments() -> &'static [(&'static str, &'static str)] {
+    ENVIRONMENTS
+}
+
 /// The package that defines the environment `name`.
 pub fn for_environment(name: &str) -> Option<&'static str> {
     ENVIRONMENTS

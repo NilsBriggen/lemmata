@@ -217,6 +217,13 @@ pub fn environments() -> &'static [Env] {
             ),
             e("tikzpicture", "${}", "TikZ drawing", Some("tikz")),
             e("lstlisting", "${}", "code listing", Some("listings")),
+            Env {
+                name: "minted",
+                args: "{${python}}",
+                body: "${}".into(),
+                detail: "highlighted code",
+                pkg: Some("minted"),
+            },
             e(
                 "thebibliography",
                 "\\bibitem{${}} ${}",
@@ -642,6 +649,23 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
                 items.push(Item::new(&x[1], Kind::Class, apply).detail("used here"));
             }
         }
+        // Environments of other packages (minted, algorithm, tcolorbox…), below the common ones.
+        for (name, pkg) in lemmata_log::packages::environments() {
+            if used.iter().any(|u| u == name) {
+                continue;
+            }
+            used.push((*name).to_owned());
+            let apply = if plain {
+                Apply::Text(format!("{name}}}"))
+            } else {
+                Apply::Snippet(format!("{name}}}\n\t${{}}\n\\end{{{name}}}"))
+            };
+            let mut it = Item::new(*name, Kind::Class, apply).detail(*pkg).boost(8);
+            if !plain {
+                it.pkg = Some((*pkg).to_owned());
+            }
+            items.push(it);
+        }
         return Some(Found {
             items: at(items, from, to),
             filter: true,
@@ -1058,6 +1082,17 @@ mod tests {
         f.as_ref()
             .map(|f| f.items.iter().map(|i| i.label.clone()).collect())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn package_environments_are_offered_with_their_package() {
+        let r = complete("\\begin{}", Some(7));
+        let items = &r.as_ref().unwrap().items;
+        let find = |n: &str| items.iter().find(|i| i.label == n).unwrap();
+        assert_eq!(find("minted").pkg.as_deref(), Some("minted"));
+        assert_eq!(find("tcolorbox").pkg.as_deref(), Some("tcolorbox"));
+        assert_eq!(find("algorithm").detail.as_deref(), Some("algorithm"));
+        assert_eq!(items.iter().filter(|i| i.label == "minted").count(), 1);
     }
 
     // completions.test.ts
