@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const LOCAL: Duration = Duration::from_secs(30);
-const NETWORK: Duration = Duration::from_secs(60);
-/// Cloning a large repository legitimately takes longer than a fetch.
-const CLONE: Duration = Duration::from_secs(300);
+/// Slow clean filters, commit hooks and a gpg passphrase prompt count as local work too.
+const LOCAL: Duration = Duration::from_secs(120);
+/// A first push of a thesis with big figures on a slow uplink needs minutes.
+const NETWORK: Duration = Duration::from_secs(600);
+const CLONE: Duration = Duration::from_secs(600);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -199,7 +200,12 @@ fn exec(git: &Path, dir: Option<&Path>, args: &[&str], timeout: Duration) -> Res
         .stderr(Stdio::piped());
     // ssh would ask for a passphrase on the terminal; fail instead, unless the user chose their own command.
     let network = matches!(args.first(), Some(&("clone" | "fetch" | "pull" | "push")));
-    if network && std::env::var_os("GIT_SSH_COMMAND").is_none() {
+    // GIT_SSH_COMMAND would win over the user's GIT_SSH (plink) and GIT_SSH_VARIANT.
+    if network
+        && ["GIT_SSH_COMMAND", "GIT_SSH", "GIT_SSH_VARIANT"]
+            .iter()
+            .all(|k| std::env::var_os(k).is_none())
+    {
         // The repository's own setting (a deploy key) counts too.
         let mut own = Command::new(git);
         if let Some(d) = dir {
@@ -236,15 +242,25 @@ fn exec(git: &Path, dir: Option<&Path>, args: &[&str], timeout: Duration) -> Res
             // The reader threads are left to finish on their own: a helper process may still hold the pipes.
             #[cfg(unix)]
             if let Ok(group) = i32::try_from(child.id()) {
-                // Safe: a plain signal to the group git leads (process_group above).
+                // Safe: a plain signal to the group git leads (process_group above). TERM first,
+                // so git removes its lock files (index.lock) before it goes.
+                unsafe { libc::kill(-group, libc::SIGTERM) };
+                let grace = Instant::now();
+                while grace.elapsed() < Duration::from_secs(3) && child.try_wait()?.is_none() {
+                    std::thread::sleep(Duration::from_millis(15));
+                }
                 unsafe { libc::kill(-group, libc::SIGKILL) };
             }
             let _ = child.kill();
             let _ = child.wait();
-            return msg(format!(
-                "Git took longer than {} seconds and was stopped. Check your connection and try again.",
-                timeout.as_secs()
-            ));
+            let n = timeout.as_secs();
+            return msg(if network {
+                format!(
+                    "Git got no answer for {n} seconds and was stopped. Check your connection and try again."
+                )
+            } else {
+                format!("Git didn't finish in {n} seconds and was stopped.")
+            });
         }
         std::thread::sleep(Duration::from_millis(15));
     };
@@ -314,6 +330,8 @@ fn net_error(stderr: &str) -> Error {
 struct Repo {
     git: PathBuf,
     top: PathBuf,
+    /// The project folder inside the repository ("" when it is the top): status and staging stay in it.
+    prefix: String,
     /// See `lemmata_env::git_guard`: the panel shows status and the log unasked. What the user
     /// asks for (stage, commit, pull) runs with the repository's own config, as in a terminal.
     guard: Vec<String>,
@@ -322,7 +340,12 @@ struct Repo {
 impl Repo {
     fn open(root: &Path) -> Result<Repo> {
         let git = find_git().ok_or(Error::NoGit)?;
-        let o = exec(&git, Some(root), &["rev-parse", "--show-toplevel"], LOCAL)?;
+        let o = exec(
+            &git,
+            Some(root),
+            &["rev-parse", "--show-toplevel", "--show-prefix"],
+            LOCAL,
+        )?;
         if !o.ok {
             return if o.stderr.contains("not a git repository") {
                 Err(Error::NotARepo)
@@ -330,13 +353,20 @@ impl Repo {
                 msg(tidy(&o.stderr))
             };
         }
-        let top = PathBuf::from(o.stdout.trim());
+        let mut lines = o.stdout.lines();
+        let top = PathBuf::from(lines.next().unwrap_or_default().trim());
+        let prefix = lines.next().unwrap_or_default().trim().to_string();
         let Some(guard) = lemmata_env::git_guard(&git, &top) else {
             return msg(
                 "This repository's config names a filter Lemmata can't turn off, so the Git panel is off.",
             );
         };
-        Ok(Repo { git, top, guard })
+        Ok(Repo {
+            git,
+            top,
+            prefix,
+            guard,
+        })
     }
 
     fn run(&self, args: &[&str], timeout: Duration) -> Result<Out> {
@@ -370,6 +400,13 @@ impl Repo {
                 "-z",
                 // Not into nested repositories: their own config was never looked at.
                 "--ignore-submodules=all",
+                "--",
+                // The whole repository when the project is its top.
+                if self.prefix.is_empty() {
+                    "."
+                } else {
+                    &self.prefix
+                },
             ],
             LOCAL,
         )?;
@@ -449,7 +486,10 @@ pub fn stage(root: &Path, paths: &[String]) -> Result<()> {
 }
 
 pub fn stage_all(root: &Path) -> Result<()> {
-    Repo::open(root)?.ok(&["add", "-A"]).map(|_| ())
+    let r = Repo::open(root)?;
+    // Not `.`: the repository's top is where git runs, and only the project's folder is staged.
+    let all = if r.prefix.is_empty() { "." } else { &r.prefix };
+    r.ok(&["add", "-A", "--", all]).map(|_| ())
 }
 
 /// Takes files out of the next commit; their contents stay as they are.

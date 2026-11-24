@@ -554,12 +554,23 @@ impl History {
 
     /// A file's bytes in a snapshot, or `None` if it didn't exist then.
     fn bytes_at(&self, id: &str, path: &str) -> Result<Option<Vec<u8>>> {
-        let prefix = self.run(&["rev-parse", "--show-prefix"])?;
-        let spec = format!("{id}:{}{}", prefix.trim(), path);
-        match self.cmd().args(["show", &spec]).output() {
-            Ok(o) if o.status.success() => Ok(Some(o.stdout)),
-            _ => Ok(None),
+        // `./` is relative to the project folder, which is where `cmd` runs.
+        let o = self
+            .cmd()
+            .args(["show", &format!("{id}:./{path}")])
+            .output()?;
+        if o.status.success() {
+            return Ok(Some(o.stdout));
         }
+        // A failed `show` only means "not there" if the snapshot has no such file (a nested
+        // repository is listed as a commit and can't be shown). Anything else is an error.
+        let listed = self.run(&["ls-tree", "-z", id, "--", path])?;
+        if listed.is_empty() || listed.starts_with("160000 ") {
+            return Ok(None);
+        }
+        Err(Error::Git(
+            String::from_utf8_lossy(&o.stderr).trim().to_string(),
+        ))
     }
 
     /// A file's contents in a snapshot, or `None` if it didn't exist then.
@@ -569,7 +580,8 @@ impl History {
             .map(|b| String::from_utf8_lossy(&b).into_owned()))
     }
 
-    fn write_back(&self, id: &str, path: &str) -> Result<()> {
+    /// Writes `bytes` to `path`, or removes the file when they are `None`.
+    fn write_back(&self, path: &str, bytes: Option<Vec<u8>>) -> Result<()> {
         // Names come from the snapshot, which can arrive with the project.
         let outside = || Error::Git(format!("{path} is outside the project"));
         let rel = lemmata_env::fs::inside_rel(path).ok_or_else(outside)?;
@@ -579,7 +591,7 @@ impl History {
             let root = std::fs::canonicalize(&self.root)?;
             Ok(std::fs::canonicalize(dir)?.starts_with(root))
         };
-        match self.bytes_at(id, path)? {
+        match bytes {
             Some(bytes) => {
                 if let Some(dir) = dest.parent() {
                     std::fs::create_dir_all(dir)?;
@@ -598,7 +610,10 @@ impl History {
             }
             None => {
                 if dest.parent().is_some_and(|d| inside(d).unwrap_or(false)) {
-                    let _ = std::fs::remove_file(&dest);
+                    match std::fs::remove_file(&dest) {
+                        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                        _ => {}
+                    }
                 }
             }
         }
@@ -609,7 +624,7 @@ impl History {
     /// current state so the restore can be undone.
     pub fn restore_file(&self, id: &str, path: &str) -> Result<()> {
         self.snapshot("Before restoring a file")?;
-        self.write_back(id, path)
+        self.write_back(path, self.bytes_at(id, path)?)
     }
 
     /// Puts the whole project back as it was in a snapshot: files from the
@@ -625,13 +640,14 @@ impl History {
         let mut changed = 0;
         for path in &wanted {
             let now = lemmata_env::fs::read(self.root.join(path)).ok();
-            if now != self.bytes_at(id, path)? {
-                self.write_back(id, path)?;
+            let want = self.bytes_at(id, path)?;
+            if now != want {
+                self.write_back(path, want)?;
                 changed += 1;
             }
         }
         for path in current.iter().filter(|p| !wanted.contains(p.as_str())) {
-            self.write_back(id, path)?;
+            self.write_back(path, None)?;
             changed += 1;
         }
         Ok(changed)
@@ -1094,6 +1110,58 @@ mod tests {
             History::open(d.path(), true),
             Err(Error::NotARepo(_))
         ));
+    }
+
+    #[test]
+    fn a_damaged_snapshot_restores_nothing_and_deletes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(root.join("main.tex"), "one").unwrap();
+        let h = History::init(root).unwrap();
+        let first = h.snapshot("First").unwrap().unwrap();
+        // Lose the stored copy of "one", then change the file.
+        let blob = git(
+            root,
+            &["--git-dir", ".lemmata/history", "hash-object", "main.tex"],
+        );
+        let loose = root
+            .join(".lemmata/history/objects")
+            .join(&blob[..2])
+            .join(&blob[2..]);
+        fs::remove_file(loose).unwrap();
+        fs::write(root.join("main.tex"), "two").unwrap();
+        assert!(h.restore_all(&first).is_err());
+        assert_eq!(fs::read_to_string(root.join("main.tex")).unwrap(), "two");
+        assert_eq!(h.file_at(&first, "missing.tex").unwrap(), None);
+    }
+
+    #[test]
+    fn a_nested_repository_does_not_stop_a_restore() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(root.join("main.tex"), "one").unwrap();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("a.tex"), "x").unwrap();
+        git(&sub, &["init", "-q"]);
+        git(&sub, &["add", "."]);
+        git(
+            &sub,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t.t",
+                "commit",
+                "-qm",
+                "x",
+            ],
+        );
+        let h = History::init(root).unwrap();
+        let first = h.snapshot("First").unwrap().unwrap();
+        fs::write(root.join("main.tex"), "two").unwrap();
+        h.restore_all(&first).unwrap();
+        assert_eq!(fs::read_to_string(root.join("main.tex")).unwrap(), "one");
     }
 
     #[test]

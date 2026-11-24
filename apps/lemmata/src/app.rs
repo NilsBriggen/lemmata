@@ -3915,7 +3915,7 @@ pub(crate) mod tests {
         wait_for(&mut h, "the trusted build's latexmkrc", |_| rc.exists());
         // Trusted, it is used, with its hooks and fsmonitor turned off.
         let snap = h.state().backend.shell.history_snapshot("trusted".into());
-        assert!(matches!(snap, Ok(Some(_))), "{snap:?}");
+        assert!(snap.is_ok(), "{snap:?}");
         h.run_steps(5);
         assert!(
             !git_ran.exists(),

@@ -1281,6 +1281,18 @@ pub fn drop_menu(
     );
     let mut result = MenuResult::Open;
     let font = FontId::proportional(13.0);
+    // The first frame of this opening: remember what had focus, to give it back on closing.
+    let seen_id = id.with("seen");
+    let frame = ctx.cumulative_frame_nr();
+    let seen: Option<(Option<egui::Id>, u64)> = ctx.data(|d| d.get_temp(seen_id));
+    let first = seen.is_none_or(|(_, f)| frame > f + 1);
+    let opener = if first {
+        ctx.memory(|m| m.focused())
+    } else {
+        seen.and_then(|s| s.0)
+    };
+    ctx.data_mut(|d| d.insert_temp(seen_id, (opener, frame)));
+    let mut rows: Vec<egui::Id> = Vec::new();
     let area = egui::Area::new(id)
         .order(egui::Order::Foreground)
         .fixed_pos(pos)
@@ -1293,6 +1305,8 @@ pub fn drop_menu(
                 .inner_margin(5)
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.ctx()
+                        .accesskit_node_builder(ui.scope_id(), |n| n.set_role(egui::Role::Menu));
                     let has_icons = items.iter().any(|it| {
                         matches!(
                             it,
@@ -1387,6 +1401,9 @@ pub fn drop_menu(
                                         *label,
                                     ),
                                 });
+                                if *enabled {
+                                    rows.push(r.id);
+                                }
                                 if *enabled && (r.hovered() || r.has_focus()) {
                                     ui.painter().rect_filled(
                                         rect,
@@ -1452,6 +1469,18 @@ pub fn drop_menu(
                 });
         });
     ctx.data_mut(|d| d.insert_temp(size_id, area.response.rect.size()));
+    // Keyboard: the first item gets focus when the menu opens; egui moves it on the arrow keys.
+    if first && let Some(&top) = rows.first() {
+        ctx.memory_mut(|m| m.request_focus(top));
+    }
+    let key = |k| ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+    let (home, end) = (key(egui::Key::Home), key(egui::Key::End));
+    if home && let Some(&r) = rows.first() {
+        ctx.memory_mut(|m| m.request_focus(r));
+    }
+    if end && let Some(&r) = rows.last() {
+        ctx.memory_mut(|m| m.request_focus(r));
+    }
     if matches!(result, MenuResult::Open) {
         let away = ctx.input(|i| {
             i.pointer.any_pressed()
@@ -1459,9 +1488,17 @@ pub fn drop_menu(
                     .interact_pos()
                     .is_some_and(|p| !area.response.rect.contains(p) && !anchor.contains(p))
         });
-        if away || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // Esc closes the menu and nothing under it.
+        let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if away || esc {
             result = MenuResult::Closed;
         }
+        if esc && let Some(opener) = opener {
+            ctx.memory_mut(|m| m.request_focus(opener));
+        }
+    }
+    if !matches!(result, MenuResult::Open) {
+        ctx.data_mut(|d| d.remove::<(Option<egui::Id>, u64)>(seen_id));
     }
     result
 }
@@ -1509,6 +1546,60 @@ mod tests {
         Harness,
         kittest::{NodeT, Queryable},
     };
+
+    #[test]
+    fn a_drop_menu_is_driven_by_the_arrow_keys() {
+        let p = theme::LIGHT;
+        let id = egui::Id::unique("menu");
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let out = seen.clone();
+        let mut h = Harness::builder()
+            .with_size([400.0, 300.0])
+            .with_context_setup(theme::install_fonts)
+            .build_ui(move |ui| {
+                let items = [
+                    MenuItem::plain("One"),
+                    MenuItem::plain("Two"),
+                    MenuItem::plain("Three"),
+                ];
+                let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), Vec2::splat(20.0));
+                let r = drop_menu(ui.ctx(), &p, id, anchor, false, &items);
+                if let MenuResult::Clicked(i) = r {
+                    *out.borrow_mut() = Some(i);
+                }
+            });
+        h.run();
+        // Focus starts on the first item; Down moves to the second; Enter picks it.
+        h.key_press(egui::Key::ArrowDown);
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(*seen.borrow(), Some(1));
+    }
+
+    #[test]
+    fn escape_closes_a_drop_menu_and_is_used_up() {
+        let p = theme::LIGHT;
+        let id = egui::Id::unique("menu");
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let out = seen.clone();
+        let mut h = Harness::builder()
+            .with_size([400.0, 300.0])
+            .with_context_setup(theme::install_fonts)
+            .build_ui(move |ui| {
+                let items = [MenuItem::plain("One")];
+                let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), Vec2::splat(20.0));
+                let r = drop_menu(ui.ctx(), &p, id, anchor, false, &items);
+                if matches!(r, MenuResult::Closed) {
+                    let left = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
+                    *out.borrow_mut() = Some(left);
+                }
+            });
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert_eq!(*seen.borrow(), Some(false));
+    }
 
     fn gallery(p: Palette) -> Harness<'static> {
         let mut harness = Harness::builder()

@@ -388,8 +388,10 @@ fn open_external(target: &str) -> Result<(), String> {
 impl Shell {
     /// Opens a web page (the guide, a link in the PDF, a bug report) in the browser.
     pub fn open_url(&self, url: String) -> CmdResult<()> {
-        if !(url.starts_with("https://") || url.starts_with("http://")) {
-            return Err("Only web addresses can be opened.".into());
+        // A mailto: link in a PDF opens the mail program; one with a query could attach files.
+        let mail = url.starts_with("mailto:") && !url.contains('?');
+        if !(url.starts_with("https://") || url.starts_with("http://") || mail) {
+            return Err("Only web and email addresses can be opened.".into());
         }
         open_external(&url).map_err(|e| format!("Could not open {url}: {e}"))
     }
@@ -830,9 +832,12 @@ impl Shell {
             .as_ref()
             .map(|p| p.log_path())
             .ok_or("No project is open.")?;
-        lemmata_env::fs::read(&path)
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
-            .map_err(|_| "There's no log yet. Build the project first.".into())
+        // One selectable label lays out the whole text: a long log keeps its first and last 512 KiB.
+        let log = lemmata_tex::build::read_capped(&path, 1 << 20);
+        if log.is_empty() {
+            return Err("There's no log yet. Build the project first.".into());
+        }
+        Ok(String::from_utf8_lossy(&log).into_owned())
     }
 
     /// Copies files chosen by the user into a project folder (`folder` is

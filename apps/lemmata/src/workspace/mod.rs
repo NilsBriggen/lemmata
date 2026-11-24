@@ -1604,7 +1604,7 @@ impl Workspace {
             if let Some((path, line, _)) = go {
                 self.goto(backend, &path, line);
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.references = None;
             }
         }
@@ -1781,12 +1781,14 @@ impl Workspace {
             {
                 let path = self.active.clone().unwrap();
                 let v = self.viewers.get_mut(&path).unwrap();
-                viewer::show(
+                if let Some(url) = viewer::show(
                     &mut ui.new_child(egui::UiBuilder::new().max_rect(body)),
                     p,
                     &path,
                     v,
-                );
+                ) {
+                    self.spawn(backend, move |shell| Msg::Done(shell.open_url(url)));
+                }
             }
             None if self.active.is_none() => {
                 // .no-file

@@ -99,9 +99,8 @@ impl Timer {
     }
     fn reset(&mut self) {
         self.carried = 0.0;
-        if self.running {
-            self.started = Some(Instant::now());
-        }
+        // Paused: back to "Start", not "Resume" at 0:00.
+        self.started = self.running.then(Instant::now);
     }
 }
 
@@ -115,8 +114,9 @@ pub struct Presentation {
     start: usize,
     slide: Region,
     notes: Option<Region>,
-    /// Rendered pages by (page, scale in 1/16 px per point).
-    tex: HashMap<(usize, u32), TextureHandle>,
+    /// Rendered pages by (page, scale in 1/16 px per point), with when each was last drawn.
+    tex: HashMap<(usize, u32), (TextureHandle, u64)>,
+    frame: u64,
     asked: HashSet<(usize, u32)>,
     pub presenter: bool,
     timer: Timer,
@@ -143,6 +143,7 @@ impl Presentation {
             slide: Region::Full,
             notes: None,
             tex: HashMap::new(),
+            frame: 0,
             asked: HashSet::new(),
             presenter: false,
             timer: Timer::default(),
@@ -194,12 +195,24 @@ impl Presentation {
                         image,
                         egui::TextureOptions::LINEAR,
                     );
-                    self.tex.insert(key, t);
+                    self.tex.insert(key, (t, self.frame));
                     // Keep the pages around the current one; drop the rest.
                     let keep = |p: usize, cur: usize| p + 2 >= cur && p <= cur + 2;
                     let cur = self.page - 1;
                     self.tex.retain(|k, _| keep(k.0, cur));
                     self.asked.retain(|k| keep(k.0, cur));
+                    // The sizes passed through while a window was resized are not kept: a page
+                    // is drawn at up to three sizes at once (slide, next, notes).
+                    let mut sizes: Vec<_> = self
+                        .tex
+                        .iter()
+                        .filter(|(k, _)| k.0 == page)
+                        .map(|(k, (_, used))| (*used, *k))
+                        .collect();
+                    sizes.sort_unstable_by_key(|s| std::cmp::Reverse(*s));
+                    for (_, k) in sizes.into_iter().skip(3) {
+                        self.tex.remove(&k);
+                    }
                 }
                 _ => {}
             }
@@ -217,6 +230,10 @@ impl Presentation {
         let at = Rect::from_center_size(rect.center(), shown);
         let scale = k * ui.ctx().pixels_per_point();
         let key = (page, scale_key(scale));
+        self.frame += 1;
+        if let Some((_, used)) = self.tex.get_mut(&key) {
+            *used = self.frame;
+        }
         if !self.tex.contains_key(&key) && self.asked.insert(key) {
             self.engine.send(Job::Render {
                 doc: self.doc,
@@ -227,11 +244,14 @@ impl Presentation {
                 thumb: false,
             });
         }
-        // The exact size, else any size of this page while it renders.
-        let tex = self
-            .tex
-            .get(&key)
-            .or_else(|| self.tex.iter().find(|(k, _)| k.0 == page).map(|(_, t)| t));
+        // The exact size, else the largest of this page while it renders.
+        let tex = self.tex.get(&key).map(|(t, _)| t).or_else(|| {
+            self.tex
+                .iter()
+                .filter(|(k, _)| k.0 == page)
+                .max_by_key(|(k, _)| k.1)
+                .map(|(_, (t, _))| t)
+        });
         ui.painter().rect_filled(at, 0, Color32::WHITE);
         if let Some(t) = tex {
             let u0 = x / size.x;
@@ -336,14 +356,21 @@ impl Presentation {
                     let (page, slide) = (self.page - 1, self.slide);
                     self.draw(ui, rect, page, slide);
                 }
+                // The pointer rests (and the cursor hides) while the audience watches.
+                let recent =
+                    r.hovered() && ui.input(|i| i.pointer.time_since_last_movement() <= 2.0);
                 // .count, bottom right.
-                ui.painter().text(
-                    rect.right_bottom() - vec2(16.0, 12.0),
-                    egui::Align2::RIGHT_BOTTOM,
-                    format!("{} / {} · P: presenter view", self.page, self.total()),
-                    FontId::proportional(12.0),
-                    Color32::from_rgba_unmultiplied(255, 255, 255, 128),
-                );
+                if recent {
+                    ui.painter().text(
+                        rect.right_bottom() - vec2(16.0, 12.0),
+                        egui::Align2::RIGHT_BOTTOM,
+                        format!("{} / {} · P: presenter view", self.page, self.total()),
+                        FontId::proportional(12.0),
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 128),
+                    );
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(2100));
+                }
                 // A click on the left third goes back, anywhere else forward.
                 if r.clicked()
                     && let Some(pos) = r.interact_pointer_pos()
@@ -355,7 +382,7 @@ impl Presentation {
                     };
                     self.go(self.page as f64 + step);
                 }
-                if !r.hovered() || ui.input(|i| i.pointer.time_since_last_movement() > 2.0) {
+                if !recent {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::None);
                 }
             });
@@ -534,7 +561,7 @@ impl Presentation {
             if self.page < total {
                 let slide = self.slide;
                 self.draw(ui, next.shrink(1.0), self.page, slide);
-            } else {
+            } else if total > 0 {
                 ui.painter().text(
                     next.center(),
                     egui::Align2::CENTER_CENTER,
@@ -682,6 +709,16 @@ mod tests {
             (455.0, 256.0, 455.0)
         );
         assert_eq!(region_size(455.0, 256.0, Region::Full), (455.0, 256.0, 0.0));
+    }
+
+    #[test]
+    fn a_reset_timer_offers_start_again() {
+        let mut t = Timer::default();
+        t.toggle();
+        t.toggle();
+        assert!(t.started.is_some());
+        t.reset();
+        assert!(t.started.is_none() && t.elapsed() == 0.0);
     }
 
     #[test]

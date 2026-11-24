@@ -173,9 +173,16 @@ impl Problems {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         ui.add_space(24.0);
                         match b.status {
-                            Some(Status::Success) | Some(Status::Failed) => {
+                            Some(Status::Success) => {
                                 icons::show(ui, icons::CIRCLE_CHECK, 28.0, p.ok);
                                 ui.label(egui::RichText::new("No errors or warnings.").font(FontId::new(13.0, theme::font::sans_600())).color(p.ink));
+                            }
+                            Some(Status::Failed) => {
+                                icons::show(ui, icons::CIRCLE_ALERT, 28.0, p.error);
+                                ui.label(egui::RichText::new("The build failed, but no error was found in the log.").font(FontId::new(13.0, theme::font::sans_600())).color(p.ink));
+                                if Button::new("Open the raw log").kind(widgets::Kind::Ghost).size(Size::Sm).show(ui, p).clicked() {
+                                    self.log_tab = true;
+                                }
                             }
                             s => {
                                 let t = match s {

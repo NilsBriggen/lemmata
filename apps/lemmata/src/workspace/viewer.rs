@@ -92,7 +92,9 @@ fn decode_svg(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
     Ok(ColorImage::from_rgba_premultiplied([w, h], pixmap.data()))
 }
 
-pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) {
+/// Shows the file; a link clicked in a PDF comes back as the address to open.
+pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) -> Option<String> {
+    let mut url = None;
     let area = ui.max_rect();
     ui.painter().rect_filled(area, 0, p.pdf_ground);
     let msg = |ui: &mut Ui, text: &str| {
@@ -109,7 +111,9 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) {
         Viewer::Error(e) => msg(ui, e),
         Viewer::Pdf(view) => {
             // A PDF of the project: no SyncTeX.
-            let _ = view.show(ui, p);
+            if let Some(super::super::pdf::view::Event::OpenUrl(u)) = view.show(ui, p) {
+                url = Some(u);
+            }
         }
         Viewer::Image {
             image,
@@ -216,22 +220,28 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) {
             ui.painter().galley(r.min + vec2(9.0, 3.0), g, p.muted);
         }
     }
+    url
 }
 
 /// The 16 px grey-and-white checkerboard behind transparent images.
 fn checkerboard(painter: &egui::Painter, rect: Rect) {
     painter.rect_filled(rect, 0, Color32::WHITE);
-    let c = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
     let grey = Color32::from_rgb(0xec, 0xec, 0xec);
-    let mut y = rect.top();
-    let mut row = 0;
-    while y < rect.bottom() {
-        let mut x = rect.left() + if row % 2 == 0 { 8.0 } else { 0.0 };
-        while x < rect.right() {
+    // Only the cells on screen: an 8192 px image at 100 % has half a million of them.
+    let visible = rect.intersect(painter.clip_rect());
+    let c = painter.with_clip_rect(visible);
+    let mut row = ((visible.top() - rect.top()) / 8.0).floor().max(0.0) as u32;
+    while rect.top() + row as f32 * 8.0 < visible.bottom() {
+        let y = rect.top() + row as f32 * 8.0;
+        let off = if row.is_multiple_of(2) { 8.0 } else { 0.0 };
+        let first = ((visible.left() - rect.left() - off) / 16.0)
+            .floor()
+            .max(0.0);
+        let mut x = rect.left() + off + first * 16.0;
+        while x < visible.right() {
             c.rect_filled(Rect::from_min_size(pos2(x, y), vec2(8.0, 8.0)), 0, grey);
             x += 16.0;
         }
-        y += 8.0;
         row += 1;
     }
 }
@@ -240,6 +250,22 @@ fn checkerboard(painter: &egui::Painter, rect: Rect) {
 mod tests {
     use super::*;
     use base64::Engine;
+
+    #[test]
+    fn the_checkerboard_paints_only_what_is_on_screen() {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let clip = Rect::from_min_size(pos2(4000.0, 4000.0), vec2(100.0, 100.0));
+            let painter = ui.painter().with_clip_rect(clip);
+            checkerboard(
+                &painter,
+                Rect::from_min_size(pos2(0.0, 0.0), vec2(8192.0, 8192.0)),
+            );
+        });
+        out.textures_delta.clear();
+        assert!(out.shapes.len() < 500, "{} shapes", out.shapes.len());
+        assert!(out.shapes.len() > 50);
+    }
 
     #[test]
     fn svg_paths_text_and_transparency_render_offline() {

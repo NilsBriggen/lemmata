@@ -296,8 +296,11 @@ pub async fn build(
         _ => {}
     }
 
-    let stderr_text =
-        String::from_utf8_lossy(&crate::build::read_capped(&output_path)).into_owned();
+    let stderr_text = String::from_utf8_lossy(&crate::build::read_capped(
+        &output_path,
+        crate::build::LOG_CAP,
+    ))
+    .into_owned();
     let mut diagnostics = read_log(project);
     merge_blg(project, &mut diagnostics, started_at);
     // Files in the build folder (.bbl, .aux) aren't something the user can edit.

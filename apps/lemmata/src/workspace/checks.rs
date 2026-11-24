@@ -42,8 +42,13 @@ impl Workspace {
         } else {
             "off".to_owned()
         };
-        let words = self.info.config.words.clone();
-        if self.spell_asked.as_ref() != Some(&(lang.clone(), words.clone())) {
+        // Compared in place: this runs every frame, and the words are often hundreds.
+        let same = self
+            .spell_asked
+            .as_ref()
+            .is_some_and(|(l, w)| *l == lang && *w == self.info.config.words);
+        if !same {
+            let words = self.info.config.words.clone();
             self.spell_asked = Some((lang.clone(), words.clone()));
             let l = lang.clone();
             self.spawn(backend, move |shell| {
@@ -61,13 +66,10 @@ impl Workspace {
                 });
             }
         }
-        let lang = self
-            .spell_asked
-            .as_ref()
-            .map_or("off".to_owned(), |a| a.0.clone());
+        let lang = self.spell_asked.as_ref().map_or("off", |a| a.0.as_str());
         self.checks
             .grammar
-            .configure(&settings.grammar, &settings.grammar_url, &lang);
+            .configure(&settings.grammar, &settings.grammar_url, lang);
         self.checks
             .grammar
             .set_ignored(&self.info.config.grammar_ignore);
