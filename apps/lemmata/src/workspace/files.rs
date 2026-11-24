@@ -876,7 +876,7 @@ impl Workspace {
         let cur_entry = cur
             .as_deref()
             .and_then(|c| crate::workspace::tree::find(&self.info.tree, c))
-            .cloned();
+            .map(|e| (e.is_dir, e.path.clone()));
         let folder_of_cursor = self.folder_of(cur.as_deref());
         use crate::shortcuts::consume;
         if consume(ctx, "tree-rename") {
@@ -958,38 +958,38 @@ impl Workspace {
                 i.consume_key(Modifiers::SHIFT, Key::F10),
             )
         });
-        if let Some(e) = &cur_entry {
+        if let Some((is_dir, path)) = &cur_entry {
             if right
-                && e.is_dir
-                && !self.collapsed.remove(&e.path)
+                && *is_dir
+                && !self.collapsed.remove(path)
                 && let Some(a) = at
             {
                 let next = rows[(a + 1).min(n - 1)].clone();
                 self.tree_select(&next);
             }
             if left {
-                if e.is_dir && !self.collapsed.contains(&e.path) {
-                    self.collapsed.insert(e.path.clone());
-                } else if !parent_of(&e.path).is_empty() {
-                    let p = parent_of(&e.path).to_owned();
+                if *is_dir && !self.collapsed.contains(path) {
+                    self.collapsed.insert(path.clone());
+                } else if !parent_of(path).is_empty() {
+                    let p = parent_of(path).to_owned();
                     self.tree_select(&p);
                 }
             }
             if enter {
-                if e.is_dir {
-                    if !self.collapsed.remove(&e.path) {
-                        self.collapsed.insert(e.path.clone());
+                if *is_dir {
+                    if !self.collapsed.remove(path) {
+                        self.collapsed.insert(path.clone());
                     }
-                } else if crate::workspace::tree::is_text_file(&e.path)
-                    || crate::workspace::tree::is_viewer_file(&e.path)
+                } else if crate::workspace::tree::is_text_file(path)
+                    || crate::workspace::tree::is_viewer_file(path)
                 {
-                    self.open_file(backend, &e.path);
+                    self.open_file(backend, path);
                 }
             }
             if menu {
                 let at = ctx.content_rect().center();
                 self.menu = Some(Menu::Tree(
-                    Some(e.path.clone()),
+                    Some(path.clone()),
                     Rect::from_min_size(at, vec2(0.0, 0.0)),
                 ));
             }

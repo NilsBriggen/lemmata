@@ -43,6 +43,8 @@ pub struct Palette {
     pub kind: Kind,
     items: Vec<Item>,
     query: String,
+    /// The items matching a query, best first (their indices): scored once per query, not per frame.
+    found: std::cell::RefCell<Option<(String, Vec<usize>)>>,
     selected: usize,
     scroll: bool,
     focus: bool,
@@ -187,6 +189,7 @@ impl Palette {
             kind,
             items,
             query: String::new(),
+            found: Default::default(),
             selected: 0,
             scroll: false,
             focus: true,
@@ -204,16 +207,26 @@ impl Palette {
     }
 
     fn results(&self) -> Vec<&Item> {
-        let mut scored: Vec<(f32, &Item)> = self
-            .items
+        let mut found = self.found.borrow_mut();
+        if found.as_ref().is_none_or(|(q, _)| *q != self.query) {
+            let mut scored: Vec<(f32, usize)> = self
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(|(n, i)| {
+                    score(&self.query, &format!("{} {}", i.label, i.detail)).map(|s| (s, n))
+                })
+                .collect();
+            // Stable: equal scores keep the list's order.
+            scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let best = scored.into_iter().take(100).map(|(_, n)| n).collect();
+            *found = Some((self.query.clone(), best));
+        }
+        found
             .iter()
-            .filter_map(|i| {
-                score(&self.query, &format!("{} {}", i.label, i.detail)).map(|s| (s, i))
-            })
-            .collect();
-        // Stable: equal scores keep the list's order.
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-        scored.into_iter().take(100).map(|(_, i)| i).collect()
+            .flat_map(|f| &f.1)
+            .map(|&n| &self.items[n])
+            .collect()
     }
 
     /// None while open; Some(None) when closed, Some(Some(cmd)) when an item was picked.
@@ -669,6 +682,22 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn results_follow_the_query_though_they_are_cached() {
+        let item = |l: &str| Item {
+            label: l.into(),
+            detail: String::new(),
+            cmd: Cmd::Open(l.into()),
+        };
+        let mut p = Palette::new(Kind::Files, vec![item("alpha.tex"), item("beta.tex")]);
+        assert_eq!(p.results().len(), 2);
+        p.query = "alp".into();
+        assert_eq!(p.results().len(), 1);
+        assert_eq!(p.results()[0].label, "alpha.tex");
+        p.query = "bet".into();
+        assert_eq!(p.results()[0].label, "beta.tex");
+    }
 
     // fuzzy.test.ts
     #[test]

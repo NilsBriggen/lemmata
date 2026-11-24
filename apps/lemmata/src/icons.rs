@@ -18,6 +18,21 @@ pub struct Line {
     pub closed: bool,
 }
 
+thread_local! {
+    /// Parsed paths by the address of their `&'static str`: icons are painted every frame.
+    static PARSED: std::cell::RefCell<std::collections::HashMap<usize, std::rc::Rc<Vec<Line>>>> =
+        Default::default();
+}
+
+fn parsed(d: &'static str) -> std::rc::Rc<Vec<Line>> {
+    PARSED.with(|c| {
+        c.borrow_mut()
+            .entry(d.as_ptr() as usize)
+            .or_insert_with(|| std::rc::Rc::new(parse(d)))
+            .clone()
+    })
+}
+
 /// Lucide draws with `stroke-width: 2` on a 24 box, round caps and joins.
 const STROKE: f32 = 2.0;
 
@@ -40,7 +55,7 @@ pub fn paint_rotated(painter: &egui::Painter, rect: Rect, icon: Icon, color: Col
     let width = STROKE * scale;
     let stroke = Stroke::new(width, color);
     for d in icon {
-        for line in parse(d) {
+        for line in parsed(d).iter() {
             let points: Vec<Pos2> = line
                 .points
                 .iter()
@@ -308,6 +323,12 @@ mod tests {
 
     fn near(a: Pos2, b: Pos2) -> bool {
         (a - b).length() < 1e-3
+    }
+
+    #[test]
+    fn a_path_is_parsed_once() {
+        static D: &str = "M2 2 L10 10";
+        assert!(std::rc::Rc::ptr_eq(&parsed(D), &parsed(D)));
     }
 
     #[test]
