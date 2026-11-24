@@ -1050,6 +1050,7 @@ async fn direct_build(
 
     for pass in 0..MAX_PASSES {
         let pass_started = SystemTime::now();
+        let before = toc_state(project);
         let mut cmd = Command::new(&engine_path);
         cmd.args(pass_args(project, &project.config.outdir, fmt, opts.miktex));
         if let Some(f) = fmt {
@@ -1079,12 +1080,14 @@ async fn direct_build(
             "Rerun to get",
             "Please rerun LaTeX",
             "Label(s) may have changed",
+            "Rerun LaTeX",
         ]
         .iter()
         .any(|m| log.contains(m));
 
         // The bibliography tool runs at most once, and only when what it reads has changed.
-        let mut again = rerun;
+        // A contents list that changed in this pass needs another one to print it.
+        let mut again = rerun || toc_state(project) != before;
         if !bib_checked && pass < MAX_PASSES - 1 {
             bib_checked = true;
             match run_bibliography(
@@ -1106,6 +1109,14 @@ async fn direct_build(
         }
     }
     Ok(if failed { Status::Failed } else { status })
+}
+
+/// The contents, figure and table lists, which a pass writes for the next one to print.
+fn toc_state(project: &Project) -> Vec<Vec<u8>> {
+    ["toc", "lof", "lot"]
+        .iter()
+        .map(|e| read_capped(&out_file(project, e)))
+        .collect()
 }
 
 enum Bib {
@@ -2192,6 +2203,52 @@ mod tests {
         build_with(&p, &opts, rx, false, false).await.unwrap();
         let passes = std::fs::read_to_string(d.path().join("passes")).unwrap();
         assert_eq!(passes.lines().count(), 2, "went on past the failed pass");
+    }
+
+    /// A pass that writes a new contents list, or a log asking for "Rerun LaTeX.", gets another pass.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_changed_contents_list_or_a_rerun_request_runs_the_engine_again() {
+        use std::os::unix::fs::PermissionsExt;
+        // (what the engine writes to the log, a contents list from an earlier build, passes expected)
+        let cases = [
+            ("ok", None, 2),
+            ("ok", Some("a"), 1),
+            ("Table widths have changed. Rerun LaTeX.", Some("a"), 2),
+        ];
+        for (log, old_toc, passes) in cases {
+            let d = tempfile::tempdir().unwrap();
+            std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+            let tools = d.path().join("tools");
+            std::fs::create_dir_all(&tools).unwrap();
+            let engine = tools.join("pdflatex");
+            // The second pass of the "rerun" case is silent, so it ends the build.
+            std::fs::write(
+                &engine,
+                format!(
+                    "#!/bin/sh\nout=.lemmata/build\necho x >> passes\nprintf a > $out/main.toc\necho pdf > $out/main.pdf\nif [ $(wc -l < passes) -eq 1 ]; then echo '{log}' > $out/main.log; else echo ok > $out/main.log; fi\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let p = Project::open(d.path()).unwrap();
+            assert!(!p.trusted);
+            std::fs::create_dir_all(p.outdir_abs()).unwrap();
+            if let Some(t) = old_toc {
+                std::fs::write(out_file(&p, "toc"), t).unwrap();
+            }
+            let opts = BuildOptions {
+                latexmk: &tools,
+                bin_dir: Some(&tools),
+                installer: None,
+                miktex: false,
+                perl_dir: None,
+            };
+            let (_tx, rx) = oneshot::channel();
+            build_with(&p, &opts, rx, false, false).await.unwrap();
+            let n = std::fs::read_to_string(d.path().join("passes")).unwrap().lines().count();
+            assert_eq!(n, passes, "{log:?} with toc {old_toc:?}");
+        }
     }
 
     /// An untrusted project never reaches latexmk (it runs a project's latexmkrc and builds shell
