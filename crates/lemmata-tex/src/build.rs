@@ -1135,7 +1135,7 @@ async fn direct_build(
 fn toc_state(project: &Project) -> Vec<Vec<u8>> {
     ["toc", "lof", "lot"]
         .iter()
-        .map(|e| read_capped(&out_file(project, e)))
+        .map(|e| read_capped(&out_file(project, e), LOG_CAP))
         .collect()
 }
 
