@@ -310,7 +310,10 @@ mod tests {
         assert_eq!(encode_like_disk(&f, "M\u{fc}ller!").unwrap(), b"M\xfcller!");
         assert!(encode_like_disk(&f, "\u{4e2d}").is_err());
         std::fs::write(&f, "plain").unwrap();
-        assert_eq!(encode_like_disk(&f, "M\u{fc}").unwrap(), "M\u{fc}".as_bytes());
+        assert_eq!(
+            encode_like_disk(&f, "M\u{fc}").unwrap(),
+            "M\u{fc}".as_bytes()
+        );
     }
 
     #[test]

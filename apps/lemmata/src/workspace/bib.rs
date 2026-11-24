@@ -185,7 +185,7 @@ impl CitePicker {
                 } else {
                     "Cite from Zotero…"
                 };
-                if Button::new(&label)
+                if Button::new(label)
                     .with_icon(icons::BOOK_OPEN)
                     .size(Size::Sm)
                     .enabled(!starting)
@@ -471,7 +471,7 @@ impl CitePicker {
             } else {
                 "Search online"
             };
-            if Button::new(&label)
+            if Button::new(label)
                 .size(Size::Sm)
                 .kind(if few { Kind::Primary } else { Kind::Default })
                 .enabled(!self.searching)
@@ -569,7 +569,7 @@ impl CitePicker {
                                     } else {
                                         "Add"
                                     };
-                                    if Button::new(&label)
+                                    if Button::new(label)
                                         .size(Size::Sm)
                                         .enabled(!busy)
                                         .show(ui, p)
