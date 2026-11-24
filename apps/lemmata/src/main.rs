@@ -55,6 +55,8 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Lemmata")
             .with_app_id("dev.briggen.lemmata")
+            // Without it eframe shows its own logo, and Windows the generic one until then.
+            .with_icon(std::sync::Arc::new(app_icon()))
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([900.0, 560.0]),
         ..Default::default()
@@ -70,4 +72,17 @@ fn main() -> eframe::Result {
         let _ = std::process::Command::new(program).args(args).spawn();
     }
     result
+}
+
+/// The window and taskbar icon.
+fn app_icon() -> eframe::egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../icons/icon.png"))
+        .expect("the bundled icon is a PNG")
+}
+
+#[cfg(test)]
+#[test]
+fn the_app_icon_loads() {
+    let icon = app_icon();
+    assert_eq!((icon.width, icon.height), (512, 512));
 }
