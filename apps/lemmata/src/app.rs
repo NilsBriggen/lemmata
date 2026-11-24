@@ -4930,6 +4930,9 @@ pub(crate) mod tests {
         wait_for(&mut h, "the conflict bar", |h| {
             h.query_by_label("Load the version on disk").is_some()
         });
+        // The permission change can reach the watcher first, with the same notice: only one
+        // that comes after the click counts.
+        h.state_mut().project.as_mut().unwrap().notices.clear();
         h.get_by_label("Load the version on disk").click();
         wait_for(&mut h, "the read to fail", |h| {
             h.state()
