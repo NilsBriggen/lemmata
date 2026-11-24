@@ -21,8 +21,8 @@ bin="target/$target/release"
 if [[ $target == universal-apple-darwin ]]; then
   # PREBUILT: release.yml built each architecture on a runner of its own.
   if [[ -z ${PREBUILT:-} ]]; then
-    cargo build --release -p lemmata-app --target aarch64-apple-darwin
-    cargo build --release -p lemmata-app --target x86_64-apple-darwin
+    cargo build --locked --release -p lemmata-app --target aarch64-apple-darwin
+    cargo build --locked --release -p lemmata-app --target x86_64-apple-darwin
   fi
   mkdir -p "$bin"
   lipo -create -output "$bin/lemmata-app" \
@@ -30,7 +30,7 @@ if [[ $target == universal-apple-darwin ]]; then
   # Apple silicon only runs signed code; without a Developer ID the program is signed ad hoc.
   codesign --force --sign - "$bin/lemmata-app"
 else
-  cargo build --release -p lemmata-app --target "$target"
+  cargo build --locked --release -p lemmata-app --target "$target"
 fi
 
 # cargo-packager takes the program from target/release, whatever was built for.
@@ -115,7 +115,10 @@ for exe in "$out"/*-setup.exe; do
 done
 
 if [[ -n ${CARGO_PACKAGER_SIGN_PRIVATE_KEY:-} ]]; then
-  find "$out" -maxdepth 2 -type f \( -name '*.AppImage' -o -name '*.app.tar.gz' -o -name '*-setup.exe' \) \
-    -exec cargo packager signer sign {} \;
+  # A loop, not `find -exec ... \;`, which exits 0 whatever the command did: a failed signing
+  # must fail the build, not ship unsigned files.
+  while IFS= read -r f; do
+    cargo packager signer sign "$f"
+  done < <(find "$out" -maxdepth 2 -type f \( -name '*.AppImage' -o -name '*.app.tar.gz' -o -name '*-setup.exe' \))
 fi
 ls -l "$out"

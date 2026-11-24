@@ -629,6 +629,24 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    /// A manifest that doesn't parse drops its template from New project without a word, and the
+    /// build check deletes the manifest before building.
+    #[test]
+    fn every_bundled_template_has_a_manifest_that_parses() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+        let folders = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name() != EXAMPLE && e.path().is_dir())
+            .count();
+        let listed = list_templates(&dir, Source::Bundled);
+        assert!(
+            folders > 0 && listed.len() == folders,
+            "{} of {folders} listed",
+            listed.len()
+        );
+    }
+
     #[test]
     fn only_project_folders_can_be_deleted() {
         let home = tempfile::tempdir().unwrap();

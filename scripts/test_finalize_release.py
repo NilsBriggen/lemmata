@@ -38,7 +38,7 @@ PACKAGER_OUTPUT = {
 }
 
 
-def run(version: str, tag: str, cli_name: str | None = None, skip: str | None = None) -> Path:
+def run(version: str, tag: str, cli_name: str | None = None, skip: str | None = None, extra: str | None = None) -> Path:
     tmp = Path(tempfile.mkdtemp())
     for label, files in PACKAGER_OUTPUT.items():
         if label == skip:
@@ -47,6 +47,9 @@ def run(version: str, tag: str, cli_name: str | None = None, skip: str | None = 
             p = tmp / "artifacts" / label / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("sig-" + p.name if p.name.endswith(".sig") else "bin")
+    if extra:
+        p = tmp / "artifacts" / "windows_x86_64" / extra
+        p.write_text("bin")
     # The command-line archives, as scripts/package-cli.sh names them.
     for label, ext in [("linux_x86_64", ".tar.gz"), ("windows_x86_64", ".zip")]:
         p = tmp / "artifacts" / f"cli_{label}" / (cli_name or f"lemmata-cli_{version}_{label}{ext}")
@@ -109,6 +112,14 @@ def test_a_misnamed_command_line_archive_stops_the_release() -> None:
     raise AssertionError("an archive for another version was published")
 
 
+def test_an_installer_with_an_unknown_name_stops_the_release() -> None:
+    try:
+        run("0.3.0", "v0.3.0", extra="Lemmata_0.3.0_x64.installer")
+    except subprocess.CalledProcessError:
+        return
+    raise AssertionError("an installer nobody could find was dropped silently")
+
+
 def test_a_stable_release_missing_a_platform_stops() -> None:
     # Its users would be left on the old version without a word.
     try:
@@ -129,6 +140,7 @@ def test_prerelease_never_writes_the_updater_manifest() -> None:
 if __name__ == "__main__":
     test_stable_release()
     test_a_misnamed_command_line_archive_stops_the_release()
+    test_an_installer_with_an_unknown_name_stops_the_release()
     test_a_stable_release_missing_a_platform_stops()
     test_prerelease_never_writes_the_updater_manifest()
     print("ok")

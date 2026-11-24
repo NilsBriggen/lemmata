@@ -45,7 +45,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: python3 -I scripts/test_finalize_release.py
 
   test:
@@ -69,7 +69,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Also builds the app on each OS, the macOS-only Apple Event code included. On Linux the app's
       # tests run in `scenarios`, with TeX Live, so not twice.
-      - run: cargo test --workspace ${{ runner.os == 'Linux' && '--exclude lemmata-app' || '' }}
+      - run: cargo test --locked --workspace ${{ runner.os == 'Linux' && '--exclude lemmata-app' || '' }}
       - name: Upload the snapshots that differ
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -95,7 +95,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release
-      - run: cargo build --release -p lemmata-app
+      - run: cargo build --locked --release -p lemmata-app
 
   # The Tectonic download and a real build on every OS, beside the tests rather than after them
   # (the first build fetches its packages, so it is slow). Intel Macs download their own Tectonic.
@@ -115,7 +115,7 @@ jobs:
       # One thread: the tests share Tectonic's package cache.
       - name: Tectonic installs and builds
         timeout-minutes: 20
-        run: cargo test -p lemmata-tex -- --ignored --test-threads=1 --nocapture installs_the_pinned_release builds_a_project_with_bibtex_and_reports_errors fixture_with_biber_reports_the_limitation
+        run: cargo test --locked -p lemmata-tex -- --ignored --test-threads=1 --nocapture installs_the_pinned_release builds_a_project_with_bibtex_and_reports_errors fixture_with_biber_reports_the_limitation
 
   # One TeX Live install and one CLI build serve both the fixture and the template checks.
   tex-integration:
@@ -161,7 +161,7 @@ jobs:
             graphics
             mylatexformat
       - name: Build the CLI
-        run: cargo build -p lemmata-cli
+        run: cargo build --locked -p lemmata-cli
       - name: lemmata doctor
         run: target/debug/lemmata doctor
       - name: Compile fixtures and compare diagnostics
@@ -170,12 +170,12 @@ jobs:
         run: scripts/check-templates.sh target/debug/lemmata
       # latexdiff's markup needs ulem, color and listings; the test fails instead of skipping when any is missing.
       - name: PDF of the changes (latexdiff)
-        run: cargo test -p lemmata-history --test latexdiff
+        run: cargo test --locked -p lemmata-history --test latexdiff
         env:
           LEMMATA_REQUIRE_TEX: "1"
       # The builds with real TeX (warm formats, citations, the CLI), which skip on the other jobs.
       - name: Builds with real TeX
-        run: cargo test -p lemmata-tex -p lemmata-cli
+        run: cargo test --locked -p lemmata-tex -p lemmata-cli
         env:
           LEMMATA_REQUIRE_TEX: "1"
 
@@ -227,12 +227,12 @@ jobs:
           git config --global user.name "Lemmata CI"
           git config --global user.email "ci@lemmata.invalid"
       - name: Run the app's tests and scenarios
-        run: cargo test -p lemmata-app
+        run: cargo test --locked -p lemmata-app
         env:
           LEMMATA_REQUIRE_TEX: "1"
       # Timed, so alone: typing and resizing in a 20,000-line file (editor/view.rs).
       - name: Editor speed in a long file
-        run: cargo test -p lemmata-app -- --ignored --test-threads=1 --nocapture stay_fast
+        run: cargo test --locked -p lemmata-app -- --ignored --test-threads=1 --nocapture stay_fast
       - name: Upload the snapshots that differ
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7

@@ -11,12 +11,10 @@ on:
   push:
     branches: [main]
     paths:
-      - "crates/lemmata-tex/**"
-      - "crates/lemmata-cli/**"
-      - "crates/lemmata-log/**"
-      - "crates/lemmata-project/**"
+      - "crates/**"
+      - "Cargo.lock"
+      - "tests/fixtures/**"
       - "apps/lemmata/**"
-      - "crates/lemmata-shell/**"
       - "scripts/windows-smoke.ps1"
       - ".github/workflows/windows.yml"
 
@@ -97,7 +95,10 @@ jobs:
       # One at a time with real TeX: the log then names a test that hangs, and the limit stops it.
       - name: Run the app's tests and scenarios
         timeout-minutes: 30
-        run: cargo test -p lemmata-app -- --test-threads=1
+        # Required: without it a broken latexmk or Perl makes the build scenarios return early, green.
+        env:
+          LEMMATA_REQUIRE_TEX: "1"
+        run: cargo test --locked -p lemmata-app -- --test-threads=1
       - name: Upload the snapshots that differ
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -110,7 +111,7 @@ jobs:
       # Debug build: it reuses the test build's dependencies, and the timings are TeX's anyway.
       - name: Build the command-line tool
         if: ${{ !cancelled() }}
-        run: cargo build -p lemmata-cli
+        run: cargo build --locked -p lemmata-cli
       - name: Build documents in each scenario
         if: ${{ !cancelled() }}
         shell: pwsh

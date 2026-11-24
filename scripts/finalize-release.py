@@ -84,7 +84,8 @@ def main() -> None:
             is_sig = f.name.endswith(".sig")
             ext = kind_of(f.name[:-4] if is_sig else f.name)
             if ext is None:
-                continue
+                # A renamed installer would otherwise be missing from the release without a word.
+                sys.exit(f"{f.relative_to(artifacts)} matches no known installer name (KINDS)")
             target = out / f"Lemmata_{version}_{label}{ext}"
             if is_sig:
                 signatures[(label, ext)] = f.read_text().strip()
