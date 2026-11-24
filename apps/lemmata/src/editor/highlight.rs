@@ -237,18 +237,21 @@ fn in_math(s: &mut Stream, st: &mut State, end: &'static str) -> Option<Token> {
     if s.match_cmd(|c| c.is_ascii_alphabetic() || c == '@') {
         return Some(Token::Tag);
     }
-    if s.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
-        s.eat_while(|c| c.is_ascii_alphabetic());
+    if s.peek().is_some_and(|c| c.is_alphabetic()) {
+        s.eat_while(|c| c.is_alphabetic());
         return Some(Token::Atom);
     }
-    if s.match_escape("$&%#{}_") || s.match_escape(",;!/") {
+    // `\\` (a new row) and the spacing commands.
+    if s.match_escape("$&%#{}_") || s.match_escape(",;!/:>\\ ") {
         return Some(Token::Tag);
     }
     if s.peek().is_some_and(|c| "^_&".contains(c)) {
         s.pos += 1;
         return Some(Token::Tag);
     }
-    if s.peek().is_some_and(|c| "+-<>|=,/@!*:;'\"`~#?".contains(c)) {
+    if s.peek().is_some_and(|c| "+-<>|=,/@!*:;'\"`~#?.".contains(c))
+        && !(s.peek() == Some('.') && s.s.get(s.pos + 1).is_some_and(|c| c.is_ascii_digit()))
+    {
         s.pos += 1;
         return None;
     }
@@ -323,7 +326,8 @@ pub fn line(text: &str, state: &mut State) -> Vec<(usize, usize, Token)> {
         return out;
     }
     // stex's blankLine: an empty line ends maths and open commands.
-    if chars.iter().all(|c| c.is_whitespace()) && chars.is_empty() {
+    // A line of only spaces is blank to TeX too.
+    if chars.iter().all(|c| c.is_whitespace()) {
         *state = State::default();
         return Vec::new();
     }
@@ -468,6 +472,19 @@ mod tests {
             .into_iter()
             .map(|(a, b, t)| (chars[a..b].iter().collect(), t))
             .collect()
+    }
+
+    #[test]
+    fn maths_rows_dots_and_greek_are_not_errors() {
+        let mut st = State::default();
+        line("$$", &mut st);
+        let t = line("α + x \\\\ y. 0.5", &mut st);
+        assert!(t.iter().all(|t| t.2 != Token::Error), "{t:?}");
+        // An indented blank line ends an unclosed $ like an empty one.
+        let mut st = State::default();
+        line("text $x", &mut st);
+        line("   ", &mut st);
+        assert_eq!(st, State::default());
     }
 
     #[test]
