@@ -1272,9 +1272,12 @@ mod tests {
             home: None,
         };
         let shell = crate::Shell::new(dirs, std::sync::Arc::new(|_| {}));
-        shell
+        // The project's own root, as the app passes it (on Windows it may be spelt differently).
+        let root = shell
             .open_project(1, root.to_string_lossy().into_owned(), true)
-            .unwrap();
+            .unwrap()
+            .info
+            .root;
         let text = shell.read_text("ch.tex".into()).unwrap();
         let save = |t: &str| shell.write_text(&root, "ch.tex".into(), t.into(), None);
         save(&text).unwrap();
