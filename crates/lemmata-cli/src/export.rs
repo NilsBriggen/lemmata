@@ -27,7 +27,9 @@ pub async fn run(dir: &Path, out: &Path, arxiv: Option<Arxiv>, json: bool) -> an
             // Like the app: build first, since the files used come from that build.
             let outcome = compile(&project).await?;
             if outcome.status != Status::Success && !a.anyway {
-                if !json {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&outcome.diagnostics)?);
+                } else {
                     print_diagnostics(&outcome.diagnostics);
                 }
                 eprintln!(
@@ -41,7 +43,10 @@ pub async fn run(dir: &Path, out: &Path, arxiv: Option<Arxiv>, json: bool) -> an
     }
     .map_err(|e| anyhow!(e))?;
     if json {
-        println!("{}", json!({ "path": out, "files": count }));
+        println!(
+            "{}",
+            json!({ "path": out.display().to_string(), "files": count })
+        );
     } else {
         println!("{count} files written to {}", out.display());
     }

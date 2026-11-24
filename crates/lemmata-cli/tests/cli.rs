@@ -444,6 +444,17 @@ fn export_arxiv_refuses_a_document_that_does_not_build() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("--anyway"));
     assert!(!zip.exists());
 
+    // With --json the diagnostics are on stdout, for a script to read.
+    let o = lemmata(&[
+        "export",
+        arg(d.path()),
+        "--arxiv",
+        zip.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(code(&o), 1);
+    assert!(json(&o).is_array());
+
     let o = lemmata(&[
         "export",
         arg(d.path()),
@@ -489,15 +500,25 @@ fn watch_ignores_its_visible_build_folder() {
         std::env::var("PATH").unwrap_or_default()
     );
     let log = tmp.path().join("watch.log");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lemmata"))
-        .arg("watch")
-        .arg(&project)
-        .env("PATH", path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stderr = child.stderr.take().unwrap();
+    /// Kills `lemmata watch` when the test ends, also when an assert fails.
+    struct Watcher(std::process::Child);
+    impl Drop for Watcher {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Watcher(
+        Command::new(env!("CARGO_BIN_EXE_lemmata"))
+            .arg("watch")
+            .arg(&project)
+            .env("PATH", path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stderr = child.0.stderr.take().unwrap();
     let mut file = fs::File::create(&log).unwrap();
     std::thread::spawn(move || {
         let _ = std::io::copy(&mut stderr, &mut file);
@@ -528,6 +549,4 @@ fn watch_ignores_its_visible_build_folder() {
     }
     std::thread::sleep(std::time::Duration::from_millis(1100));
     assert_eq!(changes(), 1, "a source edit should rebuild exactly once");
-    child.kill().unwrap();
-    child.wait().unwrap();
 }
