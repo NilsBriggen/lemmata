@@ -330,6 +330,8 @@ fn net_error(stderr: &str) -> Error {
 struct Repo {
     git: PathBuf,
     top: PathBuf,
+    /// The project folder inside the repository ("" when it is the top): status and staging stay in it.
+    prefix: String,
     /// See `lemmata_env::git_guard`: the panel shows status and the log unasked. What the user
     /// asks for (stage, commit, pull) runs with the repository's own config, as in a terminal.
     guard: Vec<String>,
@@ -338,7 +340,12 @@ struct Repo {
 impl Repo {
     fn open(root: &Path) -> Result<Repo> {
         let git = find_git().ok_or(Error::NoGit)?;
-        let o = exec(&git, Some(root), &["rev-parse", "--show-toplevel"], LOCAL)?;
+        let o = exec(
+            &git,
+            Some(root),
+            &["rev-parse", "--show-toplevel", "--show-prefix"],
+            LOCAL,
+        )?;
         if !o.ok {
             return if o.stderr.contains("not a git repository") {
                 Err(Error::NotARepo)
@@ -346,13 +353,20 @@ impl Repo {
                 msg(tidy(&o.stderr))
             };
         }
-        let top = PathBuf::from(o.stdout.trim());
+        let mut lines = o.stdout.lines();
+        let top = PathBuf::from(lines.next().unwrap_or_default().trim());
+        let prefix = lines.next().unwrap_or_default().trim().to_string();
         let Some(guard) = lemmata_env::git_guard(&git, &top) else {
             return msg(
                 "This repository's config names a filter Lemmata can't turn off, so the Git panel is off.",
             );
         };
-        Ok(Repo { git, top, guard })
+        Ok(Repo {
+            git,
+            top,
+            prefix,
+            guard,
+        })
     }
 
     fn run(&self, args: &[&str], timeout: Duration) -> Result<Out> {
@@ -386,6 +400,13 @@ impl Repo {
                 "-z",
                 // Not into nested repositories: their own config was never looked at.
                 "--ignore-submodules=all",
+                "--",
+                // The whole repository when the project is its top.
+                if self.prefix.is_empty() {
+                    "."
+                } else {
+                    &self.prefix
+                },
             ],
             LOCAL,
         )?;
@@ -465,7 +486,10 @@ pub fn stage(root: &Path, paths: &[String]) -> Result<()> {
 }
 
 pub fn stage_all(root: &Path) -> Result<()> {
-    Repo::open(root)?.ok(&["add", "-A"]).map(|_| ())
+    let r = Repo::open(root)?;
+    // Not `.`: the repository's top is where git runs, and only the project's folder is staged.
+    let all = if r.prefix.is_empty() { "." } else { &r.prefix };
+    r.ok(&["add", "-A", "--", all]).map(|_| ())
 }
 
 /// Takes files out of the next commit; their contents stay as they are.

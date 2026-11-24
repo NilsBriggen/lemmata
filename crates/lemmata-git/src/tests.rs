@@ -198,6 +198,32 @@ fn unset_identity_explains_the_fix() {
 }
 
 #[test]
+fn a_project_inside_a_bigger_repository_stages_only_itself() {
+    let d = repo();
+    std::fs::create_dir_all(d.path().join("thesis")).unwrap();
+    std::fs::create_dir_all(d.path().join("other")).unwrap();
+    write(d.path(), "other/x.tex", "x");
+    write(d.path(), "thesis/a.tex", "a");
+    let root = d.path().join("thesis");
+    assert!(
+        status(&root)
+            .untracked
+            .iter()
+            .all(|c| c.path.starts_with("thesis/"))
+    );
+    stage_all(&root).unwrap();
+    let s = status(&root);
+    assert_eq!(s.staged.len(), 1);
+    assert!(s.staged[0].path.starts_with("thesis/"));
+    assert!(
+        status(d.path())
+            .untracked
+            .iter()
+            .any(|c| c.path.starts_with("other/"))
+    );
+}
+
+#[test]
 fn stage_unstage_commit() {
     let d = repo();
     write(d.path(), "a.tex", "a");
@@ -409,7 +435,10 @@ fn a_stopped_command_gets_to_clean_up_first() {
         Duration::from_millis(300),
     );
     assert!(e.is_err());
-    assert!(mark.exists(), "git was killed without a chance to remove its lock files");
+    assert!(
+        mark.exists(),
+        "git was killed without a chance to remove its lock files"
+    );
 }
 
 #[cfg(unix)]
