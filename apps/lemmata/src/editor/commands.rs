@@ -276,8 +276,7 @@ pub fn select_next_occurrence(d: &mut Doc) -> bool {
     let end = hay.len().saturating_sub(needle.len());
     // After the last selection, then from the top: the first occurrence not selected yet.
     let hit = (last..=end).chain(0..last.min(end + 1)).find(|&i| {
-        hay[i..i + needle.len()] == needle[..]
-            && !d.selection.ranges.iter().any(|r| r.from() == i)
+        hay[i..i + needle.len()] == needle[..] && !d.selection.ranges.iter().any(|r| r.from() == i)
     });
     match hit {
         Some(i) => {
@@ -346,7 +345,7 @@ pub fn paste(d: &mut Doc, text: &str) {
             vec![Change {
                 from: r.from(),
                 to: r.to(),
-                insert: piece.into(),
+                insert: piece,
             }],
             Range::cursor(r.from() + n),
         )

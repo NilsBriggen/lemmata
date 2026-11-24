@@ -214,7 +214,9 @@ mod tests {
         // Backspace at the start of \section{B}.
         d.selection = super::super::buffer::Selection::cursor(14);
         d.apply(
-            super::super::buffer::ChangeSet::new(vec![super::super::buffer::Change::delete(13, 14)]),
+            super::super::buffer::ChangeSet::new(vec![super::super::buffer::Change::delete(
+                13, 14,
+            )]),
             super::super::buffer::Selection::cursor(13),
             super::super::buffer::EditKind::Other,
         );

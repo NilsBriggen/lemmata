@@ -1525,7 +1525,11 @@ pub fn show(
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, true, label));
         // The whole text for screen readers: only built while AccessKit is on, as it copies it.
-        if ui.ctx().accesskit_node_builder(response.id, |_| ()).is_some() {
+        if ui
+            .ctx()
+            .accesskit_node_builder(response.id, |_| ())
+            .is_some()
+        {
             if ed
                 .accesskit_snapshot
                 .as_ref()
@@ -1934,14 +1938,11 @@ pub fn show(
                 });
             }
             drag_to(ed, &mut geo, ui, at, line, x);
-        } else if let Some(pos) = response
-            .interact_pointer_pos()
-            .filter(|_| {
-                ed.drag.is_some()
-                    && response.is_pointer_button_down_on()
-                    && ui.input(|i| i.pointer.primary_down())
-            })
-        {
+        } else if let Some(pos) = response.interact_pointer_pos().filter(|_| {
+            ed.drag.is_some()
+                && response.is_pointer_button_down_on()
+                && ui.input(|i| i.pointer.primary_down())
+        }) {
             let (at, line, x) = hit(&mut geo, ui, &ed.doc, pos);
             drag_to(ed, &mut geo, ui, at, line, x);
             ed.last_activity = now;
@@ -3437,7 +3438,11 @@ mod tests {
         editor_harness(text, caret, true)
     }
 
-    fn editor_harness(text: &str, caret: usize, wrap: bool) -> egui_kittest::Harness<'static, Editor> {
+    fn editor_harness(
+        text: &str,
+        caret: usize,
+        wrap: bool,
+    ) -> egui_kittest::Harness<'static, Editor> {
         let mut ed = Editor::new(text, true);
         ed.doc.selection = Selection::cursor(caret);
         let p = theme::LIGHT;
@@ -3478,7 +3483,10 @@ mod tests {
         h.run();
         h.get_by_label("Editor").click_secondary();
         h.run();
-        assert_eq!(h.state().doc.selection.main(), Range::new(0, text.chars().count()));
+        assert_eq!(
+            h.state().doc.selection.main(),
+            Range::new(0, text.chars().count())
+        );
         assert!(h.state().spell_menu.is_some());
         assert!(h.query_by_label("Cut").is_some() && h.query_by_label("Paste").is_some());
     }
@@ -3507,7 +3515,10 @@ mod tests {
         h.key_press(egui::Key::ArrowDown);
         h.run();
         let second = h.state().doc.selection.main().head;
-        assert!(first > 0 && second > first && second < para.len(), "{first} {second}");
+        assert!(
+            first > 0 && second > first && second < para.len(),
+            "{first} {second}"
+        );
     }
 
     #[test]
@@ -4064,7 +4075,9 @@ mod tests {
     #[test]
     fn paragraphs_scrolled_to_are_sent_for_grammar_without_an_edit() {
         let p = theme::LIGHT;
-        let text: String = (0..300).map(|i| format!("Paragraph {i} has words.\n\n")).collect();
+        let text: String = (0..300)
+            .map(|i| format!("Paragraph {i} has words.\n\n"))
+            .collect();
         let mut checks = crate::writing::Checks::default();
         checks.grammar.configure("local", "", "en");
         let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));

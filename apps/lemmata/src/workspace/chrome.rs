@@ -1626,37 +1626,38 @@ pub fn menus(
                 MenuResult::Open => {}
                 MenuResult::Closed => ws.menu = None,
                 // By label: the positions shift with the engine list and the Stop item.
-                MenuResult::Clicked(i) => match items[i] {
-                    MenuItem::Item { label, .. } => match label {
-                        "As I type" | "With Ctrl+S" => {
-                            settings.auto_compile = label == "As I type";
-                            *action = Some(Action::Settings);
-                        }
-                        "Normal" | "Fast (draft)" => {
-                            ws.set_config(backend, settings, |c| c.draft = label == "Fast (draft)")
-                        }
-                        "Keep going" | "Stop at the first error" => {
-                            ws.set_config(backend, settings, |c| {
-                                c.stop_on_error = label == "Stop at the first error"
-                            })
-                        }
-                        "Clear cached files" => {
-                            ws.menu = None;
-                            ws.clean(backend);
-                        }
-                        "Stop compiling" => {
-                            ws.menu = None;
-                            ws.stop_build(backend);
-                        }
-                        _ => {
-                            if let Some((e, _)) = ENGINES.iter().find(|(_, l)| *l == label) {
-                                let e = *e;
-                                ws.set_config(backend, settings, |c| c.engine = e);
+                MenuResult::Clicked(i) => {
+                    if let MenuItem::Item { label, .. } = items[i] {
+                        match label {
+                            "As I type" | "With Ctrl+S" => {
+                                settings.auto_compile = label == "As I type";
+                                *action = Some(Action::Settings);
+                            }
+                            "Normal" | "Fast (draft)" => ws.set_config(backend, settings, |c| {
+                                c.draft = label == "Fast (draft)"
+                            }),
+                            "Keep going" | "Stop at the first error" => {
+                                ws.set_config(backend, settings, |c| {
+                                    c.stop_on_error = label == "Stop at the first error"
+                                })
+                            }
+                            "Clear cached files" => {
+                                ws.menu = None;
+                                ws.clean(backend);
+                            }
+                            "Stop compiling" => {
+                                ws.menu = None;
+                                ws.stop_build(backend);
+                            }
+                            _ => {
+                                if let Some((e, _)) = ENGINES.iter().find(|(_, l)| *l == label) {
+                                    let e = *e;
+                                    ws.set_config(backend, settings, |c| c.engine = e);
+                                }
                             }
                         }
-                    },
-                    _ => {}
-                },
+                    }
+                }
             }
         }
         Menu::Sort(anchor) => {

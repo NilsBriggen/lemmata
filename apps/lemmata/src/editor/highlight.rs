@@ -249,7 +249,8 @@ fn in_math(s: &mut Stream, st: &mut State, end: &'static str) -> Option<Token> {
         s.pos += 1;
         return Some(Token::Tag);
     }
-    if s.peek().is_some_and(|c| "+-<>|=,/@!*:;'\"`~#?.".contains(c))
+    if s.peek()
+        .is_some_and(|c| "+-<>|=,/@!*:;'\"`~#?.".contains(c))
         && !(s.peek() == Some('.') && s.s.get(s.pos + 1).is_some_and(|c| c.is_ascii_digit()))
     {
         s.pos += 1;

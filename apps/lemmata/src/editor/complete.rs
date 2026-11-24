@@ -598,10 +598,16 @@ pub fn code_block(language: &str, minted: bool) -> (String, &'static str) {
         .copied()
         .unwrap_or(("", "text", None));
     if minted {
-        (format!("\\begin{{minted}}{{{lexer}}}\n${{}}\n\\end{{minted}}"), "minted")
+        (
+            format!("\\begin{{minted}}{{{lexer}}}\n${{}}\n\\end{{minted}}"),
+            "minted",
+        )
     } else {
         let opts = lst.map(|l| format!("[language={l}]")).unwrap_or_default();
-        (format!("\\begin{{lstlisting}}{opts}\n${{}}\n\\end{{lstlisting}}"), "listings")
+        (
+            format!("\\begin{{lstlisting}}{opts}\n${{}}\n\\end{{lstlisting}}"),
+            "listings",
+        )
     }
 }
 
@@ -723,7 +729,11 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
                 } else {
                     Apply::Snippet(format!("{0}}}\n\t${{}}\n\\end{{{0}}}", &x[1]))
                 };
-                let boost = if open.as_deref() == Some(&x[1]) { 30 } else { 0 };
+                let boost = if open.as_deref() == Some(&x[1]) {
+                    30
+                } else {
+                    0
+                };
                 items.push(
                     Item::new(&x[1], Kind::Class, apply)
                         .detail("used here")
@@ -990,9 +1000,17 @@ pub fn wants_server(d: &Doc, pos: usize, explicit: bool) -> bool {
     if chars(c.as_str()) < 2 && !explicit {
         return false;
     }
-    ![&*ENV, &*REF, &*CITE, &*FILE, &*PKG, &*MINTED_LANG, &*LST_LANG]
-        .iter()
-        .any(|r| r.is_match(&before))
+    ![
+        &*ENV,
+        &*REF,
+        &*CITE,
+        &*FILE,
+        &*PKG,
+        &*MINTED_LANG,
+        &*LST_LANG,
+    ]
+    .iter()
+    .any(|r| r.is_match(&before))
 }
 
 /// texlab's command items, minus those the local list has (its labels come without the backslash).
@@ -1221,7 +1239,10 @@ mod tests {
             code_block("Python", false).0,
             "\\begin{lstlisting}[language=Python]\n${}\n\\end{lstlisting}"
         );
-        assert_eq!(code_block("Rust", false).0, "\\begin{lstlisting}\n${}\n\\end{lstlisting}");
+        assert_eq!(
+            code_block("Rust", false).0,
+            "\\begin{lstlisting}\n${}\n\\end{lstlisting}"
+        );
         assert_eq!(
             code_block("Rust", true),
             ("\\begin{minted}{rust}\n${}\n\\end{minted}".into(), "minted")

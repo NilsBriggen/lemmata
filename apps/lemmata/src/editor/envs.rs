@@ -12,8 +12,10 @@ static TOKEN: LazyLock<Regex> =
 static NEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(?:begin|end)\s*\{").unwrap());
 /// A line that is only `\begin{X}`, maybe with arguments: `[h]`, `{python}`, `{p{3cm}l}`.
 static OPENING: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(\s*)\\begin\{([^{}]+)\}(?:\s*\[[^\]\n]*\]|\s*\{(?:[^{}\n]|\{[^{}\n]*\})*\})*\s*$")
-        .unwrap()
+    Regex::new(
+        r"^(\s*)\\begin\{([^{}]+)\}(?:\s*\[[^\]\n]*\]|\s*\{(?:[^{}\n]|\{[^{}\n]*\})*\})*\s*$",
+    )
+    .unwrap()
 });
 
 #[derive(Clone, Debug, PartialEq)]
@@ -286,10 +288,22 @@ mod tests {
         assert!(!close_environment(&mut d, Indent::Spaces(2)));
         // Arguments after the name, and the caret still before an auto-closed brace.
         for (text, caret, closed) in [
-            ("\\begin{minted}{python}", 22, "\\begin{minted}{python}\n  \n\\end{minted}"),
-            ("\\begin{minted}{python}", 21, "\\begin{minted}{python}\n  \n\\end{minted}"),
+            (
+                "\\begin{minted}{python}",
+                22,
+                "\\begin{minted}{python}\n  \n\\end{minted}",
+            ),
+            (
+                "\\begin{minted}{python}",
+                21,
+                "\\begin{minted}{python}\n  \n\\end{minted}",
+            ),
             ("\\begin{minted}", 13, "\\begin{minted}\n  \n\\end{minted}"),
-            ("\\begin{figure}[h]", 16, "\\begin{figure}[h]\n  \n\\end{figure}"),
+            (
+                "\\begin{figure}[h]",
+                16,
+                "\\begin{figure}[h]\n  \n\\end{figure}",
+            ),
             (
                 "  \\begin{tabular}{p{3cm}l}",
                 26,
@@ -298,7 +312,10 @@ mod tests {
         ] {
             let mut d = Doc::new(text);
             d.selection = Selection::cursor(caret);
-            assert!(close_environment(&mut d, Indent::Spaces(2)), "{text} at {caret}");
+            assert!(
+                close_environment(&mut d, Indent::Spaces(2)),
+                "{text} at {caret}"
+            );
             assert_eq!(d.text(), closed);
         }
         // Not in the middle of the name, nor before text that isn't a closing brace.

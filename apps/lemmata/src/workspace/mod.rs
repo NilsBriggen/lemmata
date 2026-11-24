@@ -2028,11 +2028,17 @@ mod tests {
 /// Why minted can't highlight code in this project, if it can't.
 fn minted_problem(config: &lemmata_project::Config, trusted: bool) -> Option<&'static str> {
     if config.engine == lemmata_project::Engine::Tectonic {
-        Some("minted can't highlight code with Tectonic, which never allows shell escape. Use the Code button for listings instead, or another compiler.")
+        Some(
+            "minted can't highlight code with Tectonic, which never allows shell escape. Use the Code button for listings instead, or another compiler.",
+        )
     } else if !trusted {
-        Some("minted needs shell escape to highlight code, and this project isn't trusted, so the build will fail. Trust the project and turn on shell escape in Project settings.")
+        Some(
+            "minted needs shell escape to highlight code, and this project isn't trusted, so the build will fail. Trust the project and turn on shell escape in Project settings.",
+        )
     } else if !config.shell_escape {
-        Some("minted needs shell escape to highlight code, and it's off for this project, so the build will fail. Turn it on in Project settings.")
+        Some(
+            "minted needs shell escape to highlight code, and it's off for this project, so the build will fail. Turn it on in Project settings.",
+        )
     } else {
         None
     }

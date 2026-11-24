@@ -3777,7 +3777,12 @@ pub(crate) mod tests {
         let ws = app.project.as_mut().unwrap();
         ws.open_file(&app.backend, "plot.png");
         wait_for(&mut h, "the image", |h| {
-            h.state().project.as_ref().unwrap().viewers.contains_key("plot.png")
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .viewers
+                .contains_key("plot.png")
         });
         std::fs::remove_file(project.join("plot.png")).unwrap();
         wait_for(&mut h, "the tab to close", |h| {
@@ -3807,11 +3812,9 @@ pub(crate) mod tests {
         let mut h = app(tmp.path());
         wait_for(&mut h, "the project", |h| h.state().project.is_some());
         let pick = |h: &mut Harness<'_, App>, item: &str| {
-            h.state_mut().project.as_mut().unwrap().menu =
-                Some(crate::workspace::Menu::Compile(egui::Rect::from_min_size(
-                    egui::pos2(400.0, 40.0),
-                    egui::vec2(20.0, 20.0),
-                )));
+            h.state_mut().project.as_mut().unwrap().menu = Some(crate::workspace::Menu::Compile(
+                egui::Rect::from_min_size(egui::pos2(400.0, 40.0), egui::vec2(20.0, 20.0)),
+            ));
             h.run_steps(2);
             h.get_by_label(item).click();
             h.run_steps(2);
