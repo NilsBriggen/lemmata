@@ -40,18 +40,19 @@ const GROUPS: &[(&str, Option<&str>, &str)] = &[
     (
         "Sets and logic",
         None,
-        "emptyset forall exists nexists neg lnot land lor top bot vdots ldots cdots ddots in notin subset cup cap setminus",
+        "emptyset forall exists neg lnot land lor top bot vdots ldots cdots ddots in notin subset cup cap setminus",
     ),
     (
         "Sets and logic",
         Some("amssymb"),
-        "mathbb{R} mathbb{N} mathbb{Z} mathbb{Q} mathbb{C} mathbb{P} mathbb{E} mathbb{F} mathbb{H} mathbb{1} varnothing complement therefore because square blacksquare checkmark",
+        "nexists mathbb{R} mathbb{N} mathbb{Z} mathbb{Q} mathbb{C} mathbb{P} mathbb{E} mathbb{F} mathbb{H} mathbb{1} varnothing complement therefore because square blacksquare checkmark",
     ),
     (
         "Calculus",
         None,
-        "partial nabla infty prime backprime Re Im aleph hbar ell wp angle triangle surd imath jmath",
+        "partial nabla infty prime Re Im aleph hbar ell wp angle triangle surd imath jmath",
     ),
+    ("Calculus", Some("amssymb"), "backprime"),
     (
         "Functions",
         None,
@@ -65,12 +66,18 @@ const GROUPS: &[(&str, Option<&str>, &str)] = &[
     (
         "Delimiters",
         None,
-        "langle rangle lceil rceil lfloor rfloor lvert rvert lVert rVert lbrace rbrace lbrack rbrack",
+        "langle rangle lceil rceil lfloor rfloor lbrace rbrace lbrack rbrack",
     ),
+    ("Delimiters", Some("amsmath"), "lvert rvert lVert rVert"),
     (
         "Structures",
         None,
-        "frac{a}{b}|dfrac{a}{b}|tfrac{a}{b}|binom{n}{k}|sqrt{x}|sqrt[n]{x}|sum_{i=1}^{n}|prod_{i=1}^{n}|int_{a}^{b}|lim_{x \\to 0}|left( x \\right)|left[ x \\right]|left\\{ x \\right\\}|mathrm{d}x|text{if}|operatorname{argmax}|stackrel{a}{=}|xrightarrow{f}|xleftarrow{f}",
+        "frac{a}{b}|sqrt{x}|sqrt[n]{x}|sum_{i=1}^{n}|prod_{i=1}^{n}|int_{a}^{b}|lim_{x \\to 0}|left( x \\right)|left[ x \\right]|left\\{ x \\right\\}|mathrm{d}x|stackrel{a}{=}",
+    ),
+    (
+        "Structures",
+        Some("amsmath"),
+        "dfrac{a}{b}|tfrac{a}{b}|binom{n}{k}|text{if}|operatorname{argmax}|xrightarrow{f}|xleftarrow{f}",
     ),
     (
         "Scripts",
@@ -80,8 +87,10 @@ const GROUPS: &[(&str, Option<&str>, &str)] = &[
     (
         "Fonts",
         None,
-        "mathbf{x}|mathit{x}|mathrm{x}|mathsf{x}|mathtt{x}|mathcal{A}|mathfrak{A}|boldsymbol{x}|mathbb{A}",
+        "mathbf{x}|mathit{x}|mathrm{x}|mathsf{x}|mathtt{x}|mathcal{A}",
     ),
+    ("Fonts", Some("amssymb"), "mathfrak{A}|mathbb{A}"),
+    ("Fonts", Some("amsmath"), "boldsymbol{x}"),
     (
         "Spacing",
         None,
@@ -90,8 +99,9 @@ const GROUPS: &[(&str, Option<&str>, &str)] = &[
     (
         "Misc",
         None,
-        "dots cdots ldots vdots ddots hbar degree dagger S P copyright pounds",
+        "dots cdots ldots vdots ddots hbar dagger S P copyright pounds",
     ),
+    ("Misc", Some("gensymb"), "degree"),
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -163,5 +173,27 @@ mod tests {
             1
         );
         assert_eq!(groups().first(), Some(&"Greek"));
+    }
+
+    /// Every command the log's package table knows (and a few it doesn't) is tagged with it, so
+    /// inserting one offers to load the package.
+    #[test]
+    fn symbols_carry_the_package_their_command_needs() {
+        for s in symbols() {
+            let name: String = s
+                .tex
+                .strip_prefix('\\')
+                .unwrap_or("")
+                .chars()
+                .take_while(char::is_ascii_alphabetic)
+                .collect();
+            if let Some(pkg) = lemmata_log::packages::for_command(&name) {
+                assert_eq!(s.pkg, Some(pkg), "{}", s.tex);
+            }
+        }
+        let pkg = |tex: &str| symbols().iter().find(|s| s.tex == tex).and_then(|s| s.pkg);
+        assert_eq!(pkg("\\nexists"), Some("amssymb"));
+        assert_eq!(pkg("\\lVert"), Some("amsmath"));
+        assert_eq!(pkg("\\degree"), Some("gensymb"));
     }
 }
