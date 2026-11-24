@@ -21,6 +21,8 @@ pub struct Search {
     found_for: Option<(u64, String, bool, bool, bool)>,
     current: Option<(usize, usize)>,
     focus_query: bool,
+    /// The regular expression doesn't parse.
+    invalid: bool,
 }
 
 impl Search {
@@ -37,6 +39,7 @@ impl Search {
             found_for: None,
             current: None,
             focus_query: true,
+            invalid: false,
         });
         if !selected.is_empty() && !selected.contains('\n') {
             s.query = selected.into();
@@ -91,10 +94,51 @@ impl Search {
             self.whole_word,
         );
         self.found_for = Some(key);
+        self.invalid = self.regexp
+            && !self.query.is_empty()
+            && regex(&self.query, self.case_sensitive, true).is_err();
         if self.current.is_some_and(|c| !self.matches.contains(&c)) {
             self.current = None;
         }
     }
+}
+
+/// The query as a regex; `^` and `$` match at every line (also before `\r\n`).
+fn regex(query: &str, case_sensitive: bool, regexp: bool) -> Result<regex::Regex, regex::Error> {
+    let pattern = if regexp {
+        query.to_owned()
+    } else {
+        regex::escape(query)
+    };
+    let flags = if case_sensitive { "(?mR)" } else { "(?imR)" };
+    regex::Regex::new(&format!("{flags}{pattern}"))
+}
+
+/// The replacement for the match at char `from`: in regexp mode `$1` and `${name}` are expanded.
+fn replacement(s: &Search, text: &str, byte_of: &[usize], from: usize) -> String {
+    if !s.regexp {
+        return s.replace.clone();
+    }
+    let at = byte_of.get(from).copied().unwrap_or(text.len());
+    regex(&s.query, s.case_sensitive, true)
+        .ok()
+        .and_then(|re| re.captures_at(text, at))
+        .filter(|c| c.get(0).is_some_and(|m| m.start() == at))
+        .map_or_else(
+            || s.replace.clone(),
+            |c| {
+                let mut out = String::new();
+                c.expand(&s.replace, &mut out);
+                out
+            },
+        )
+}
+
+/// Byte offset of every char, and of the end.
+fn byte_offsets(text: &str) -> Vec<usize> {
+    let mut v: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+    v.push(text.len());
+    v
 }
 
 /// Every match of the query, as char ranges.
@@ -108,17 +152,7 @@ pub fn find_all(
     if query.is_empty() {
         return Vec::new();
     }
-    let pattern = if regexp {
-        query.to_owned()
-    } else {
-        regex::escape(query)
-    };
-    let pattern = if case_sensitive {
-        pattern
-    } else {
-        format!("(?i){pattern}")
-    };
-    let Ok(re) = regex::Regex::new(&pattern) else {
+    let Ok(re) = regex(query, case_sensitive, regexp) else {
         return Vec::new();
     };
     // Byte offsets to char offsets.
@@ -197,8 +231,9 @@ fn replace_next(ed: &mut Editor) {
     let Some(s) = ed.search.as_mut() else { return };
     s.refresh(&ed.doc);
     let main = ed.doc.selection.main();
-    let replacement = s.replace.clone();
     if s.matches.contains(&(main.from(), main.to())) {
+        let text = ed.doc.text();
+        let replacement = replacement(s, &text, &byte_offsets(&text), main.from());
         let n = replacement.chars().count();
         let cs = ChangeSet::new(vec![Change {
             from: main.from(),
@@ -217,13 +252,15 @@ fn replace_all(ed: &mut Editor) {
     if s.matches.is_empty() {
         return;
     }
+    let text = ed.doc.text();
+    let bytes = byte_offsets(&text);
     let changes = s
         .matches
         .iter()
         .map(|&(a, b)| Change {
             from: a,
             to: b,
-            insert: s.replace.clone(),
+            insert: replacement(s, &text, &bytes, a),
         })
         .collect();
     let cs = ChangeSet::new(changes);
@@ -445,6 +482,13 @@ pub fn panel(ui: &mut Ui, p: &Palette, ed: &mut Editor, area: Rect, id: egui::Id
                 cm_check(ui, p, &mut s.case_sensitive, "match case", size);
                 cm_check(ui, p, &mut s.regexp, "regexp", size);
                 cm_check(ui, p, &mut s.whole_word, "by word", size);
+                if s.invalid {
+                    ui.label(
+                        egui::RichText::new("invalid pattern")
+                            .size(size * 0.8)
+                            .color(p.error),
+                    );
+                }
             });
             ui.horizontal(|ui| {
                 let r = cm_field(ui, p, &mut s.replace, "Replace", size, 140.0);
@@ -477,6 +521,7 @@ pub fn panel(ui: &mut Ui, p: &Palette, ed: &mut Editor, area: Rect, id: egui::Id
     );
     if cr.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         ed.search = None;
+        ui.memory_mut(|m| m.request_focus(id));
         return h;
     }
     match act {
@@ -534,6 +579,28 @@ mod tests {
             "a broken pattern finds nothing"
         );
         assert_eq!(find_all(t, "(", false, false, false), vec![]);
+        // ^ and $ are per line, also with CRLF line ends.
+        assert_eq!(
+            find_all("a x\r\nb x\nc", r"x$", true, true, false),
+            vec![(2, 3), (7, 8)]
+        );
+        assert_eq!(find_all("ab\nab", "^a", true, true, false).len(), 2);
+    }
+
+    #[test]
+    fn regexp_replacements_expand_groups() {
+        let mut ed = Editor::new("see \\ref{a} and \\ref{b}", true);
+        let mut s = Search::open(None, "", true);
+        s.query = r"\\ref\{(\w+)\}".into();
+        s.regexp = true;
+        s.replace = r"\autoref{$1}".into();
+        ed.search = Some(s);
+        replace_all(&mut ed);
+        assert_eq!(ed.doc.text(), "see \\autoref{a} and \\autoref{b}");
+        let s = ed.search.as_mut().unwrap();
+        s.query = "(".into();
+        s.refresh(&ed.doc);
+        assert!(s.invalid);
     }
 
     #[test]
