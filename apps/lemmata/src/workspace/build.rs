@@ -23,6 +23,9 @@ fn is_editable_source(path: &str, inside_project: bool, outdir: &str) -> bool {
 /// cancelled again while typing.
 const AUTO_COMPILE_DELAY: Duration = Duration::from_millis(1500);
 
+/// An export waiting for the build with this number.
+type Pending<T> = Option<(u64, T)>;
+
 #[derive(Default)]
 pub struct BuildState {
     pub building: bool,
@@ -56,7 +59,7 @@ pub struct BuildState {
 impl BuildState {
     /// The exports waiting for build `seq`. When a newer build is running in its place, they wait
     /// for that one; after a Stop they are dropped.
-    fn take_waiting(&mut self, seq: u64) -> (Option<(u64, bool)>, Option<(u64, Save)>) {
+    fn take_waiting(&mut self, seq: u64) -> (Pending<bool>, Pending<Save>) {
         let arxiv = self.arxiv.filter(|(s, _)| *s == seq);
         let export = self.export.filter(|(s, _)| *s == seq);
         let newer = self.building.then_some(self.seq);
