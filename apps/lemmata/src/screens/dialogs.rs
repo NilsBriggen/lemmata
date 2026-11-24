@@ -217,7 +217,8 @@ impl NewProject {
 
     pub fn can_create(&self) -> bool {
         !self.busy
-            && self.shown.is_some()
+            // A template is chosen from the start: no need to open a category first.
+            && self.templates.iter().any(|t| t.id == self.chosen)
             && !self.name.trim().is_empty()
             && !self.parent.is_empty()
     }
@@ -292,7 +293,7 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
             {
                 action = Some(Action::Submit);
             }
-            if Button::new("Cancel").show(ui, p).clicked() {
+            if Button::new("Cancel").enabled(!busy).show(ui, p).clicked() {
                 action = Some(Action::Close);
             }
         }),
@@ -807,7 +808,7 @@ pub fn clone(ctx: &egui::Context, p: &Palette, st: &mut Clone) -> Option<Action>
             {
                 action = Some(Action::Submit);
             }
-            if Button::new("Cancel").show(ui, p).clicked() {
+            if Button::new("Cancel").enabled(!busy).show(ui, p).clicked() {
                 action = Some(Action::Close);
             }
         }),
@@ -855,6 +856,7 @@ pub fn import(ctx: &egui::Context, p: &Palette, st: &mut Import) -> Option<Actio
         .next()
         .unwrap_or(&st.zip)
         .to_owned();
+    let busy = st.busy;
     let bulk = st.info.as_ref().map(|i| i.bulk);
     let can = !st.busy
         && st.info.is_some()
@@ -961,7 +963,7 @@ pub fn import(ctx: &egui::Context, p: &Palette, st: &mut Import) -> Option<Actio
             {
                 action = Some(Action::Submit);
             }
-            if Button::new("Cancel").show(ui, p).clicked() {
+            if Button::new("Cancel").enabled(!busy).show(ui, p).clicked() {
                 action = Some(Action::Close);
             }
         }),
@@ -1057,6 +1059,7 @@ impl SaveTemplate {
 
 pub fn save_template(ctx: &egui::Context, p: &Palette, st: &mut SaveTemplate) -> Option<Action> {
     let mut action = None;
+    let busy = st.busy;
     let can = !st.busy && !st.name.trim().is_empty();
     let r = widgets::modal_with(
         ctx,
@@ -1106,7 +1109,7 @@ pub fn save_template(ctx: &egui::Context, p: &Palette, st: &mut SaveTemplate) ->
             {
                 action = Some(Action::Submit);
             }
-            if Button::new("Cancel").show(ui, p).clicked() {
+            if Button::new("Cancel").enabled(!busy).show(ui, p).clicked() {
                 action = Some(Action::Close);
             }
         }),
@@ -1337,6 +1340,14 @@ mod tests {
         assert_eq!(st.chosen, "article");
         st.removed("article");
         assert_eq!(st.shown, None);
+    }
+
+    #[test]
+    fn create_is_possible_on_the_category_screen() {
+        let mut st = NewProject::new("/p".into(), String::new());
+        st.set_templates(vec![t("article", "Article", "Papers", false)], true);
+        st.name = "thesis".into();
+        assert!(st.shown.is_none() && st.can_create());
     }
 
     #[test]

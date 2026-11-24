@@ -467,6 +467,14 @@ impl App {
         };
         let Some(action) = action else { return };
         match (action, d) {
+            // The job goes on and its result has nowhere to go once the dialog is gone.
+            (
+                dialogs::Action::Close,
+                Dialog::NewProject(dialogs::NewProject { busy: true, .. })
+                | Dialog::Clone(dialogs::Clone { busy: true, .. })
+                | Dialog::Import(dialogs::Import { busy: true, .. })
+                | Dialog::SaveTemplate(dialogs::SaveTemplate { busy: true, .. }),
+            ) => {}
             (dialogs::Action::Close, _) => self.dialog = None,
             (dialogs::Action::Trust(trusted), Dialog::Trust(st)) => {
                 let (path, root) = (st.path.clone(), st.root.clone());
