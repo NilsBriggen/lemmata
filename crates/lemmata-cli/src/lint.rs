@@ -15,7 +15,7 @@ pub async fn run(dir: &Path, json: bool, strict: bool) -> anyhow::Result<bool> {
     let project = open(dir)?;
     let outcome = compile(&project).await?;
 
-    let checks = static_checks(&project);
+    let checks = static_checks(&project, &outcome.diagnostics);
     // A build's own "undefined" warning is replaced by the located one from
     // the check, so each problem is printed once.
     let mut diagnostics: Vec<Diagnostic> = outcome
@@ -50,9 +50,10 @@ fn count(diagnostics: &[Diagnostic], severity: Severity) -> usize {
 }
 
 /// Citation keys that no .bib file defines, and labels that are referenced
-/// but never defined. Each is reported once, at its first use.
-/// shortcut: labels from another document (`\externaldocument`) count as undefined.
-fn static_checks(project: &Project) -> Vec<Diagnostic> {
+/// but never defined. Each is reported once, at its first use. A label is reported only when the
+/// build also found it undefined: the scan sees no labels made by a macro, and sees `\ref`s in
+/// verbatim text, which the build doesn't.
+fn static_checks(project: &Project, build: &[Diagnostic]) -> Vec<Diagnostic> {
     let mut out = Vec::new();
 
     let missing: HashSet<String> = crate::bib::missing_keys(project).into_iter().collect();
@@ -77,13 +78,23 @@ fn static_checks(project: &Project) -> Vec<Diagnostic> {
                 format!("citation `{}` is in no .bib file", o.name),
                 "Check the spelling, or add the entry to a .bib file.",
             ),
-            Sym::Label if !defined_labels.contains(o.name.as_str()) => (
-                Kind::UndefinedReference {
-                    key: o.name.clone(),
-                },
-                format!("reference to label `{}`, which is never defined", o.name),
-                "Check the spelling, or add a \\label with this name.",
-            ),
+            Sym::Label
+                if !defined_labels.contains(o.name.as_str())
+                    && build.iter().any(|d| {
+                        d.kind
+                            == Kind::UndefinedReference {
+                                key: o.name.clone(),
+                            }
+                    }) =>
+            {
+                (
+                    Kind::UndefinedReference {
+                        key: o.name.clone(),
+                    },
+                    format!("reference to label `{}`, which is never defined", o.name),
+                    "Check the spelling, or add a \\label with this name.",
+                )
+            }
             _ => continue,
         };
         out.push(Diagnostic {
@@ -97,4 +108,36 @@ fn static_checks(project: &Project) -> Vec<Diagnostic> {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A label a macro defines is not reported, unless the build itself found it undefined.
+    #[test]
+    fn a_label_is_reported_only_when_the_build_found_it_undefined() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\nSee \\ref{sec:intro}.\n\\end{document}\n",
+        )
+        .unwrap();
+        let p = Project::open(d.path()).unwrap();
+        assert!(static_checks(&p, &[]).is_empty());
+        let built = Diagnostic {
+            severity: Severity::Warning,
+            kind: Kind::UndefinedReference {
+                key: "sec:intro".into(),
+            },
+            file: None,
+            line: None,
+            message: String::new(),
+            hint: None,
+            fix: None,
+        };
+        let got = static_checks(&p, &[built]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].line, Some(3));
+    }
 }

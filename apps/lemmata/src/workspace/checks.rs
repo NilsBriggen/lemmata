@@ -108,8 +108,8 @@ impl Workspace {
                 }
             }
             Msg::SpellLoaded(_, Err(_)) => {
-                // Allow a retry; until then no word is marked.
-                self.spell_asked = None;
+                // No word is marked. Not asked again until the language or words change or the
+                // dictionary is downloaded, or this would retry on every frame.
                 self.checks.spell.set_loaded(None);
             }
             Msg::Dictionary(d) => {
@@ -142,10 +142,13 @@ impl Workspace {
                     match result {
                         Ok(m) => self.checks.grammar.store(text, m),
                         Err(e) => {
-                            // Stops at the first failure; a later edit retries.
+                            // Stops at the first failure; a later edit retries, and the paragraphs
+                            // that were waiting are asked for again.
                             self.checks.grammar.asked.remove(&text);
                             self.checks.grammar.error = Some(e);
-                            self.grammar_queue.clear();
+                            for t in self.grammar_queue.drain(..) {
+                                self.checks.grammar.asked.remove(&t);
+                            }
                         }
                     }
                 }

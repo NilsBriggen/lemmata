@@ -62,7 +62,6 @@ const NON_PROSE_ARGS: &[&str] = &[
     "end",
     "includegraphics",
     "url",
-    "href",
     "bibliography",
     "addbibresource",
     "bibliographystyle",
@@ -100,8 +99,37 @@ const NON_PROSE_ARGS: &[&str] = &[
     "texttt",
 ];
 
+/// Environments that take arguments after `\begin{env}`, and how many braced ones follow the
+/// optional `[..]`: `\begin{figure}[htbp]`, `\begin{tabular}{lcr}`, `\begin{tabularx}{\linewidth}{lX}`.
+/// Not every environment: `\begin{theorem}[Pythagoras]` has prose in its brackets.
+const ENV_ARGS: &[(&str, usize)] = &[
+    ("figure", 0),
+    ("figure*", 0),
+    ("table", 0),
+    ("table*", 0),
+    ("sidewaysfigure", 0),
+    ("sidewaystable", 0),
+    ("algorithm", 0),
+    ("itemize", 0),
+    ("enumerate", 0),
+    ("description", 0),
+    ("tabular", 1),
+    ("array", 1),
+    ("longtable", 1),
+    ("minipage", 1),
+    ("subfigure", 1),
+    ("multicols", 1),
+    ("adjustbox", 1),
+    ("tabular*", 2),
+    ("tabularx", 2),
+    ("tabulary", 2),
+    ("wrapfigure", 2),
+];
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct State {
+    /// Inside `$ … $` or `\( … \)` that spans lines, with what closes it.
+    inline: Option<&'static str>,
     /// Inside a math or verbatim environment, with its name.
     env: Option<String>,
     /// Inside `$$ … $$` or `\[ … \]` that spans lines.
@@ -132,6 +160,10 @@ pub fn own_language_words(line: &str, state: &mut State) -> Vec<(usize, usize)> 
 /// Words with whether they are in another language.
 fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
     let code = strip_comment(line);
+    // A blank line ends a paragraph, and with it any maths left open.
+    if code.trim().is_empty() {
+        state.inline = None;
+    }
     let b = code.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -145,6 +177,16 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                 Some(p) => {
                     i += p + end.len();
                     state.env = None;
+                    continue;
+                }
+                None => return out,
+            }
+        }
+        if let Some(close) = state.inline {
+            match code[i..].find(close) {
+                Some(p) => {
+                    i += p + close.len();
+                    state.inline = None;
                     continue;
                 }
                 None => return out,
@@ -166,8 +208,14 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                     state.display = Some("$$");
                     i += 2;
                 } else {
-                    // Inline maths ends on this line in practice.
-                    i = code[i + 1..].find('$').map_or(b.len(), |p| i + 1 + p + 1);
+                    // Inline maths may go on to the next line, up to the next blank one.
+                    i = match code[i + 1..].find('$') {
+                        Some(p) => i + 1 + p + 1,
+                        None => {
+                            state.inline = Some("$");
+                            b.len()
+                        }
+                    };
                 }
             }
             b'\\' => {
@@ -178,7 +226,13 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                     continue;
                 }
                 if rest.starts_with('(') {
-                    i = rest.find("\\)").map_or(b.len(), |p| i + 1 + p + 2);
+                    i = match rest.find("\\)") {
+                        Some(p) => i + 1 + p + 2,
+                        None => {
+                            state.inline = Some("\\)");
+                            b.len()
+                        }
+                    };
                     continue;
                 }
                 let name: String = rest
@@ -188,6 +242,15 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                 if name.is_empty() {
                     // Escaped character like \% or \&.
                     i += 1 + rest.chars().next().map_or(0, char::len_utf8);
+                    // A line break's spacing, `\\[6pt]`, is no word.
+                    if rest.starts_with('\\') {
+                        let at = i + usize::from(code[i..].starts_with('*'));
+                        if code[at..].starts_with('[')
+                            && let Some(p) = code[at..].find(']')
+                        {
+                            i = at + p + 1;
+                        }
+                    }
                     continue;
                 }
                 i += 1 + name.len();
@@ -215,6 +278,19 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                             if let Some((_, len)) = braced_at(code, skip_ws(code, i)) {
                                 i = skip_ws(code, i) + len;
                             }
+                        } else if let Some(&(_, n)) = ENV_ARGS.iter().find(|(e, _)| *e == env) {
+                            // shortcut: arguments on the next line are not skipped.
+                            let at = skip_ws(code, i);
+                            if code[at..].starts_with('[') {
+                                i = code[at..].find(']').map_or(b.len(), |p| at + p + 1);
+                            }
+                            for _ in 0..n {
+                                let at = skip_ws(code, i);
+                                match braced_at(code, at) {
+                                    Some((_, len)) => i = at + len,
+                                    None => break,
+                                }
+                            }
                         }
                     }
                     continue;
@@ -240,22 +316,38 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                     }
                     continue;
                 }
+                if name == "href" || name == "hyperref" {
+                    // \href{url}{text} and \hyperref[label]{text}: the text is prose.
+                    let at = skip_ws(code, i);
+                    if name == "hyperref" && code[at..].starts_with('[') {
+                        i = code[at..].find(']').map_or(b.len(), |p| at + p + 1);
+                    } else if name == "href"
+                        && let Some((_, len)) = braced_at(code, at)
+                    {
+                        i = at + len;
+                    }
+                    continue;
+                }
                 if NON_PROSE_ARGS.contains(&name.as_str()) {
-                    // Skip a star, optional arguments and up to two braced ones.
+                    // Skip a star, up to two optional arguments (`\citep[see][p.~5]{key}`) and up
+                    // to two braced ones.
                     if code[i..].starts_with('*') {
                         i += 1;
                     }
-                    for _ in 0..2 {
-                        let skipped = skip_ws(code, i);
-                        if code[skipped..].starts_with('[') {
-                            i = code[skipped..]
-                                .find(']')
-                                .map_or(b.len(), |p| skipped + p + 1);
+                    let (mut opts, mut braces) = (0, 0);
+                    loop {
+                        let at = skip_ws(code, i);
+                        if opts < 2 && code[at..].starts_with('[') {
+                            i = code[at..].find(']').map_or(b.len(), |p| at + p + 1);
+                            opts += 1;
+                            continue;
                         }
-                        let skipped = skip_ws(code, i);
-                        match braced_at(code, skipped) {
-                            Some((_, len)) => i = skipped + len,
-                            None => break,
+                        match braced_at(code, at) {
+                            Some((_, len)) if braces < 2 => {
+                                i = at + len;
+                                braces += 1;
+                            }
+                            _ => break,
                         }
                     }
                 }
@@ -263,12 +355,22 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
             c if c.is_ascii_alphabetic() || c >= 0x80 => {
                 let start = i;
                 let mut end = i;
-                for (off, ch) in code[i..].char_indices() {
+                // A word with a TeX accent in it (`Schr\"odinger`) is one word, not spell-checked.
+                let mut tex_accent = false;
+                let mut off = 0;
+                while let Some(ch) = code[i + off..].chars().next() {
                     if ch.is_alphabetic() || (ch == '\'' || ch == '-') && off > 0 {
-                        end = i + off + ch.len_utf8();
+                        off += ch.len_utf8();
+                    } else if ch == '\\'
+                        && off > 0
+                        && let Some(n) = accent_len(&code[i + off..])
+                    {
+                        off += n;
+                        tex_accent = true;
                     } else {
                         break;
                     }
+                    end = i + off;
                 }
                 if end == start {
                     // A non-letter multibyte character.
@@ -277,7 +379,7 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                 }
                 let word = code[start..end].trim_end_matches(['\'', '-']);
                 if !word.is_empty() {
-                    let foreign = state.foreign.is_some() || start < foreign_until;
+                    let foreign = state.foreign.is_some() || start < foreign_until || tex_accent;
                     out.push((start, start + word.len(), foreign));
                 }
                 i = end;
@@ -286,6 +388,30 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
         }
     }
     out
+}
+
+/// The length of the TeX accent at the start of `s` (`\"o`, `\'{e}`, `\c{c}`, `\H{o}`), which
+/// needs one letter after it; None for any other command. shortcut: a word that starts with an
+/// accent (`\"Uber`) and babel shorthands (`Schr"odinger`) are not handled.
+fn accent_len(s: &str) -> Option<usize> {
+    let rest = s.strip_prefix('\\')?;
+    let c = rest.chars().next()?;
+    let after = &rest[c.len_utf8()..];
+    let braced_letter = after.len() >= 3
+        && after.starts_with('{')
+        && after.as_bytes()[1].is_ascii_alphabetic()
+        && after.as_bytes()[2] == b'}';
+    if "\"'^`~=.".contains(c) {
+        if after
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+        {
+            return Some(3);
+        }
+        return braced_letter.then_some(5);
+    }
+    ("cHvukrdbt".contains(c) && braced_letter).then_some(5)
 }
 
 fn skip_ws(s: &str, i: usize) -> usize {
@@ -401,6 +527,37 @@ mod tests {
         assert_eq!(texts(r"\] done", &mut s), ["done"]);
         assert!(texts(r"\begin{verbatim} code here", &mut s).is_empty());
         assert_eq!(texts(r"more code \end{verbatim} text", &mut s), ["text"]);
+    }
+
+    #[test]
+    fn maths_wrapped_over_lines_stays_maths() {
+        let mut s = State::default();
+        assert_eq!(
+            texts(r"where $x_{ij}$ sums over $k = 1,", &mut s),
+            ["where", "sums", "over"]
+        );
+        assert!(texts(r"\ldots, n$ and the word xyzzy", &mut s).len() == 4);
+        // A blank line ends the maths a missing $ left open.
+        assert!(texts(r"a $b", &mut s) == ["a"]);
+        texts("", &mut s);
+        assert_eq!(texts("fresh text", &mut s), ["fresh", "text"]);
+        let mut s = State::default();
+        texts(r"see \(f(x) +", &mut s);
+        assert_eq!(texts(r"y\) next", &mut s), ["next"]);
+    }
+
+    #[test]
+    fn arguments_after_names_are_not_prose() {
+        let mut s = State::default();
+        assert_eq!(texts(r"\citep[see][p.~5]{knuth84} yes", &mut s), ["yes"]);
+        assert_eq!(
+            texts(
+                r"\href{https://x.org}{the project} \hyperref[sec:intro]{Section}",
+                &mut s
+            ),
+            ["the", "project", "Section"]
+        );
+        assert_eq!(texts(r"a \\[6pt] b", &mut s), ["a", "b"]);
     }
 
     /// Shared with the editor's spell checker.

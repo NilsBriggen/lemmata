@@ -71,7 +71,13 @@ pub fn parse_keys(cite: &str) -> Vec<String> {
 pub async fn export(keys: &[String]) -> Result<(String, Vec<String>), Error> {
     let c = client(Duration::from_secs(30))?;
     let offline = || Error("Zotero isn't running, or Better BibTeX isn't installed.".into());
-    // Err(true): Zotero couldn't be reached at all; Err(false): it answered with an error.
+    let slow = || Error("Zotero took too long to answer. Try again in a moment.".into());
+    // Zotero couldn't be reached at all, took too long, or answered with an error.
+    enum Fail {
+        Offline,
+        Slow,
+        Answered,
+    }
     let call = |keys: Vec<String>| {
         let c = c.clone();
         async move {
@@ -84,17 +90,23 @@ pub async fn export(keys: &[String]) -> Result<(String, Vec<String>), Error> {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|_| true)?
+                .map_err(|e| {
+                    if e.is_timeout() {
+                        Fail::Slow
+                    } else {
+                        Fail::Offline
+                    }
+                })?
                 .json()
                 .await
-                .map_err(|_| false)?;
+                .map_err(|_| Fail::Answered)?;
             match res.get("result") {
                 // Older Better BibTeX versions answer [status, format, text].
                 Some(serde_json::Value::Array(a)) => {
                     Ok(a.last().and_then(|v| v.as_str()).unwrap_or("").to_string())
                 }
                 Some(v) => Ok(v.as_str().unwrap_or("").to_string()),
-                None => Err(false),
+                None => Err(Fail::Answered),
             }
         }
     };
@@ -102,8 +114,9 @@ pub async fn export(keys: &[String]) -> Result<(String, Vec<String>), Error> {
     match call(keys.to_vec()).await {
         Ok(all) => return Ok((all, Vec::new())),
         // Unreachable: every key would come back "unknown", and zotero.bib be emptied.
-        Err(true) => return Err(offline()),
-        Err(false) => {}
+        Err(Fail::Offline) => return Err(offline()),
+        Err(Fail::Slow) => return Err(slow()),
+        Err(Fail::Answered) => {}
     }
     let mut text = String::new();
     let mut missing = Vec::new();
@@ -113,8 +126,9 @@ pub async fn export(keys: &[String]) -> Result<(String, Vec<String>), Error> {
                 text.push_str(t.trim_end());
                 text.push_str("\n\n");
             }
-            Err(true) => return Err(offline()),
-            Err(false) => missing.push(k.clone()),
+            Err(Fail::Offline) => return Err(offline()),
+            Err(Fail::Slow) => return Err(slow()),
+            Err(Fail::Answered) => missing.push(k.clone()),
         }
     }
     Ok((text, missing))

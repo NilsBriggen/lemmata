@@ -227,16 +227,33 @@ fn doctor() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether the file was written, or on Unix moved or linked in (which keeps its old modified
+/// time), after `since`.
+fn touched_since(m: &std::fs::Metadata, since: std::time::SystemTime) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let changed = std::time::UNIX_EPOCH
+            + std::time::Duration::new(m.ctime().max(0) as u64, m.ctime_nsec().max(0) as u32);
+        if changed > since {
+            return true;
+        }
+    }
+    m.modified().is_ok_and(|t| t > since)
+}
+
 fn watch_path_relevant(
     root: &Path,
     outdir: &Path,
     path: &Path,
     last_build: std::time::SystemTime,
 ) -> bool {
-    let modified = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .is_ok_and(|t| t > last_build);
-    modified
+    // A file that is gone was removed (or moved away) since: that is a change too.
+    let changed = match std::fs::metadata(path) {
+        Ok(m) => touched_since(&m, last_build),
+        Err(_) => true,
+    };
+    changed
         && path.strip_prefix(root).is_ok_and(|rel| {
             let outdir: PathBuf = outdir
                 .components()
@@ -276,7 +293,14 @@ async fn watch(dir: PathBuf, json: bool) -> anyhow::Result<()> {
         root.display()
     );
     while let Some(res) = rx.recv().await {
-        let Ok(events) = res else { continue };
+        let events = match res {
+            Ok(events) => events,
+            Err(e) => {
+                // Changes may be missed from here on: say so instead of watching in silence.
+                eprintln!("The file watcher reported an error: {e:?}");
+                continue;
+            }
+        };
         // Reading a file during a build also raises an event, so only files
         // modified since the last build started count. Hidden files, our own
         // output and our temp files don't count either.
@@ -500,5 +524,21 @@ mod tests {
             since
         ));
         assert!(!watch_path_relevant(root, outdir, root, since));
+        // A deleted figure, and (on Unix) one moved in with an old modified time, rebuild.
+        let now = std::time::SystemTime::now();
+        assert!(watch_path_relevant(
+            root,
+            outdir,
+            &root.join("figures/gone.pdf"),
+            now
+        ));
+        #[cfg(unix)]
+        {
+            let moved = root.join("moved.pdf");
+            let f = std::fs::File::create(&moved).unwrap();
+            f.set_modified(std::time::UNIX_EPOCH).unwrap();
+            let before = now - std::time::Duration::from_secs(5);
+            assert!(watch_path_relevant(root, outdir, &moved, before));
+        }
     }
 }

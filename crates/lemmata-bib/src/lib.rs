@@ -20,6 +20,8 @@ pub struct Entry {
     pub title: String,
     /// "Knuth", "Schulman et al.", or empty.
     pub authors: String,
+    /// All authors (else editors) as written, for searching.
+    pub names: String,
     pub year: String,
     /// The .bib file, relative to the project root.
     pub file: String,
@@ -56,7 +58,7 @@ pub fn bib_files_with_sources(
         let Some(text) = sources.get(Path::new(&rel)) else {
             continue;
         };
-        for c in BIB_COMMAND.captures_iter(text) {
+        for c in BIB_COMMAND.captures_iter(&lemmata_project::export::strip_comments(text)) {
             for name in c[1].split(',').map(str::trim).filter(|n| !n.is_empty()) {
                 let mut p = PathBuf::from(name);
                 if p.extension().is_none() {
@@ -98,31 +100,52 @@ fn all_files(entries: &[lemmata_project::Entry], ext: &str) -> Vec<String> {
 }
 
 static CITE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\\[A-Za-z]*cite[A-Za-z]*\*?(?:\[[^\]]*\]){0,2}\{([^}]*)\}").unwrap()
+    Regex::new(r"\\([A-Za-z]*[Cc]ite[A-Za-z]*)\*?(?:\s*\[[^\]]*\]){0,2}\s*\{([^{}]*)\}").unwrap()
 });
+/// The next argument of `\parencites[pre]{a}[post]{b}{c}`, after the first.
+static MORE_KEYS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(?:\[[^\]]*\]\s*){0,2}\{([^{}]*)\}").unwrap());
 
-/// Every citation key the project's .tex files use, in first-use order.
+/// Every citation key the project's .tex files use, in first-use order. Shortcut: comment-looking
+/// text inside a verbatim block counts as a comment.
 pub fn cited_keys(project: &lemmata_project::Project) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
+    let mut add = |group: &str| {
+        for k in group
+            .replace('%', "")
+            .split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty() && *k != "*" && !k.starts_with('#'))
+        {
+            if !keys.iter().any(|x| x == k) {
+                keys.push(k.to_string());
+            }
+        }
+    };
     for rel in project_tex_files(&lemmata_project::tree(
         &project.root,
         &project.config.outdir,
     )) {
-        let Ok(text) = lemmata_env::fs::read_to_string(project.root.join(&rel)) else {
+        let Ok(text) = lemmata_env::fs::read_text(project.root.join(&rel)) else {
             continue;
         };
-        for line in text.lines() {
-            let code = line.split('%').next().unwrap_or("");
-            for c in CITE.captures_iter(code) {
-                for k in c[1]
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|k| !k.is_empty() && *k != "*")
-                {
-                    if !keys.iter().any(|x| x == k) {
-                        keys.push(k.to_string());
-                    }
-                }
+        let code = lemmata_project::export::strip_comments(&text);
+        for c in CITE.captures_iter(&code) {
+            let name = &c[1];
+            if matches!(
+                name,
+                "setcitestyle" | "citestyle" | "defcitealias" | "citetext"
+            ) {
+                continue;
+            }
+            add(&c[2]);
+            // \parencites{a}{b}: every group is a list of keys.
+            let mut end = c.get(0).map_or(0, |m| m.end());
+            while name.ends_with('s')
+                && let Some(m) = MORE_KEYS.captures(&code[end..])
+            {
+                add(&m[1]);
+                end += m.get(0).map_or(0, |m| m.end());
             }
         }
     }
@@ -243,17 +266,22 @@ fn cyclic<'a>(
     bad
 }
 
-/// Every entry in the given .bib files. Files that fail to parse are skipped.
+/// Every entry in the given .bib files. A file that doesn't parse as a whole (a duplicate key,
+/// an unknown `@string`) is read entry by entry, so one bad entry doesn't hide the rest.
 pub fn entries(root: &Path, files: &[String]) -> Vec<Entry> {
     let mut out = Vec::new();
     for file in files {
-        let Ok(src) = lemmata_env::fs::read_to_string(root.join(file)) else {
+        let Ok(src) = lemmata_env::fs::read_text(root.join(file)) else {
             continue;
         };
-        let Ok(bib) = parse_bib(&src) else {
-            continue;
-        };
-        out.extend(bib.iter().map(|e| make_entry(e, file)));
+        match parse_bib(&src) {
+            Ok(bib) => out.extend(bib.iter().map(|e| make_entry(e, file))),
+            Err(_) => out.extend(
+                manage::parse_spans(&src)
+                    .iter()
+                    .map(|(s, e)| manage::entry_of(s, e, file)),
+            ),
+        }
     }
     out
 }
@@ -278,6 +306,7 @@ fn make_entry(e: &biblatex::Entry, file: &str) -> Entry {
         kind: e.entry_type.to_string(),
         title: clean(&field("title")),
         authors: short_authors(&names),
+        names,
         year,
         file: file.to_string(),
     }
@@ -322,10 +351,29 @@ static ARXIV: LazyLock<Regex> = LazyLock::new(|| {
 pub fn to_doi(input: &str) -> Option<String> {
     let input = input.trim();
     if let Some(c) = DOI.captures(input) {
-        return Some(c[1].trim_end_matches(['.', ',', ';']).to_string());
+        return Some(trim_doi(&c[1]).to_string());
     }
     let c = ARXIV.captures(input)?;
     Some(format!("10.48550/arXiv.{}", &c[1]))
+}
+
+/// A DOI without the punctuation that follows it in prose: `.,;`, and a closing bracket or quote
+/// that has no opening one inside the DOI (`(doi:10.1/x)`, `<https://doi.org/10.1/x>`).
+fn trim_doi(doi: &str) -> &str {
+    let mut d = doi;
+    while let Some(last) = d.chars().last() {
+        let open = match last {
+            '.' | ',' | ';' | '>' | '"' | '\'' | '}' => None,
+            ')' => Some('('),
+            ']' => Some('['),
+            _ => break,
+        };
+        if open.is_some_and(|o| d.matches(o).count() >= d.matches(last).count()) {
+            break;
+        }
+        d = &d[..d.len() - last.len_utf8()];
+    }
+    d
 }
 
 #[derive(Debug)]
@@ -418,17 +466,76 @@ pub fn prepare_entry(bibtex: &str, existing: &[String]) -> Result<(String, Strin
         year,
         word
     );
-    let mut key = base.clone();
-    let mut suffix = b'a';
-    while existing.iter().any(|k| k.eq_ignore_ascii_case(&key)) {
-        key = format!("{base}{}", suffix as char);
-        suffix += 1;
-    }
+    let key = unique_key(base, existing);
     entry.key = key.clone();
     let text = entry
         .to_bibtex_string()
         .unwrap_or_else(|_| entry.to_biblatex_string());
     Ok((key, text))
+}
+
+/// `base`, or `basea`, `baseb`, … (then `base26`, …) when `existing` has it (without case).
+fn unique_key(base: String, existing: &[String]) -> String {
+    let mut key = base.clone();
+    let mut n = 0u32;
+    while existing.iter().any(|k| k.eq_ignore_ascii_case(&key)) {
+        key = match u8::try_from(n).ok().filter(|n| *n < 26) {
+            Some(n) => format!("{base}{}", (b'a' + n) as char),
+            None => format!("{base}{n}"),
+        };
+        n += 1;
+    }
+    key
+}
+
+/// The entries of BibTeX the user pasted; none unless the text starts with `@` and parses.
+pub fn parse_pasted(text: &str) -> Vec<biblatex::Entry> {
+    let text = text.trim();
+    if !text.starts_with('@') {
+        return Vec::new();
+    }
+    parse_bib(text).map_or_else(|_| Vec::new(), |b| b.iter().cloned().collect())
+}
+
+/// What to append for pasted BibTeX, one `(key, text)` per entry. `known` are the library's
+/// `(key, doi)`. The pasted key stays when it is free, else gets a letter; an entry whose DOI is
+/// already in the library (or earlier in the paste) is not added again: its text is `None`.
+pub fn prepare_pasted(
+    text: &str,
+    known: &[(String, String)],
+) -> Result<Vec<(String, Option<String>)>, Error> {
+    let entries = parse_pasted(text);
+    if entries.is_empty() {
+        return Err(Error("That isn't BibTeX.".into()));
+    }
+    let mut keys: Vec<String> = known.iter().map(|k| k.0.clone()).collect();
+    let mut dois: Vec<(String, String)> = known
+        .iter()
+        .filter(|k| !k.1.is_empty())
+        .map(|k| (manage::norm_doi(&k.1), k.0.clone()))
+        .collect();
+    let mut out = Vec::new();
+    for mut e in entries {
+        let doi = e
+            .get("doi")
+            .map(|c| manage::norm_doi(&c.format_verbatim()))
+            .unwrap_or_default();
+        if let Some((_, k)) = dois.iter().find(|(d, _)| !doi.is_empty() && *d == doi) {
+            out.push((k.clone(), None));
+            continue;
+        }
+        let key = unique_key(e.key.clone(), &keys);
+        e.key = key.clone();
+        keys.push(key.clone());
+        if !doi.is_empty() {
+            dois.push((doi, key.clone()));
+        }
+        let text = e
+            .to_bibtex_string()
+            .unwrap_or_else(|_| e.to_biblatex_string());
+        out.push((key, Some(text)));
+    }
+    Ok(out)
 }
 
 /// Appends an entry to a .bib file, separated by a blank line. The file's bytes are kept as they
@@ -485,6 +592,22 @@ mod tests {
             b.get("c").unwrap().get("booktitle").is_some(),
             "inherited from its parent"
         );
+    }
+
+    #[test]
+    fn pasted_bibtex_gets_free_keys_and_skips_known_dois() {
+        let known = [
+            ("smith".to_string(), "10.1/known".to_string()),
+            ("old".to_string(), String::new()),
+        ];
+        let paste = "@article{smith, title={New One}, doi={10.1/new}}\n@book{old, title={Again}}\n@misc{dup, doi={https://doi.org/10.1/KNOWN}}";
+        let got = prepare_pasted(paste, &known).unwrap();
+        assert_eq!(got[0].0, "smitha");
+        assert!(got[0].1.as_deref().unwrap().contains("smitha"));
+        assert_eq!(got[1].0, "olda");
+        assert_eq!(got[2], ("smith".to_string(), None));
+        assert!(prepare_pasted("just words", &known).is_err());
+        assert!(parse_pasted("@article{a, title={Half").is_empty());
     }
 
     #[test]
@@ -627,5 +750,70 @@ mod tests {
         .unwrap();
         let p = lemmata_project::Project::open(d.path()).unwrap();
         assert_eq!(cited_keys(&p), ["a", "b", "c"]);
+        std::fs::write(
+            d.path().join("main.tex"),
+            "\\setcitestyle{authoryear,round}\nup 50\\% \\cite{x}\n\\cite{a,\n b} \\parencites[p.~1]{c}[2]{d}{e}\n\\Textcite{f}\n% \\cite{hidden}\n\\cite{ unfinished\n\\section{Intro}\n",
+        )
+        .unwrap();
+        assert_eq!(cited_keys(&p), ["x", "a", "b", "c", "d", "e", "f"]);
+    }
+
+    #[test]
+    fn a_commented_out_bib_resource_is_not_used() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("old.bib"), "@misc{o}\n").unwrap();
+        std::fs::write(d.path().join("refs.bib"), "@misc{r}\n").unwrap();
+        std::fs::write(
+            d.path().join("main.tex"),
+            "\\documentclass{article}\n% \\addbibresource{old.bib}\n\\addbibresource{refs.bib}\n",
+        )
+        .unwrap();
+        let p = lemmata_project::Project::open(d.path()).unwrap();
+        assert_eq!(bib_files(&p), ["refs.bib"]);
+    }
+
+    #[test]
+    fn one_bad_entry_does_not_hide_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("refs.bib"),
+            "@string{jfm = {J. Fluid Mech.}}\n@article{a, title={One Title Here}, journal=jfm}\n@article{a, title={Dup}}\n@article{b, title={Bee}, journal=nosuchstring}\n",
+        )
+        .unwrap();
+        let got = entries(d.path(), &["refs.bib".to_string()]);
+        let titles: Vec<_> = got
+            .iter()
+            .map(|e| (e.key.as_str(), e.title.as_str()))
+            .collect();
+        assert_eq!(titles, [("a", "One Title Here"), ("a", "Dup"), ("b", "")]);
+    }
+
+    #[test]
+    fn a_latin1_bib_file_is_read() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("refs.bib"),
+            b"@book{m, author={M\xfcller, A}}\n",
+        )
+        .unwrap();
+        let got = entries(d.path(), &["refs.bib".to_string()]);
+        assert_eq!(got[0].authors, "M\u{fc}ller");
+    }
+
+    #[test]
+    fn dois_lose_the_brackets_and_quotes_around_them() {
+        for s in [
+            "(doi:10.1038/nature14539)",
+            "<https://doi.org/10.1038/nature14539>",
+            "\"10.1038/nature14539\".",
+            "[10.1038/nature14539]",
+        ] {
+            assert_eq!(to_doi(s).as_deref(), Some("10.1038/nature14539"), "{s}");
+        }
+        // A bracket that belongs to the DOI stays.
+        assert_eq!(
+            to_doi("10.1002/(SICI)1097-4571(199806)49:8<693::AID-ASI4>3.0.CO;2-O").as_deref(),
+            Some("10.1002/(SICI)1097-4571(199806)49:8<693::AID-ASI4>3.0.CO;2-O")
+        );
     }
 }

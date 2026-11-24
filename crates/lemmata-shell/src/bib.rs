@@ -35,16 +35,50 @@ impl Shell {
             return Err("Choose a .bib file inside the project.".into());
         }
         let doi = lemmata_bib::to_doi(&id).ok_or("That doesn't look like a DOI or an arXiv ID.")?;
+        // Already in the library: cite that entry rather than add a second copy.
+        let lib = lemmata_bib::manage::library(&p.root, &lemmata_bib::bib_files(&p), &[]);
+        if let Some(e) = lib.with_doi(&doi) {
+            return Ok(Added {
+                key: e.entry.key.clone(),
+                file: e.entry.file.clone(),
+            });
+        }
         let bibtex = lemmata_bib::fetch_bibtex(&doi).await.map_err(crate::err)?;
-        let existing: Vec<String> = lemmata_bib::entries(&p.root, &lemmata_bib::bib_files(&p))
-            .into_iter()
-            .map(|e| e.key)
-            .collect();
+        let existing: Vec<String> = lib.entries.into_iter().map(|e| e.entry.key).collect();
         let (key, text) = lemmata_bib::prepare_entry(&bibtex, &existing).map_err(crate::err)?;
         let path = p.root.join(&file);
         writable(&p, &path)?;
         lemmata_bib::append(&path, &text).map_err(crate::err)?;
         Ok(Added { key, file })
+    }
+
+    /// Appends the BibTeX the user pasted to `file`, as `bib_add_reference` does a looked-up
+    /// one: keys made unique, an entry whose DOI the library has already not added again.
+    pub fn bib_add_bibtex(&self, text: String, file: String) -> CmdResult<Vec<Added>> {
+        let p = project(self)?;
+        if !file.ends_with(".bib") || crate::files::safe_rel(&file).is_err() {
+            return Err("Choose a .bib file inside the project.".into());
+        }
+        let lib = lemmata_bib::manage::library(&p.root, &lemmata_bib::bib_files(&p), &[]);
+        let known: Vec<(String, String)> = lib
+            .entries
+            .into_iter()
+            .map(|e| (e.entry.key, e.doi))
+            .collect();
+        let prepared = lemmata_bib::prepare_pasted(&text, &known).map_err(crate::err)?;
+        let new: Vec<&str> = prepared.iter().filter_map(|(_, t)| t.as_deref()).collect();
+        if !new.is_empty() {
+            let path = p.root.join(&file);
+            writable(&p, &path)?;
+            lemmata_bib::append(&path, &new.join("\n\n")).map_err(crate::err)?;
+        }
+        Ok(prepared
+            .into_iter()
+            .map(|(key, _)| Added {
+                key,
+                file: file.clone(),
+            })
+            .collect())
     }
 
     /// Searches Crossref by title, author or keywords. The query leaves the
@@ -83,10 +117,10 @@ fn edit_bib(
         return Err("Choose a .bib file inside the project.".into());
     }
     let path = p.root.join(file);
-    let text =
-        edit(&lemmata_env::fs::read_to_string(&path).map_err(crate::err)?).map_err(crate::err)?;
+    let text = edit(&lemmata_env::fs::read_text(&path).map_err(crate::err)?).map_err(crate::err)?;
     writable(&p, &path)?;
-    lemmata_bib::manage::write_atomic(&path, &text).map_err(crate::err)?;
+    let bytes = lemmata_env::fs::encode_like_disk(&path, &text).map_err(crate::err)?;
+    lemmata_bib::manage::write_atomic(&path, bytes).map_err(crate::err)?;
     Ok(vec![file.to_string()])
 }
 
@@ -199,10 +233,11 @@ impl Shell {
     pub fn zotero_link(&self) -> CmdResult<()> {
         let p = project(self)?;
         let main = p.main_abs();
-        let text = lemmata_env::fs::read_to_string(&main).map_err(crate::err)?;
+        let text = lemmata_env::fs::read_text(&main).map_err(crate::err)?;
         let new = link_zotero(&text)?;
         writable(&p, &main)?;
-        lemmata_bib::manage::write_atomic(&main, new).map_err(crate::err)
+        let bytes = lemmata_env::fs::encode_like_disk(&main, &new).map_err(crate::err)?;
+        lemmata_bib::manage::write_atomic(&main, bytes).map_err(crate::err)
     }
 }
 

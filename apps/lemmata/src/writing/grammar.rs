@@ -27,7 +27,7 @@ static BREAK_AFTER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*\\(?:begin|end|part|chapter|(?:sub)*section|(?:sub)*paragraph|title|author|date|maketitle)(?:[^A-Za-z]|$)").unwrap()
 });
 static INLINE_MATH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\$[^$]*\$|\\\([^)]*\\\)").unwrap());
+    LazyLock::new(|| Regex::new(r"\$[^$]*\$|\\\(.*?\\\)").unwrap());
 static COMMAND: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\\[A-Za-z]+\*?(?:\[[^\]]*\])*(?:\{[^{}]*\})*").unwrap());
 static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(^|[^\\])%.*$").unwrap());
@@ -40,7 +40,7 @@ fn open(c: char) -> bool {
 }
 
 /// What remains of the source between two words: a space, punctuation that followed a command,
-/// and X for inline maths.
+/// X for inline maths, and numbers as they are.
 fn gap_text(gap: &str) -> String {
     let math = INLINE_MATH.is_match(gap);
     let g = INLINE_MATH.replace_all(gap, " ");
@@ -49,12 +49,23 @@ fn gap_text(gap: &str) -> String {
         .chars()
         .map(|c| if "{}~".contains(c) { ' ' } else { c })
         .collect();
-    let p: String = g.chars().filter(|c| punct(*c) || open(*c)).collect();
+    let p: String = g
+        .chars()
+        .filter(|c| punct(*c) || open(*c) || c.is_ascii_digit())
+        .collect();
+    let number = p.contains(|c: char| c.is_ascii_digit());
     // A placeholder keeps "Let $x$ be" a sentence; punctuation after it ("$x$,") stays attached.
+    // A number goes through as it is, so LanguageTool's own rules ("a 5 percent") apply.
     format!(
         "{}{p}{}",
-        if math { " X" } else { "" },
-        if g.contains(' ') || p.is_empty() {
+        if math {
+            " X"
+        } else if number {
+            " "
+        } else {
+            ""
+        },
+        if g.contains(' ') || p.is_empty() || number {
             " "
         } else {
             ""
@@ -337,6 +348,19 @@ mod tests {
                 "Listed"
             ]
         );
+    }
+
+    #[test]
+    fn numbers_and_maths_in_parentheses_reach_the_server_as_written() {
+        let t = |s: &str| text(&paragraphs(s)[0]);
+        assert_eq!(
+            t("The accuracy was 0.71 on the test set."),
+            "The accuracy was 0.71 on the test set."
+        );
+        assert_eq!(t("an 8 percent drop"), "an 8 percent drop");
+        assert_eq!(t("in 2020, the tide"), "in 2020, the tide");
+        assert_eq!(t("The value \\(f(x)\\) is small."), "The value X is small.");
+        assert_eq!(t("abc123def"), "abc 123 def");
     }
 
     #[test]

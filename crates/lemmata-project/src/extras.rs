@@ -126,7 +126,7 @@ pub(crate) fn labels_with(
             .get(Path::new(&file))
             .map(std::borrow::Cow::Borrowed)
             .or_else(|| {
-                lemmata_env::fs::read_to_string(project.root.join(&file))
+                lemmata_env::fs::read_text(project.root.join(&file))
                     .ok()
                     .map(std::borrow::Cow::Owned)
             });
@@ -245,6 +245,8 @@ struct Counter {
     out: Counts,
     seen: HashSet<PathBuf>,
     prose: prose::State,
+    /// Inside a `$$ … $$` block that began on an earlier line.
+    in_dollars: bool,
 }
 
 const FLOATS: &[&str] = &[
@@ -276,7 +278,7 @@ impl Counter {
         if depth > 16 || !self.seen.insert(rel.to_path_buf()) {
             return;
         }
-        let Ok(text) = lemmata_env::fs::read_to_string(root.join(rel)) else {
+        let Ok(text) = lemmata_env::fs::read_text(root.join(rel)) else {
             return;
         };
         let name = rel.to_string_lossy().replace('\\', "/");
@@ -337,8 +339,16 @@ impl Counter {
                 }
             }
         }
-        c.display_math +=
-            code.matches("\\[").count() as u32 + code.matches("$$").count() as u32 / 2;
+        // `\\[6pt]` after a line break is spacing, not a formula.
+        c.display_math += code
+            .match_indices("\\[")
+            .filter(|(i, _)| !code[..*i].ends_with('\\'))
+            .count() as u32;
+        for _ in code.matches("$$") {
+            // One formula per `$$ … $$`, wherever its two ends are.
+            self.in_dollars = !self.in_dollars;
+            c.display_math += u32::from(self.in_dollars);
+        }
         c.inline_math += code.matches("\\(").count() as u32;
         let singles = code.replace("$$", "").replace("\\$", "");
         c.inline_math += singles.matches('$').count() as u32 / 2;
@@ -475,5 +485,18 @@ mod tests {
         assert_eq!(c.floats, 1);
         assert_eq!(c.citations, 3);
         assert_eq!(c.total_words, c.files.iter().map(|f| f.words).sum::<u32>());
+    }
+
+    #[test]
+    fn display_blocks_over_lines_count_once_and_line_breaks_count_none() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "main.tex",
+            "\\documentclass{article}\n\\begin{document}\n$$\na+b\n$$\nrow \\\\[6pt] next\n$$ c $$\n\\end{document}\n",
+        );
+        let c = counts(&Project::open(d.path()).unwrap());
+        assert_eq!(c.display_math, 2);
+        assert_eq!(c.total_words, 2);
     }
 }

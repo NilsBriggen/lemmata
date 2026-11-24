@@ -180,7 +180,7 @@ impl Shell {
         let mut out = Vec::new();
         let mut total = 0;
         for rel in text_files(&p) {
-            let Ok(text) = lemmata_env::fs::read_to_string(p.root.join(&rel)) else {
+            let Ok(text) = lemmata_env::fs::read_text(p.root.join(&rel)) else {
                 continue;
             };
             let mut matches = search_in(&text, &re);
@@ -243,8 +243,8 @@ fn replace_across(
     let mut writes = Vec::new();
     for (rel, lines) in by_file {
         let path = p.root.join(safe_rel(&rel)?);
-        let text = lemmata_env::fs::read_to_string(&path)
-            .map_err(|e| format!("Could not read {rel}: {e}"))?;
+        let text =
+            lemmata_env::fs::read_text(&path).map_err(|e| format!("Could not read {rel}: {e}"))?;
         let (new, n) = replace_on_lines(&text, re, replacement, regex_mode, &lines);
         if n > 0 {
             writes.push((path, new));
@@ -264,7 +264,8 @@ fn write_all_atomic(p: &lemmata_project::Project, writes: &[(PathBuf, String)]) 
         lemmata_env::fs::may_write(&p.root, p.trusted, path)
             .map_err(|e| format!("Could not save {}: {e}.", path.display()))?;
         staged.push(
-            lemmata_env::fs::stage(path, text.as_bytes())
+            lemmata_env::fs::encode_like_disk(path, text)
+                .and_then(|b| lemmata_env::fs::stage(path, &b))
                 .map_err(|e| format!("Could not save {}: {e}", path.display()))?,
         );
     }
@@ -334,7 +335,7 @@ impl Shell {
         let mut writes = Vec::new();
         for f in files {
             let path = p.root.join(safe_rel(&f)?);
-            let text = lemmata_env::fs::read_to_string(&path)
+            let text = lemmata_env::fs::read_text(&path)
                 .map_err(|e| format!("Could not read {f}: {e}"))?;
             let (out, n) = rename_in_text(&f, &text, f.ends_with(".bib"), kind, &old, &new);
             if n > 0 {
@@ -467,7 +468,7 @@ impl Shell {
         let re = reference_regex(&path);
         let mut out = Vec::new();
         for rel in text_files(&p) {
-            let Ok(text) = lemmata_env::fs::read_to_string(p.root.join(&rel)) else {
+            let Ok(text) = lemmata_env::fs::read_text(p.root.join(&rel)) else {
                 continue;
             };
             for (i, line) in text.lines().enumerate() {
@@ -544,7 +545,7 @@ fn rename_one(
     if update_references {
         for rel in text_files(p) {
             let path = p.root.join(&rel);
-            let Ok(text) = lemmata_env::fs::read_to_string(&path) else {
+            let Ok(text) = lemmata_env::fs::read_text(&path) else {
                 continue;
             };
             let new = rewrite_references(&text, from, to);
@@ -899,7 +900,7 @@ impl Shell {
         let p = project(self)?;
         let sources: Vec<String> = text_files(&p)
             .iter()
-            .filter_map(|rel| lemmata_env::fs::read_to_string(p.root.join(rel)).ok())
+            .filter_map(|rel| lemmata_env::fs::read_text(p.root.join(rel)).ok())
             .collect();
         let main = p.main.to_string_lossy().replace('\\', "/");
         Ok(unused_in(&all_files(&p), &sources, &main))
@@ -968,46 +969,6 @@ pub fn unused_in(files: &[String], sources: &[String], main: &str) -> Vec<String
 pub type Written = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>>;
 
 /// FNV-1a (32 bit), the same as `contentHash` in the frontend (src/lib/contentHash.ts).
-/// Windows-1252's characters for 0x80..=0x9F; the five it leaves out stay the C1 controls of
-/// the same number, so every byte comes back as it was.
-const CP1252_HIGH: [char; 32] = [
-    '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
-    '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
-];
-
-/// A text file's text: UTF-8, else Windows-1252, which older documents with
-/// `\usepackage[latin1]{inputenc}` (or cp1252) are written in. True when it was the latter.
-pub(crate) fn decode_text(bytes: Vec<u8>) -> (String, bool) {
-    match String::from_utf8(bytes) {
-        Ok(text) => (text, false),
-        Err(e) => {
-            let text = e
-                .as_bytes()
-                .iter()
-                .map(|&b| match b {
-                    0x80..=0x9f => CP1252_HIGH[usize::from(b - 0x80)],
-                    _ => char::from(b),
-                })
-                .collect();
-            (text, true)
-        }
-    }
-}
-
-/// `text` in Windows-1252, or the first character it can't hold.
-pub(crate) fn encode_cp1252(text: &str) -> Result<Vec<u8>, char> {
-    text.chars()
-        .map(|c| match u32::from(c) {
-            n @ (0..=0x7f | 0xa0..=0xff) => Ok(n as u8),
-            _ => CP1252_HIGH
-                .iter()
-                .position(|&h| h == c)
-                .map(|i| 0x80 + i as u8)
-                .ok_or(c),
-        })
-        .collect()
-}
-
 pub fn content_hash(bytes: &[u8]) -> u32 {
     bytes.iter().fold(0x811c_9dc5, |h, &b| {
         (h ^ u32::from(b)).wrapping_mul(0x0100_0193)

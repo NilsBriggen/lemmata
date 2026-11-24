@@ -1,5 +1,5 @@
 //! How long the walks after every save take on a thesis-sized project:
-//! `cargo test --release -p lemmata-bib --test scale -- --ignored --nocapture`
+//! `cargo test -p lemmata-bib --test scale -- --ignored --nocapture` (the scenarios job runs it)
 
 use std::time::Instant;
 
@@ -48,7 +48,13 @@ fn walks_after_a_save_on_a_big_project() {
         for _ in 0..5 {
             f();
         }
-        eprintln!("{name}: {:?}", t.elapsed() / 5);
+        let each = t.elapsed() / 5;
+        eprintln!("{name}: {each:?}");
+        // Generous (a walk takes about a tenth of a second): it catches a tenfold slowdown, not noise.
+        assert!(
+            each < std::time::Duration::from_secs(2),
+            "{name} took {each:?}"
+        );
     };
     time("open", &|| {
         drop(lemmata_project::Project::open(root).unwrap())

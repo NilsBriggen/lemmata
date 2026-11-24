@@ -493,7 +493,7 @@ fn has_documentclass(text: &str) -> bool {
 /// Prefers `main.tex`, then the shallowest candidate.
 /// A `% !TeX <key> = value` comment (also `TS-program`) near the top of a file, as TeXShop, TeXstudio and VS Code read them.
 fn magic(file: &Path, key: &str) -> Option<String> {
-    let text = lemmata_env::fs::read_to_string(file).ok()?;
+    let text = lemmata_env::fs::read_text(file).ok()?;
     text.lines().take(40).find_map(|line| {
         let rest = line
             .trim_start()
@@ -665,20 +665,18 @@ const HEADINGS: &[(&str, u8)] = &[
 pub struct Analysis {
     pub outline: Outline,
     pub labels: Vec<extras::Label>,
+    /// Where the maths previews find the preamble's macros: see `macro_text`.
+    pub macro_text: String,
 }
 
 pub type Sources = std::collections::HashMap<PathBuf, String>;
 
 pub fn analyze(project: &Project, entries: &[Entry]) -> Analysis {
-    analyze_with(project, entries, |path| {
-        lemmata_env::fs::read_to_string(path)
-    })
+    analyze_with(project, entries, |path| lemmata_env::fs::read_text(path))
 }
 
 pub fn source_snapshot(project: &Project, entries: &[Entry]) -> Sources {
-    source_snapshot_with(project, entries, |path| {
-        lemmata_env::fs::read_to_string(path)
-    })
+    source_snapshot_with(project, entries, |path| lemmata_env::fs::read_text(path))
 }
 
 pub fn source_snapshot_with(
@@ -719,7 +717,48 @@ fn analyze_with(
 pub fn analyze_with_sources(project: &Project, entries: &[Entry], sources: &Sources) -> Analysis {
     let outline = outline_with(project, sources);
     let labels = extras::labels_with(project, entries, sources);
-    Analysis { outline, labels }
+    Analysis {
+        outline,
+        labels,
+        macro_text: macro_text(project, sources),
+    }
+}
+
+/// The text the maths previews read macros from: the files the main file's preamble `\input`s,
+/// then the preamble itself, so its own definitions win. shortcut: one level of `\input`, and
+/// no .sty files (the snapshot holds .tex only).
+fn macro_text(project: &Project, sources: &Sources) -> String {
+    let Some(main) = sources.get(&project.main) else {
+        return String::new();
+    };
+    let preamble = main.split("\\begin{document}").next().unwrap_or("");
+    let mut out = String::new();
+    for line in preamble.lines() {
+        let mut rest = strip_comment(line);
+        while let Some(pos) = rest.find('\\') {
+            rest = &rest[pos + 1..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .collect();
+            let after = rest[name.len()..].trim_start_matches('*');
+            if let Some(target) = include_target(&name, after) {
+                let mut child: PathBuf = Path::new(target.trim())
+                    .components()
+                    .filter(|c| !matches!(c, std::path::Component::CurDir))
+                    .collect();
+                if child.extension().is_none() {
+                    child.set_extension("tex");
+                }
+                if let Some(text) = sources.get(&child) {
+                    out.push_str(text);
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    out.push_str(preamble);
+    out
 }
 
 /// The document's headings in reading order with word counts, following
@@ -775,7 +814,7 @@ impl Walk<'_> {
             .sources
             .and_then(|sources| sources.get(rel).map(std::borrow::Cow::Borrowed))
             .or_else(|| {
-                lemmata_env::fs::read_to_string(root.join(rel))
+                lemmata_env::fs::read_text(root.join(rel))
                     .ok()
                     .map(std::borrow::Cow::Owned)
             });
@@ -996,6 +1035,26 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn macro_text_has_the_preamble_and_the_files_it_inputs() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "main.tex",
+            "\\documentclass{article}\n\\input{macros}\n\\newcommand{\\mine}{m}\n\\begin{document}\n\\input{ch}\n\\end{document}\n",
+        );
+        write(d.path(), "macros.tex", "\\newcommand{\\R}{\\mathbb{R}}\n");
+        write(d.path(), "ch.tex", "\\newcommand{\\late}{l}\n");
+        let p = Project::open(d.path()).unwrap();
+        let a = analyze(&p, &tree(&p.root, &p.config.outdir));
+        let (r, mine) = (
+            a.macro_text.find("\\R").unwrap(),
+            a.macro_text.find("\\mine"),
+        );
+        assert!(mine.is_some_and(|m| r < m), "the main preamble comes last");
+        assert!(!a.macro_text.contains("\\late"));
+    }
 
     #[test]
     fn outline_handles_paragraphs_frames_and_imports() {

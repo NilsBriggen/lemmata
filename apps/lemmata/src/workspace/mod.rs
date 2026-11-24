@@ -423,8 +423,7 @@ impl Workspace {
         backend.spawn_async(move |shell| async move {
             Msg::Project(project, Box::new(Msg::LspStarted(shell.lsp_start().await)))
         });
-        if let Ok(main) = lemmata_env::fs::read_to_string(ws.info.root.join(&ws.info.main)) {
-            Self::set_macros(&main);
+        if let Ok(main) = lemmata_env::fs::read_text(ws.info.root.join(&ws.info.main)) {
             ws.detected = crate::writing::spell::detect_language(&main);
         }
         ws.checks.spell.shell = Some(backend.shell.clone());
@@ -523,12 +522,6 @@ impl Workspace {
         }
     }
 
-    /// The main file's `\newcommand`s for the maths previews (setMathMacros).
-    fn set_macros(text: &str) {
-        let preamble = text.split("\\begin{document}").next().unwrap_or("");
-        crate::writing::render::set_macros(crate::writing::math::collect_macros(preamble));
-    }
-
     pub fn refresh_outline(&mut self, backend: &Backend) {
         self.refresh_analysis(backend);
     }
@@ -602,6 +595,10 @@ impl Workspace {
         self.total_words = analysis.outline.total_words;
         self.lookups.labels = analysis.labels;
         self.lookups.cites = analysis.cites;
+        // The maths previews' macros follow the analysis, which runs after a save, not at once.
+        crate::writing::render::set_macros(crate::writing::math::collect_macros(
+            &analysis.macro_text,
+        ));
         self.pdf_current = analysis.pdf_current;
         fn files(list: &[lemmata_project::Entry], out: &mut Vec<String>) {
             for e in list {
@@ -963,7 +960,6 @@ impl Workspace {
                             self.refresh_analysis(backend);
                         }
                         if path == self.info.main {
-                            Self::set_macros(&written);
                             self.detected = crate::writing::spell::detect_language(&written);
                         }
                         if self.closing_after_save.remove(&path) && !self.buffers.is_dirty(&path) {

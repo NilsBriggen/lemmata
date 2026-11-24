@@ -212,7 +212,7 @@ fn export_bytes(p: &Project, rel: &str) -> Result<Option<Vec<u8>>, String> {
     else {
         return Ok(None);
     };
-    let path = p.root.join(rel);
+    let path = p.root.join(&rel);
     if !p.trusted {
         let inside = crate::canonical(&path)
             .is_ok_and(|real| crate::canonical(&p.root).is_ok_and(|root| real.starts_with(root)));
@@ -220,7 +220,9 @@ fn export_bytes(p: &Project, rel: &str) -> Result<Option<Vec<u8>>, String> {
             return Ok(None);
         }
     }
-    lemmata_env::fs::read(path).map(Some).map_err(io)
+    lemmata_env::fs::read(path)
+        .map(Some)
+        .map_err(|e| format!("{}: {e}", rel.display()))
 }
 
 fn io(e: impl std::fmt::Display) -> String {
@@ -267,13 +269,47 @@ pub fn atomic_copy(source: &Path, dest: &Path) -> Result<(), String> {
     destination.finish()
 }
 
+/// When `path` was last written.
+fn mtime(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// `t` as a zip entry's time (UTC; the format has no zone, and no year before 1980).
+/// shortcut: without zip's `time` feature, so the days are counted here.
+fn zip_time(t: std::time::SystemTime) -> Option<zip::DateTime> {
+    let secs = i64::try_from(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs()).ok()?;
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Days since 1970 to a calendar date (Howard Hinnant's civil_from_days).
+    let z = days + 719_468;
+    let (era, doe) = (z.div_euclid(146_097), z.rem_euclid(146_097));
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    zip::DateTime::from_date_and_time(
+        u16::try_from(year).ok()?,
+        month as u8,
+        day as u8,
+        (rest / 3600) as u8,
+        (rest % 3600 / 60) as u8,
+        (rest % 60) as u8,
+    )
+    .ok()
+}
+
 fn add(
     zip: &mut zip::ZipWriter<std::fs::File>,
     name: impl Into<String>,
     bytes: &[u8],
+    modified: Option<std::time::SystemTime>,
 ) -> Result<(), String> {
-    let opts = zip::write::SimpleFileOptions::default()
+    let mut opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
+    if let Some(t) = modified.and_then(zip_time) {
+        opts = opts.last_modified_time(t);
+    }
     zip.start_file(name.into(), opts).map_err(io)?;
     zip.write_all(bytes).map_err(io)
 }
@@ -304,7 +340,7 @@ pub fn zip_project(p: &Project, dest: &Path, with_pdf: bool) -> Result<usize, St
         let Some(bytes) = export_bytes(p, &rel)? else {
             continue;
         };
-        add(&mut zip, &rel, &bytes)?;
+        add(&mut zip, &rel, &bytes, mtime(&p.root.join(&rel)))?;
         count += 1;
     }
     if with_pdf && let Ok(pdf) = lemmata_env::fs::read(p.pdf_path()) {
@@ -312,7 +348,7 @@ pub fn zip_project(p: &Project, dest: &Path, with_pdf: bool) -> Result<usize, St
             .pdf_path()
             .file_name()
             .map_or("main.pdf".into(), |n| n.to_string_lossy().into_owned());
-        add(&mut zip, name, &pdf)?;
+        add(&mut zip, name, &pdf, mtime(&p.pdf_path()))?;
         count += 1;
     }
     zip.finish().map_err(io)?;
@@ -532,11 +568,19 @@ impl Flattener<'_> {
         let body = body?;
         self.inlined.insert(rel);
         let body = body.trim_end_matches('\n');
-        let rep = if name == "include" {
+        let mut rep = if name == "include" {
             format!("\\clearpage\n{body}\n\\clearpage")
         } else {
             body.to_string()
         };
+        // Text after the command on its line must not follow a `% comment` that ends the file.
+        if !code[p..].trim().is_empty()
+            && scan_line(body.rsplit('\n').next().unwrap_or(""))
+                .0
+                .is_some()
+        {
+            rep.push('\n');
+        }
         Ok(Some((rep, p)))
     }
 
@@ -564,7 +608,12 @@ fn flatten_tex(
     read: &dyn Fn(&Path) -> Option<String>,
     bbl: Option<&str>,
 ) -> Result<Flattened, String> {
-    let text = read(main).ok_or_else(|| format!("Can't read {}.", main.display()))?;
+    let text = read(main).ok_or_else(|| {
+        format!(
+            "Can't flatten {}: it can't be read as UTF-8 text (latin1?). Export without flatten.",
+            main.display()
+        )
+    })?;
     let top = main.parent().unwrap_or(Path::new("")).to_path_buf();
     let mut f = Flattener {
         read,
@@ -643,7 +692,7 @@ pub fn zip_arxiv(p: &Project, dest: &Path, strip: bool, flatten: bool) -> Result
             Ok(text) if strip && name.ends_with(".tex") => strip_comments(text).into_bytes(),
             _ => bytes,
         };
-        add(&mut zip, name, &bytes)?;
+        add(&mut zip, name, &bytes, mtime(&p.root.join(rel)))?;
         count += 1;
     }
     // The bibliography, already formatted, next to the main file.
@@ -659,7 +708,12 @@ pub fn zip_arxiv(p: &Project, dest: &Path, strip: bool, flatten: bool) -> Result
         } else {
             format!("{main_dir}/{stem}.bbl")
         };
-        add(&mut zip, name, &bbl)?;
+        add(
+            &mut zip,
+            name,
+            &bbl,
+            mtime(&outdir.join(format!("{stem}.bbl"))),
+        )?;
         count += 1;
     }
     zip.finish().map_err(io)?;
@@ -716,8 +770,51 @@ mod tests {
         p.trusted = true;
         let dest = d.path().join("paper.zip");
         std::fs::write(&dest, b"known good").unwrap();
-        assert!(zip_project(&p, &dest, false).is_err());
+        let e = zip_project(&p, &dest, false).unwrap_err();
+        assert!(e.contains("bad.tex"), "{e}");
         assert_eq!(std::fs::read(&dest).unwrap(), b"known good");
+    }
+
+    /// A zip entry has the file's own date, not 1980.
+    #[cfg(unix)]
+    #[test]
+    fn zip_entries_keep_the_files_modified_time() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        let f = std::fs::File::options()
+            .write(true)
+            .open(d.path().join("main.tex"))
+            .unwrap();
+        // 2021-03-04 05:06:08 UTC
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_614_834_368))
+            .unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let dest = d.path().join("out.zip");
+        zip_project(&p, &dest, false).unwrap();
+        let mut z = zip::ZipArchive::new(std::fs::File::open(&dest).unwrap()).unwrap();
+        let t = z.by_name("main.tex").unwrap().last_modified().unwrap();
+        assert_eq!(
+            (t.year(), t.month(), t.day(), t.hour(), t.minute()),
+            (2021, 3, 4, 5, 6)
+        );
+    }
+
+    /// A colon is an ordinary name character off Windows: the figure is not left out.
+    #[cfg(unix)]
+    #[test]
+    fn a_name_with_a_colon_is_exported() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::fs::create_dir(d.path().join("figures")).unwrap();
+        std::fs::write(d.path().join("figures/Fig: results.pdf"), "pdf").unwrap();
+        let p = Project::open(d.path()).unwrap();
+        let dest = d.path().join("out.zip");
+        zip_project(&p, &dest, false).unwrap();
+        let z = zip::ZipArchive::new(std::fs::File::open(&dest).unwrap()).unwrap();
+        assert!(
+            z.file_names()
+                .any(|n| n.unwrap() == "figures/Fig: results.pdf")
+        );
     }
 
     /// A project from elsewhere can't get a private file into a zip the user sends out, nor a name
@@ -919,6 +1016,12 @@ mod tests {
             f.inlined.into_iter().collect::<Vec<_>>(),
             [PathBuf::from("a.tex"), PathBuf::from("b.tex")]
         );
+    }
+
+    #[test]
+    fn flatten_keeps_text_after_an_input_out_of_the_files_last_comment() {
+        let t = text(&[("main.tex", "\\input{a} more\n"), ("a.tex", "x % note\n")]);
+        assert_eq!(t, "x % note\n more\n");
     }
 
     #[test]

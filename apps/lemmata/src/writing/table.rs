@@ -19,6 +19,23 @@ pub fn escape_latex(s: &str) -> String {
     out
 }
 
+/// A caption as LaTeX: it may hold commands and maths, but a `%`, `&`, `#` or `_` outside maths
+/// (which would comment out the closing brace or fail the build) is escaped.
+fn escape_caption(s: &str) -> String {
+    let (mut out, mut math, mut prev) = (String::with_capacity(s.len()), false, ' ');
+    for c in s.chars() {
+        if c == '$' && prev != '\\' {
+            math = !math;
+        }
+        if "%&#_".contains(c) && prev != '\\' && !(math && c == '_') {
+            out.push('\\');
+        }
+        out.push(c);
+        prev = c;
+    }
+    out
+}
+
 /// A number in a table cell: digits with separators, a sign, maybe a percent sign.
 fn numeric(v: &str) -> bool {
     let v = v.strip_prefix(['-', '+']).unwrap_or(v);
@@ -32,7 +49,11 @@ fn numeric(v: &str) -> bool {
 pub fn tsv_to_tabular(text: &str) -> Option<String> {
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let rows: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
-    if rows.len() < 2 || !rows.iter().all(|r| r.contains('\t')) {
+    // Tab-indented LaTeX (`\t\\item First`) is code, not a table.
+    if rows.len() < 2
+        || !rows.iter().all(|r| r.contains('\t'))
+        || rows.iter().any(|r| r.starts_with(['\t', '\\']))
+    {
         return None;
     }
     let cells: Vec<Vec<&str>> = rows
@@ -94,11 +115,29 @@ pub fn figure_snippet(path: &str) -> String {
     )
 }
 
+/// Accented letters and the plain letter a label spells them with (`ä` is `a`).
+const FOLD: &[(&str, char)] = &[
+    ("àáâãäåā", 'a'),
+    ("çćč", 'c'),
+    ("èéêëē", 'e'),
+    ("ìíîïī", 'i'),
+    ("ñń", 'n'),
+    ("òóôõöøō", 'o'),
+    ("šś", 's'),
+    ("ùúûüū", 'u'),
+    ("ýÿ", 'y'),
+    ("žź", 'z'),
+];
+
 /// The slug used for a default label: letters, digits and dashes.
 pub fn slug(s: &str) -> String {
     let mut out = String::new();
     for c in s.to_lowercase().chars() {
-        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+        if c == 'ß' {
+            out.push_str("ss");
+        } else if let Some((_, plain)) = FOLD.iter().find(|(from, _)| from.contains(c)) {
+            out.push(*plain);
+        } else if c.is_ascii_lowercase() || c.is_ascii_digit() {
             out.push(c);
         } else if !out.ends_with('-') {
             out.push('-');
@@ -134,11 +173,15 @@ pub fn figure_block(o: &FigureOptions) -> String {
             }
         ),
         "  \\centering".into(),
-        format!("  \\includegraphics[width={w}]{{{}}}", o.path),
+        // A `%` or `#` in a name would comment out the rest or end the argument.
+        format!(
+            "  \\includegraphics[width={w}]{{{}}}",
+            o.path.replace('%', "\\%").replace('#', "\\#")
+        ),
     ];
     let caption = o.caption.trim();
     if !caption.is_empty() {
-        lines.push(format!("  \\caption{{{caption}}}"));
+        lines.push(format!("  \\caption{{{}}}", escape_caption(caption)));
     }
     let label = match o.label.trim() {
         "" if !caption.is_empty() => slug(caption).chars().take(30).collect(),
@@ -223,7 +266,7 @@ pub fn table_block(o: &TableOptions, fields: bool) -> String {
     let caption = if caption.is_empty() {
         ph("Caption".into())
     } else {
-        caption.to_owned()
+        escape_caption(caption)
     };
     let label = if label.is_empty() {
         ph("label".into())
@@ -245,6 +288,27 @@ mod tests {
     use super::*;
 
     // table.test.ts
+    #[test]
+    fn captions_paths_and_labels_survive_special_characters() {
+        let fig = figure_block(&FigureOptions {
+            path: "figures/results 50%.png",
+            caption: "Accuracy of 95% in $x_1$ and Results_A",
+            label: "",
+            width: 80,
+            placement: "H",
+        });
+        assert!(fig.contains("{figures/results 50\\%.png}"), "{fig}");
+        assert!(
+            fig.contains("\\caption{Accuracy of 95\\% in $x_1$ and Results\\_A}"),
+            "{fig}"
+        );
+        assert_eq!(slug("Größe der Stichprobe"), "grosse-der-stichprobe");
+        assert_eq!(slug("Über die Façade"), "uber-die-facade");
+        // Tab-indented LaTeX is not a table.
+        assert!(tsv_to_tabular("\t\\item First\n\t\\item Second").is_none());
+        assert!(tsv_to_tabular("\\item a\tb\n\\item c\td").is_none());
+    }
+
     #[test]
     fn pastes_a_spreadsheet_as_a_table() {
         let t =

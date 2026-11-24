@@ -145,7 +145,7 @@ pub fn scan(project: &Project) -> Vec<Occurrence> {
     let mut out = Vec::new();
     for (files, is_bib) in [(tex, false), (bib, true)] {
         for f in files {
-            if let Ok(text) = lemmata_env::fs::read_to_string(project.root.join(&f)) {
+            if let Ok(text) = lemmata_env::fs::read_text(project.root.join(&f)) {
                 out.extend(scan_text(&f, &text, is_bib));
             }
         }

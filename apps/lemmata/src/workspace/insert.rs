@@ -251,12 +251,16 @@ impl Workspace {
                     width: f.width.parse().unwrap_or(80),
                     placement: &f.placement,
                 });
+                let placement = std::mem::take(&mut f.placement);
                 self.figure = None;
                 let indent = self.indent;
                 if let Some(ed) = self.active_editor() {
                     ed.insert_literal_block(&format!("{text}\n"), indent);
                 }
                 self.needs_package(backend, "graphicx".into());
+                if placement.contains('H') {
+                    self.needs_package(backend, "float".into());
+                }
             } else if r.closed || cancel {
                 self.figure = None;
             } else if browse {
@@ -294,12 +298,18 @@ impl Workspace {
                     caption: &t.caption,
                     label: &t.label,
                 };
-                let text = table::table_block(&o, true);
+                // A caption with a `${` must stay as typed, not become a tab stop.
+                let fields = !format!("{}{}", t.caption, t.label).contains("${");
+                let text = table::table_block(&o, fields);
                 let booktabs = t.booktabs;
                 self.table = None;
                 let indent = self.indent;
                 if let Some(ed) = self.active_editor() {
-                    ed.insert_template(&format!("{text}\n"), indent);
+                    if fields {
+                        ed.insert_template(&format!("{text}\n"), indent);
+                    } else {
+                        ed.insert_literal_block(&format!("{text}\n"), indent);
+                    }
                     ed.refocus = true;
                 }
                 if booktabs {

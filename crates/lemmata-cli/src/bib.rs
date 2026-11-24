@@ -97,7 +97,7 @@ fn bibitem_keys(project: &Project) -> HashSet<String> {
     );
     let mut keys = HashSet::new();
     for file in files {
-        let Ok(text) = lemmata_env::fs::read_to_string(project.root.join(&file)) else {
+        let Ok(text) = lemmata_env::fs::read_text(project.root.join(&file)) else {
             continue;
         };
         for line in text.lines() {

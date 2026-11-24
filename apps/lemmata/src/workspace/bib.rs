@@ -34,6 +34,11 @@ fn matches(hay: &str, terms: &[String]) -> bool {
     terms.iter().all(|t| hay.contains(t.as_str()))
 }
 
+/// What a search matches an entry against: all its authors, not only the ones shown.
+fn haystack(e: &Entry) -> String {
+    format!("{} {} {} {} {}", e.key, e.authors, e.names, e.title, e.year)
+}
+
 /// Entry indices sorted by key, author or year (newest first); missing values last, case
 /// ignored. Each entry's sort key is made once, not once per comparison.
 fn sort_entries(entries: &[ManagedEntry], idx: &mut [usize], by: &str) {
@@ -115,8 +120,12 @@ pub struct CitePicker {
     found: std::cell::RefCell<Option<(String, Vec<usize>)>>,
 }
 
+/// The most rows the picker draws; the rest are reached by searching.
+const SHOWN: usize = 200;
+
 enum Cite {
     Insert(Vec<String>),
+    AddBibtex,
     SearchOnline,
     AddHit(String),
     AddReference,
@@ -131,10 +140,7 @@ impl CitePicker {
             let hits = (0..self.entries.len())
                 .filter(|&i| {
                     let e = &self.entries[i];
-                    matches(
-                        &format!("{} {} {} {}", e.key, e.authors, e.title, e.year),
-                        &terms,
-                    )
+                    matches(&haystack(e), &terms)
                 })
                 .collect();
             *found = Some((self.query.clone(), hits));
@@ -191,7 +197,7 @@ impl CitePicker {
                 }
             });
         }
-        let results_len = self.results().len();
+        let results_len = self.results().len().min(SHOWN);
         // The list keys, while the search box has the focus.
         if self
             .search_id
@@ -242,7 +248,9 @@ impl CitePicker {
             self.online_error.clear();
         }
         self.list(ui, p, out);
-        if !self.query.trim().is_empty() && !self.loading {
+        if !lemmata_bib::parse_pasted(&self.query).is_empty() {
+            self.paste_part(ui, p, out);
+        } else if !self.query.trim().is_empty() && !self.loading {
             self.online_part(ui, p, out);
         }
         // .hint
@@ -278,7 +286,9 @@ impl CitePicker {
 
     fn list(&mut self, ui: &mut Ui, p: &Palette, out: &mut Option<Cite>) {
         let max_h = ui.ctx().content_rect().height() * 0.42;
-        let shown: Vec<Entry> = self.results().into_iter().take(200).cloned().collect();
+        let all = self.results();
+        let more = all.len().saturating_sub(SHOWN);
+        let shown: Vec<Entry> = all.into_iter().take(SHOWN).cloned().collect();
         list_frame(ui, p, max_h, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("cite-list")
@@ -408,8 +418,47 @@ impl CitePicker {
                             *out = Some(Cite::Insert(vec![e.key.clone()]));
                         }
                     }
+                    if more > 0 {
+                        ui.label(
+                            RichText::new(format!("{more} more, refine your search."))
+                                .color(p.muted),
+                        );
+                    }
                 });
         });
+    }
+
+    /// The search box holds BibTeX (pasted from Google Scholar, a publisher or a mail).
+    fn paste_part(&mut self, ui: &mut Ui, p: &Palette, out: &mut Option<Cite>) {
+        let n = lemmata_bib::parse_pasted(&self.query).len();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let label = match (self.adding, n) {
+                (true, _) => "Adding…".to_owned(),
+                (_, 1) => "Add this entry".to_owned(),
+                _ => format!("Add these {n} entries"),
+            };
+            if Button::new(&label)
+                .size(Size::Sm)
+                .kind(Kind::Primary)
+                .enabled(!self.adding)
+                .show(ui, p)
+                .clicked()
+            {
+                *out = Some(Cite::AddBibtex);
+            }
+            ui.label(
+                RichText::new(format!(
+                    "That looks like BibTeX. It goes into {} (change the file below).",
+                    self.add_file
+                ))
+                .size(11.0)
+                .color(p.muted),
+            );
+        });
+        if let Some((ok, text)) = &self.add_msg {
+            ui.label(RichText::new(text).color(if *ok { p.ok } else { p.error }));
+        }
     }
 
     fn online_part(&mut self, ui: &mut Ui, p: &Palette, out: &mut Option<Cite>) {
@@ -649,6 +698,8 @@ pub struct BibManager {
 }
 
 enum Manage {
+    /// BibTeX from the search box, added to the first .bib file.
+    AddBibtex(String),
     Open(String, usize),
     Remove(usize),
     Rename(usize, String),
@@ -772,6 +823,30 @@ impl BibManager {
         if !self.error.is_empty() {
             ui.label(RichText::new(&self.error).color(p.error));
         }
+        let pasted = lemmata_bib::parse_pasted(&self.query).len();
+        if pasted > 0 {
+            ui.horizontal(|ui| {
+                let label = if pasted == 1 {
+                    "Add this entry".to_owned()
+                } else {
+                    format!("Add these {pasted} entries")
+                };
+                if Button::new(&label)
+                    .size(Size::Sm)
+                    .kind(Kind::Primary)
+                    .enabled(!self.busy)
+                    .show(ui, p)
+                    .clicked()
+                {
+                    *out = Some(Manage::AddBibtex(self.query.trim().to_owned()));
+                }
+                ui.label(
+                    RichText::new("That looks like BibTeX.")
+                        .size(11.0)
+                        .color(p.muted),
+                );
+            });
+        }
         let warnings = warnings_by_entry(&lib.duplicates);
         let want = (self.query.clone(), self.show.clone(), self.sort.clone());
         let rows = match self.rows.take() {
@@ -781,17 +856,12 @@ impl BibManager {
                 let mut rows: Vec<usize> = (0..n)
                     .filter(|&i| {
                         let e = &lib.entries[i];
-                        matches(
-                            &format!(
-                                "{} {} {} {} {}",
-                                e.entry.key, e.entry.authors, e.entry.title, e.entry.year, e.doi
-                            ),
-                            &terms,
-                        ) && match self.show.as_str() {
-                            "duplicates" => warnings.contains_key(&i),
-                            "uncited" => !e.cited,
-                            _ => true,
-                        }
+                        matches(&format!("{} {}", haystack(&e.entry), e.doi), &terms)
+                            && match self.show.as_str() {
+                                "duplicates" => warnings.contains_key(&i),
+                                "uncited" => !e.cited,
+                                _ => true,
+                            }
                     })
                     .collect();
                 sort_entries(&lib.entries, &mut rows, &self.sort);
@@ -927,7 +997,7 @@ impl BibManager {
                                     self.confirming.clear();
                                 }
                                 if self.confirming == id {
-                                    if Button::new("Delete entry").size(Size::Sm).kind(Kind::Danger).enabled(!self.busy).show(ui, p).clicked() {
+                                    if Button::new(if e.cited { "Delete cited entry" } else { "Delete entry" }).size(Size::Sm).kind(Kind::Danger).enabled(!self.busy).show(ui, p).clicked() {
                                         *out = Some(Manage::Remove(i));
                                     }
                                     if Button::new("Keep").size(Size::Sm).kind(Kind::Ghost).show(ui, p).clicked() {
@@ -1151,6 +1221,39 @@ impl Workspace {
                         );
                     });
                 }
+                Some(Cite::AddBibtex) => {
+                    let Some(c) = &mut self.cite else { return };
+                    c.adding = true;
+                    c.add_msg = None;
+                    let (text, file) = (c.query.trim().to_owned(), c.add_file.clone());
+                    self.after_bib_saved(backend, settings, move |_, b| {
+                        Workspace::job(
+                            b,
+                            move |s| s.bib_add_bibtex(text, file),
+                            |ws, b, r| {
+                                let Some(c) = &mut ws.cite else { return };
+                                c.adding = false;
+                                match r {
+                                    Ok(added) => {
+                                        let keys: Vec<_> =
+                                            added.iter().map(|a| a.key.as_str()).collect();
+                                        c.add_msg =
+                                            Some((true, format!("Added {}.", keys.join(", "))));
+                                        c.query =
+                                            keys.first().copied().unwrap_or_default().to_owned();
+                                        c.selected = 0;
+                                        c.search_id = None;
+                                        let files: Vec<String> =
+                                            added.into_iter().map(|a| a.file).collect();
+                                        ws.bib_changed(b, &files);
+                                        ws.load_cite(b);
+                                    }
+                                    Err(e) => c.add_msg = Some((false, e)),
+                                }
+                            },
+                        );
+                    });
+                }
                 Some(Cite::Zotero) => {
                     self.cite = None;
                     self.cite_from_zotero(backend);
@@ -1177,6 +1280,20 @@ impl Workspace {
             self.bib_manager = None;
         }
         match (act, entry) {
+            (Some(Manage::AddBibtex(text)), _) => {
+                let file = match &self.bib_manager {
+                    Some(m) => m.lib.as_ref().and_then(|l| l.files.first().cloned()),
+                    None => None,
+                }
+                .unwrap_or_else(|| "refs.bib".into());
+                if let Some(m) = &mut self.bib_manager {
+                    m.query.clear();
+                }
+                self.bib_change(backend, settings, move |s| {
+                    s.bib_add_bibtex(text, file)
+                        .map(|a| a.into_iter().map(|a| a.file).collect())
+                });
+            }
             (Some(Manage::Open(file, line)), _) => {
                 self.bib_manager = None;
                 self.goto(backend, &file, line);
@@ -1355,6 +1472,7 @@ mod tests {
                 kind: "misc".into(),
                 title: title.into(),
                 authors: authors.into(),
+                names: authors.into(),
                 year: year.into(),
                 file: "refs.bib".into(),
             },
@@ -1404,6 +1522,9 @@ mod tests {
         assert_eq!(w[&0], [("doi", vec![2])]);
         assert!(!w.contains_key(&1));
         assert_eq!(free_key("k", &["K", "ka"]), "kb");
+        let mut shown = e("s", "Schulman et al.", "2017", "Proximal policy");
+        shown.entry.names = "Schulman, John and Wolski, Filip and Dhariwal, Prafulla".into();
+        assert!(matches(&haystack(&shown.entry), &terms("wolski dhariwal")));
         assert!(valid_key("smith2020a"));
         assert!(!valid_key("bad key") && !valid_key(""));
     }

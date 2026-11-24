@@ -15,6 +15,9 @@ use skrifa::{
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
+/// What `render` answers while the worker is still drawing the formula: not an error.
+pub const PENDING: &str = "Rendering…";
+
 /// A rendered formula: its texture and size in points.
 #[derive(Clone)]
 pub struct Math {
@@ -58,7 +61,9 @@ fn math_worker() -> &'static std::sync::mpsc::SyncSender<Job> {
             .name("math-render".into())
             .spawn(move || {
                 while let Ok(job) = rx.recv() {
-                    let result =
+                    // A formula that makes the layout panic must fail, not end this thread (then
+                    // every formula would stay "Rendering…" until the app restarts).
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         layout_with(&job.tex, job.display, &job.prelude).and_then(|list| {
                             let em = job.size * job.ppp;
                             raster(&list, em, job.color)
@@ -73,7 +78,9 @@ fn math_worker() -> &'static std::sync::mpsc::SyncSender<Job> {
                                     )
                                 })
                                 .ok_or_else(|| "This formula can't be drawn.".to_owned())
-                        });
+                        })
+                    }))
+                    .unwrap_or_else(|_| Err("This formula can't be drawn.".to_owned()));
                     completed()
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -223,7 +230,17 @@ pub fn render(
         color.to_array(),
         ppp.to_bits(),
     );
-    if let Some(hit) = CACHE.with_borrow(|c| c.done.get(&key).cloned()) {
+    let hit = CACHE.with_borrow_mut(|c| {
+        let hit = c.done.get(&key).cloned()?;
+        // Used now: the last to be evicted, not the first formula that was drawn.
+        if let Some(i) = c.order.iter().rposition(|k| *k == key)
+            && let Some(k) = c.order.remove(i)
+        {
+            c.order.push_back(k);
+        }
+        Some(hit)
+    });
+    if let Some(hit) = hit {
         return hit;
     }
     let job = CACHE.with_borrow_mut(|c| {
@@ -244,12 +261,12 @@ pub fn render(
         })
     });
     let Some(job) = job else {
-        return Err("Rendering…".into());
+        return Err(PENDING.into());
     };
     if math_worker().try_send(job).is_err() {
         CACHE.with_borrow_mut(|c| c.pending.remove(&key));
     }
-    Err("Rendering…".into())
+    Err(PENDING.into())
 }
 
 /// Pixels around the formula, so antialiased edges aren't cut.
@@ -486,6 +503,23 @@ mod tests {
                 .is_ok_and(|name| name.starts_with("math-render"))
         }));
         CACHE.with_borrow(|c| assert!(c.bytes <= MAX_BYTES));
+    }
+
+    #[test]
+    fn a_formula_in_use_is_the_last_to_be_evicted() {
+        set_macros(BTreeMap::from([("\\lru".to_owned(), "x".to_owned())]));
+        let ctx = egui::Context::default();
+        let done = |tex: &str| {
+            let start = std::time::Instant::now();
+            while render(&ctx, tex, true, 24.0, Color32::BLACK).is_err() {
+                assert!(start.elapsed() < std::time::Duration::from_secs(5));
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        done("a+1");
+        done("b+2");
+        done("a+1");
+        CACHE.with_borrow(|c| assert_eq!(c.order.back().map(|k| k.0.as_str()), Some("a+1")));
     }
 
     #[test]

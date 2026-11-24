@@ -266,7 +266,7 @@ pub struct Span {
 }
 
 /// Drops `%` comments, which the renderer would choke on.
-fn strip_comments(tex: &str) -> String {
+pub(super) fn strip_comments(tex: &str) -> String {
     tex.split('\n')
         .map(|l| {
             let c: Vec<char> = l.chars().collect();
@@ -290,6 +290,22 @@ fn strip_comments(tex: &str) -> String {
 static LABELS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\\(label|nonumber|notag)\b(\{[^}]*\})?").unwrap());
 static TYPING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\[A-Za-z]*$").unwrap());
+static ALIGNAT_ARG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\{\d+\}").unwrap());
+
+/// Whether `before` ends in a whole command the palette knows (`\alpha`), as opposed to one
+/// still being typed (`\al`).
+fn ends_in_known_command(before: &str) -> bool {
+    static KNOWN: LazyLock<std::collections::HashSet<String>> = LazyLock::new(|| {
+        super::symbols::symbols()
+            .iter()
+            .filter_map(|s| s.tex.strip_prefix('\\'))
+            .map(|t| t.chars().take_while(char::is_ascii_alphabetic).collect())
+            .collect()
+    });
+    TYPING
+        .find(before)
+        .is_some_and(|m| KNOWN.contains(&m.as_str()[1..]))
+}
 
 /// The maths around `pos`, closed or still being typed: inline, `$$`, `\[`, or a maths environment.
 pub fn math_at(d: &Doc, pos: usize) -> Option<Span> {
@@ -301,8 +317,11 @@ pub fn math_at(d: &Doc, pos: usize) -> Option<Span> {
     let stop = content_to.max(ctx.content_from);
     let mut before = d.slice(ctx.content_from, pos.min(stop));
     let after = d.slice(pos.min(stop), stop);
-    // A command still being typed (\alp|) isn't an error yet: leave it out.
-    if !after.starts_with(|c: char| c.is_ascii_alphabetic()) {
+    // A command still being typed (\alp|) isn't an error yet: leave it out. One that is whole and
+    // closed over by the maths' end (`$x = \alpha|$`) stays.
+    if !after.starts_with(|c: char| c.is_ascii_alphabetic())
+        && (closing.is_none() || !ends_in_known_command(&before))
+    {
         before = TYPING.replace(&before, "").into_owned();
     }
     let mut tex = strip_comments(&(before + &after));
@@ -310,6 +329,10 @@ pub fn math_at(d: &Doc, pos: usize) -> Option<Span> {
         && let Some(env) = &ctx.env
     {
         tex = LABELS.replace_all(&tex, "").into_owned();
+        // `\begin{alignat}{2}`: the column count isn't maths.
+        if env.starts_with("alignat") {
+            tex = ALIGNAT_ARG.replace(&tex, "").into_owned();
+        }
         if let Some(w) = katex_env(env) {
             tex = format!("\\begin{{{w}}}{tex}\\end{{{w}}}");
         } else if !MATH_ONLY.contains(&env.as_str()) {
@@ -330,6 +353,8 @@ static MACRO: LazyLock<Regex> = LazyLock::new(|| {
 
 /// `\newcommand`, `\renewcommand` and `\DeclareMathOperator` from the preamble, as macros.
 pub fn collect_macros(preamble: &str) -> BTreeMap<String, String> {
+    // A commented-out definition isn't one.
+    let preamble = &strip_comments(preamble);
     let mut out = BTreeMap::new();
     let braced = |s: &str, i: usize| -> Option<(String, usize)> {
         if !s[i..].starts_with('{') {
@@ -458,6 +483,22 @@ mod tests {
             math_at(&Doc::new("$x = \\alpha$"), 9).map(|m| m.tex),
             Some("x = \\alpha".into())
         );
+        // The cursor before the closing $ leaves a whole command alone.
+        assert_eq!(
+            math_at(&Doc::new("$x = \\alpha$"), 11).map(|m| m.tex),
+            Some("x = \\alpha".into())
+        );
+        assert_eq!(
+            math_at(&Doc::new("$x = \\al$"), 8).map(|m| m.tex),
+            Some("x = ".into())
+        );
+        let d = Doc::new("\\begin{alignat}{2}\n x &= 1 \\\\ y &= 2");
+        let m = math_at(&d, d.line_start(1) + 2).unwrap();
+        assert!(
+            m.tex.contains("\\begin{aligned}") && !m.tex.contains("{2}"),
+            "{}",
+            m.tex
+        );
         assert_eq!(math_at(&Doc::new("$a % $ oops\n$"), 8), None);
         assert_eq!(
             math_at(&Doc::new("$a % $ oops\n$"), 3).map(|m| m.tex),
@@ -466,6 +507,13 @@ mod tests {
         let d = Doc::new("\\begin{eqnarray}\n a &=& b % note\n\\end{eqnarray}");
         let m = math_at(&d, d.line_start(1) + 2).unwrap();
         assert!(m.tex.contains("aligned") && !m.tex.contains("note"));
+    }
+
+    #[test]
+    fn a_commented_out_macro_is_not_one() {
+        let m =
+            collect_macros("% \\newcommand{\\ket}[1]{|#1\\rangle}\n\\newcommand{\\R}{\\mathbb{R}}");
+        assert!(m.contains_key("\\R") && !m.contains_key("\\ket"));
     }
 
     #[test]
