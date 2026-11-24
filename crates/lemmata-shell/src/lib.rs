@@ -267,6 +267,8 @@ pub struct ProjectAnalysis {
     pub info: ProjectInfo,
     pub outline: lemmata_project::Outline,
     pub labels: Vec<lemmata_project::extras::Label>,
+    /// The preamble's text for the maths previews' macros (see `lemmata_project::Analysis`).
+    pub macro_text: String,
     pub cites: Vec<lemmata_bib::Entry>,
     pub pdf_current: bool,
 }
@@ -314,6 +316,7 @@ fn analysis_of_with(
         info: project_info_with_tree(p, tree),
         outline: analysis.outline,
         labels: analysis.labels,
+        macro_text: analysis.macro_text,
         cites,
         pdf_current,
     }
