@@ -671,11 +671,11 @@ impl App {
                 self.welcome = None;
                 self.handle_request(r);
             }
-            Msg::Done(Err(e)) => {
-                if let Some(ws) = &mut self.project {
-                    ws.notice(e, workspace::Tone::Error);
-                }
-            }
+            Msg::Done(Err(e)) => match &mut self.project {
+                Some(ws) => ws.notice(e, workspace::Tone::Error),
+                // No project yet (one that is opening): the start screen shows it.
+                None => self.open_error = Some(e),
+            },
             Msg::Event(_) | Msg::Done(Ok(())) => {}
             // Answers for a project that has closed since.
             Msg::FileRead(..)

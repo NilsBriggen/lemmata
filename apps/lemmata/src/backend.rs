@@ -180,6 +180,19 @@ pub fn resources_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources"))
 }
 
+/// What the UI is told when a job panicked: without it the job would never answer, and whatever
+/// waits for it (opening a project, a save) would wait for good.
+fn panicked() -> Msg {
+    Msg::Done(Err(
+        "Lemmata hit an internal error while doing that. Please try again.".into(),
+    ))
+}
+
+fn run_caught(job: impl FnOnce(&Shell) -> Msg, shell: &Shell) -> Msg {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(shell)))
+        .unwrap_or_else(|_| panicked())
+}
+
 impl Backend {
     pub fn new(ctx: egui::Context, dirs: &crate::store::Dirs) -> Self {
         let (tx, rx) = channel();
@@ -232,7 +245,7 @@ impl Backend {
     pub fn spawn(&self, job: impl FnOnce(&Shell) -> Msg + Send + 'static) {
         let (shell, tx, ctx) = (self.shell.clone(), self.tx.clone(), self.ctx.clone());
         self.rt().spawn_blocking(move || {
-            let _ = tx.send(job(&shell));
+            let _ = tx.send(run_caught(job, &shell));
             ctx.request_repaint();
         });
     }
@@ -244,7 +257,7 @@ impl Backend {
             if shell.current_project() != project {
                 return;
             }
-            let _ = tx.send(Msg::Project(project, Box::new(job(&shell))));
+            let _ = tx.send(Msg::Project(project, Box::new(run_caught(job, &shell))));
             ctx.request_repaint();
         });
     }
@@ -260,7 +273,11 @@ impl Backend {
             if shell.current_project() != project {
                 return;
             }
-            let _ = tx.send(Msg::Project(project, Box::new(job(shell.clone()).await)));
+            let msg = tokio::spawn(job(shell.clone())).await;
+            let _ = tx.send(Msg::Project(
+                project,
+                Box::new(msg.unwrap_or_else(|_| panicked())),
+            ));
             ctx.request_repaint();
         });
     }
@@ -273,7 +290,8 @@ impl Backend {
     {
         let (shell, tx, ctx) = (self.shell.clone(), self.tx.clone(), self.ctx.clone());
         self.rt().spawn(async move {
-            let _ = tx.send(job(shell).await);
+            let msg = tokio::spawn(job(shell)).await;
+            let _ = tx.send(msg.unwrap_or_else(|_| panicked()));
             ctx.request_repaint();
         });
     }
@@ -396,6 +414,27 @@ mod tests {
             panic!("the current project's job did not report")
         };
         assert!(matches!(*msg, super::Msg::Done(Ok(()))));
+    }
+
+    #[test]
+    fn a_job_that_panics_reports_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::store::Dirs {
+            config: tmp.path().join("config"),
+            data: tmp.path().join("data"),
+            cache: tmp.path().join("cache"),
+        };
+        let b = super::Backend::new(eframe::egui::Context::default(), &dirs);
+        b.spawn(|_| -> super::Msg { panic!("a job went wrong") });
+        let got =
+            b.rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        assert!(matches!(got, super::Msg::Done(Err(_))));
+        b.spawn_async(|_| async { panic!("an async job went wrong") });
+        let got =
+            b.rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        assert!(matches!(got, super::Msg::Done(Err(_))));
     }
 
     #[test]
