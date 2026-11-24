@@ -77,7 +77,16 @@ pub fn toolbar(
         })
         .clicked()
     {
-        settings.sidebar_open = !settings.sidebar_open;
+        // The panel shows only beside the editor: where it can't, the click brings it there.
+        if settings.layout == "pdf" || ws.focus_mode {
+            if settings.layout == "pdf" {
+                settings.layout = "split".into();
+            }
+            ws.focus_mode = false;
+            settings.sidebar_open = true;
+        } else {
+            settings.sidebar_open = !settings.sidebar_open;
+        }
         action = Some(Action::Settings);
     }
     let layouts = ["editor", "split", "pdf"];
@@ -855,7 +864,20 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
         })
         .collect();
     let current = ws.current_heading();
-    let key = |h: &lemmata_project::Heading| format!("{}:{}", h.file, h.line);
+    // A heading is told by its file, level and title (and which of equals it is), not its line:
+    // typing above it must not unfold it.
+    let keys: Vec<String> = {
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        ws.headings
+            .iter()
+            .map(|h| {
+                let base = format!("{}:{}:{}", h.file, h.level, h.title);
+                let n = seen.entry(base.clone()).or_default();
+                *n += 1;
+                format!("{base}:{n}")
+            })
+            .collect()
+    };
     let has_children =
         |i: usize| i + 1 < ws.headings.len() && ws.headings[i + 1].level > ws.headings[i].level;
     let w = ui.available_width();
@@ -869,7 +891,7 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
             }
             hide_below = None;
         }
-        let folded = ws.outline_folded.contains(&key(h));
+        let folded = ws.outline_folded.contains(&keys[i]);
         if folded && has_children(i) {
             hide_below = Some(h.level);
         }
@@ -904,7 +926,7 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
                     .with_angle_and_anchor(rot, Align2::CENTER_CENTER),
             );
             if tr.clicked() {
-                fold = Some(key(h));
+                fold = Some(keys[i].clone());
             }
         }
         let er = ui.interact(entry, ui.make_persistent_id(("heading", i)), Sense::click());
