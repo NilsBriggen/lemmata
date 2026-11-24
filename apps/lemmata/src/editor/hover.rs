@@ -90,7 +90,7 @@ pub fn target_at(line: &str, offset: usize) -> Option<Target> {
     let s: String = text.iter().collect();
     for m in COMMAND.captures_iter(&s) {
         let cmd = &m[1];
-        let kind = if REF.is_match(cmd) && cmd != "hyperref" {
+        let kind = if REF.is_match(cmd) && !matches!(cmd, "hyperref" | "href") {
             Kind::Ref
         } else if CITE.is_match(cmd) {
             Kind::Cite

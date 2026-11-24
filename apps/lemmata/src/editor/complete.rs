@@ -541,6 +541,9 @@ fn text_commands(math: bool) -> Vec<Item> {
 
 static REF: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\\[a-zA-Z]*ref[a-zA-Z]*\*?\{([^{}\n]*)$").unwrap());
+/// Commands REF matches that don't take a label.
+static NOT_REF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\\(?:href|refstepcounter)\{[^{}\n]*$").unwrap());
 static CITE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\\[a-zA-Z]*cite[a-zA-Z]*\*?(?:\[[^\]\n]*\]){0,2}\{([^{}\n]*)$").unwrap()
 });
@@ -664,7 +667,26 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
         let kind = m[1].to_owned();
         let typed = &m[2];
         let from = pos - chars(typed);
-        let to = if after.starts_with('}') { pos + 1 } else { pos };
+        // The rest of the name after the cursor goes too: `\begin{al|ign}` becomes one name.
+        let tail: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphabetic() || *c == '*')
+            .collect();
+        let to = pos + chars(&tail) + usize::from(after[tail.len()..].starts_with('}'));
+        // `\end{`: the innermost environment still open comes first.
+        let open = (kind == "end")
+            .then(|| {
+                let mut stack = Vec::new();
+                for t in super::envs::tokens(d).iter().filter(|t| t.to < from) {
+                    if t.begin {
+                        stack.push(t.name.clone());
+                    } else {
+                        stack.pop();
+                    }
+                }
+                stack.pop()
+            })
+            .flatten();
         // Renaming an environment that already has its \end: only the name changes.
         let paired = kind == "begin"
             && super::envs::tokens(d)
@@ -682,6 +704,9 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
                 let mut it = Item::new(e.name, Kind::Class, apply)
                     .detail(e.detail)
                     .boost(if COMMON.contains(&e.name) { 12 } else { 10 });
+                if open.as_deref() == Some(e.name) {
+                    it.boost = 30;
+                }
                 if !plain {
                     it.pkg = e.pkg.map(str::to_owned);
                 }
@@ -698,7 +723,12 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
                 } else {
                     Apply::Snippet(format!("{0}}}\n\t${{}}\n\\end{{{0}}}", &x[1]))
                 };
-                items.push(Item::new(&x[1], Kind::Class, apply).detail("used here"));
+                let boost = if open.as_deref() == Some(&x[1]) { 30 } else { 0 };
+                items.push(
+                    Item::new(&x[1], Kind::Class, apply)
+                        .detail("used here")
+                        .boost(boost),
+                );
             }
         }
         // Environments of other packages (minted, algorithm, tcolorbox…), below the common ones.
@@ -724,7 +754,7 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
         });
     }
 
-    if let Some(m) = REF.captures(&before) {
+    if let Some(m) = REF.captures(&before).filter(|_| !NOT_REF.is_match(&before)) {
         let (from, typed) = list_item(&m[1], pos);
         let items = look
             .labels
@@ -768,7 +798,12 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
 
     if let Some(m) = FILE.captures(&before) {
         let cmd = m[1].to_owned();
-        let from = pos - chars(&m[2]);
+        // Both take comma lists: complete the item being typed.
+        let from = if matches!(cmd.as_str(), "bibliography" | "addbibresource") {
+            list_item(&m[2], pos).0
+        } else {
+            pos - chars(&m[2])
+        };
         let items = look
             .files
             .iter()
@@ -873,8 +908,14 @@ pub fn snippets(d: &Doc, pos: usize, look: &Lookups) -> Option<Found> {
     let before = d.slice(d.line_start(n), pos);
     let word = WORD.find(&before)?;
     let from = pos - chars(word.as_str());
-    // A command name or a braced argument is for the other sources.
-    if before[..word.start()].ends_with(['\\', '{']) {
+    // Only a word on its own: not a command name, nor inside a path, a key list or a label.
+    let prefix = &before[..word.start()];
+    if !(prefix.is_empty() || prefix.ends_with(char::is_whitespace))
+        || [&*ENV, &*REF, &*CITE, &*FILE, &*PKG]
+            .iter()
+            .any(|r| r.is_match(&before))
+        || super::commands::comment_start(&before).is_some()
+    {
         return None;
     }
     let hits = match_snippets(&look.snippets, word.as_str());
@@ -1246,6 +1287,31 @@ mod tests {
                 .iter()
                 .any(|l| l.starts_with("\\end{"))
         );
+    }
+
+    #[test]
+    fn completion_spans_and_contexts() {
+        // \end{ ranks the open environment first.
+        let r = complete("\\begin{proof}\nx\n\\end{", None).unwrap();
+        let top = r.items.iter().max_by_key(|i| i.boost).unwrap();
+        assert_eq!(top.label, "proof");
+        // The rest of the name after the cursor is replaced too.
+        let r = complete("\\begin{alxign}", Some(9)).unwrap();
+        let it = r.items.iter().find(|i| i.label == "align").unwrap();
+        assert_eq!((it.from, it.to), (7, 14));
+        // \href takes a URL, not a label.
+        assert!(!labels(&complete("\\href{s", None)).contains(&"sec:intro".into()));
+        // Comma lists in \bibliography complete their last item.
+        let r = complete("\\bibliography{refs1,re", None).unwrap();
+        assert_eq!(r.items[0].from, 20);
+        // Snippets stay out of paths, key lists and comments.
+        let l = look();
+        for text in ["\\includegraphics{figures/fi", "\\cite{a,fi", "% fi"] {
+            let d = Doc::new(text);
+            assert!(snippets(&d, d.len(), &l).is_none(), "{text}");
+        }
+        let d = Doc::new("x fi");
+        assert!(snippets(&d, d.len(), &l).is_some());
     }
 
     #[test]
