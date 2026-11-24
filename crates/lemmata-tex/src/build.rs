@@ -354,7 +354,7 @@ pub async fn build_with(
     for d in &mut diagnostics {
         if d.file
             .as_deref()
-            .is_some_and(|f| f.trim_start_matches("./").starts_with(outdir))
+            .is_some_and(|f| Path::new(f.trim_start_matches("./")).starts_with(outdir))
         {
             d.file = None;
             d.line = None;
@@ -521,7 +521,7 @@ pub(crate) fn cached_outcome_with(
     for d in &mut diagnostics {
         if d.file
             .as_deref()
-            .is_some_and(|f| f.trim_start_matches("./").starts_with(&outdir))
+            .is_some_and(|f| Path::new(f.trim_start_matches("./")).starts_with(&outdir))
         {
             d.file = None;
             d.line = None;
@@ -2923,6 +2923,41 @@ mod tests {
             out.diagnostics
                 .iter()
                 .any(|x| x.message.contains("refs.bib")),
+            "{:?}",
+            out.diagnostics
+        );
+    }
+
+    /// With the build folder "build", an error in builder.tex keeps its file and line.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_that_only_starts_like_the_build_folder_keeps_its_location() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        std::fs::write(d.path().join("lemmata.toml"), "outdir = \"build\"\n").unwrap();
+        let fake = d.path().join("fake-latexmk");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nprintf './builder.tex:12: Undefined control sequence.\\nl.12 \\\\foo\\n' > build/main.log\necho pdf > build/main.pdf\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut p = Project::open(d.path()).unwrap();
+        p.trusted = true;
+        let (_tx, rx) = oneshot::channel();
+        let opts = BuildOptions {
+            latexmk: &fake,
+            bin_dir: None,
+            installer: None,
+            miktex: false,
+            perl_dir: None,
+        };
+        let out = build(&p, &opts, rx).await.unwrap();
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|x| x.file.as_deref() == Some("./builder.tex") && x.line == Some(12)),
             "{:?}",
             out.diagnostics
         );

@@ -301,7 +301,7 @@ pub async fn build(
     for d in &mut diagnostics {
         if d.file
             .as_deref()
-            .is_some_and(|f| f.trim_start_matches("./").starts_with(rel_outdir))
+            .is_some_and(|f| Path::new(f.trim_start_matches("./")).starts_with(rel_outdir))
         {
             d.file = None;
             d.line = None;
