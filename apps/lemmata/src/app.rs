@@ -1922,6 +1922,17 @@ pub(crate) mod tests {
         wait_for(&mut h, "the search", |h| {
             h.state().project.as_ref().unwrap().pane.view.match_count() > 0
         });
+        // The SyncTeX box fades after 1.8 s; the search can be quicker than that.
+        wait_for(&mut h, "the SyncTeX box to fade", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .pane
+                .view
+                .highlighted()
+                .is_none()
+        });
         h.run_steps(2);
         snap(&mut h, "editor-split-built-light");
     }
