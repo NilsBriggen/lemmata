@@ -28,7 +28,7 @@ pub(crate) fn safe_rel(rel: &str) -> CmdResult<PathBuf> {
     Ok(p)
 }
 
-fn text_files(project: &lemmata_project::Project) -> Vec<String> {
+pub(crate) fn text_files(project: &lemmata_project::Project) -> Vec<String> {
     fn walk(entries: &[lemmata_project::Entry], out: &mut Vec<String>) {
         for e in entries {
             if e.is_dir {
