@@ -2,7 +2,7 @@
 
 All notable changes to Lemmata.
 
-## 3.3.0 (unreleased)
+## 3.3.0 (2026-11-24)
 
 A release of fixes and smaller features from a review of the whole app: more than 200 problems, from wrong clicks in the Compile menu to text that could be lost in rare cases.
 
