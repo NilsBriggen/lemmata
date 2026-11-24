@@ -808,7 +808,9 @@ pub fn clone(ctx: &egui::Context, p: &Palette, st: &mut Clone) -> Option<Action>
             {
                 action = Some(Action::Submit);
             }
-            if Button::new("Cancel").enabled(!busy).show(ui, p).clicked() {
+            // A clone can wait minutes on a server that doesn't answer, so it can be left; one
+            // that finishes later still lands in the library (see App::on_dialog_msg).
+            if Button::new("Cancel").show(ui, p).clicked() {
                 action = Some(Action::Close);
             }
         }),

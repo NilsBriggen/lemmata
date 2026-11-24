@@ -346,6 +346,16 @@ impl App {
         }
     }
 
+    /// A clone left with Cancel that finished anyway: listed in the library, not opened.
+    fn cloned_after_cancel(&mut self, path: String) {
+        let paths = [path];
+        self.recents.remember_all(&paths, now_ms());
+        self.recents.save(&self.dirs);
+        if self.library.file(&mut self.groups, &paths) {
+            self.groups.save(&self.dirs);
+        }
+    }
+
     fn on_dialog_msg(&mut self, msg: Msg) -> Option<Msg> {
         let d = self.dialog.as_mut();
         match (msg, d) {
@@ -438,6 +448,7 @@ impl App {
                     Dialog::SaveTemplate(_) | Dialog::Trust(_) => {}
                 }
             }
+            (Msg::Cloned(Ok(path)), _) => self.cloned_after_cancel(path),
             // A dialog closed since: its answer has nowhere to go.
             (
                 Msg::Templates(..)
@@ -639,6 +650,7 @@ impl App {
                     .spawn(move |shell| Msg::ZipInfo(shell.inspect_zip(zip)));
             }
             Msg::Picked(..) => {}
+            Msg::Cloned(Ok(path)) => self.cloned_after_cancel(path),
             // Dialog answers arrive here only when no dialog is open.
             Msg::Templates(..)
             | Msg::TemplateDeleted(..)
@@ -3858,6 +3870,50 @@ pub(crate) mod tests {
         wait_for(&mut h, "the tab to close", |h| {
             let ws = h.state().project.as_ref().unwrap();
             !ws.viewers.contains_key("plot.png") && !ws.tabs.iter().any(|t| t == "plot.png")
+        });
+    }
+
+    #[test]
+    fn the_code_button_inserts_a_listing_in_the_chosen_language() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("paper");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\n\n\\end{document}\n",
+        )
+        .unwrap();
+        let root = canonical_str(&project);
+        let d = dirs(tmp.path());
+        let mut recents = Recents::default();
+        recents.remember(&root, 1.0);
+        recents.save(&d);
+        Settings {
+            first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
+            trusted_projects: vec![root],
+            ..Settings::default()
+        }
+        .save(&d);
+        let mut h = app(tmp.path());
+        wait_for(&mut h, "the main file", |h| {
+            h.query_by_label("Text of main.tex").is_some()
+        });
+        h.get_by_label("Code block").click();
+        h.run_steps(2);
+        h.get_by_label("Python").click();
+        wait_for(&mut h, "the listing", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .unwrap()
+                .editors
+                .get("main.tex")
+                .is_some_and(|e| {
+                    e.doc
+                        .text()
+                        .contains("\\begin{lstlisting}[language=Python]\n\n\\end{lstlisting}")
+                })
         });
     }
 

@@ -342,7 +342,11 @@ impl Shell {
     ) -> CmdResult<ProjectAnalysis> {
         self.generation
             .fetch_max(generation, std::sync::atomic::Ordering::Relaxed);
-        // Before the lock: a running build holds it for its whole run.
+        // Before the lock: a running build holds it for its whole run. An open already
+        // superseded leaves the newer project's build alone.
+        if self.current_project() != generation {
+            return Err("A newer project open superseded this one.".into());
+        }
         cancel_running(self);
         let _opening = self.operation.blocking_write();
         if self.current_project() != generation {
