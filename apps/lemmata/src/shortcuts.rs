@@ -437,14 +437,21 @@ pub fn matches_spec(spec: &str, mods: Modifiers, key: Key) -> bool {
     };
     let ctrl = mods.ctrl || mods.mac_cmd || mods.command;
     let want_ctrl = want.ctrl || want.mac_cmd || want.command;
+    // German and French keyboards type `/` with Shift+7: Mod-/ arrives with Shift held, so a
+    // shifted slash is Mod-/, and Mod-Shift-/ is the `?` key (Shift+/ on US keyboards).
+    let shifted_slash = want_key == Key::Slash && !want.shift && mods.shift && key == Key::Slash;
     ctrl == want_ctrl
-        && mods.shift == want.shift
+        && (mods.shift == want.shift || shifted_slash)
         && mods.alt == want.alt
-        && (key == want_key
-            || (want_key == Key::Slash && key == Key::Questionmark)
-            // Shift-[ arrives as `{` on most layouts.
-            || (want_key == Key::OpenBracket && key == Key::OpenCurlyBracket)
-            || (want_key == Key::CloseBracket && key == Key::CloseCurlyBracket))
+        && if want_key == Key::Slash && want.shift {
+            key == Key::Questionmark
+        } else {
+            key == want_key
+                || (want_key == Key::Slash && key == Key::Questionmark)
+                // Shift-[ arrives as `{` on most layouts.
+                || (want_key == Key::OpenBracket && key == Key::OpenCurlyBracket)
+                || (want_key == Key::CloseBracket && key == Key::CloseCurlyBracket)
+        }
 }
 
 /// Takes the key press of shortcut `id` out of this frame's input, if there is one.
@@ -476,6 +483,15 @@ pub fn consume(ctx: &egui::Context, id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_shifted_slash_is_the_comment_shortcut() {
+        let ctrl_shift = Modifiers::COMMAND | Modifiers::SHIFT;
+        assert!(matches_spec("Mod-/", ctrl_shift, Key::Slash));
+        assert!(!matches_spec("Mod-Shift-/", ctrl_shift, Key::Slash));
+        assert!(matches_spec("Mod-Shift-/", ctrl_shift, Key::Questionmark));
+        assert!(matches_spec("Mod-/", Modifiers::COMMAND, Key::Slash));
+    }
+
     use super::*;
 
     // shortcuts.test.ts: shortcut search
