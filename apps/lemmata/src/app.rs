@@ -158,7 +158,7 @@ impl App {
             without_tex: false,
             library: library::State::default(),
             open_error: damaged.then(|| {
-                "Your settings couldn't be read, so Lemmata started with the defaults. The old file is kept beside them as settings.json.bak.".to_owned()
+                "Some of your settings couldn't be read, so those are back at their defaults. The old file is kept beside them as settings.json.bak.".to_owned()
             }),
             no_main_in: None,
             project: None,
