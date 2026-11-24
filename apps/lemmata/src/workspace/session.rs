@@ -31,10 +31,14 @@ fn path(dirs: &Dirs) -> std::path::PathBuf {
 }
 
 fn read_all(dirs: &Dirs) -> serde_json::Map<String, Value> {
-    lemmata_env::fs::read(path(dirs))
+    let all = lemmata_env::fs::read(path(dirs))
         .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    if all.is_none() {
+        // The next save writes a new file: what is there stays as sessions.json.bak.
+        crate::store::backup_unreadable(&path(dirs));
+    }
+    all.unwrap_or_default()
 }
 
 pub fn load(dirs: &Dirs, root: &str) -> Option<Session> {
@@ -86,5 +90,21 @@ mod tests {
         assert_eq!(load(&dirs, "/q"), Some(s2));
         assert_eq!(load(&dirs, "/p"), Some(s), "other projects' sessions stay");
         assert_eq!(load(&dirs, "/none"), None);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_kept_aside_before_it_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs {
+            config: dir.path().into(),
+            data: dir.path().into(),
+            cache: dir.path().into(),
+        };
+        std::fs::write(dir.path().join("sessions.json"), r#"{"/a": {},}"#).unwrap();
+        save(&dirs, "/b", &Session::default());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("sessions.json.bak")).unwrap(),
+            r#"{"/a": {},}"#
+        );
     }
 }
