@@ -784,7 +784,7 @@ pub fn comment_start(text: &str) -> Option<usize> {
 }
 
 /// Their lines are content, not code: indenting them would change it.
-const VERBATIM: [&str; 6] = [
+pub(crate) const VERBATIM: [&str; 6] = [
     "verbatim",
     "verbatim*",
     "Verbatim",

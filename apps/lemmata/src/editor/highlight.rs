@@ -67,6 +67,8 @@ enum Mode {
     BeginParams,
     /// In maths until this closes it.
     Math(&'static str),
+    /// Inside a verbatim-like environment (verbatim, lstlisting, minted…) until its `\end`.
+    Verbatim(&'static str),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -161,6 +163,16 @@ fn cmd_char(c: char) -> bool {
 fn normal(s: &mut Stream, st: &mut State) -> Option<Token> {
     if s.match_cmd(cmd_char) {
         let name = s.current()[1..].to_owned();
+        // `\verb|$x|`: what's between the delimiters is literal, so it can't open maths.
+        if name == "verb" {
+            if s.peek() == Some('*') {
+                s.pos += 1;
+            }
+            if let Some(d) = s.next() {
+                while s.next().is_some_and(|c| c != d) {}
+            }
+            return Some(Token::Atom);
+        }
         let plug = Plug {
             name: PLUGINS.iter().find(|p| **p == name).copied(),
             bracket_no: 0,
@@ -290,6 +302,26 @@ fn begin_params(s: &mut Stream, st: &mut State) -> Option<Token> {
 /// state to the next line's.
 pub fn line(text: &str, state: &mut State) -> Vec<(usize, usize, Token)> {
     let chars: Vec<char> = text.chars().collect();
+    if let Mode::Verbatim(name) = state.mode {
+        let comment = |n: usize| {
+            (name == "comment" && n > 0)
+                .then_some((0, n, Token::Comment))
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let Some(b) = text.find(&format!("\\end{{{name}}}")) else {
+            return comment(chars.len());
+        };
+        let at = text[..b].chars().count();
+        *state = State::default();
+        let mut out = comment(at);
+        out.extend(
+            line(&text[b..], state)
+                .into_iter()
+                .map(|(f, t, k)| (f + at, t + at, k)),
+        );
+        return out;
+    }
     // stex's blankLine: an empty line ends maths and open commands.
     if chars.iter().all(|c| c.is_whitespace()) && chars.is_empty() {
         *state = State::default();
@@ -307,6 +339,7 @@ pub fn line(text: &str, state: &mut State) -> Vec<(usize, usize, Token)> {
             Mode::Normal => normal(&mut s, state),
             Mode::BeginParams => begin_params(&mut s, state),
             Mode::Math(end) => in_math(&mut s, state, end),
+            Mode::Verbatim(_) => unreachable!("handled above"),
         };
         if s.pos == s.start {
             // A mode that consumed nothing must not loop; CodeMirror throws in that case.
@@ -319,7 +352,24 @@ pub fn line(text: &str, state: &mut State) -> Vec<(usize, usize, Token)> {
             }
         }
     }
+    if let Some(name) = opens_verbatim(text) {
+        *state = State {
+            mode: Mode::Verbatim(name),
+            cmd: Vec::new(),
+        };
+    }
     out
+}
+
+/// The verbatim-like environment this line opens and leaves open, outside a comment.
+fn opens_verbatim(text: &str) -> Option<&'static str> {
+    let comment = super::commands::comment_start(text)
+        .map(|c| text.char_indices().nth(c).map_or(text.len(), |(b, _)| b));
+    super::commands::VERBATIM.into_iter().find(|name| {
+        text.rfind(&format!("\\begin{{{name}}}")).is_some_and(|i| {
+            comment.is_none_or(|c| i < c) && !text[i..].contains(&format!("\\end{{{name}}}"))
+        })
+    })
 }
 
 /// A line of a .bib file: the `@type`, the entry's key, field names, braces and `%` comments.
@@ -418,6 +468,25 @@ mod tests {
             .into_iter()
             .map(|(a, b, t)| (chars[a..b].iter().collect(), t))
             .collect()
+    }
+
+    #[test]
+    fn verbatim_and_verb_contents_are_not_latex() {
+        let mut st = State::default();
+        line("\\begin{lstlisting}[language=bash]", &mut st);
+        assert!(line("$ ls -l } ]", &mut st).is_empty());
+        line("\\end{lstlisting}", &mut st);
+        assert!(!matches!(st.mode, Mode::Verbatim(_)));
+        let after = line("text $x$", &mut st);
+        assert!(after.iter().any(|t| t.2 == Token::Keyword));
+        // \verb with a dollar does not open maths for what follows.
+        let t = toks("\\verb|$| and \\textbf{x}");
+        assert_eq!(t[0], ("\\verb|$|".into(), Token::Atom));
+        assert!(t.iter().all(|t| t.1 != Token::Keyword));
+        // A commented \begin{verbatim} opens nothing.
+        let mut st = State::default();
+        line("% \\begin{verbatim}", &mut st);
+        assert_eq!(st, State::default());
     }
 
     #[test]

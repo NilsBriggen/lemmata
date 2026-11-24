@@ -43,6 +43,8 @@ pub fn tokens(d: &Doc) -> Arc<Vec<Token>> {
 fn scan(d: &Doc) -> Vec<Token> {
     let mut out: Vec<Token> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
+    // Inside verbatim or lstlisting a `\begin` or `\end` is text; only its own `\end` counts.
+    let mut literal: Option<String> = None;
     // Typed at every key near a token, in thesis-sized files: lines are borrowed from the rope,
     // and only those that can hold a token are looked at.
     let mut next = 0;
@@ -69,6 +71,14 @@ fn scan(d: &Doc) -> Vec<Token> {
                 break;
             }
             let name = m.get(2).unwrap();
+            if let Some(v) = &literal {
+                if &m[1] != "end" || name.as_str() != v {
+                    continue;
+                }
+                literal = None;
+            } else if &m[1] == "begin" && super::commands::VERBATIM.contains(&name.as_str()) {
+                literal = Some(name.as_str().to_owned());
+            }
             let from = start + line[..name.start()].chars().count();
             let t = Token {
                 begin: &m[1] == "begin",
@@ -242,6 +252,15 @@ mod tests {
         assert_eq!(d.text(), "\\begin{ab}\n\\end{ab}");
         d.undo();
         assert_eq!(d.text(), "\\begin{a}\n\\end{a}");
+    }
+
+    #[test]
+    fn begin_and_end_inside_verbatim_are_text() {
+        let d = Doc::new("\\begin{verbatim}\n\\end{itemize}\n\\end{verbatim}");
+        assert!(unmatched(&d).is_empty());
+        let t = tokens(&d);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[1].name, "verbatim");
     }
 
     #[test]
