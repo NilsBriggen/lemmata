@@ -45,6 +45,9 @@ print(json.dumps(keep, indent=2, sort_keys=True))' || true)
       [[ $mode == restricted ]] && expected="$dir/expected-restricted.json"
       printf '%s\n' "$actual" > "$expected"
       echo "updated $name ($mode)"
+    else
+      # Restricted now equals trusted: an older file of its own would fail the comparison for good.
+      rm -f "$dir/expected-restricted.json"
     fi
   elif ! diff -u "$expected" <(printf '%s\n' "$actual"); then
     echo "FAIL $name ($mode)"
