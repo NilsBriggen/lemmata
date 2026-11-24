@@ -86,6 +86,11 @@ struct Hit {
     rects: Vec<Rect>,
 }
 
+/// Links the app opens outside: web pages and email addresses.
+pub fn is_link_to_open(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:")
+}
+
 /// What happened in the view that the pane acts on.
 #[derive(Debug)]
 pub enum Event {
@@ -150,7 +155,8 @@ pub struct PdfView {
     /// 1-based, 0 when there is none.
     pub match_index: usize,
     searching: bool,
-    selection: Option<(usize, usize, usize)>,
+    /// Where a text selection started and ended, each as (page, glyph); it can run over pages.
+    selection: Option<((usize, usize), (usize, usize))>,
     png_wanted: bool,
     /// The pages have keyboard focus (Ctrl+F searches the PDF, Ctrl+C copies the selection).
     pub focused: bool,
@@ -600,16 +606,20 @@ impl PdfView {
             self.searching = false;
             return;
         }
-        for n in 0..self.pages.len() {
-            if !self.search_text.contains_key(&n) && self.decorating.insert(n) {
-                self.engine
-                    .as_ref()
-                    .expect("a PDF is loaded")
-                    .send(Job::Decorate {
-                        doc: self.shown,
-                        page: n,
-                    });
-            }
+        let mut missing: Vec<usize> = (0..self.pages.len())
+            .filter(|n| !self.search_text.contains_key(n) && self.decorating.insert(*n))
+            .collect();
+        // Nearest first: the pages in view get their hits and links before page 1 does.
+        let here = self.current_page.saturating_sub(1);
+        missing.sort_by_key(|&n| n.abs_diff(here));
+        for n in missing {
+            self.engine
+                .as_ref()
+                .expect("a PDF is loaded")
+                .send(Job::Decorate {
+                    doc: self.shown,
+                    page: n,
+                });
         }
         self.searching = !self.decorating.is_empty();
         self.find(query, jump);
@@ -632,6 +642,24 @@ impl PdfView {
     }
 
     fn find_page(&mut self, n: usize) {
+        // The current match stays the same one when hits are merged in before it.
+        let current = self
+            .match_index
+            .checked_sub(1)
+            .and_then(|i| self.hits.get(i))
+            .map(|h| (h.page, h.rects[0]));
+        self.find_page_hits(n);
+        if let Some((page, rect)) = current
+            && let Some(i) = self
+                .hits
+                .iter()
+                .position(|h| h.page == page && h.rects[0] == rect)
+        {
+            self.match_index = i + 1;
+        }
+    }
+
+    fn find_page_hits(&mut self, n: usize) {
         self.hits.retain(|h| h.page != n);
         let q = self.query.trim().to_lowercase();
         let (Some((hay, map)), Some((glyphs, _))) = (self.search_text.get(&n), self.deco.get(&n))
@@ -802,10 +830,8 @@ impl PdfView {
         }
         let client = area.size();
         if client != self.client {
-            if matches!(self.fit, Fit::Width | Fit::Page)
-                && (client.x - self.client.x).abs() >= 4.0
-                && self.client.x > 0.0
-            {
+            // Whatever the step: a slow drag of the splitter is many small ones.
+            if matches!(self.fit, Fit::Width | Fit::Page) && self.client.x > 0.0 {
                 self.pending_ratio
                     .get_or_insert(self.scroll_y / self.content.y.max(1.0));
             }
@@ -842,7 +868,7 @@ impl PdfView {
             self.engine().epoch.fetch_add(1, Ordering::Relaxed);
             self.asked.retain(|(_, thumb)| *thumb);
         }
-        let epoch = self.engine().epoch.load(Ordering::Relaxed);
+        let mut epoch = self.engine().epoch.load(Ordering::Relaxed);
 
         let scroll = egui::ScrollArea::both()
             .id_salt(self.id)
@@ -887,15 +913,27 @@ impl PdfView {
             // The pages on screen are asked for first, then the ones half a screen away, and
             // their text layers last: the engine works through its queue in order.
             let (mut on_screen, mut around) = (Vec::new(), Vec::new());
-            let selected = self.selection.map(|(page, ..)| page);
+            let selected = self.selected_span().map(|(a, b)| a.0..=b.0);
             self.tex
                 .retain(|i, _| self.rects.get(*i).is_some_and(|r| keep.intersects(*r)));
             if self.query.is_empty() {
                 self.deco.retain(|i, _| {
-                    selected == Some(*i) || self.rects.get(*i).is_some_and(|r| keep.intersects(*r))
+                    selected.as_ref().is_some_and(|s| s.contains(i))
+                        || self.rects.get(*i).is_some_and(|r| keep.intersects(*r))
                 });
             }
-            for i in self.vertical_page_range(keep) {
+            let range = self.vertical_page_range(keep);
+            // A far jump or a fast drag of the scrollbar: renders still asked for pages that are
+            // now far away are moot, and must not queue ahead of the page landed on.
+            if self
+                .asked
+                .iter()
+                .any(|&(page, thumb)| !thumb && !range.contains(&page))
+            {
+                epoch = self.engine().epoch.fetch_add(1, Ordering::Relaxed) + 1;
+                self.asked.retain(|(_, thumb)| *thumb);
+            }
+            for i in range {
                 #[cfg(test)]
                 PDF_PAGE_VISITS.fetch_add(1, Ordering::Relaxed);
                 let r = self.rects[i];
@@ -1066,34 +1104,56 @@ impl PdfView {
             }
         }
 
-        // Selecting text: within the page the drag started on.
-        if resp.drag_started()
-            && let Some((i, pt)) = resp.interact_pointer_pos().and_then(at)
-            && let Some(g) = self.glyph_near(i, pt)
-        {
-            self.selection = Some((i, g, g));
-            resp.request_focus();
+        // Selecting text: a drag that starts on a glyph, and runs on over the pages after it.
+        if resp.drag_started() {
+            self.selection = None;
+            if let Some((i, pt)) = resp.interact_pointer_pos().and_then(at)
+                && let Some(g) = self.glyph_near(i, pt)
+            {
+                self.selection = Some(((i, g), (i, g)));
+                resp.request_focus();
+            }
         }
         if resp.dragged()
-            && let Some((page, start, _)) = self.selection
+            && let Some((start, _)) = self.selection
             && let Some(pos) = resp.interact_pointer_pos()
         {
             let c = pos - origin.to_vec2();
-            let r = self.rects[page];
-            let pt = ((c - r.min) / self.scales[page]).to_pos2();
-            if let Some(g) = self.glyph_near(page, pt) {
-                self.selection = Some((page, start, g));
+            // The page under the pointer, or the nearest one when it is in a gap.
+            let page = self.rects.iter().position(|r| r.contains(c)).or_else(|| {
+                (0..self.rects.len()).min_by(|&a, &b| {
+                    self.rects[a]
+                        .distance_sq_to_pos(c)
+                        .total_cmp(&self.rects[b].distance_sq_to_pos(c))
+                })
+            });
+            if let Some(page) = page {
+                let pt = ((c - self.rects[page].min) / self.scales[page]).to_pos2();
+                if let Some(g) = self.glyph_near(page, pt) {
+                    self.selection = Some((start, (page, g)));
+                }
             }
         }
-        if let Some((page, a, b)) = self.selection
-            && let Some((glyphs, _)) = self.deco.get(&page)
-        {
-            for g in &glyphs[a.min(b)..=a.max(b).min(glyphs.len() - 1)] {
-                painter.rect_filled(
-                    screen(page, g.rect, &self.rects, &self.scales),
-                    0,
-                    accent.gamma_multiply(0.35),
-                );
+        if let Some((lo, hi)) = self.selected_span() {
+            for page in lo.0..=hi.0.min(self.rects.len().saturating_sub(1)) {
+                let Some((glyphs, _)) = self.deco.get(&page) else {
+                    continue;
+                };
+                if !ui.is_rect_visible(self.rects[page].translate(origin.to_vec2())) {
+                    continue;
+                }
+                let from = if page == lo.0 { lo.1 } else { 0 };
+                let to = if page == hi.0 { hi.1 } else { usize::MAX };
+                for g in glyphs
+                    .get(from..=to.min(glyphs.len().saturating_sub(1)))
+                    .unwrap_or_default()
+                {
+                    painter.rect_filled(
+                        screen(page, g.rect, &self.rects, &self.scales),
+                        0,
+                        accent.gamma_multiply(0.35),
+                    );
+                }
             }
         }
 
@@ -1160,12 +1220,10 @@ impl PdfView {
             }
         } else if resp.clicked() {
             resp.request_focus();
-            if self.selection.is_some_and(|(_, a, b)| a == b) || self.selection.is_none() {
-                self.selection = None;
-            }
+            self.selection = None;
             if let Some(t) = over_link
                 && let Some(url) = self.goto_target(&t)
-                && (url.starts_with("http://") || url.starts_with("https://"))
+                && is_link_to_open(&url)
             {
                 *event = Some(Event::OpenUrl(url));
             }
@@ -1186,14 +1244,28 @@ impl PdfView {
             .map(|(i, _)| i)
     }
 
+    /// The selection's two ends in document order.
+    fn selected_span(&self) -> Option<((usize, usize), (usize, usize))> {
+        let (a, b) = self.selection?;
+        Some((a.min(b), a.max(b)))
+    }
+
+    /// shortcut: a page whose text layer isn't loaded (scrolled past very fast) is left out, and
+    /// there is no Ctrl+A; ask the engine for the missing layers first if that shows up.
     pub fn selected_text(&self) -> String {
-        let Some((page, a, b)) = self.selection else {
+        let Some((lo, hi)) = self.selected_span() else {
             return String::new();
         };
-        let Some((glyphs, _)) = self.deco.get(&page) else {
-            return String::new();
-        };
-        page_text(&glyphs[a.min(b)..=a.max(b).min(glyphs.len() - 1)]).0
+        (lo.0..=hi.0)
+            .filter_map(|page| {
+                let (glyphs, _) = self.deco.get(&page)?;
+                let from = if page == lo.0 { lo.1 } else { 0 };
+                let to = (if page == hi.0 { hi.1 } else { usize::MAX })
+                    .min(glyphs.len().checked_sub(1)?);
+                glyphs.get(from..=to).map(|g| page_text(g).0)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -1648,8 +1720,8 @@ mod tests {
         assert!((h.state().scroll_y - expected.y).abs() < 0.01);
     }
 
-    #[test]
-    fn a_pdf_web_link_emits_an_open_url_event() {
+    /// What clicking a link to `url` in a one-page view emits.
+    fn click_link(url: &str) -> Option<Event> {
         let mut view = PdfView::new(&egui::Context::default(), egui::Id::unique("links"));
         view.pages = vec![vec2(100.0, 100.0)];
         view.rects = vec![Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 100.0))];
@@ -1660,7 +1732,7 @@ mod tests {
                 Vec::new(),
                 vec![Link {
                     rect: Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 100.0)),
-                    target: Target::Url("https://example.com".into()),
+                    target: Target::Url(url.into()),
                 }],
             ),
         );
@@ -1690,8 +1762,111 @@ mod tests {
             });
             h.run();
         }
+        seen.lock().unwrap().take()
+    }
+
+    #[test]
+    fn a_pdf_web_or_email_link_emits_an_open_url_event() {
+        for url in ["https://example.com", "mailto:me@uni.edu"] {
+            assert!(
+                matches!(click_link(url), Some(Event::OpenUrl(u)) if u == url),
+                "{url}"
+            );
+        }
+    }
+
+    fn glyph(text: &str, x: f32) -> Glyph {
+        Glyph {
+            text: text.into(),
+            rect: Rect::from_min_size(pos2(x, 0.0), vec2(5.0, 10.0)),
+        }
+    }
+
+    #[test]
+    fn a_selection_can_run_over_two_pages() {
+        let mut view = PdfView::new(&egui::Context::default(), egui::Id::unique("two-pages"));
+        view.deco.insert(
+            0,
+            (
+                vec![glyph("a", 0.0), glyph("b", 5.0), glyph("c", 10.0)],
+                vec![],
+            ),
+        );
+        view.deco
+            .insert(1, (vec![glyph("d", 0.0), glyph("e", 5.0)], vec![]));
+        view.selection = Some(((0, 1), (1, 0)));
+        assert_eq!(view.selected_text(), "bc\nd");
+        // Dragged upwards, the same text.
+        view.selection = Some(((1, 0), (0, 1)));
+        assert_eq!(view.selected_text(), "bc\nd");
+    }
+
+    #[test]
+    fn the_current_search_match_stays_put_as_earlier_pages_arrive() {
+        let ctx = egui::Context::default();
+        let mut view = PdfView::new(&ctx, egui::Id::unique("match"));
+        view.engine = Some(Engine::new(ctx.clone()));
+        view.pages = vec![vec2(600.0, 800.0); 3];
+        view.shown = 1;
+        view.sent = 1;
+        view.search("hit", false);
+        decorate(&mut view, 1, 2, "hit");
+        view.receive(&ctx);
+        view.search_step(1);
+        assert_eq!((view.match_index, view.hits[0].page), (1, 2));
+        decorate(&mut view, 1, 0, "hit");
+        view.receive(&ctx);
+        assert_eq!(view.hits.len(), 2);
+        assert_eq!(view.hits[view.match_index - 1].page, 2);
+    }
+
+    #[test]
+    fn a_far_jump_drops_the_renders_asked_for_pages_left_behind() {
+        let mut view = thousand_page_view(Layout::Single);
+        view.pages.truncate(400);
+        let mut h = pdf_harness(view);
+        h.run();
+        let epoch = |h: &egui_kittest::Harness<'_, PdfView>| {
+            h.state()
+                .engine
+                .as_ref()
+                .unwrap()
+                .epoch
+                .load(Ordering::Relaxed)
+        };
+        let before = epoch(&h);
+        let y = h.state().rects[340].top();
+        h.state_mut().asked.insert((5, false));
+        h.state_mut().jump = Some(Jump::Offset(vec2(0.0, y)));
+        for _ in 0..3 {
+            h.step();
+        }
+        assert!(epoch(&h) > before, "the stale renders are cancelled");
+        assert!(!h.state().asked.contains(&(5, false)));
         assert!(
-            matches!(&*seen.lock().unwrap(), Some(Event::OpenUrl(url)) if url == "https://example.com")
+            h.state().asked.iter().any(|&(p, thumb)| !thumb && p >= 340),
+            "and the pages landed on are asked for again"
+        );
+    }
+
+    #[test]
+    fn a_slow_width_change_keeps_the_place_in_the_document() {
+        let mut view = thousand_page_view(Layout::Single);
+        view.fit = Fit::Width;
+        let mut h = pdf_harness(view);
+        h.run();
+        h.state_mut().jump = Some(Jump::Offset(vec2(0.0, 300_000.0)));
+        h.run();
+        let ratio = h.state().scroll_y / h.state().content.y;
+        for width in [802.0, 804.0, 806.0] {
+            h.set_size(vec2(width, 600.0));
+            h.step();
+            h.step();
+        }
+        let now = h.state().scroll_y / h.state().content.y;
+        assert!(
+            (now - ratio).abs() * h.state().content.y < 50.0,
+            "moved from {ratio} to {now}"
         );
     }
 }

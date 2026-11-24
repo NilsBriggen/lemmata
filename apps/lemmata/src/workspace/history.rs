@@ -217,7 +217,8 @@ impl Workspace {
         Self::job(
             backend,
             move |shell| shell.history_snapshot(label),
-            move |ws, b, r| match r {
+            move |ws, b, r| {
+                match r {
                 Ok(Some(_)) => ws.load_history(b),
                 Ok(None) if manual => ws.notice(
                     format!("Nothing changed since the last snapshot, so “{name}” wasn't saved. Rename the newest one instead."),
@@ -229,6 +230,7 @@ impl Workspace {
                     ws.history.edited = true;
                     ws.notice(format!("Couldn't save a snapshot: {e}"), Tone::Error);
                 }
+            }
             },
         );
     }
@@ -776,7 +778,11 @@ impl Workspace {
         ui.painter().rect_filled(rest, 0, p.code_bg);
         if !hunks::is_text_path(&path) {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("This file isn't text, so there is no diff to show.").size(12.0).color(p.muted));
+            ui.label(
+                egui::RichText::new("This file isn't text, so there is no diff to show.")
+                    .size(12.0)
+                    .color(p.muted),
+            );
             return;
         }
         let rows = self.history.diff_rows_cached();
@@ -849,10 +855,9 @@ impl Workspace {
                     let _ = sh.history_snapshot("Before review".into());
                     // The window the user sees, plus the snapshot just taken and a timer one.
                     let list = sh.history_list(snapshots.len() + 2)?;
-                    let idx = list
-                        .iter()
-                        .position(|s| s.id == base.id)
-                        .ok_or("That snapshot is no longer in the list. Reload History and try again.")?;
+                    let idx = list.iter().position(|s| s.id == base.id).ok_or(
+                        "That snapshot is no longer in the list. Reload History and try again.",
+                    )?;
                     let mut paths: Vec<String> = list[..idx]
                         .iter()
                         .flat_map(|s| s.changes.iter().map(|c| c.path.clone()))

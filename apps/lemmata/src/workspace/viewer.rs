@@ -92,7 +92,9 @@ fn decode_svg(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
     Ok(ColorImage::from_rgba_premultiplied([w, h], pixmap.data()))
 }
 
-pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) {
+/// Shows the file; a link clicked in a PDF comes back as the address to open.
+pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) -> Option<String> {
+    let mut url = None;
     let area = ui.max_rect();
     ui.painter().rect_filled(area, 0, p.pdf_ground);
     let msg = |ui: &mut Ui, text: &str| {
@@ -109,7 +111,9 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) {
         Viewer::Error(e) => msg(ui, e),
         Viewer::Pdf(view) => {
             // A PDF of the project: no SyncTeX.
-            let _ = view.show(ui, p);
+            if let Some(super::super::pdf::view::Event::OpenUrl(u)) = view.show(ui, p) {
+                url = Some(u);
+            }
         }
         Viewer::Image {
             image,
@@ -216,6 +220,7 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) {
             ui.painter().galley(r.min + vec2(9.0, 3.0), g, p.muted);
         }
     }
+    url
 }
 
 /// The 16 px grey-and-white checkerboard behind transparent images.

@@ -71,11 +71,7 @@ fn diff(a: &[&str], b: &[&str]) -> (Vec<bool>, Vec<bool>) {
         } else {
             k - 1
         };
-        let prev_x = if d == 0 {
-            0
-        } else {
-            v[(prev_k + d) as usize]
-        };
+        let prev_x = if d == 0 { 0 } else { v[(prev_k + d) as usize] };
         let prev_y = prev_x - prev_k;
         while x > prev_x && y > prev_y {
             x -= 1;
@@ -264,7 +260,10 @@ mod tests {
         let new = old.replace("\r\n", "\n");
         let h = compute(&old, &new);
         assert_eq!(h.len(), 1);
-        assert_eq!((h[0].old_text.as_str(), h[0].new_text.as_str()), (old.as_str(), new.as_str()));
+        assert_eq!(
+            (h[0].old_text.as_str(), h[0].new_text.as_str()),
+            (old.as_str(), new.as_str())
+        );
         assert_eq!(reject(&new, &h), old);
     }
 

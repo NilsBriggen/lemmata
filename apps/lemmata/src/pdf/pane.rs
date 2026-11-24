@@ -611,7 +611,7 @@ impl Pane {
             });
         if let Some(t) = go
             && let Some(url) = self.view.goto_target(&t)
-            && (url.starts_with("http://") || url.starts_with("https://"))
+            && super::view::is_link_to_open(&url)
         {
             return Some(Action::OpenUrl(url));
         }

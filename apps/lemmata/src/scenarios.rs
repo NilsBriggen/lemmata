@@ -706,11 +706,15 @@ fn the_history_list_shows_older_snapshots_on_request() {
     ws_mut(&mut h).0.history.limit = 2;
     let (w, backend, _) = ws_mut(&mut h);
     w.load_history(backend);
-    wait_for(&mut h, "the short list", |h| ws(h).history.snapshots.len() == 2);
+    wait_for(&mut h, "the short list", |h| {
+        ws(h).history.snapshots.len() == 2
+    });
     ws_mut(&mut h).0.history.limit = all;
     let (w, backend, _) = ws_mut(&mut h);
     w.load_history(backend);
-    wait_for(&mut h, "the whole list", |h| ws(h).history.snapshots.len() == all);
+    wait_for(&mut h, "the whole list", |h| {
+        ws(h).history.snapshots.len() == all
+    });
 }
 
 #[test]

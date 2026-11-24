@@ -387,8 +387,10 @@ fn open_external(target: &str) -> Result<(), String> {
 impl Shell {
     /// Opens a web page (the guide, a link in the PDF, a bug report) in the browser.
     pub fn open_url(&self, url: String) -> CmdResult<()> {
-        if !(url.starts_with("https://") || url.starts_with("http://")) {
-            return Err("Only web addresses can be opened.".into());
+        // A mailto: link in a PDF opens the mail program; one with a query could attach files.
+        let mail = url.starts_with("mailto:") && !url.contains('?');
+        if !(url.starts_with("https://") || url.starts_with("http://") || mail) {
+            return Err("Only web and email addresses can be opened.".into());
         }
         open_external(&url).map_err(|e| format!("Could not open {url}: {e}"))
     }

@@ -1153,7 +1153,11 @@ mod tests {
             decorated.set(decorated.get() + matches!(d, Done::Decorated { .. }) as usize);
             matches!(d, Done::Rendered { doc, .. } if *doc == a)
         });
-        assert!(decorated.get() < 200, "{} text layers came first", decorated.get());
+        assert!(
+            decorated.get() < 200,
+            "{} text layers came first",
+            decorated.get()
+        );
     }
 
     #[test]

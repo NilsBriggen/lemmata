@@ -1746,12 +1746,14 @@ impl Workspace {
             {
                 let path = self.active.clone().unwrap();
                 let v = self.viewers.get_mut(&path).unwrap();
-                viewer::show(
+                if let Some(url) = viewer::show(
                     &mut ui.new_child(egui::UiBuilder::new().max_rect(body)),
                     p,
                     &path,
                     v,
-                );
+                ) {
+                    self.spawn(backend, move |shell| Msg::Done(shell.open_url(url)));
+                }
             }
             None if self.active.is_none() => {
                 // .no-file
