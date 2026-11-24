@@ -438,8 +438,10 @@ impl Editor {
     }
 }
 
-/// The suggestions menu of a misspelled word (`.lm-spell-menu`).
+/// The right-click menu: Cut, Copy, Paste, and for a misspelled word its suggestions
+/// (`.lm-spell-menu`).
 struct SpellMenu {
+    /// Empty when the click wasn't on a misspelled word.
     word: String,
     from: usize,
     to: usize,
@@ -1668,12 +1670,30 @@ pub fn show(
                 .find(|c| at >= c.1 && at < c.2)
                 .map(|c| c.0.clone());
         }
-        // Right-click on a misspelled word: suggestions and "Add to dictionary".
+        // Right-click: Cut, Copy, Paste; on a misspelled word also suggestions and "Add to
+        // dictionary". Outside the selection the caret moves there first, as in other editors.
         if response.secondary_clicked()
             && let Some(pos) = response.interact_pointer_pos()
         {
+            ui.memory_mut(|m| m.request_focus(id));
             let (at, _, _) = hit(&mut geo, ui, &ed.doc, pos);
-            ed.spell_menu =
+            if !ed
+                .doc
+                .selection
+                .ranges
+                .iter()
+                .any(|r| !r.is_empty() && at >= r.from() && at <= r.to())
+            {
+                ed.doc.selection = Selection::cursor(at);
+            }
+            let plain = || SpellMenu {
+                word: String::new(),
+                from: at,
+                to: at,
+                at: pos,
+                suggestions: std::sync::Arc::new(std::sync::Mutex::new(Some(Vec::new()))),
+            };
+            ed.spell_menu = Some(
                 spell_words
                     .iter()
                     .find(|w| at >= w.0 && at <= w.1)
@@ -1695,7 +1715,9 @@ pub fn show(
                             at: pos,
                             suggestions: cell,
                         }
-                    });
+                    })
+                    .unwrap_or_else(plain),
+            );
         }
         // Hovering a grammar finding: its message, the fixes, and "Ignore this rule".
         if ed.spell_menu.is_none()
@@ -1813,7 +1835,8 @@ pub fn show(
         if response.is_pointer_button_down_on()
             && !fold_hit
             && ed.drag.is_none()
-            && ui.input(|i| i.pointer.any_pressed())
+            // Only the primary button selects: a right-click keeps the selection for its menu.
+            && ui.input(|i| i.pointer.primary_pressed())
             && let Some(pos) = response.interact_pointer_pos()
         {
             ui.memory_mut(|m| m.request_focus(id));
@@ -1853,7 +1876,11 @@ pub fn show(
             drag_to(ed, &mut geo, ui, at, line, x);
         } else if let Some(pos) = response
             .interact_pointer_pos()
-            .filter(|_| ed.drag.is_some() && response.is_pointer_button_down_on())
+            .filter(|_| {
+                ed.drag.is_some()
+                    && response.is_pointer_button_down_on()
+                    && ui.input(|i| i.pointer.primary_down())
+            })
         {
             let (at, line, x) = hit(&mut geo, ui, &ed.doc, pos);
             drag_to(ed, &mut geo, ui, at, line, x);
@@ -2129,6 +2156,29 @@ pub fn show(
                             });
                             resp.clicked()
                         };
+                        let has_selection = ed.doc.selection.ranges.iter().any(|r| !r.is_empty());
+                        for (label, enabled, cmd) in [
+                            ("Cut", has_selection, egui::ViewportCommand::RequestCut),
+                            ("Copy", has_selection, egui::ViewportCommand::RequestCopy),
+                            ("Paste", true, egui::ViewportCommand::RequestPaste),
+                        ] {
+                            let color = if enabled { p.ink } else { p.faint };
+                            if item(ui, label, color) && enabled {
+                                ui.ctx().send_viewport_cmd(cmd);
+                                close = true;
+                            }
+                        }
+                        if word.is_empty() {
+                            return;
+                        }
+                        ui.add_space(4.0);
+                        let line_y = ui.cursor().top();
+                        ui.painter().hline(
+                            ui.min_rect().x_range(),
+                            line_y,
+                            Stroke::new(1.0, p.border),
+                        );
+                        ui.add_space(4.0);
                         match &suggestions {
                             None => muted(ui, "Finding suggestions…"),
                             Some(list) if list.is_empty() => muted(ui, "No suggestions"),
@@ -3351,6 +3401,19 @@ mod tests {
         h.get_by_label("Editor").focus();
         h.run();
         h
+    }
+
+    #[test]
+    fn right_click_keeps_the_selection_and_offers_cut_copy_paste() {
+        let text = "word word word\n".repeat(30);
+        let mut h = wrapped_harness(&text, 0);
+        h.state_mut().doc.selection = Selection::single(Range::new(0, text.chars().count()));
+        h.run();
+        h.get_by_label("Editor").click_secondary();
+        h.run();
+        assert_eq!(h.state().doc.selection.main(), Range::new(0, text.chars().count()));
+        assert!(h.state().spell_menu.is_some());
+        assert!(h.query_by_label("Cut").is_some() && h.query_by_label("Paste").is_some());
     }
 
     #[test]
