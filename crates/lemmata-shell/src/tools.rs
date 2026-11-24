@@ -222,6 +222,23 @@ fn run(mut cmd: Command, input: &str, timeout: Duration) -> Result<String, Strin
     })
 }
 
+/// latexindent is a Perl script, and some systems (Arch, Debian's minimal TeX Live) leave out the
+/// Perl modules it needs: Perl then prints its whole search path. Says which module, and how.
+fn missing_perl_module(err: &str) -> Option<String> {
+    let path = err
+        .split("Can't locate ")
+        .nth(1)?
+        .split(".pm in @INC")
+        .next()?;
+    let module = path.replace('/', "::");
+    let dashed = module.replace("::", "-").to_lowercase();
+    Some(format!(
+        "latexindent needs the Perl module {module}, which isn't installed. Install perl-{dashed} \
+         (Arch), lib{dashed}-perl (Debian, Ubuntu) or perl({module}) (Fedora), or run \
+         `cpan {module}`. Installing tex-fmt works too: Lemmata uses it instead."
+    ))
+}
+
 /// tex-fmt if present (and the indent is spaces), else latexindent.
 fn format_with(bin_dir: Option<&Path>, text: &str, indent: &str) -> CmdResult<String> {
     check_indent(indent)?;
@@ -235,7 +252,7 @@ fn format_with(bin_dir: Option<&Path>, text: &str, indent: &str) -> CmdResult<St
     if let Some(latexindent) = find_tool("latexindent", bin_dir) {
         let mut cmd = Command::new(latexindent);
         cmd.args(latexindent_args(indent));
-        return run(cmd, text, FORMAT_TIMEOUT);
+        return run(cmd, text, FORMAT_TIMEOUT).map_err(|e| missing_perl_module(&e).unwrap_or(e));
     }
     Err("Formatting needs latexindent (part of TeX Live) or tex-fmt.".into())
 }
@@ -337,6 +354,15 @@ mod tests {
             found,
             vec![("main.tex".into(), 2), ("sections/b.tex".into(), 1)]
         );
+    }
+
+    #[test]
+    fn a_missing_perl_module_is_named_with_its_packages() {
+        let err = "The formatter failed: Can't locate YAML/Tiny.pm in @INC (you may need to install the YAML::Tiny module) (@INC entries checked: /usr/share/perl5) at x.pm line 107.";
+        let msg = missing_perl_module(err).unwrap();
+        assert!(msg.contains("Perl module YAML::Tiny"), "{msg}");
+        assert!(msg.contains("perl-yaml-tiny (Arch)") && msg.contains("libyaml-tiny-perl"));
+        assert!(missing_perl_module("The formatter failed: syntax error").is_none());
     }
 
     #[test]
