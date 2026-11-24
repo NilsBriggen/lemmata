@@ -341,11 +341,17 @@ impl Problems {
                                 }
                             });
                         }
-                        if let (Some(cmd), Kind::MissingFile { name }) = (&fix.command, &d.kind) {
+                        if let Some(cmd) = &fix.command {
                             let mut copied = self.copied;
                             indent(ui, &mut |ui| {
                                 if command_box(ui, p, cmd, &mut copied) {
-                                    out.push(Action::OpenTerminal(name.clone()));
+                                    // A missing file is looked up again for this computer's installer.
+                                    out.push(match &d.kind {
+                                        Kind::MissingFile { name } => {
+                                            Action::OpenTerminal(name.clone())
+                                        }
+                                        _ => Action::OpenCommand(cmd.clone()),
+                                    });
                                 }
                                 ui.label(
                                     egui::RichText::new("After installing, recompile.")

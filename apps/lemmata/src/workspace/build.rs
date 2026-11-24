@@ -422,6 +422,13 @@ impl Workspace {
                     let id = self.build.seq;
                     self.spawn(backend, move |shell| Msg::Log(id, shell.read_log()));
                 }
+                PaneAction::OpenCommand(command) => {
+                    self.spawn(backend, move |shell| {
+                        Msg::Done(shell.open_install_terminal(
+                            lemmata_shell::InstallRequest::Command(command),
+                        ))
+                    });
+                }
                 PaneAction::OpenTerminal(file) => {
                     self.spawn(backend, move |shell| {
                         Msg::Done(

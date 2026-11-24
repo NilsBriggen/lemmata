@@ -1103,11 +1103,14 @@ pub enum InstallRequest {
     Tex { platform: String, full: bool },
     /// The package providing a missing file, e.g. `pgfplots.sty`.
     Package { file: String },
+    /// A command the app itself showed (Perl, MiKTeX, Pygments), as it is.
+    Command(String),
 }
 
 impl Shell {
     pub fn open_install_terminal(&self, request: InstallRequest) -> CmdResult<()> {
         let command = match request {
+            InstallRequest::Command(command) => command,
             InstallRequest::Tex { platform, full } => {
                 let all = lemmata_tex::os::all_instructions();
                 let i = all.get(&platform).ok_or("Unknown platform.")?;
