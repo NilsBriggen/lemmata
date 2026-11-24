@@ -387,8 +387,29 @@ fn slow_commands_are_stopped() {
         &["-c", "alias.zz=!sleep 20", "zz"],
         Duration::from_millis(300),
     );
-    assert!(e.err().unwrap().to_string().contains("took longer"));
+    let e = e.err().unwrap().to_string();
+    assert!(e.contains("didn't finish") && !e.contains("connection"));
     assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stopped_command_gets_to_clean_up_first() {
+    isolate();
+    let d = tempfile::tempdir().unwrap();
+    let mark = d.path().join("cleaned");
+    let alias = format!(
+        "alias.zz=!trap 'touch {}; exit 0' TERM; sleep 20 & wait",
+        mark.display()
+    );
+    let e = exec(
+        &find_git().unwrap(),
+        None,
+        &["-c", &alias, "zz"],
+        Duration::from_millis(300),
+    );
+    assert!(e.is_err());
+    assert!(mark.exists(), "git was killed without a chance to remove its lock files");
 }
 
 #[cfg(unix)]
