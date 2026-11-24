@@ -111,12 +111,24 @@ pub fn search_in(text: &str, re: &Regex) -> Vec<LineMatch> {
 
 /// The text of one line after replacing every match in it.
 fn replace_line(line: &str, re: &Regex, replacement: &str, regex_mode: bool) -> String {
-    if regex_mode {
-        re.replace_all(line, replacement).into_owned()
-    } else {
-        re.replace_all(line, regex::NoExpand(replacement))
-            .into_owned()
+    // Empty matches (`\d*` between letters) are skipped, as search_in skips them.
+    let mut out = String::with_capacity(line.len());
+    let mut last = 0;
+    for c in re.captures_iter(line) {
+        let m = c.get(0).unwrap();
+        if m.is_empty() {
+            continue;
+        }
+        out.push_str(&line[last..m.start()]);
+        if regex_mode {
+            c.expand(replacement, &mut out);
+        } else {
+            out.push_str(replacement);
+        }
+        last = m.end();
     }
+    out.push_str(&line[last..]);
+    out
 }
 
 /// Replaces matches only on the listed (1-based) lines. Returns the new text
@@ -1198,6 +1210,14 @@ mod tests {
         let (new, n) = replace_on_lines(text, &re, "dog", false, &lines);
         assert_eq!(new, "dog one\r\ncat two\ndog dog three");
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn a_pattern_that_can_match_nothing_replaces_only_what_it_found() {
+        let re = Regex::new(r"\d*").unwrap();
+        assert_eq!(search_in("a1b", &re).len(), 1);
+        assert_eq!(replace_line("a1b", &re, "N", true), "aNb");
+        assert_eq!(replace_line("a1b", &re, "N", false), "aNb");
     }
 
     #[test]
