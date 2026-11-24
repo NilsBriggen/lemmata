@@ -46,9 +46,11 @@ pub fn show(ctx: &egui::Context, p: &Palette, t: &Toast) -> Option<Out> {
                         let v = &t.update.version;
                         let text = match (&t.error, t.progress) {
                             (Some(e), _) => format!("The update failed: {e}"),
-                            (None, Some(f)) => {
+                            (None, Some(f)) if f > 0.0 => {
                                 format!("Downloading Lemmata {v}… {}%", (f * 100.0).round())
                             }
+                            // No size from the server, or nothing yet: no percentage to show.
+                            (None, Some(_)) => format!("Downloading Lemmata {v}…"),
                             (None, None) => format!("Lemmata {v} is available."),
                         };
                         ui.add(egui::Label::new(egui::RichText::new(text).color(p.ink)).wrap());
