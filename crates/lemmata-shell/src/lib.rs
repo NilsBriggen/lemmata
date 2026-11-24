@@ -1074,7 +1074,11 @@ impl Shell {
             return Err("The project was closed.".into());
         }
         // A start made after this one (the trust answer changed) has the say, not the last to finish.
-        if self.lsp_generation.load(std::sync::atomic::Ordering::SeqCst) != generation {
+        if self
+            .lsp_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != generation
+        {
             drop(server);
             return Err(LSP_SUPERSEDED.into());
         }

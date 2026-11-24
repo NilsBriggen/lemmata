@@ -23,9 +23,8 @@ pub fn scrub_paths(text: &str) -> String {
     static QUOTED: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"(['"`(])(?:~|/)[^'"`)\n]*"#).unwrap());
     // /data/thesis/main.tex, ~/texlive: not "and/or", not ./relative/paths
-    static UNIX: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(^|[\s=])(?:~|/[^\s'"`/]+)/[^\s'"`]+"#).unwrap()
-    });
+    static UNIX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(^|[\s=])(?:~|/[^\s'"`/]+)/[^\s'"`]+"#).unwrap());
     let text = WIN.replace_all(text, "${1}<path>");
     let text = QUOTED.replace_all(&text, "${1}<path>");
     UNIX.replace_all(&text, "${1}<path>").into_owned()
@@ -177,11 +176,20 @@ mod tests {
             scrub_paths("File `/home/jane/My Thesis/x.sty' not found"),
             "File `<path>' not found"
         );
-        assert_eq!(scrub_paths("in C:\\Users\\Jane Doe\\thesis\\a.tex"), "in <path>");
+        assert_eq!(
+            scrub_paths("in C:\\Users\\Jane Doe\\thesis\\a.tex"),
+            "in <path>"
+        );
         assert_eq!(scrub_paths("(D:/Documents/thesis/main.aux"), "(<path>");
-        assert_eq!(scrub_paths("opened /data/thesis/main.tex ok"), "opened <path> ok");
+        assert_eq!(
+            scrub_paths("opened /data/thesis/main.tex ok"),
+            "opened <path> ok"
+        );
         assert_eq!(scrub_paths("in /root/x.tex"), "in <path>");
-        assert_eq!(scrub_paths("a and/or b, 3 / 4, https://x.org/a"), "a and/or b, 3 / 4, https://x.org/a");
+        assert_eq!(
+            scrub_paths("a and/or b, 3 / 4, https://x.org/a"),
+            "a and/or b, 3 / 4, https://x.org/a"
+        );
         assert_eq!(
             scrub_paths("see ~/texlive/2026 and ./chapters/a.tex"),
             "see <path> and ./chapters/a.tex"

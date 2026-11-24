@@ -28,6 +28,16 @@ impl Workspace {
         if self.lsp.state != crate::lsp::State::Ready {
             return;
         }
+        for what in self.lsp.expire(std::time::Duration::from_secs(10)) {
+            match what {
+                crate::lsp::Pending::Hover { .. } => self.lookups.hover = None,
+                crate::lsp::Pending::Definition | crate::lsp::Pending::References => self.notice(
+                    "texlab didn't answer, so this can't be answered now. \"Go to a label or citation…\" in the command palette finds them by name.",
+                    Tone::Info,
+                ),
+                _ => {}
+            }
+        }
         let mut edits: HashMap<String, _> = self
             .editors
             .iter_mut()
@@ -157,6 +167,13 @@ impl Workspace {
             Msg::Event(lemmata_shell::Event::LspExit { generation })
                 if Some(generation) == self.lsp.generation =>
             {
+                // Said once: the lost-server message above only comes while it is Ready.
+                if self.lsp.state == crate::lsp::State::Ready {
+                    self.notice(
+                        "The language server (texlab) stopped, so completion and hover may be missing. Reopen the project to restart it.",
+                        Tone::Info,
+                    );
+                }
                 self.lsp.state = crate::lsp::State::Failed("texlab stopped.".into());
             }
             _ => {}
