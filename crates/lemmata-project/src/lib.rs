@@ -649,15 +649,11 @@ pub struct Analysis {
 pub type Sources = std::collections::HashMap<PathBuf, String>;
 
 pub fn analyze(project: &Project, entries: &[Entry]) -> Analysis {
-    analyze_with(project, entries, |path| {
-        lemmata_env::fs::read_text(path)
-    })
+    analyze_with(project, entries, |path| lemmata_env::fs::read_text(path))
 }
 
 pub fn source_snapshot(project: &Project, entries: &[Entry]) -> Sources {
-    source_snapshot_with(project, entries, |path| {
-        lemmata_env::fs::read_text(path)
-    })
+    source_snapshot_with(project, entries, |path| lemmata_env::fs::read_text(path))
 }
 
 pub fn source_snapshot_with(

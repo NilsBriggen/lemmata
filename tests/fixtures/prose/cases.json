@@ -24,5 +24,8 @@
   {"name": "starred verb with plus delimiter", "tex": "\\verb*+a b+ text", "words": ["text"]},
   {"name": "verb delimiter may be a brace-like character", "tex": "\\verb!{x y}! kept", "words": ["kept"]},
   {"name": "verb with dollar sign is not maths", "tex": "cost \\verb|$| now", "words": ["cost", "now"]},
-  {"name": "verb without closing delimiter skips the line", "tex": "see \\verb#open code", "words": ["see"]}
+  {"name": "verb without closing delimiter skips the line", "tex": "see \\verb#open code", "words": ["see"]},
+  {"name": "float and tabular arguments", "tex": "\\begin{figure}[htbp] Look\n\\begin{tabular}{p{3cm}l} a & b\n\\begin{theorem}[Pythagoras] sum\n\\begin{enumerate}[label=(\\alph*)] one", "words": ["Look", "a", "b", "Pythagoras", "sum", "one"]},
+  {"name": "TeX accents inside a word", "tex": "Schr\\\"odinger and M\\\"{u}ller met Erd\\H{o}s, Fran\\c{c}ois", "words": ["Schr\\\"odinger", "and", "M\\\"{u}ller", "met", "Erd\\H{o}s", "Fran\\c{c}ois"]},
+  {"name": "a command after a letter is still a command", "tex": "a\\cite{x} a\\vspace{1cm} b", "words": ["a", "a", "b"]}
 ]

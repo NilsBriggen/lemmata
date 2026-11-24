@@ -737,7 +737,10 @@ mod tests {
         let dest = d.path().join("out.zip");
         zip_project(&p, &dest, false).unwrap();
         let z = zip::ZipArchive::new(std::fs::File::open(&dest).unwrap()).unwrap();
-        assert!(z.file_names().any(|n| n.unwrap() == "figures/Fig: results.pdf"));
+        assert!(
+            z.file_names()
+                .any(|n| n.unwrap() == "figures/Fig: results.pdf")
+        );
     }
 
     /// A project from elsewhere can't get a private file into a zip the user sends out, nor a name
