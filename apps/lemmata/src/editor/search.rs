@@ -155,16 +155,14 @@ pub fn find_all(
     let Ok(re) = regex(query, case_sensitive, regexp) else {
         return Vec::new();
     };
-    // Byte offsets to char offsets.
-    let mut byte_to_char = Vec::with_capacity(text.len() + 1);
-    for (i, ch) in text.chars().enumerate() {
-        for _ in 0..ch.len_utf8() {
-            byte_to_char.push(i);
-        }
-    }
-    let n = text.chars().count();
-    byte_to_char.push(n);
     let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    // Byte offsets to char offsets, counted on from the previous match.
+    let (mut byte, mut ch) = (0, 0);
+    let mut char_at = |b: usize| {
+        ch += text[byte..b].chars().count();
+        byte = b;
+        ch
+    };
     re.find_iter(text)
         .filter(|m| !m.as_str().is_empty())
         .filter(|m| {
@@ -172,7 +170,7 @@ pub fn find_all(
                 || (!word(text[..m.start()].chars().next_back())
                     && !word(text[m.end()..].chars().next()))
         })
-        .map(|m| (byte_to_char[m.start()], byte_to_char[m.end()]))
+        .map(|m| (char_at(m.start()), char_at(m.end())))
         .collect()
 }
 

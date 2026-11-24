@@ -1524,45 +1524,48 @@ pub fn show(
         }
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, true, label));
-        if ed
-            .accesskit_snapshot
-            .as_ref()
-            .is_none_or(|(version, _, _)| *version != ed.doc.version)
-        {
-            #[cfg(test)]
+        // The whole text for screen readers: only built while AccessKit is on, as it copies it.
+        if ui.ctx().accesskit_node_builder(response.id, |_| ()).is_some() {
+            if ed
+                .accesskit_snapshot
+                .as_ref()
+                .is_none_or(|(version, _, _)| *version != ed.doc.version)
             {
-                ACCESSKIT_TEXT_CONVERSIONS.with(|n| n.set(n.get() + 1));
-                ACCESSKIT_LENGTH_CONSTRUCTIONS.with(|n| n.set(n.get() + 1));
+                #[cfg(test)]
+                {
+                    ACCESSKIT_TEXT_CONVERSIONS.with(|n| n.set(n.get() + 1));
+                    ACCESSKIT_LENGTH_CONSTRUCTIONS.with(|n| n.set(n.get() + 1));
+                }
+                let text = ed.doc.text();
+                let lengths = text.chars().map(|c| c.len_utf8() as u8).collect();
+                ed.accesskit_snapshot = Some((ed.doc.version, text, lengths));
             }
-            let text = ed.doc.text();
-            let lengths = text.chars().map(|c| c.len_utf8() as u8).collect();
-            ed.accesskit_snapshot = Some((ed.doc.version, text, lengths));
-        }
-        let (_, text, lengths) = ed.accesskit_snapshot.as_ref().unwrap();
-        let selection = ed.doc.selection.main();
-        let run = ui
-            .new_child(
-                egui::UiBuilder::new()
-                    .id_salt("accesskit-text")
-                    .accessibility_parent(response.id),
-            )
-            .unique_id();
-        let at = |character_index| egui::accesskit::TextPosition {
-            node: run.accesskit_id(),
-            character_index,
-        };
-        ui.ctx().accesskit_node_builder(response.id, |node| {
-            node.set_value(text.clone());
-            node.set_text_selection(egui::accesskit::TextSelection {
-                anchor: at(selection.anchor),
-                focus: at(selection.head),
+            let (_, text, lengths) = ed.accesskit_snapshot.as_ref().unwrap();
+            let selection = ed.doc.selection.main();
+            let run = ui
+                .new_child(
+                    egui::UiBuilder::new()
+                        .id_salt("accesskit-text")
+                        .accessibility_parent(response.id),
+                )
+                .unique_id();
+            let at = |character_index| egui::accesskit::TextPosition {
+                node: run.accesskit_id(),
+                character_index,
+            };
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_value(text.clone());
+                node.set_text_selection(egui::accesskit::TextSelection {
+                    anchor: at(selection.anchor),
+                    focus: at(selection.head),
+                });
             });
-        });
-        ui.ctx().accesskit_node_builder(run, |node| {
-            node.set_role(egui::accesskit::Role::TextRun);
-            node.set_character_lengths(lengths.clone());
-            node.set_value(text.clone());
-        });
+            ui.ctx().accesskit_node_builder(run, |node| {
+                node.set_role(egui::accesskit::Role::TextRun);
+                node.set_character_lengths(lengths.clone());
+                node.set_value(text.clone());
+            });
+        }
         if response.hovered() {
             ui.ctx().set_cursor_icon(if mods.alt {
                 egui::CursorIcon::Crosshair
