@@ -590,10 +590,10 @@ pub(crate) fn time_limit(project: &Project) -> Duration {
 
 /// Logs bigger than this are read as their first and last half: a runaway document can write
 /// gigabytes, and errors sit near the start or the end.
-const LOG_CAP: u64 = 32 << 20;
+pub(crate) const LOG_CAP: u64 = 32 << 20;
 
-/// A build file, or only its first and last part when it is huge.
-pub(crate) fn read_capped(path: &Path) -> Vec<u8> {
+/// A file, or only its first and last `cap / 2` bytes when it is bigger than `cap`.
+pub fn read_capped(path: &Path, cap: u64) -> Vec<u8> {
     use std::io::{Read, Seek, SeekFrom};
     // A regular file only: a planted link to /dev/zero reports no length and never ends.
     if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
@@ -604,11 +604,11 @@ pub(crate) fn read_capped(path: &Path) -> Vec<u8> {
     };
     let len = f.metadata().map_or(0, |m| m.len());
     let mut out = Vec::new();
-    if len <= LOG_CAP {
-        let _ = f.take(LOG_CAP).read_to_end(&mut out);
+    if len <= cap {
+        let _ = f.take(cap).read_to_end(&mut out);
         return out;
     }
-    let half = LOG_CAP / 2;
+    let half = cap / 2;
     let _ = (&mut f).take(half).read_to_end(&mut out);
     out.extend_from_slice(b"\n[... the middle of a very long log is left out ...]\n");
     if f.seek(SeekFrom::End(-(half as i64))).is_ok() {
@@ -636,7 +636,7 @@ pub(crate) fn read_tail(path: &Path, n: u64) -> Vec<u8> {
 /// The diagnostics in the main log. A run from the precompiled preamble didn't read the preamble,
 /// so what it said then comes from the log of the run that made the format.
 pub(crate) fn read_log(project: &Project) -> Vec<Diagnostic> {
-    let mut log = String::from_utf8_lossy(&read_capped(&project.log_path())).into_owned();
+    let mut log = String::from_utf8_lossy(&read_capped(&project.log_path(), LOG_CAP)).into_owned();
     if project.config.engine == lemmata_project::Engine::Tectonic {
         log = crate::tectonic::normalize_log(&log);
     }
@@ -1063,7 +1063,8 @@ async fn direct_build(
             return Ok(status);
         }
 
-        let log = String::from_utf8_lossy(&read_capped(&out_file(project, "log"))).into_owned();
+        let log =
+            String::from_utf8_lossy(&read_capped(&out_file(project, "log"), LOG_CAP)).into_owned();
         let rerun = [
             "Rerun to get",
             "Please rerun LaTeX",
@@ -1482,10 +1483,17 @@ mod tests {
         text.resize(LOG_CAP as usize + 1000, b'x');
         text.extend_from_slice(b"\n! Last error.\n");
         std::fs::write(&big, &text).unwrap();
-        let read = read_capped(&big);
+        let read = read_capped(&big, LOG_CAP);
         assert!(read.len() <= LOG_CAP as usize + 100);
         assert!(read.starts_with(b"! First error.") && read.ends_with(b"! Last error.\n"));
         assert_eq!(read_tail(&big, 6), b"rror.\n");
+        let short = read_capped(&big, 64 << 10);
+        assert!(short.len() < (64 << 10) + 100);
+        assert!(short.starts_with(b"! First error.") && short.ends_with(b"! Last error.\n"));
+        assert!(String::from_utf8_lossy(&short).contains("left out"));
+        let small = d.path().join("small.log");
+        std::fs::write(&small, "! Only.\n").unwrap();
+        assert_eq!(read_capped(&small, 64 << 10), b"! Only.\n");
 
         std::fs::write(d.path().join("main.tex"), "\\documentclass{article}").unwrap();
         let mut p = Project::open(d.path()).unwrap();
