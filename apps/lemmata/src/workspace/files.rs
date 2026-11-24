@@ -130,6 +130,8 @@ pub struct TreeSel {
     /// Letters typed to jump to a row, and when the last one came.
     typed: String,
     typed_at: Option<std::time::Instant>,
+    /// Where the cursor row was drawn last, for a menu opened from the keyboard.
+    pub(super) cursor_rect: Option<Rect>,
 }
 
 impl TreeSel {
@@ -1040,7 +1042,13 @@ impl Workspace {
                 }
             }
             if menu {
-                let at = ctx.content_rect().center();
+                // At the cursor row, not the middle of the window.
+                let at = self
+                    .sel
+                    .cursor_rect
+                    .map_or(ctx.content_rect().center(), |r| {
+                        r.left_bottom() + vec2(24.0, 0.0)
+                    });
                 self.menu = Some(Menu::Tree(
                     Some(e.path.clone()),
                     Rect::from_min_size(at, vec2(0.0, 0.0)),
@@ -1055,7 +1063,10 @@ impl Workspace {
             i.events
                 .iter()
                 .filter_map(|e| match e {
-                    egui::Event::Text(t) if !i.modifiers.command && !i.modifiers.alt => {
+                    // Not a space: that opens a folder and must not start a search for " m".
+                    egui::Event::Text(t)
+                        if !i.modifiers.command && !i.modifiers.alt && !t.trim().is_empty() =>
+                    {
                         Some(t.to_lowercase())
                     }
                     _ => None,
@@ -1072,11 +1083,19 @@ impl Workspace {
             }
             self.sel.typed_at = Some(std::time::Instant::now());
             self.sel.typed.push_str(&typed);
-            let start = at.map_or(0, |a| a + usize::from(self.sel.typed.chars().count() == 1));
+            // The same letter again goes on to the next row with it, rather than looking for "cc".
+            let mut letters = self.sel.typed.chars();
+            let repeated = letters.next().is_some_and(|f| letters.all(|c| c == f));
+            let needle: String = if repeated {
+                self.sel.typed.chars().take(1).collect()
+            } else {
+                self.sel.typed.clone()
+            };
+            let start = at.map_or(0, |a| a + usize::from(needle.chars().count() == 1));
             let hit = rows[start.min(n)..]
                 .iter()
                 .chain(&rows[..start.min(n)])
-                .find(|r| base_name(r).to_lowercase().starts_with(&self.sel.typed))
+                .find(|r| base_name(r).to_lowercase().starts_with(&needle))
                 .cloned();
             if let Some(h) = hit {
                 self.tree_select(&h);
@@ -1213,7 +1232,9 @@ impl Workspace {
                     } else {
                         abs.parent().map(|d| d.to_path_buf()).unwrap_or(abs)
                     };
-                    let _ = open::that_detached(dir);
+                    if let Err(e) = open::that_detached(dir) {
+                        self.notice(format!("Couldn't open the file manager: {e}"), Tone::Error);
+                    }
                 }
             }
             12 => self.trash(backend, settings, picked),

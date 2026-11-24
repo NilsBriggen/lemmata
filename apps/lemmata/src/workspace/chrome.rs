@@ -475,6 +475,9 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
     let mut over_folder: Option<String> = None;
     for (e, depth, count) in rows.iter() {
         let (rect, r) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click_and_drag());
+        if ws.tree_cursor.as_deref() == Some(e.path.as_str()) {
+            ws.sel.cursor_rect = Some(rect);
+        }
         // Rows scrolled out of the panel only keep their place.
         if !ui.is_rect_visible(rect) {
             continue;
