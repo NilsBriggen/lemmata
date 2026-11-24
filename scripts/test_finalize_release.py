@@ -50,6 +50,11 @@ def run(version: str, tag: str, cli_name: str | None = None, skip: str | None = 
     if extra:
         p = tmp / "artifacts" / "windows_x86_64" / extra
         p.write_text("bin")
+    # Other artifacts of a release run, which aren't installers.
+    for rel in ["macos-bin-aarch64/lemmata-app", "miktex-pdfs/article/main.pdf"]:
+        p = tmp / "artifacts" / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("bin")
     # The command-line archives, as scripts/package-cli.sh names them.
     for label, ext in [("linux_x86_64", ".tar.gz"), ("windows_x86_64", ".zip")]:
         p = tmp / "artifacts" / f"cli_{label}" / (cli_name or f"lemmata-cli_{version}_{label}{ext}")

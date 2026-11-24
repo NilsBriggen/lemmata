@@ -68,6 +68,11 @@ def main() -> None:
 
     for job in sorted(p for p in artifacts.iterdir() if p.is_dir()):
         label = job.name
+        # The run's other artifacts (macos-bin-* for the universal app, miktex-pdfs from the
+        # Windows tests) aren't for the release; installers come in platform folders.
+        if not label.startswith(("cli_", "linux_", "windows_", "macos_")):
+            print(f"{label}: not a release platform, skipped")
+            continue
         if label.startswith("cli_"):
             platform = label[len("cli_"):]
             archives = [f for f in job.rglob("*") if f.is_file()]
