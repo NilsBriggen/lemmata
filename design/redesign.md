@@ -1,5 +1,7 @@
 # Lemmata UI redesign
 
+Building it: see `HANDOFF.md` in this folder for the step-by-step implementation guide.
+
 The plan is one screen at a time. Each screen gets an HTML mockup and an OK before any Rust is written.
 
 Mockups: open `mockups/index.html` in a browser. Every page has a switch at the bottom right that toggles light/dark and shows today's UI for comparison.
@@ -42,7 +44,7 @@ Everything in the mockup can be drawn in egui: solid fills, 1 px strokes, rounde
 1. **Workspace (editor + PDF).**
 2. **Library (home).**
    - The sidebar holds New project, Recent / All projects / Templates, folders, and the ways to bring a project in (open a folder, clone, import from Overleaf, the example document).
-   - "Continue writing" shows the three latest projects with a page thumbnail and their build status.
+   - "Continue writing" shows the three latest projects with their page thumbnail (already rendered today, `library.rs` `thumb`) and their build status.
    - Below that, every project in a table with folder, compiler and last opened.
 3. **New project and onboarding:**
    - New project is a template gallery: categories on the left, cards with page previews on the right, and name + location always visible at the bottom.
