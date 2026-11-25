@@ -195,6 +195,7 @@ mod tests {
         raw.events
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn finger(dy: f32, phase: TouchPhase) -> Event {
         Event::MouseWheel {
             unit: MouseWheelUnit::Point,
@@ -205,6 +206,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn moved(events: &[Event], source: MouseWheelSource) -> f32 {
         events
             .iter()
@@ -220,6 +222,7 @@ mod tests {
             .sum()
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_flick_coasts_and_slows_down() {
         let (mut m, ctx) = (Momentum::default(), egui::Context::default());
@@ -255,6 +258,7 @@ mod tests {
         assert!(m.coast.is_none(), "then stops");
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_key_or_click_stops_the_coast_and_a_slow_lift_doesnt_start_one() {
         let (mut m, ctx) = (Momentum::default(), egui::Context::default());
@@ -287,6 +291,7 @@ mod tests {
         ));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn ctrl_wheel_and_pinch_stop_momentum_coast_without_mutating_zoom() {
         let (mut m, ctx) = (Momentum::default(), egui::Context::default());

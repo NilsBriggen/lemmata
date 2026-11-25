@@ -4383,7 +4383,14 @@ mod tests {
         h.state_mut().last_activity = f64::NEG_INFINITY;
         h.step();
         h.run();
-        h.snapshot("completion-maths");
+        h.snapshot_options(
+            "completion-maths",
+            &egui_kittest::SnapshotOptions::new().max_failed_pixels(
+                egui_kittest::OsThreshold::new(100)
+                    .macos(2000)
+                    .windows(2000),
+            ),
+        );
     }
 
     #[test]

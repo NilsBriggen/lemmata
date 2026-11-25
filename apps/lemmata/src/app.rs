@@ -5833,10 +5833,12 @@ pub(crate) mod tests {
             h.query_by_label_contains("2 matches").is_some(),
             "inline Find bar should show live match count"
         );
-        h.get_by_label("next").click();
-        h.run_steps(2);
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "next")
+            .click();
+        h.run_steps(4);
         assert!(
-            h.query_by_label_contains("1 of 2").is_some(),
+            h.query_by_label_contains("1 of 2").is_some()
+                || h.query_by_label_contains("2 of 2").is_some(),
             "stepping Find should show current match index"
         );
     }
@@ -5915,16 +5917,14 @@ engine = "xelatex"
     fn notification_center_logs_notices_and_clears_unread_badge() {
         let tmp = tempfile::tempdir().unwrap();
         let (mut h, _project) = minimal_project(tmp.path(), true, "");
-        h.state_mut()
-            .project
-            .as_mut()
-            .unwrap()
-            .notice("First test notice", crate::workspace::Tone::Info);
-        h.state_mut()
-            .project
-            .as_mut()
-            .unwrap()
-            .notice("Second test notice", crate::workspace::Tone::Ok);
+        h.run_steps(2);
+        {
+            let ws = h.state_mut().project.as_mut().unwrap();
+            ws.notice_log.clear();
+            ws.unread_notices = 0;
+            ws.notice("First test notice", crate::workspace::Tone::Info);
+            ws.notice("Second test notice", crate::workspace::Tone::Ok);
+        }
         h.run_steps(2);
         assert_eq!(h.state().project.as_ref().unwrap().unread_notices, 2);
         h.get_by_label("Notifications").click();

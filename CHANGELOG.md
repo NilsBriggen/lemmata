@@ -2,6 +2,14 @@
 
 All notable changes to Lemmata.
 
+## 4.0.0-rc.2 (2026-11-25)
+
+A major visual refresh paired with a comprehensive performance, security, and install-size overhaul—with zero features removed.
+
+### Fixed (since rc.1)
+- Canonicalized project trust lookups in `Settings::trust_of` / `set_trust` so Windows path normalization matches migrated pre-3.2 entries consistently.
+- Fixed macOS & Linux CI test portability (synthetic momentum test gating on macOS, deterministic Welcome shortcut labels under tests, software-renderer pixel thresholds, and Find/notification test stability).
+
 ## 4.0.0-rc.1 (2026-11-25)
 
 A major visual refresh paired with a comprehensive performance, security, and install-size overhaul—with zero features removed.

@@ -285,9 +285,14 @@ impl Settings {
 
     /// Whether the user trusts the project in `root`: None when they haven't been asked.
     pub fn trust_of(&self, root: &str) -> Option<bool> {
-        if self.trusted_projects.iter().any(|r| r == root) {
+        let key = trust_key(root);
+        if self.trusted_projects.iter().any(|r| r == root || r == &key) {
             Some(true)
-        } else if self.restricted_projects.iter().any(|r| r == root) {
+        } else if self
+            .restricted_projects
+            .iter()
+            .any(|r| r == root || r == &key)
+        {
             Some(false)
         } else {
             None
@@ -296,11 +301,12 @@ impl Settings {
 
     /// Records the answer for `root`; None forgets it (the project was trashed or forgotten).
     pub fn set_trust(&mut self, root: &str, trusted: Option<bool>) {
-        self.trusted_projects.retain(|r| r != root);
-        self.restricted_projects.retain(|r| r != root);
+        let key = trust_key(root);
+        self.trusted_projects.retain(|r| r != root && r != &key);
+        self.restricted_projects.retain(|r| r != root && r != &key);
         match trusted {
-            Some(true) => self.trusted_projects.push(root.to_string()),
-            Some(false) => self.restricted_projects.push(root.to_string()),
+            Some(true) => self.trusted_projects.push(key),
+            Some(false) => self.restricted_projects.push(key),
             None => {}
         }
     }

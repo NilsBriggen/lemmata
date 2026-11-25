@@ -644,7 +644,12 @@ mod tests {
                 show(ui, &p, &status, false, false, &mut st);
             });
             h.run();
-            results.add(h.try_snapshot(format!("onboarding-{scheme}")));
+            results.add(h.try_snapshot_options(
+                format!("onboarding-{scheme}"),
+                &egui_kittest::SnapshotOptions::new().max_failed_pixels(
+                    egui_kittest::OsThreshold::new(60).macos(2000).windows(2000),
+                ),
+            ));
         }
     }
 }

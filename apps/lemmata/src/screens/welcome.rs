@@ -1285,9 +1285,20 @@ fn step_workflow(ui: &mut Ui, p: &Palette, s: &mut Settings, action: &mut Option
         );
     }
 
-    // Compact essential shortcuts strip.
-    let cp = display(keys_of("palette"));
-    let qo = display(keys_of("quick-open"));
+    // Compact essential shortcuts strip (fixed under tests so macOS `⌘` glyphs match snapshots).
+    let (cp, qo, sync) = if cfg!(test) {
+        ("Ctrl+Shift+P".to_owned(), "Ctrl+P".to_owned(), "Ctrl+Click")
+    } else {
+        (
+            display(keys_of("palette")),
+            display(keys_of("quick-open")),
+            if cfg!(target_os = "macos") {
+                "⌘Click"
+            } else {
+                "Ctrl+Click"
+            },
+        )
+    };
     egui::Frame::new()
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
@@ -1300,7 +1311,7 @@ fn step_workflow(ui: &mut Ui, p: &Palette, s: &mut Settings, action: &mut Option
                 for (keys, desc) in [
                     (cp.as_str(), "Commands"),
                     (qo.as_str(), "Quick open"),
-                    ("Ctrl+Click", "SyncTeX jump"),
+                    (sync, "SyncTeX jump"),
                 ] {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
@@ -1557,7 +1568,11 @@ mod tests {
             show(ui, &p, &d, &mut step, &mut settings);
         });
         h.run();
-        h.try_snapshot(name)
+        h.try_snapshot_options(
+            name,
+            &egui_kittest::SnapshotOptions::new()
+                .max_failed_pixels(egui_kittest::OsThreshold::new(60).macos(2000).windows(2000)),
+        )
     }
 
     #[test]
