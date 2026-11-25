@@ -2,6 +2,13 @@
 
 All notable changes to Lemmata.
 
+## 4.0.0-rc.4 (2026-11-25)
+
+A major visual refresh paired with a comprehensive performance, security, and install-size overhaul—with zero features removed.
+
+### Fixed (since rc.3)
+- Normalized CRLF line endings across all assertions in the Windows figure/table insertion test and added retries for transient macOS `hdiutil: Resource busy` DMG packaging errors.
+
 ## 4.0.0-rc.3 (2026-11-25)
 
 A major visual refresh paired with a comprehensive performance, security, and install-size overhaul—with zero features removed.

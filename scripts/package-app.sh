@@ -41,7 +41,19 @@ mkdir -p target/release
 
 packager_formats=$(echo "$formats" | tr ',' '\n' | grep -vx rpm | paste -sd, -)
 # AppImage tools are AppImages themselves; runners have no FUSE to mount them.
-APPIMAGE_EXTRACT_AND_RUN=1 cargo packager -p lemmata-app --release --formats "$packager_formats"
+# On macOS CI runners, Spotlight/diskimages-helper can transiently cause `hdiutil: Resource busy`,
+# so retry packaging up to 3 times before failing.
+for attempt in 1 2 3; do
+  if APPIMAGE_EXTRACT_AND_RUN=1 cargo packager -p lemmata-app --release --formats "$packager_formats"; then
+    break
+  fi
+  if [[ $attempt -eq 3 ]]; then
+    exit 1
+  fi
+  echo "cargo packager attempt $attempt failed; retrying in 5s..." >&2
+  rm -rf "$out"
+  sleep 5
+done
 
 # cargo-packager writes the .deb with gzip; xz makes it about 28% smaller, and dpkg and the
 # AUR's bsdtar read both.

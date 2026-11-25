@@ -3050,6 +3050,7 @@ pub(crate) mod tests {
             h.state().project.as_ref().unwrap().editors["main.tex"]
                 .doc
                 .text()
+                .replace("\r\n", "\n")
         };
 
         // A table of 2 columns by 2 rows; its cells are tab stops.
@@ -3061,7 +3062,7 @@ pub(crate) mod tests {
         snap(&mut h, "table-light");
         h.get_by_label("Insert").click();
         h.run_steps(2);
-        let t = text(&h).replace("\r\n", "\n");
+        let t = text(&h);
         assert!(
             t.contains(
                 "\\maketitle\n\\begin{table}[htbp]\n    \\centering\n    \\begin{tabular}{ll}"
@@ -3109,10 +3110,7 @@ pub(crate) mod tests {
             egui::ColorImage::filled([3, 3], egui::Color32::RED),
         )));
         wait_for(&mut h, "the pasted figure", |h| {
-            h.state().project.as_ref().unwrap().editors["main.tex"]
-                .doc
-                .text()
-                .contains("\\caption{}\n")
+            text(h).contains("\\caption{}\n")
         });
     }
 
