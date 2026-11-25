@@ -885,23 +885,130 @@ impl App {
     }
 
     fn show_prefs(&mut self, ctx: &egui::Context) {
+        if self
+            .project
+            .as_mut()
+            .is_some_and(|w| std::mem::take(&mut w.project_settings_saved))
+        {
+            if self
+                .prefs
+                .as_ref()
+                .is_none_or(|st| st.close_after_project_save)
+            {
+                self.prefs = None;
+                return;
+            } else if let Some(st) = &mut self.prefs {
+                st.scope = prefs::Scope::App;
+                st.unsaved_prompt = false;
+                st.close_after_project_save = true;
+            }
+        }
+        if self.prefs.is_none()
+            && self
+                .project
+                .as_ref()
+                .is_some_and(|w| w.project_settings.is_some())
+        {
+            self.open_prefs();
+        }
         let Some(st) = &mut self.prefs else { return };
+        if let Some(ws) = &mut self.project
+            && let Some(ps) = &mut ws.project_settings
+            && std::mem::take(&mut ps.focus_project_scope)
+        {
+            st.scope = prefs::Scope::Project;
+            st.project_section = ps.initial_section;
+            st.unsaved_prompt = false;
+        }
         let system_dark = ctx.system_theme() == Some(egui::Theme::Dark);
         let p = self.palette;
-        match prefs::show(
+        let project_meta = self.project.as_ref().map(|ws| {
+            (
+                ws.info.name.clone(),
+                ws.main_candidates(),
+                ws.trusted,
+                ws.info.config.shell_escape,
+            )
+        });
+        let project_ctx = match (&mut self.project, &project_meta) {
+            (Some(ws), Some((name, candidates, trusted, was_shell_escape))) => {
+                Some(prefs::ProjectCtx {
+                    name,
+                    settings: ws.project_settings.as_mut(),
+                    candidates,
+                    trusted: *trusted,
+                    was_shell_escape: *was_shell_escape,
+                })
+            }
+            _ => None,
+        };
+        let out = prefs::show(
             ctx,
             &p,
             st,
             &mut self.settings,
             self.tex.as_ref(),
             system_dark,
-        ) {
+            project_ctx,
+        );
+        match out {
             None => {}
             Some(prefs::Out::Changed) => self.save_settings(ctx),
-            Some(prefs::Out::Close) => self.prefs = None,
+            Some(prefs::Out::Close) => {
+                let busy = self
+                    .project
+                    .as_ref()
+                    .and_then(|w| w.project_settings.as_ref())
+                    .is_some_and(|ps| ps.busy);
+                if !busy {
+                    if let Some(ws) = &mut self.project {
+                        ws.project_settings = None;
+                    }
+                    self.prefs = None;
+                }
+            }
             Some(prefs::Out::CloseAndSave) => {
+                let busy = self
+                    .project
+                    .as_ref()
+                    .and_then(|w| w.project_settings.as_ref())
+                    .is_some_and(|ps| ps.busy);
                 self.save_settings(ctx);
-                self.prefs = None;
+                if !busy {
+                    if let Some(ws) = &mut self.project {
+                        ws.project_settings = None;
+                    }
+                    self.prefs = None;
+                }
+            }
+            Some(prefs::Out::OpenProjectScope) => {
+                if let Some(ws) = &mut self.project {
+                    if ws.project_settings.is_none() {
+                        ws.open_project_settings();
+                    }
+                    if let Some(ps) = &mut ws.project_settings {
+                        ps.focus_project_scope = false;
+                    }
+                    if let Some(st) = &mut self.prefs {
+                        st.scope = prefs::Scope::Project;
+                        st.project_section = workspace::project_settings::ProjectSection::Build;
+                        st.unsaved_prompt = false;
+                    }
+                }
+            }
+            Some(prefs::Out::SaveProject) => {
+                if let Some(ws) = &mut self.project {
+                    ws.save_project_settings(&self.backend, &mut self.settings);
+                }
+            }
+            Some(prefs::Out::DiscardProjectAndSwitchApp) => {
+                if let Some(ws) = &mut self.project {
+                    ws.project_settings = None;
+                }
+                if let Some(st) = &mut self.prefs {
+                    st.scope = prefs::Scope::App;
+                    st.unsaved_prompt = false;
+                }
             }
             Some(prefs::Out::ChooseTex) => self.backend.pick(Pick::TexFolder),
             Some(prefs::Out::AutoTex) => {
@@ -914,8 +1021,10 @@ impl App {
                 Msg::Prefs(PrefsMsg::Downloaded(code, r))
             }),
             Some(prefs::Out::CheckUpdates) => {
-                st.checking_updates = true;
-                st.update_message = None;
+                if let Some(st) = &mut self.prefs {
+                    st.checking_updates = true;
+                    st.update_message = None;
+                }
                 self.check_updates(true);
             }
             Some(prefs::Out::TestGrammar) => {
@@ -1325,7 +1434,12 @@ impl eframe::App for App {
         }
         // The system's scheme can change while the app runs.
         let palette = palette_for(&ctx, &self.settings);
-        if palette != self.palette {
+        let want_theme = if palette.dark {
+            egui::Theme::Dark
+        } else {
+            egui::Theme::Light
+        };
+        if palette != self.palette || ctx.theme() != want_theme {
             self.palette = palette;
             theme::apply(&ctx, &palette);
         }
@@ -1793,7 +1907,10 @@ pub(crate) mod tests {
         h.run_steps(2);
         h.get_by_label("Create project").click();
         wait_for(&mut h, "the new project", |h| {
-            h.query_by_label("thesis-draft").is_some()
+            h.state()
+                .project
+                .as_ref()
+                .is_some_and(|w| w.info.name == "thesis-draft")
                 && h.query_by_label("Back to all projects").is_some()
         });
         assert!(
@@ -2052,17 +2169,21 @@ pub(crate) mod tests {
         assert_eq!(ws.pane.view.page_count(), 1);
         assert!(ws.pane.view.outline.is_empty(), "no hyperref, no bookmarks");
 
-        // The logs replace the PDF, and come back.
-        h.get_by_label("Logs").click();
+        // The Problems sidebar opens alongside the PDF; Raw log replaces the PDF and comes back.
+        h.get_by_label("Build issues").click();
         h.run_steps(2);
-        assert!(h.query_by_label("Problems").is_some());
+        assert!(h.query_by_label("Raw log").is_some());
         h.get_by_label("Raw log").click();
         wait_for(&mut h, "the raw log", |h| {
             h.query_by_label_contains("This is").is_some()
         });
-        h.get_by_label("Logs").click();
+        h.get_by_label("Back to PDF").click();
         h.run_steps(2);
-        assert!(h.query_by_label("Problems").is_none());
+        assert!(!h.state().project.as_ref().unwrap().build.raw_log_open);
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Problems")
+            .click();
+        h.run_steps(2);
+        assert!(!h.state().settings.sidebar_open);
 
         // Ctrl+J on \maketitle shows that line in the PDF; a click on that box goes back.
         {
@@ -2181,7 +2302,7 @@ pub(crate) mod tests {
             "F8 reaches the error on line 11: {seen:?}"
         );
         snap(&mut h, "editor-problem-light");
-        h.get_by_label("Logs").click();
+        h.get_by_label("Build issues").click();
         h.run_steps(3);
         assert!(
             h.query_by_label("main.tex:11").is_some(),
@@ -2424,21 +2545,17 @@ pub(crate) mod tests {
         let Some((mut h, _)) = in_article(tmp.path()) else {
             return;
         };
-        h.set_size(egui::vec2(1280.0, 900.0));
-        h.run_steps(3);
-        for label in ["Comments", "History", "Git"] {
-            assert!(
-                h.get_by_label(label).rect().width() < 60.0,
-                "{label} still has its text label"
-            );
-        }
-        h.set_size(egui::vec2(1400.0, 900.0));
-        h.run_steps(3);
-        for label in ["Comments", "History", "Git"] {
-            assert!(
-                h.get_by_label(label).rect().width() > 60.0,
-                "{label} lost its text label in the wide layout"
-            );
+        for width in [1280.0, 1400.0] {
+            h.set_size(egui::vec2(width, 900.0));
+            h.run_steps(3);
+            let split_left = h.get_by_label("Split").rect().left();
+            for label in ["Comments", "History", "Git"] {
+                let r = h.get_by_label(label).rect();
+                assert!(
+                    r.width() < 52.0 && r.right() <= 52.0 && r.right() < split_left,
+                    "{label} escaped the left icon rail or overlapped Split at {width} px: {r:?}"
+                );
+            }
         }
     }
 
@@ -2688,8 +2805,8 @@ pub(crate) mod tests {
         h.get_by_label("Write a comment")
             .type_text("Is this the final title?");
         h.run_steps(2);
-        // The panel's button, not the editor toolbar's.
-        h.query_all_by_label("Comment").last().unwrap().click();
+        // The left sidebar panel's button comes before the editor toolbar's.
+        h.query_all_by_label("Comment").next().unwrap().click();
         wait_for(&mut h, "comments.json", |_| {
             std::fs::read_to_string(project.join(".lemmata/comments.json"))
                 .is_ok_and(|t| t.contains("final title"))
@@ -2709,15 +2826,14 @@ pub(crate) mod tests {
             "% TODO check the proof\n\\todo{cite more}\n",
         )
         .unwrap();
-        h.get_by_label("Close comments").click();
+        h.get_by_label("Comments").click();
         h.run_steps(2);
         {
             let app = h.state_mut();
-            let mut s = app.settings.clone();
-            app.project.as_mut().unwrap().open_panel(
-                crate::workspace::panels::Panel::Todos,
+            app.project.as_mut().unwrap().open_side(
+                crate::workspace::panels::SidePanel::Todos,
                 &app.backend,
-                &mut s,
+                &mut app.settings,
             );
         }
         wait_for(&mut h, "the TODOs", |h| {
@@ -2726,7 +2842,7 @@ pub(crate) mod tests {
         snap(&mut h, "todos-light");
 
         // Git: not a repository yet, then one.
-        h.get_by_label("Close TODOs").click();
+        h.get_by_label("To-dos").click();
         h.run_steps(2);
         h.get_by_label("Git").click();
         wait_for(&mut h, "the git overview", |h| {
@@ -2741,7 +2857,7 @@ pub(crate) mod tests {
         snap(&mut h, "git-light");
 
         // History: the session's first save took a snapshot.
-        h.get_by_label("Close Git").click();
+        h.get_by_label("Git").click();
         h.run_steps(2);
         h.get_by_label("History").click();
         wait_for(&mut h, "a snapshot", |h| {
@@ -3103,7 +3219,9 @@ pub(crate) mod tests {
         for width in [1600.0, 1200.0] {
             h.set_size(egui::vec2(width, 900.0));
             h.run_steps(2);
-            h.get_by_role_and_label(egui::accesskit::Role::Button, "Project settings")
+            h.get_by_label("Project menu").click();
+            h.run_steps(2);
+            h.get_by_role_and_label(egui::accesskit::Role::MenuItem, "Project settings")
                 .click();
             h.run_steps(2);
             assert!(
@@ -3114,7 +3232,16 @@ pub(crate) mod tests {
                     .project_settings
                     .is_some()
             );
-            h.state_mut().project.as_mut().unwrap().project_settings = None;
+            h.key_press(egui::Key::Escape);
+            h.run_steps(2);
+            assert!(
+                h.state()
+                    .project
+                    .as_ref()
+                    .unwrap()
+                    .project_settings
+                    .is_none()
+            );
         }
     }
 
@@ -3173,9 +3300,10 @@ pub(crate) mod tests {
             ws.build.outcome.is_some() && !ws.build.building && ws.build.deadline.is_none()
         });
         let app = h.state_mut();
+        app.settings.sidebar_open = false;
         let ws = app.project.as_mut().unwrap();
         ws.build.building = false;
-        ws.build.logs_open = false;
+        ws.side_panel = crate::workspace::panels::SidePanel::Files;
         ws.build.outcome = Some(lemmata_tex::Outcome {
             status: lemmata_tex::Status::Failed,
             duration_ms: 0,
@@ -3184,12 +3312,16 @@ pub(crate) mod tests {
             latexmk_failed: false,
         });
         h.run_steps(2);
-        h.get_by_role_and_label(egui::accesskit::Role::Button, "Show the logs")
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Show problems")
             .focus();
         h.run_steps(1);
         h.key_press(egui::Key::Enter);
         h.run_steps(2);
-        assert!(h.state().project.as_ref().unwrap().build.logs_open);
+        assert!(
+            h.state().settings.sidebar_open
+                && h.state().project.as_ref().unwrap().side_panel
+                    == crate::workspace::panels::SidePanel::Problems
+        );
 
         h.get_by_role_and_label(
             egui::accesskit::Role::Button,
@@ -3246,13 +3378,18 @@ pub(crate) mod tests {
             let ws = h.state().project.as_ref().unwrap();
             ws.build.outcome.is_some() && !ws.build.building && ws.build.deadline.is_none()
         });
-        // Preferences from the menu: a checkbox saves at once.
-        h.get_by_label("Menu").click();
+        // Preferences from the menu: switches save at once.
+        h.get_by_label("Project menu").click();
         h.run_steps(2);
         h.get_by_role_and_label(egui::accesskit::Role::MenuItem, "Preferences")
             .click();
         wait_for(&mut h, "the preferences", |h| {
-            h.query_by_label("Wrap long lines").is_some()
+            h.query_by_label("Editing").is_some()
+        });
+        h.get_by_label("Editing").click();
+        wait_for(&mut h, "editing settings", |h| {
+            h.query_by_role_and_label(egui::accesskit::Role::CheckBox, "Wrap long lines")
+                .is_some()
         });
         h.run_steps(3);
         let folding = h.state().settings.folding;
@@ -3298,6 +3435,10 @@ pub(crate) mod tests {
         h.get_by_label("Compiler: change it in Project settings")
             .click();
         wait_for(&mut h, "the project settings", |h| {
+            h.query_by_label("Trust & safety").is_some()
+        });
+        h.get_by_label("Trust & safety").click();
+        wait_for(&mut h, "trust settings", |h| {
             h.query_by_label("Allow the document to run programs (shell escape)")
                 .is_some()
         });
@@ -3371,7 +3512,7 @@ pub(crate) mod tests {
         h.run_steps(2);
 
         // Word count from the menu.
-        h.get_by_label("Menu").click();
+        h.get_by_label("Project menu").click();
         h.run_steps(2);
         h.get_by_role_and_label(egui::accesskit::Role::MenuItem, "Word count")
             .click();
@@ -3520,8 +3661,9 @@ pub(crate) mod tests {
             cursor(&mut h, "Back to all projects"),
             egui::CursorIcon::PointingHand
         );
-        // A plain label of the interface: no I-beam.
-        assert_eq!(cursor(&mut h, "Outline"), egui::CursorIcon::Default);
+        // Plain labels of the interface: no I-beam.
+        assert_eq!(cursor(&mut h, "FILES"), egui::CursorIcon::Default);
+        assert_eq!(cursor(&mut h, "Saved"), egui::CursorIcon::Default);
     }
 
     #[test]
@@ -5516,7 +5658,10 @@ pub(crate) mod tests {
         });
         h.run_steps(2);
         // Folder is visible even with zero recent projects.
-        assert!(h.query_by_label("Research").is_some());
+        assert!(
+            h.query_by_role_and_label(egui::accesskit::Role::Button, "Research")
+                .is_some()
+        );
         let title_r = h.get_by_label("Your projects").rect();
         let search_r = h.get_by_label("Search projects").rect();
         let new_folder_r = h.get_by_label("New folder").rect();
@@ -5557,6 +5702,7 @@ pub(crate) mod tests {
             "Project settings escaped 900x560: close={close_r:?} save={save_r:?} screen={screen:?}"
         );
         h.state_mut().project.as_mut().unwrap().project_settings = None;
+        h.state_mut().prefs = None;
         h.run_steps(2);
 
         // Preferences modal stays inside 900x560.
@@ -5584,7 +5730,7 @@ pub(crate) mod tests {
         h.run_steps(2);
 
         // Main menu at 900x560 is clamped to viewport height (scrollable).
-        h.get_by_label("Menu").click();
+        h.get_by_label("Project menu").click();
         h.run_steps(3);
         let first_item = h
             .get_by_role_and_label(egui::accesskit::Role::MenuItem, "All projects")
@@ -5673,13 +5819,12 @@ pub(crate) mod tests {
         h.run_steps(2);
         {
             let app = h.state_mut();
-            let mut settings = app.settings.clone();
             let ws = app.project.as_mut().unwrap();
             assert!(!ws.trusted);
-            ws.open_panel(
-                crate::workspace::panels::Panel::Git,
+            ws.open_side(
+                crate::workspace::panels::SidePanel::Git,
                 &app.backend,
-                &mut settings,
+                &mut app.settings,
             );
             ws.refresh_git_status(&app.backend);
         }
@@ -5769,7 +5914,7 @@ engine = "xelatex"
         let (mut h, _project) = minimal_project(tmp.path(), true, "");
         h.run_steps(2);
         // Open Menu::Main, then switch to Menu::Compile in a single click.
-        h.get_by_label("Menu").click();
+        h.get_by_label("Project menu").click();
         h.run_steps(2);
         assert!(matches!(
             h.state().project.as_ref().unwrap().menu,

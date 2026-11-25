@@ -1,6 +1,7 @@
 //! The editor screen's frame: Toolbar.svelte, Sidebar.svelte with Tree.svelte and Outline.svelte,
 //! TabStrip.svelte, EditorToolbar.svelte, the status bar of App.svelte, and their menus.
 
+use super::panels::SidePanel;
 use super::{Action, Menu, Tone, Workspace, tree};
 use crate::backend::Backend;
 use crate::editor::commands::{self as cmd, Indent};
@@ -9,7 +10,7 @@ use crate::icons::{self, Icon};
 use crate::shortcuts::{display, keys_of};
 use crate::store::Settings;
 use crate::theme::{self, Palette};
-use crate::widgets::{self, Button, Kind, MenuItem, MenuResult, Size};
+use crate::widgets::{self, Button, ChipTone, Kind, MenuItem, MenuResult, Size};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2,
     vec2,
@@ -30,6 +31,217 @@ fn engine_name(e: Engine) -> &'static str {
         .map_or("pdfLaTeX", |(_, n)| n)
 }
 
+// ── Left Icon Rail ─────────────────────────────────────────────────────────
+
+pub fn rail(
+    ui: &mut Ui,
+    p: &Palette,
+    ws: &mut Workspace,
+    settings: &mut Settings,
+    backend: &Backend,
+) -> Option<Action> {
+    let rect = ui.max_rect();
+    ui.painter().rect_filled(rect, 0, p.app);
+    let mut action = None;
+
+    // Top logo mark (Version 2 Typeset Split) + 8 panel buttons.
+    let top_rect = Rect::from_min_max(
+        pos2(rect.left(), rect.top() + 8.0),
+        pos2(rect.right(), rect.bottom() - 128.0),
+    );
+    let mut top = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(top_rect)
+            .layout(egui::Layout::top_down(egui::Align::Center)),
+    );
+    top.spacing_mut().item_spacing.y = 4.0;
+    let logo_resp = widgets::logo_mark(&mut top, 32.0);
+    if logo_resp.on_hover_text("Lemmata").clicked() {
+        action = Some(Action::Library);
+    }
+    top.add_space(10.0);
+
+    let errors = ws.build.errors();
+    let warnings = ws.build.warnings();
+    let issues = errors + warnings;
+    let git_changes = ws.git.status.len();
+    let open_comments = ws.comments.threads.iter().filter(|t| !t.resolved).count();
+    let open = settings.sidebar_open && !ws.focus_mode;
+
+    let nav_items: [(Icon, &str, &str, SidePanel); 3] = [
+        (icons::FILES, "Files", "Project files", SidePanel::Files),
+        (
+            icons::LIST_TREE,
+            "Outline",
+            "Document outline",
+            SidePanel::Outline,
+        ),
+        (
+            icons::SEARCH,
+            "Search",
+            "Search in project (Ctrl+Shift+F)",
+            SidePanel::Search,
+        ),
+    ];
+    for (icon, label, tip, panel) in nav_items {
+        if widgets::rail_button(
+            &mut top,
+            p,
+            icon,
+            label,
+            open && ws.side_panel == panel,
+            true,
+            None,
+        )
+        .on_hover_text(tip)
+        .clicked()
+            && ws.toggle_side(panel, backend, settings)
+        {
+            action = Some(Action::Settings);
+        }
+    }
+
+    // Subtle 22 px horizontal divider between navigation and tools.
+    top.add_space(3.0);
+    let (sep_r, _) = top.allocate_exact_size(vec2(22.0, 1.0), Sense::hover());
+    top.painter().hline(
+        sep_r.x_range(),
+        sep_r.center().y,
+        Stroke::new(1.0, p.border),
+    );
+    top.add_space(3.0);
+
+    let prob_badge = (issues > 0).then_some((
+        issues,
+        if errors > 0 {
+            ChipTone::Error
+        } else {
+            ChipTone::Warn
+        },
+    ));
+    let git_badge = (git_changes > 0).then_some((git_changes, ChipTone::Accent));
+    let comment_badge = (open_comments > 0).then_some((open_comments, ChipTone::Accent));
+    let git_tip = if ws.trusted {
+        "Commit, pull and push with git"
+    } else {
+        "Git (disabled in restricted projects)"
+    };
+    type ToolItem<'a> = (Icon, &'a str, &'a str, SidePanel, Option<(usize, ChipTone)>);
+    let tool_items: [ToolItem<'_>; 5] = [
+        (
+            icons::CIRCLE_ALERT,
+            "Problems",
+            "Build errors and warnings",
+            SidePanel::Problems,
+            prob_badge,
+        ),
+        (icons::GIT_BRANCH, "Git", git_tip, SidePanel::Git, git_badge),
+        (
+            icons::HISTORY,
+            "History",
+            "Snapshots of the project, to compare and restore",
+            SidePanel::History,
+            None,
+        ),
+        (
+            icons::MESSAGE_SQUARE,
+            "Comments",
+            "Review comments",
+            SidePanel::Comments,
+            comment_badge,
+        ),
+        (
+            icons::CIRCLE_CHECK,
+            "To-dos",
+            "TODO and FIXME notes",
+            SidePanel::Todos,
+            None,
+        ),
+    ];
+    for (icon, label, tip, panel, badge) in tool_items {
+        if widgets::rail_button(
+            &mut top,
+            p,
+            icon,
+            label,
+            open && ws.side_panel == panel,
+            true,
+            badge,
+        )
+        .on_hover_text(tip)
+        .clicked()
+            && ws.toggle_side(panel, backend, settings)
+        {
+            action = Some(Action::Settings);
+        }
+    }
+
+    // Bottom pinned utilities: Notifications bell, All projects, Settings/Preferences.
+    let bot_rect = Rect::from_min_max(
+        pos2(rect.left(), rect.bottom() - 126.0),
+        pos2(rect.right(), rect.bottom() - 10.0),
+    );
+    let mut bot = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(bot_rect)
+            .layout(egui::Layout::bottom_up(egui::Align::Center)),
+    );
+    bot.spacing_mut().item_spacing.y = 4.0;
+    if widgets::rail_button(
+        &mut bot,
+        p,
+        icons::SETTINGS,
+        "Preferences",
+        false,
+        false,
+        None,
+    )
+    .on_hover_text("Settings & preferences")
+    .clicked()
+    {
+        action = Some(Action::Preferences);
+    }
+    if widgets::rail_button(
+        &mut bot,
+        p,
+        icons::LAYOUT_GRID,
+        "Back to all projects",
+        false,
+        false,
+        None,
+    )
+    .on_hover_text("All projects")
+    .clicked()
+    {
+        action = Some(Action::Library);
+    }
+    let bell_badge = (ws.unread_notices > 0).then_some((ws.unread_notices, ChipTone::Accent));
+    let bell = widgets::rail_button(
+        &mut bot,
+        p,
+        icons::BELL,
+        "Notifications",
+        matches!(ws.menu, Some(Menu::Notices(_))),
+        true,
+        bell_badge,
+    )
+    .on_hover_text(if ws.notice_log.is_empty() {
+        "Notifications (none yet)"
+    } else {
+        "Notifications"
+    });
+    if bell.clicked() {
+        ws.menu = if matches!(ws.menu, Some(Menu::Notices(_))) {
+            None
+        } else {
+            ws.unread_notices = 0;
+            Some(Menu::Notices(bell.rect))
+        };
+    }
+
+    action
+}
+
 // ── Toolbar ────────────────────────────────────────────────────────────────
 
 pub fn toolbar(
@@ -40,66 +252,39 @@ pub fn toolbar(
     backend: &Backend,
 ) -> Option<Action> {
     let rect = ui.max_rect();
-    ui.painter().rect_filled(rect, 0, p.chrome);
-    ui.painter().hline(
-        rect.x_range(),
-        rect.bottom() - 0.5,
-        Stroke::new(1.0, p.chrome_border),
-    );
+    ui.painter().rect_filled(rect, 0, p.app);
     let mut action = None;
-    let inner = rect.shrink2(vec2(10.0, 0.0));
+    let inner = Rect::from_min_max(
+        pos2(rect.left() + 4.0, rect.top()),
+        pos2(rect.right() - 8.0, rect.bottom()),
+    );
 
-    // Centre: the sidebar toggle and the layout switch.
-    let narrow = rect.width() < 1100.0;
+    // Center: Editor | Split | PDF segmented control.
+    let narrow = rect.width() < 960.0;
     let layout_options = [
         (Some(icons::FILE_CODE), "Editor"),
-        (Some(icons::COLUMNS_2), "Both"),
+        (Some(icons::COLUMNS_2), "Split"),
         (Some(icons::FILE_TEXT), "PDF"),
     ];
-    let center_w = 30.0 + 6.0 + widgets::segmented_width(ui, &layout_options, narrow);
+    let center_w = widgets::segmented_width(ui, &layout_options, narrow);
     let center =
-        Rect::from_center_size(pos2(rect.center().x, rect.center().y), vec2(center_w, 30.0));
+        Rect::from_center_size(pos2(rect.center().x, rect.center().y), vec2(center_w, 32.0));
     let mut c = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(center)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    c.spacing_mut().item_spacing.x = 6.0;
-    if Button::icon(icons::PANEL_LEFT, "Show files and outline")
-        .kind(Kind::Chrome)
-        .on(settings.sidebar_open)
-        .icon_size(17.0)
-        .show_icon(&mut c, p)
-        .on_hover_text(if settings.sidebar_open {
-            "Hide files and outline"
-        } else {
-            "Show files and outline"
-        })
-        .clicked()
-    {
-        // The panel shows only beside the editor: where it can't, the click brings it there.
-        if settings.layout == "pdf" || ws.focus_mode {
-            if settings.layout == "pdf" {
-                settings.layout = "split".into();
-            }
-            ws.focus_mode = false;
-            settings.sidebar_open = true;
-        } else {
-            settings.sidebar_open = !settings.sidebar_open;
-        }
-        action = Some(Action::Settings);
-    }
     let layouts = ["editor", "split", "pdf"];
     let current = layouts
         .iter()
         .position(|l| *l == settings.layout)
         .unwrap_or(1);
-    if let Some(i) = widgets::segmented(&mut c, p, &layout_options, current, true, narrow) {
+    if let Some(i) = widgets::segmented(&mut c, p, &layout_options, current, narrow) {
         settings.layout = layouts[i].into();
         action = Some(Action::Settings);
     }
 
-    // Left: menu, brand, project name.
+    // Left: Project menu trigger (project name + chevron) + / + active file path.
     let left = Rect::from_min_max(inner.min, pos2(center.left() - 12.0, inner.bottom()));
     let mut l = ui.new_child(
         egui::UiBuilder::new()
@@ -107,74 +292,67 @@ pub fn toolbar(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     l.spacing_mut().item_spacing.x = 6.0;
-    let menu = Button::icon(icons::MENU, "Menu")
-        .kind(Kind::Chrome)
-        .icon_size(18.0)
-        .show_icon(&mut l, p)
-        .on_hover_text("Menu");
-    if menu.clicked() {
-        ws.menu = if matches!(ws.menu, Some(Menu::Main(_))) {
-            None
-        } else {
-            Some(Menu::Main(menu.rect))
-        };
+    let proj_font = FontId::new(13.5, theme::font::sans_600());
+    let proj_w = (l
+        .painter()
+        .layout_no_wrap(ws.info.name.clone(), proj_font.clone(), p.ink)
+        .size()
+        .x
+        + 32.0)
+        .min((left.width() * 0.65).max(80.0));
+    let (prect, presp) = l.allocate_exact_size(vec2(proj_w, 30.0), Sense::click());
+    presp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Project menu"));
+    let menu_on = matches!(ws.menu, Some(Menu::Main(_)));
+    if menu_on || presp.hovered() {
+        l.painter().rect_filled(
+            prect,
+            CornerRadius::same(theme::R_MD),
+            if menu_on { p.rail_active } else { p.surface_3 },
+        );
     }
-    let brand = l.add(
-        egui::Label::new(
-            egui::RichText::new("Lemmata")
-                .font(FontId::new(17.0, theme::font::display()))
-                .color(p.chrome_ink),
-        )
-        .sense(Sense::click()),
+    let mut pjob = egui::text::LayoutJob::simple_singleline(ws.info.name.clone(), proj_font, p.ink);
+    pjob.wrap.max_width = (prect.width() - 30.0).max(20.0);
+    pjob.wrap.max_rows = 1;
+    pjob.wrap.overflow_character = Some('…');
+    let pg = l.fonts_mut(|f| f.layout_job(pjob));
+    let pg_w = pg.size().x;
+    l.painter().galley(
+        pos2(prect.left() + 8.0, prect.center().y - pg.size().y / 2.0),
+        pg,
+        p.ink,
     );
-    brand.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::Role::Button, true, "Back to all projects")
-    });
-    if brand
+    icons::paint(
+        l.painter(),
+        Rect::from_center_size(
+            pos2(
+                (prect.left() + 8.0 + pg_w + 10.0).min(prect.right() - 10.0),
+                prect.center().y,
+            ),
+            Vec2::splat(13.0),
+        ),
+        icons::CHEVRON_DOWN,
+        p.muted,
+    );
+    if presp
+        .on_hover_text("Project menu")
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Back to all projects")
         .clicked()
     {
-        action = Some(Action::Library);
+        ws.menu = if menu_on {
+            None
+        } else {
+            Some(Menu::Main(prect))
+        };
     }
-    l.label(egui::RichText::new("/").color(p.chrome_muted));
-    let has_targets = !ws.info.config.targets.is_empty();
-    let target_reserve = if has_targets { 118.0 } else { 0.0 };
-    let name_max = (l.available_width() - target_reserve).max(40.0);
-    l.add_sized(
-        vec2(name_max.min(200.0), 24.0),
-        egui::Label::new(
-            egui::RichText::new(&ws.info.name)
-                .font(FontId::new(13.0, theme::font::sans_500()))
-                .color(p.chrome_ink),
-        )
-        .truncate(),
-    );
-    if has_targets {
-        let active_target = ws
-            .info
-            .config
-            .targets
-            .iter()
-            .find(|t| t.main == ws.info.main && t.engine.is_none_or(|e| e == ws.info.config.engine))
-            .map(|t| t.name.as_str())
-            .unwrap_or_else(|| tree::base_name(&ws.info.main));
-        let tbtn = Button::new(&format!("{active_target} ▾"))
-            .kind(Kind::Chrome)
-            .size(Size::Sm)
-            .on(matches!(ws.menu, Some(Menu::Targets(_))))
-            .show(&mut l, p)
-            .on_hover_text("Switch build target");
-        if tbtn.clicked() {
-            ws.menu = if matches!(ws.menu, Some(Menu::Targets(_))) {
-                None
-            } else {
-                Some(Menu::Targets(tbtn.rect))
-            };
-        }
+    if let Some(active) = ws.active.as_deref()
+        && l.available_width() > 64.0
+    {
+        l.label(egui::RichText::new("/").size(13.0).color(p.faint));
+        l.add(egui::Label::new(egui::RichText::new(active).size(12.5).color(p.muted)).truncate());
     }
 
-    // Right, from the right edge: the compile button, settings, Git, History, Comments.
+    // Right (right-to-left): Recompile split button, Build targets (if configured),
+    // Build status indicator, Command palette pill (Ctrl+Shift+P).
     let right = Rect::from_min_max(pos2(center.right() + 12.0, inner.top()), inner.max);
     let mut r = ui.new_child(
         egui::UiBuilder::new()
@@ -187,16 +365,17 @@ pub fn toolbar(
         .radius(CornerRadius {
             nw: 0,
             sw: 0,
-            ne: theme::R,
-            se: theme::R,
+            ne: theme::R_MD,
+            se: theme::R_MD,
         })
-        .icon_size(15.0)
+        .icon_size(14.0)
         .show_icon(&mut r, p);
-    // The 1 px light line between the halves.
+    let div_col =
+        Color32::from_rgba_unmultiplied(p.accent_ink.r(), p.accent_ink.g(), p.accent_ink.b(), 64);
     r.painter().vline(
         caret.rect.left(),
         caret.rect.y_range(),
-        Stroke::new(1.0, Color32::from_white_alpha(64)),
+        Stroke::new(1.0, div_col),
     );
     if caret.clicked() {
         ws.menu = if matches!(ws.menu, Some(Menu::Compile(_))) {
@@ -205,7 +384,6 @@ pub fn toolbar(
             Some(Menu::Compile(caret.rect))
         };
     }
-    // While building, the button stops the build, so it says so; its icon spins.
     let building = ws.build.building;
     let angle = if building {
         r.ctx().request_repaint_after(theme::ANIMATION_FRAME);
@@ -216,12 +394,12 @@ pub fn toolbar(
     let recompile = Button::new(if building { "Stop" } else { "Recompile" })
         .with_icon(icons::REFRESH_CW)
         .icon_angle(angle)
-        .icon_size(15.0)
+        .icon_size(14.0)
         .kind(Kind::Primary)
-        .min_width(128.0)
+        .min_width(114.0)
         .radius(CornerRadius {
-            nw: theme::R,
-            sw: theme::R,
+            nw: theme::R_MD,
+            sw: theme::R_MD,
             ne: 0,
             se: 0,
         })
@@ -238,88 +416,155 @@ pub fn toolbar(
     } else {
         format!("Recompile ({})", display(keys_of("recompile")))
     });
-    r.add_space(4.0 + 6.0);
-    r.spacing_mut().item_spacing.x = 6.0;
-    if Button::icon(icons::SETTINGS, "Project settings")
-        .kind(Kind::Chrome)
-        .icon_size(17.0)
-        .show_icon(&mut r, p)
-        .on_hover_text("Project settings")
-        .clicked()
+
+    r.add_space(8.0);
+    r.spacing_mut().item_spacing.x = 8.0;
+
+    // Optional build targets picker (only when lemmata.toml defines targets).
+    if !ws.info.config.targets.is_empty() && r.available_width() > 96.0 {
+        let active_target = ws
+            .info
+            .config
+            .targets
+            .iter()
+            .find(|t| t.main == ws.info.main && t.engine.is_none_or(|e| e == ws.info.config.engine))
+            .map(|t| t.name.as_str())
+            .unwrap_or_else(|| tree::base_name(&ws.info.main));
+        let tbtn = Button::new(&format!("{active_target} ▾"))
+            .kind(Kind::Ghost)
+            .size(Size::Sm)
+            .on(matches!(ws.menu, Some(Menu::Targets(_))))
+            .show(&mut r, p)
+            .on_hover_text("Switch build target");
+        if tbtn.clicked() {
+            ws.menu = if matches!(ws.menu, Some(Menu::Targets(_))) {
+                None
+            } else {
+                Some(Menu::Targets(tbtn.rect))
+            };
+        }
+    }
+
+    // Build status indicator in the top bar.
+    if let Some(o) = ws.build.outcome.as_ref().filter(|_| !ws.build.building)
+        && r.available_width() > 90.0
     {
-        ws.open_project_settings();
-    }
-    use super::panels::Panel;
-    let open_comments = ws.comments.threads.iter().filter(|t| !t.resolved).count();
-    let git_changes = ws.git.status.len();
-    let compact = rect.width() < 1400.0;
-    let git_tip = if ws.trusted {
-        "Commit, pull and push with git"
-    } else {
-        "Git (disabled in restricted projects)"
-    };
-    for (icon, label, panel, count, tip) in [
-        (icons::GIT_BRANCH, "Git", Panel::Git, git_changes, git_tip),
-        (
-            icons::HISTORY,
-            "History",
-            Panel::History,
-            0,
-            "Snapshots of the project, to compare and restore",
-        ),
-        (
-            icons::MESSAGE_SQUARE,
-            "Comments",
-            Panel::Review,
-            open_comments,
-            "Review comments",
-        ),
-    ] {
-        // .pill: a small amber count after the label.
-        let pill = (count > 0).then(|| count.to_string());
-        let b = if compact {
-            Button::icon(icon, label)
-                .kind(Kind::Chrome)
-                .on(ws.panel == Some(panel))
-                .pill(pill.as_deref())
-                .show_icon(&mut r, p)
+        use lemmata_tex::Status;
+        if o.status == Status::Success {
+            let secs = o.duration_ms as f64 / 1000.0;
+            let visual = format!("Compiled {secs:.1} s");
+            let a11y = format!("Compiled in {secs:.1} s");
+            let g = r.painter().layout_no_wrap(
+                visual.clone(),
+                FontId::new(12.0, theme::font::sans_500()),
+                p.ok,
+            );
+            let (srect, sresp) =
+                r.allocate_exact_size(vec2(14.0 + g.size().x, 24.0), Sense::hover());
+            sresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &a11y));
+            r.painter()
+                .circle_filled(pos2(srect.left() + 4.0, srect.center().y), 3.5, p.ok);
+            r.painter().galley(
+                pos2(srect.left() + 13.0, srect.center().y - g.size().y / 2.0),
+                g,
+                p.ok,
+            );
+            if let Some(at) = ws
+                .build
+                .finished_at
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            {
+                sresp.on_hover_text(format!(
+                    "Finished at {}",
+                    crate::when::time_ms(at.as_millis() as f64)
+                ));
+            }
         } else {
-            Button::new(label)
-                .with_icon(icon)
-                .kind(Kind::Chrome)
-                .on(ws.panel == Some(panel))
-                .pill(pill.as_deref())
-                .show(&mut r, p)
-        }
-        .on_hover_text(tip);
-        if b.clicked() && ws.toggle_panel(panel, backend, settings) {
-            action = Some(Action::Settings);
+            let errors = ws.build.errors();
+            let text = match o.status {
+                Status::Timeout => "Stopped: took too long".to_owned(),
+                Status::Cancelled => "Stopped".to_owned(),
+                _ if errors > 0 => {
+                    format!("{errors} error{}", if errors == 1 { "" } else { "s" })
+                }
+                _ => "Compile failed".to_owned(),
+            };
+            if status_link(&mut r, text, p.error, "Build status: show problems", true).clicked()
+                && ws.open_side(SidePanel::Problems, backend, settings)
+            {
+                action = Some(Action::Settings);
+            }
         }
     }
+
+    // Command palette pill (opens Command Palette — kept separate from Quick Open).
+    let shortcut = display(keys_of("palette"));
+    let kbd_g = r
+        .painter()
+        .layout_no_wrap(shortcut.clone(), FontId::monospace(10.5), p.faint);
+    let pill_w = (26.0 + 74.0 + 8.0 + kbd_g.size().x + 16.0).max(204.0);
+    if rect.width() >= 1140.0 && r.available_width() >= pill_w {
+        let (prect, presp) = r.allocate_exact_size(vec2(pill_w, 30.0), Sense::click());
+        presp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Command palette"));
+        let fill = if presp.hovered() {
+            p.surface_2
+        } else {
+            p.surface
+        };
+        r.painter().rect(
+            prect,
+            CornerRadius::same(theme::R_MD),
+            fill,
+            Stroke::new(1.0, p.border),
+            StrokeKind::Inside,
+        );
+        icons::paint(
+            r.painter(),
+            Rect::from_center_size(
+                pos2(prect.left() + 15.0, prect.center().y),
+                Vec2::splat(13.0),
+            ),
+            icons::SEARCH,
+            p.faint,
+        );
+        let kbd_r = Rect::from_min_size(
+            pos2(
+                prect.right() - 7.0 - kbd_g.size().x - 8.0,
+                prect.center().y - 9.0,
+            ),
+            vec2(kbd_g.size().x + 8.0, 18.0),
+        );
+        r.painter()
+            .rect_filled(kbd_r, CornerRadius::same(4), p.surface_2);
+        r.painter()
+            .galley(kbd_r.center() - kbd_g.size() / 2.0, kbd_g, p.faint);
+        let lbl_clip = Rect::from_min_max(
+            pos2(prect.left() + 26.0, prect.top()),
+            pos2(kbd_r.left() - 6.0, prect.bottom()),
+        );
+        r.painter().with_clip_rect(lbl_clip).text(
+            pos2(prect.left() + 26.0, prect.center().y),
+            Align2::LEFT_CENTER,
+            "Commands…",
+            FontId::proportional(12.0),
+            p.muted,
+        );
+        if presp
+            .on_hover_text(format!("Command palette ({shortcut})"))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
+            ws.open_palette(super::palette::Kind::Commands, settings);
+        }
+    }
+
     action
 }
 
-// ── Sidebar ────────────────────────────────────────────────────────────────
+// ── Files & Outline Sidebar Panels ─────────────────────────────────────────
 
-/// `.title`: 11 px, 600, uppercase, +0.08em, `--chrome-muted`.
-fn section_title(ui: &Ui, at: egui::Pos2, text: &str, p: &Palette) {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        &text.to_uppercase(),
-        0.0,
-        egui::TextFormat {
-            font_id: FontId::new(11.0, theme::font::sans_600()),
-            color: p.chrome_muted,
-            extra_letter_spacing: 0.88,
-            ..Default::default()
-        },
-    );
-    let g = ui.fonts_mut(|f| f.layout_job(job));
-    ui.painter()
-        .galley(pos2(at.x, at.y - g.size().y / 2.0), g, p.chrome_muted);
-}
-
-pub fn sidebar(
+pub fn files_panel(
     ui: &mut Ui,
     p: &Palette,
     ws: &mut Workspace,
@@ -327,62 +572,36 @@ pub fn sidebar(
     backend: &Backend,
 ) {
     let rect = ui.max_rect();
-    ui.painter().rect_filled(rect, 0, p.chrome_2);
-    ui.painter().vline(
-        rect.right() - 0.5,
-        rect.y_range(),
-        Stroke::new(1.0, p.chrome_border),
-    );
-    // Files take 60 %, the outline 40 % (or just its header when closed).
-    let outline_h = if ws.outline_open {
-        (rect.height() * 0.4).max(36.0)
-    } else {
-        36.0
-    };
-    let files = Rect::from_min_max(
-        rect.min,
-        pos2(rect.right() - 1.0, rect.bottom() - outline_h),
-    );
-    let outline = Rect::from_min_max(
-        pos2(rect.left(), files.bottom()),
-        pos2(rect.right() - 1.0, rect.bottom()),
-    );
+    ui.painter().rect_filled(rect, 0, p.app);
 
-    // Files header.
-    let head = Rect::from_min_size(files.min, vec2(files.width(), 36.0));
-    section_title(ui, pos2(head.left() + 14.0, head.center().y), "Files", p);
-    let mut acts = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(head.shrink2(vec2(6.0, 0.0)))
-            .layout(egui::Layout::right_to_left(egui::Align::Center)),
-    );
-    acts.spacing_mut().item_spacing.x = 1.0;
     let mut sort_rect = None;
-    for (icon, label) in [
-        (icons::SEARCH, "Search in project"),
-        (icons::ARROW_UP_DOWN, "Sort and view"),
-        (icons::UPLOAD, "Add files"),
-        (icons::FOLDER_PLUS, "New folder"),
-        (icons::FILE_PLUS, "New file"),
-    ] {
-        let b = Button::icon(icon, label)
-            .kind(Kind::Chrome)
-            .size(Size::Sm)
-            .icon_size(15.0)
-            .ink(p.chrome_muted)
-            .show_icon(&mut acts, p);
-        if label == "Sort and view" && b.clicked() {
-            sort_rect = Some(b.rect);
-        }
-        if b.clicked() {
-            match label {
-                "Search in project" => ws.open_search(None),
-                "Add files" => ws.upload(backend, String::new()),
-                "New folder" => ws.new_item(true, String::new()),
-                "New file" => ws.new_item(false, String::new()),
-                _ => {}
+    let mut act_click: Option<&'static str> = None;
+    let rest = super::panels::side_head(ui, p, "Files", |ui| {
+        for (icon, label) in [
+            (icons::ARROW_UP_DOWN, "Sort and view"),
+            (icons::UPLOAD, "Add files"),
+            (icons::FOLDER_PLUS, "New folder"),
+            (icons::FILE_PLUS, "New file"),
+        ] {
+            let b = Button::icon(icon, label)
+                .kind(Kind::Ghost)
+                .size(Size::Sm)
+                .icon_size(14.0)
+                .show_icon(ui, p);
+            if b.clicked() {
+                if label == "Sort and view" {
+                    sort_rect = Some(b.rect);
+                } else {
+                    act_click = Some(label);
+                }
             }
         }
+    });
+    match act_click {
+        Some("Add files") => ws.upload(backend, String::new()),
+        Some("New folder") => ws.new_item(true, String::new()),
+        Some("New file") => ws.new_item(false, String::new()),
+        _ => {}
     }
     if let Some(r) = sort_rect {
         ws.menu = if matches!(ws.menu, Some(Menu::Sort(_))) {
@@ -392,19 +611,30 @@ pub fn sidebar(
         };
     }
 
-    // The tree.
-    let body = Rect::from_min_max(pos2(files.left(), head.bottom()), files.max);
+    // Optional bottom Git branch footer when the project is a git repo.
+    let branch_info = if ws.trusted {
+        match &ws.git.overview {
+            Some(lemmata_git::Overview::Repo(r)) => Some((
+                r.branch.clone().unwrap_or_else(|| "detached".into()),
+                ws.git.status.len(),
+            )),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let footer_h = if branch_info.is_some() { 34.0 } else { 0.0 };
+    let body = Rect::from_min_max(rest.min, pos2(rest.right(), rest.bottom() - footer_h));
+
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body));
     egui::ScrollArea::vertical()
         .id_salt("tree")
         .auto_shrink(false)
         .show(&mut child, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.spacing_mut().item_spacing.y = 1.0;
             tree_rows(ui, p, ws, settings, backend);
-            // The empty space under the rows: a click clears the selection, a right-click
-            // opens the folder-level menu.
-            let rest = ui.available_rect_before_wrap();
-            let r = ui.interact(rest, ui.scope_id().with("tree-space"), Sense::click());
+            let rest_sp = ui.available_rect_before_wrap();
+            let r = ui.interact(rest_sp, ui.scope_id().with("tree-space"), Sense::click());
             if r.clicked() {
                 ws.sel.selected.clear();
                 ws.sel.focused = true;
@@ -421,65 +651,81 @@ pub fn sidebar(
             }
         });
 
-    // Outline.
-    ui.painter().hline(
-        outline.x_range(),
-        outline.top() + 0.5,
-        Stroke::new(1.0, p.chrome_border),
-    );
-    let ohead = Rect::from_min_size(outline.min + vec2(0.0, 1.0), vec2(outline.width(), 35.0));
-    let r = ui.interact(ohead, egui::Id::unique("outline-toggle"), Sense::click());
-    r.widget_info(|| {
-        egui::WidgetInfo::selected(egui::Role::Button, true, ws.outline_open, "Outline")
+    if let Some((branch, changes)) = branch_info {
+        let foot = Rect::from_min_max(pos2(rest.left(), body.bottom()), rest.max);
+        ui.painter()
+            .hline(foot.x_range(), foot.top() + 0.5, Stroke::new(1.0, p.border));
+        let btn_r = foot.shrink2(vec2(6.0, 3.0));
+        let resp = ui
+            .interact(btn_r, ui.scope_id().with("files-git-foot"), Sense::click())
+            .on_hover_text("Open Git panel")
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.hovered() {
+            ui.painter()
+                .rect_filled(btn_r, CornerRadius::same(6), p.rail_active);
+        }
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(
+                pos2(btn_r.left() + 14.0, btn_r.center().y),
+                Vec2::splat(13.0),
+            ),
+            icons::GIT_BRANCH,
+            p.muted,
+        );
+        ui.painter().text(
+            pos2(btn_r.left() + 26.0, btn_r.center().y),
+            Align2::LEFT_CENTER,
+            &branch,
+            FontId::new(12.0, theme::font::mono_500()),
+            p.ink_2,
+        );
+        if changes > 0 {
+            ui.painter().text(
+                pos2(btn_r.right() - 8.0, btn_r.center().y),
+                Align2::RIGHT_CENTER,
+                format!("{changes}"),
+                FontId::new(11.0, theme::font::sans_600()),
+                p.accent_text,
+            );
+        }
+        if resp.clicked() {
+            ws.open_side(SidePanel::Git, backend, settings);
+        }
+    }
+}
+
+pub fn outline_panel(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend) {
+    let rect = ui.max_rect();
+    ui.painter().rect_filled(rect, 0, p.app);
+    let words = ws.total_words;
+    let rest = super::panels::side_head(ui, p, "Outline", |ui| {
+        if words > 0 {
+            ui.label(
+                egui::RichText::new(format!("{}w", super::sheets::group_digits(words)))
+                    .font(FontId::monospace(11.0))
+                    .color(p.faint),
+            );
+        }
     });
-    if r.hovered() {
-        ui.painter().rect_filled(ohead, 0, p.chrome_hover);
-    }
-    section_title(
-        ui,
-        pos2(ohead.left() + 14.0, ohead.center().y),
-        "Outline",
-        p,
-    );
-    let chev = Rect::from_center_size(
-        pos2(ohead.right() - 6.0 - 8.0 - 7.0, ohead.center().y),
-        Vec2::splat(14.0),
-    );
-    icons::paint_rotated(
-        ui.painter(),
-        chev,
-        icons::CHEVRON_DOWN,
-        p.chrome_muted,
-        if ws.outline_open {
-            0.0
-        } else {
-            -std::f32::consts::FRAC_PI_2
-        },
-    );
-    if r.clicked() {
-        ws.outline_open = !ws.outline_open;
-    }
-    if ws.outline_open {
-        let body = Rect::from_min_max(pos2(outline.left(), ohead.bottom()), outline.max);
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body));
-        egui::ScrollArea::vertical()
-            .id_salt("outline")
-            .auto_shrink(false)
-            .show(&mut child, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                outline_rows(ui, p, ws, backend);
-            });
-    }
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rest));
+    egui::ScrollArea::vertical()
+        .id_salt("outline")
+        .auto_shrink(false)
+        .show(&mut child, |ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            outline_rows(ui, p, ws, backend);
+        });
 }
 
 fn kind_icon(k: tree::Kind, p: &Palette) -> (Icon, Color32) {
     match k {
-        tree::Kind::Tex => (icons::FILE_TEXT, p.accent_on_dark),
-        tree::Kind::Bib => (icons::BOOK_OPEN, Color32::from_rgb(0xc7, 0xa2, 0xe0)),
-        tree::Kind::Image => (icons::FILE_IMAGE, Color32::from_rgb(0x8f, 0xcf, 0x9f)),
-        tree::Kind::Code => (icons::BRACES, p.chrome_muted),
-        tree::Kind::Config => (icons::SETTINGS, p.chrome_muted),
-        tree::Kind::File => (icons::FILE, p.chrome_muted),
+        tree::Kind::Tex => (icons::FILE_TEXT, p.accent_text),
+        tree::Kind::Bib => (icons::BOOK_OPEN, p.atom),
+        tree::Kind::Image => (icons::FILE_IMAGE, p.ok),
+        tree::Kind::Code => (icons::BRACES, p.muted),
+        tree::Kind::Config => (icons::SETTINGS, p.muted),
+        tree::Kind::File => (icons::FILE, p.muted),
     }
 }
 
@@ -554,13 +800,13 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
                 .as_ref()
                 .is_some_and(|d| d.target.as_deref() == Some(e.path.as_str()))
                 || ws.os_drop.as_deref() == Some(e.path.as_str()));
+        let row_pill = rect.shrink2(vec2(6.0, 0.0));
         if drop_here {
-            // .row.drop: --accent-on-dark at 28 % with a 1 px ring.
             ui.painter().rect(
-                rect,
-                0,
-                p.accent_on_dark.gamma_multiply(0.28),
-                Stroke::new(1.0, p.accent_on_dark),
+                row_pill,
+                CornerRadius::same(6),
+                p.accent_soft,
+                Stroke::new(1.0, p.accent),
                 StrokeKind::Inside,
             );
         }
@@ -577,71 +823,68 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
         });
         let painter = ui.painter();
         if selected && !active {
-            // .row.sel: --accent-on-dark at 20 %.
-            painter.rect_filled(rect, 0, p.accent_on_dark.gamma_multiply(0.2));
+            painter.rect_filled(row_pill, CornerRadius::same(6), p.accent_soft);
         }
         if active {
-            painter.rect_filled(rect, 0, p.chrome_active);
-            painter.rect_filled(
-                Rect::from_min_size(rect.min, vec2(3.0, rect.height())),
-                0,
-                p.accent_on_dark,
-            );
+            painter.rect_filled(row_pill, CornerRadius::same(6), p.rail_active);
         } else if r.hovered() {
-            painter.rect_filled(rect, 0, p.chrome_hover);
+            painter.rect_filled(row_pill, CornerRadius::same(6), p.surface_3);
         }
         let opens = tree::is_text_file(&e.path) || tree::is_viewer_file(&e.path);
         let ink = if active {
-            Color32::WHITE
+            p.ink
         } else if !e.is_dir && !opens {
-            p.chrome_muted
+            p.faint
         } else {
-            p.chrome_ink
+            p.ink_2
         };
-        let mut x = rect.left() + 8.0 + *depth as f32 * 14.0;
+        let mut x = rect.left() + 12.0 + *depth as f32 * 14.0;
         if e.is_dir {
             let open_dir = !ws.collapsed.contains(&e.path);
             icons::paint_rotated(
                 painter,
-                Rect::from_min_size(pos2(x, rect.center().y - 6.5), Vec2::splat(13.0)),
+                Rect::from_min_size(pos2(x, rect.center().y - 6.0), Vec2::splat(12.0)),
                 icons::CHEVRON_RIGHT,
-                p.chrome_muted,
+                p.faint,
                 if open_dir {
                     std::f32::consts::FRAC_PI_2
                 } else {
                     0.0
                 },
             );
-            x += 13.0 + 6.0;
+            x += 12.0 + 5.0;
             icons::paint(
                 painter,
-                Rect::from_min_size(pos2(x, rect.center().y - 7.5), Vec2::splat(15.0)),
+                Rect::from_min_size(pos2(x, rect.center().y - 7.0), Vec2::splat(14.0)),
                 if open_dir {
                     icons::FOLDER_OPEN
                 } else {
                     icons::FOLDER
                 },
-                Color32::from_rgb(0xd9, 0xb5, 0x6a),
+                p.warn,
             );
-            x += 15.0 + 6.0;
+            x += 14.0 + 6.0;
             let has_git_dot = ws
                 .git
                 .status
                 .iter()
                 .any(|(path, _)| path.starts_with(&format!("{}/", e.path)));
             let count_g = (!open_dir).then(|| {
-                painter.layout_no_wrap(
-                    count.to_string(),
-                    FontId::proportional(11.0),
-                    p.chrome_muted,
-                )
+                painter.layout_no_wrap(count.to_string(), FontId::proportional(11.0), p.faint)
             });
-            let right_reserve = if has_git_dot { 22.0 } else { 10.0 }
+            let right_reserve = if has_git_dot { 24.0 } else { 14.0 }
                 + count_g.as_ref().map_or(0.0, |g| g.size().x + 18.0);
             let max_name_w = (rect.right() - right_reserve - x).max(20.0);
             let mut job = egui::text::LayoutJob::simple_singleline(
                 e.name.clone(),
-                FontId::proportional(13.0),
+                FontId::new(
+                    12.5,
+                    if active {
+                        theme::font::sans_500()
+                    } else {
+                        egui::FontFamily::Proportional
+                    },
+                ),
                 ink,
             );
             job.wrap.max_width = max_name_w;
@@ -652,43 +895,45 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
             let painter = ui.painter();
             painter.galley(pos2(x, rect.center().y - ng.size().y / 2.0), ng, ink);
             if has_git_dot {
-                painter.circle_filled(
-                    pos2(rect.right() - 13.0, rect.center().y),
-                    3.0,
-                    Color32::from_rgb(0xe5, 0xb5, 0x67),
-                );
+                painter.circle_filled(pos2(rect.right() - 16.0, rect.center().y), 3.0, p.warn);
             }
             if let Some(g) = count_g {
-                // .count: how many files the folded folder holds.
                 let b = Rect::from_min_size(
                     pos2(x + name_w + 6.0, rect.center().y - 8.0),
-                    vec2(g.size().x + 12.0, 16.0),
+                    vec2(g.size().x + 10.0, 16.0),
                 );
-                painter.rect_filled(b, CornerRadius::same(8), p.chrome_3);
-                painter.galley(b.center() - g.size() / 2.0, g, p.chrome_muted);
+                painter.rect_filled(b, CornerRadius::same(8), p.surface_3);
+                painter.galley(b.center() - g.size() / 2.0, g, p.faint);
             }
             if r.clicked() {
                 toggle = Some(e.path.clone());
             }
         } else {
-            x += 15.0;
+            x += 14.0;
             let (icon, color) = kind_icon(tree::kind(&e.name), p);
             icons::paint(
                 painter,
-                Rect::from_min_size(pos2(x, rect.center().y - 7.5), Vec2::splat(15.0)),
+                Rect::from_min_size(pos2(x, rect.center().y - 7.0), Vec2::splat(14.0)),
                 icon,
                 color,
             );
-            x += 15.0 + 6.0;
+            x += 14.0 + 6.0;
             let git_entry = ws.git.status.iter().find(|(path, _)| *path == e.path);
             let is_main = e.path == ws.info.main;
-            let right_reserve = 10.0
-                + if is_main { 48.0 } else { 0.0 }
+            let right_reserve = 14.0
+                + if is_main { 46.0 } else { 0.0 }
                 + if git_entry.is_some() { 18.0 } else { 0.0 };
             let max_name_w = (rect.right() - right_reserve - x).max(20.0);
             let mut job = egui::text::LayoutJob::simple_singleline(
                 e.name.clone(),
-                FontId::proportional(13.0),
+                FontId::new(
+                    12.5,
+                    if active {
+                        theme::font::sans_500()
+                    } else {
+                        egui::FontFamily::Proportional
+                    },
+                ),
                 ink,
             );
             job.wrap.max_width = max_name_w;
@@ -697,33 +942,20 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
             let name = ui.fonts_mut(|f| f.layout_job(job));
             let painter = ui.painter();
             painter.galley(pos2(x, rect.center().y - name.size().y / 2.0), name, ink);
-            // The file's git status letter, and a dot on folders holding changes.
             let mut git_note = String::new();
             if let Some((_, st)) = git_entry {
                 let (c, title) = match st.as_str() {
-                    "M" => (
-                        Color32::from_rgb(0xe5, 0xb5, 0x67),
-                        "Changed since the last git commit",
-                    ),
-                    "R" => (
-                        Color32::from_rgb(0xe5, 0xb5, 0x67),
-                        "Renamed, not committed yet",
-                    ),
-                    "A" => (
-                        Color32::from_rgb(0x8f, 0xcf, 0x9f),
-                        "Added to git, not committed yet",
-                    ),
-                    "?" => (Color32::from_rgb(0x8f, 0xcf, 0x9f), "Not tracked by git"),
-                    "D" => (
-                        Color32::from_rgb(0xe5, 0x8c, 0x8c),
-                        "Deleted, not committed yet",
-                    ),
-                    _ => (Color32::from_rgb(0xe5, 0x8c, 0x8c), "Merge conflict"),
+                    "M" => (p.warn, "Changed since the last git commit"),
+                    "R" => (p.warn, "Renamed, not committed yet"),
+                    "A" => (p.ok, "Added to git, not committed yet"),
+                    "?" => (p.ok, "Not tracked by git"),
+                    "D" => (p.error, "Deleted, not committed yet"),
+                    _ => (p.error, "Merge conflict"),
                 };
                 let right = if is_main {
                     rect.right() - 60.0
                 } else {
-                    rect.right() - 10.0
+                    rect.right() - 12.0
                 };
                 let gr =
                     Rect::from_min_size(pos2(right - 14.0, rect.top()), vec2(14.0, rect.height()));
@@ -737,34 +969,28 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
                 git_note = format!("\n{title}");
             }
             if is_main {
-                // The MAIN badge.
                 let mut job = egui::text::LayoutJob::default();
                 job.append(
                     "MAIN",
                     0.0,
                     egui::TextFormat {
                         font_id: FontId::new(9.5, theme::font::sans_600()),
-                        color: p.accent_on_dark,
-                        extra_letter_spacing: 0.76,
+                        color: p.accent_text,
+                        extra_letter_spacing: 0.65,
                         ..Default::default()
                     },
                 );
                 let g = ui.fonts_mut(|f| f.layout_job(job));
                 let b = Rect::from_min_size(
                     pos2(
-                        rect.right() - 10.0 - g.size().x - 8.0,
-                        rect.center().y - 7.0,
+                        rect.right() - 12.0 - g.size().x - 8.0,
+                        rect.center().y - 7.5,
                     ),
-                    vec2(g.size().x + 8.0, 14.0),
+                    vec2(g.size().x + 8.0, 15.0),
                 );
                 let painter = ui.painter();
-                painter.rect_stroke(
-                    b,
-                    CornerRadius::same(3),
-                    Stroke::new(1.0, p.accent_on_dark.gamma_multiply(0.45)),
-                    StrokeKind::Inside,
-                );
-                painter.galley(b.center() - g.size() / 2.0, g, p.accent_on_dark);
+                painter.rect_filled(b, CornerRadius::same(4), p.accent_soft);
+                painter.galley(b.center() - g.size() / 2.0, g, p.accent_text);
             }
             let tip = format!(
                 "{}{}{}{git_note}",
@@ -781,9 +1007,8 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
             }
         }
         if dragging {
-            // .row.dragging: half opacity.
             ui.painter()
-                .rect_filled(rect, 0, p.chrome_2.gamma_multiply(0.5));
+                .rect_filled(row_pill, CornerRadius::same(6), p.app.gamma_multiply(0.55));
         }
         if r.clicked() {
             click = Some((e.path.clone(), ui.input(|i| i.modifiers)));
@@ -858,19 +1083,18 @@ fn tree_drops(
                 .interactable(false)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::new()
-                        .fill(p.chrome_3)
-                        .stroke(Stroke::new(1.0, p.chrome_border))
-                        .corner_radius(crate::theme::R_SM)
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0, p.border))
+                        .corner_radius(crate::theme::R_MD)
                         .shadow(p.shadow)
-                        .inner_margin(egui::Margin::symmetric(9, 3))
+                        .inner_margin(egui::Margin::symmetric(9, 4))
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new(&d.name).size(12.5).color(p.chrome_ink))
+                            ui.label(egui::RichText::new(&d.name).size(12.5).color(p.ink))
                         });
                 });
         }
     }
     ws.os_drop = if os_hover { folder.clone() } else { None };
-    // .tree-scroll.drop: the project root takes them.
     if ws
         .tree_drag
         .as_ref()
@@ -879,8 +1103,8 @@ fn tree_drops(
     {
         ui.painter().rect_stroke(
             ui.clip_rect(),
-            0,
-            Stroke::new(2.0, p.accent_on_dark),
+            CornerRadius::same(theme::R_MD),
+            Stroke::new(2.0, p.accent),
             StrokeKind::Inside,
         );
     }
@@ -894,11 +1118,11 @@ fn tree_drops(
 fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend) {
     if ws.headings.is_empty() {
         ui.horizontal(|ui| {
-            ui.add_space(14.0);
+            ui.add_space(12.0);
             ui.label(
                 egui::RichText::new("Add a \\section to see the outline here.")
                     .size(12.0)
-                    .color(p.chrome_muted),
+                    .color(p.muted),
             );
         });
         return;
@@ -910,7 +1134,6 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
         .min()
         .unwrap_or(0)
         .min(4);
-    // Words per heading, with its subsections.
     let totals: Vec<u32> = (0..ws.headings.len())
         .map(|i| {
             let h = &ws.headings[i];
@@ -923,8 +1146,6 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
         })
         .collect();
     let current = ws.current_heading();
-    // A heading is told by its file, level and title (and which of equals it is), not its line:
-    // typing above it must not unfold it.
     let keys: Vec<String> = {
         let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         ws.headings
@@ -954,40 +1175,14 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
         if folded && has_children(i) {
             hide_below = Some(h.level);
         }
-        let (rect, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
-        // A long thesis: only the headings in view are laid out and drawn.
+        let (rect, _) = ui.allocate_exact_size(vec2(w, 27.0), Sense::hover());
         if !ui.is_rect_visible(rect) {
             continue;
         }
-        let indent = 4.0 + (h.level.saturating_sub(min_level)) as f32 * 13.0;
-        let twist = Rect::from_min_size(pos2(rect.left() + indent, rect.top()), vec2(14.0, 26.0));
+        let row_pill = rect.shrink2(vec2(6.0, 0.0));
+        let indent = 10.0 + (h.level.saturating_sub(min_level)) as f32 * 13.0;
+        let twist = Rect::from_min_size(pos2(rect.left() + indent, rect.top()), vec2(14.0, 27.0));
         let entry = Rect::from_min_max(pos2(twist.right(), rect.top()), rect.max);
-        if has_children(i) {
-            let tr = ui.interact(twist, ui.make_persistent_id(("twist", i)), Sense::click());
-            tr.widget_info(|| {
-                egui::WidgetInfo::labeled(
-                    egui::Role::Button,
-                    true,
-                    if folded { "Expand" } else { "Collapse" },
-                )
-            });
-            let g =
-                ui.painter()
-                    .layout_no_wrap("▾".into(), FontId::proportional(11.0), p.chrome_muted);
-            let center = twist.center();
-            let rot = if folded {
-                -std::f32::consts::FRAC_PI_2
-            } else {
-                0.0
-            };
-            ui.painter().add(
-                egui::epaint::TextShape::new(center - g.size() / 2.0, g, p.chrome_muted)
-                    .with_angle_and_anchor(rot, Align2::CENTER_CENTER),
-            );
-            if tr.clicked() {
-                fold = Some(keys[i].clone());
-            }
-        }
         let er = ui.interact(entry, ui.make_persistent_id(("heading", i)), Sense::click());
         let title = if h.title.is_empty() {
             "(untitled)".to_owned()
@@ -997,36 +1192,64 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
         er.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &title));
         let on = current == Some(i);
         if on {
-            ui.painter().rect_filled(entry, 0, p.chrome_active);
-            ui.painter().rect_filled(
-                Rect::from_min_size(entry.min, vec2(3.0, entry.height())),
-                0,
-                p.accent_on_dark,
-            );
+            ui.painter()
+                .rect_filled(row_pill, CornerRadius::same(6), p.rail_active);
         } else if er.hovered() {
-            ui.painter().rect_filled(entry, 0, p.chrome_hover);
+            ui.painter()
+                .rect_filled(row_pill, CornerRadius::same(6), p.surface_3);
+        }
+        if has_children(i) {
+            let tr = ui.interact(twist, ui.make_persistent_id(("twist", i)), Sense::click());
+            tr.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Button,
+                    true,
+                    if folded { "Expand" } else { "Collapse" },
+                )
+            });
+            let g = ui
+                .painter()
+                .layout_no_wrap("▾".into(), FontId::proportional(11.0), p.faint);
+            let center = twist.center();
+            let rot = if folded {
+                -std::f32::consts::FRAC_PI_2
+            } else {
+                0.0
+            };
+            ui.painter().add(
+                egui::epaint::TextShape::new(center - g.size() / 2.0, g, p.faint)
+                    .with_angle_and_anchor(rot, Align2::CENTER_CENTER),
+            );
+            if tr.clicked() {
+                fold = Some(keys[i].clone());
+            }
         }
         let ink = if on {
-            Color32::WHITE
+            p.ink
         } else if er.hovered() || h.level == min_level {
-            p.chrome_ink
+            p.ink_2
         } else {
-            p.chrome_muted
+            p.muted
         };
         let n = format!("{}w", totals[i]);
-        let ng = ui.painter().layout_no_wrap(
-            n,
-            FontId::monospace(10.5),
-            p.chrome_muted.gamma_multiply(0.8),
+        let ng = ui
+            .painter()
+            .layout_no_wrap(n, FontId::monospace(10.5), p.faint);
+        let nx = row_pill.right() - 8.0 - ng.size().x;
+        ui.painter()
+            .galley(pos2(nx, entry.center().y - ng.size().y / 2.0), ng, p.faint);
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            title,
+            FontId::new(
+                12.5,
+                if on || h.level == min_level {
+                    theme::font::sans_500()
+                } else {
+                    egui::FontFamily::Proportional
+                },
+            ),
+            ink,
         );
-        let nx = entry.right() - 12.0 - ng.size().x;
-        ui.painter().galley(
-            pos2(nx, entry.center().y - ng.size().y / 2.0),
-            ng,
-            p.chrome_muted,
-        );
-        let mut job =
-            egui::text::LayoutJob::simple_singleline(title, FontId::proportional(12.5), ink);
         job.wrap.max_width = (nx - entry.left() - 4.0 - 8.0).max(16.0);
         job.wrap.max_rows = 1;
         job.wrap.overflow_character = Some('…');
@@ -1036,7 +1259,9 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
             tg,
             ink,
         );
-        let er = er.on_hover_text(format!("{}:{} · {} words", h.file, h.line, totals[i]));
+        let er = er
+            .on_hover_text(format!("{}:{} · {} words", h.file, h.line, totals[i]))
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
         if er.clicked() {
             jump = Some((h.file.clone(), h.line as usize));
         }
@@ -1055,9 +1280,17 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
 
 pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, backend: &Backend) {
     let rect = ui.max_rect();
-    // Scrolled tabs stop at the strip's edges.
     ui.set_clip_rect(ui.clip_rect().intersect(rect));
-    ui.painter().rect_filled(rect, 0, p.surface_2);
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius {
+            nw: theme::R_LG - 1,
+            ne: theme::R_LG - 1,
+            sw: 0,
+            se: 0,
+        },
+        p.surface_2,
+    );
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 0.5,
@@ -1071,7 +1304,6 @@ pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, b
     let mut drop_at = None;
     let tabs = ws.tabs.clone();
     let mut tab_rects = Vec::new();
-    // Two open files with one name show their folder too.
     let names: Vec<String> = tabs
         .iter()
         .map(|t| {
@@ -1091,19 +1323,18 @@ pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, b
         .map(|(t, name)| {
             let g = ui
                 .painter()
-                .layout_no_wrap(name.clone(), FontId::proportional(13.0), p.muted);
+                .layout_no_wrap(name.clone(), FontId::proportional(12.5), p.muted);
+            let dirty_w = if ws.buffers.is_dirty(t) { 10.0 } else { 0.0 };
             ((if ws.pinned.contains(t) { 10.0 } else { 14.0 })
                 + if tree::is_viewer_file(t) { 18.0 } else { 0.0 }
                 + g.size().x
+                + dirty_w
                 + 4.0
-                + 26.0
-                + 4.0
-                + 1.0)
+                + 24.0
+                + 6.0)
                 .min(220.0)
         })
         .collect();
-    // Too many tabs for the strip: they get narrower, and past that the strip scrolls (the wheel
-    // over it, and to the active tab when that changes).
     let total: f32 = naturals.iter().sum();
     let widths: Vec<f32> = if total > rect.width() {
         let k = rect.width() / total;
@@ -1138,6 +1369,7 @@ pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, b
         let name = names[idx].clone();
         let viewer = tree::is_viewer_file(t);
         let pinned = ws.pinned.contains(t);
+        let dirty = ws.buffers.is_dirty(t);
         let w = widths[idx];
         let tr = Rect::from_min_size(pos2(x, rect.top()), vec2(w, rect.height() - 1.0));
         tab_rects.push(tr);
@@ -1151,12 +1383,24 @@ pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, b
         r.clone().on_hover_text(t.as_str());
         let painter = ui.painter();
         if on {
-            painter.rect_filled(tr.with_max_y(rect.bottom()), 0, p.code_bg);
+            let active_r = tr.with_max_y(rect.bottom());
+            let nw = if idx == 0 && off < 1.0 {
+                theme::R_LG - 1
+            } else {
+                0
+            };
             painter.rect_filled(
-                Rect::from_min_size(tr.min, vec2(tr.width(), 2.0)),
-                0,
-                p.accent,
+                active_r,
+                CornerRadius {
+                    nw,
+                    ne: 0,
+                    sw: 0,
+                    se: 0,
+                },
+                p.code_bg,
             );
+        } else if r.hovered() {
+            painter.rect_filled(tr, 0, p.surface_3.gamma_multiply(0.55));
         }
         if dragging.as_deref() == Some(t.as_str()) {
             painter.rect_filled(tr, 0, p.surface_2.gamma_multiply(0.5));
@@ -1173,20 +1417,38 @@ pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, b
             );
             tx += 18.0;
         }
-        let mut job =
-            egui::text::LayoutJob::simple_singleline(name.clone(), FontId::proportional(13.0), ink);
-        job.wrap.max_width = tr.right() - 4.0 - 26.0 - 4.0 - tx;
+        let dirty_space = if dirty { 10.0 } else { 0.0 };
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            name.clone(),
+            FontId::new(
+                12.5,
+                if on {
+                    theme::font::sans_500()
+                } else {
+                    egui::FontFamily::Proportional
+                },
+            ),
+            ink,
+        );
+        job.wrap.max_width = (tr.right() - 4.0 - 24.0 - dirty_space - 4.0 - tx).max(16.0);
         job.wrap.max_rows = 1;
         job.wrap.overflow_character = Some('…');
         let g = ui.fonts_mut(|f| f.layout_job(job));
+        let gw = g.size().x;
         painter.galley(pos2(tx, tr.center().y - g.size().y / 2.0), g, ink);
-        // The close button, or the pin; a dot while unsaved.
+        if dirty && !pinned {
+            // Dirty warn dot shown beside filename before the close button.
+            painter.circle_filled(
+                pos2((tx + gw + 7.0).min(tr.right() - 32.0), tr.center().y),
+                3.0,
+                p.warn,
+            );
+        }
         let xr = Rect::from_min_size(
-            pos2(tr.right() - 1.0 - 4.0 - 26.0, tr.center().y - 13.0),
-            Vec2::splat(26.0),
+            pos2(tr.right() - 1.0 - 4.0 - 24.0, tr.center().y - 12.0),
+            Vec2::splat(24.0),
         );
         let xresp = ui.interact(xr, ui.make_persistent_id(("tab-x", t)), Sense::click());
-        let dirty = ws.buffers.is_dirty(t);
         let label = if pinned {
             format!("Unpin {t}")
         } else if dirty {
@@ -1209,11 +1471,9 @@ pub fn tabs(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, b
             );
             if dirty {
                 ui.painter()
-                    .circle_filled(xr.right_top() + vec2(-6.5, 6.5), 3.5, p.accent);
+                    .circle_filled(xr.right_top() + vec2(-5.5, 5.5), 3.0, p.warn);
             }
-        } else if dirty && !hover {
-            ui.painter().circle_filled(xr.center(), 3.5, p.accent);
-        } else if hover || (on && !dirty) {
+        } else if hover || on {
             icons::paint(
                 ui.painter(),
                 Rect::from_center_size(xr.center(), Vec2::splat(13.0)),
@@ -1299,10 +1559,10 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> (bool, bool, bo
         .as_deref()
         .is_some_and(|a| ws.editors.contains_key(a));
     let avail_w = rect.width() - 20.0;
-    // Compact mode uses icons for Cite/Comment/Go to PDF so nothing clips in Split layout;
-    // overflow mode moves secondary insert/list buttons into a `…` menu at narrow widths (< 470 px).
-    let compact_labels = avail_w < 640.0;
-    let overflow = avail_w < 470.0;
+    // Compact mode uses icons for Cite/Comment/Show in PDF so nothing clips in Split layout;
+    // overflow mode moves secondary insert/list buttons into a `…` menu at narrow widths (< 490 px).
+    let compact_labels = avail_w < 680.0;
+    let overflow = avail_w < 490.0;
     let mut bar = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect.shrink2(vec2(10.0, 4.0)))
@@ -1326,6 +1586,104 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> (bool, bool, bo
     #[allow(clippy::type_complexity)]
     let mut todo: Option<Box<dyn FnOnce(&mut Workspace)>> = None;
     let c = &mut bar;
+    // Style picker ("Paragraph ▾" or current heading level; AccessKit label "Heading").
+    let style_label = ws
+        .active
+        .as_deref()
+        .and_then(|a| ws.editors.get(a))
+        .map(|ed| {
+            let line = ed.doc.line(ed.doc.line_of(ed.doc.selection.main().head));
+            let trimmed = line.trim_start();
+            for (cmd, name) in [
+                ("\\chapter", "Chapter"),
+                ("\\section", "Section"),
+                ("\\subsection", "Subsection"),
+                ("\\subsubsection", "Subsubsection"),
+                ("\\paragraph", "Paragraph"),
+            ] {
+                if let Some(rest) = trimmed.strip_prefix(cmd)
+                    && rest.trim_start_matches('*').starts_with(['[', '{'])
+                {
+                    return name;
+                }
+            }
+            "Paragraph"
+        })
+        .unwrap_or("Paragraph");
+    let show_style_text = avail_w >= 410.0;
+    let style_g = show_style_text.then(|| {
+        c.painter().layout_no_wrap(
+            style_label.into(),
+            FontId::new(12.0, theme::font::sans_500()),
+            p.ink,
+        )
+    });
+    let hw = match &style_g {
+        Some(g) => 9.0 + g.size().x + 4.0 + 12.0 + 8.0,
+        None => 9.0 + 16.0 + 2.0 + 12.0 + 9.0,
+    };
+    let (hrect, h) = c.allocate_exact_size(
+        vec2(hw, 26.0),
+        if disabled {
+            Sense::hover()
+        } else {
+            Sense::click()
+        },
+    );
+    h.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, !disabled, "Heading"));
+    if !disabled && (h.hovered() || matches!(ws.menu, Some(Menu::Heading(_)))) {
+        c.painter()
+            .rect_filled(hrect, CornerRadius::same(theme::R), p.surface_3);
+    }
+    let ink = if disabled {
+        p.ink.gamma_multiply(0.5)
+    } else {
+        p.ink
+    };
+    if let Some(g) = style_g {
+        let gw = g.size().x;
+        c.painter().galley(
+            pos2(hrect.left() + 9.0, hrect.center().y - g.size().y / 2.0),
+            g,
+            ink,
+        );
+        icons::paint(
+            c.painter(),
+            Rect::from_min_size(
+                pos2(hrect.left() + 9.0 + gw + 4.0, hrect.center().y - 6.0),
+                Vec2::splat(12.0),
+            ),
+            icons::CHEVRON_DOWN,
+            if disabled { ink } else { p.muted },
+        );
+    } else {
+        icons::paint(
+            c.painter(),
+            Rect::from_min_size(
+                pos2(hrect.left() + 9.0, hrect.center().y - 8.0),
+                Vec2::splat(16.0),
+            ),
+            icons::HEADING,
+            ink,
+        );
+        icons::paint(
+            c.painter(),
+            Rect::from_min_size(
+                pos2(hrect.left() + 27.0, hrect.center().y - 6.0),
+                Vec2::splat(12.0),
+            ),
+            icons::CHEVRON_DOWN,
+            ink,
+        );
+    }
+    if h.on_hover_text("Heading / text style").clicked() {
+        ws.menu = if matches!(ws.menu, Some(Menu::Heading(_))) {
+            None
+        } else {
+            Some(Menu::Heading(hrect))
+        };
+    }
+    sep(c);
     if ibtn(c, icons::BOLD, "Bold")
         .on_hover_text(tip("Bold", "bold"))
         .clicked()
@@ -1341,50 +1699,6 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> (bool, bool, bo
         todo = Some(Box::new(|ws| {
             with_editor(ws, |e, _| cmd::toggle_wrap(&mut e.doc, "textit"))
         }));
-    }
-    // `.heading`: the H and a small chevron, 2 px apart.
-    let (hrect, h) = c.allocate_exact_size(
-        vec2(9.0 + 16.0 + 2.0 + 12.0 + 9.0, 26.0),
-        if disabled {
-            Sense::hover()
-        } else {
-            Sense::click()
-        },
-    );
-    h.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, !disabled, "Heading"));
-    if !disabled && h.hovered() {
-        c.painter()
-            .rect_filled(hrect, CornerRadius::same(theme::R), p.surface_3);
-    }
-    let ink = if disabled {
-        p.ink.gamma_multiply(0.5)
-    } else {
-        p.ink
-    };
-    icons::paint(
-        c.painter(),
-        Rect::from_min_size(
-            pos2(hrect.left() + 9.0, hrect.center().y - 8.0),
-            Vec2::splat(16.0),
-        ),
-        icons::HEADING,
-        ink,
-    );
-    icons::paint(
-        c.painter(),
-        Rect::from_min_size(
-            pos2(hrect.left() + 27.0, hrect.center().y - 6.0),
-            Vec2::splat(12.0),
-        ),
-        icons::CHEVRON_DOWN,
-        ink,
-    );
-    if h.on_hover_text("Heading").clicked() {
-        ws.menu = if matches!(ws.menu, Some(Menu::Heading(_))) {
-            None
-        } else {
-            Some(Menu::Heading(hrect))
-        };
     }
     sep(c);
     if ibtn(c, icons::SIGMA, "Inline math ($…$)")
@@ -1507,14 +1821,17 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> (bool, bool, bo
             .enabled(!disabled)
             .show_icon(c, p)
     } else {
-        Button::new("Go to PDF")
+        let b = Button::new("Show in PDF")
             .with_icon(icons::LOCATE)
             .kind(Kind::Ghost)
             .size(Size::Sm)
             .enabled(!disabled)
-            .show(c, p)
+            .show(c, p);
+        c.ctx()
+            .accesskit_node_builder(b.id, |n| n.set_label("Go to PDF"));
+        b
     };
-    if sync_btn.on_hover_text(tip("Go to PDF", "sync")).clicked() {
+    if sync_btn.on_hover_text(tip("Show in PDF", "sync")).clicked() {
         sync = true;
     }
     if let Some(f) = todo {
@@ -1571,7 +1888,16 @@ pub fn status_bar(
 ) -> bool {
     let mut changed = false;
     let rect = ui.max_rect();
-    ui.painter().rect_filled(rect, 0, p.surface_2);
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: theme::R_LG - 1,
+            se: theme::R_LG - 1,
+        },
+        p.surface_2,
+    );
     ui.painter()
         .hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
     let mut c = ui.new_child(
@@ -1579,10 +1905,10 @@ pub fn status_bar(
             .max_rect(rect.shrink2(vec2(12.0, 0.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    let tight = rect.width() < 420.0;
-    let medium = rect.width() < 560.0;
-    c.spacing_mut().item_spacing.x = if tight { 10.0 } else { 16.0 };
-    let small = |t: String, color: Color32| egui::RichText::new(t).size(12.0).color(color);
+    let tight = rect.width() < 340.0;
+    let medium = rect.width() < 430.0;
+    c.spacing_mut().item_spacing.x = if tight { 10.0 } else { 14.0 };
+    let small = |t: String, color: Color32| egui::RichText::new(t).size(11.5).color(color);
     let is_editor = ws
         .active
         .as_deref()
@@ -1593,7 +1919,8 @@ pub fn status_bar(
         } else {
             ws.cursor.1
         };
-        c.label(small(format!("Line {line}"), p.muted));
+        let col = ws.cursor_col.max(1);
+        c.label(small(format!("Ln {line}, Col {col}"), p.muted));
         if ws.selection_words > 0 && !tight {
             c.label(small(format!("{} selected", ws.selection_words), p.muted))
                 .on_hover_text("Words in the selection");
@@ -1608,89 +1935,117 @@ pub fn status_bar(
                 "Saved"
             };
             let rt = if failed {
-                small(text.into(), p.error).font(FontId::new(12.0, theme::font::sans_600()))
+                small(text.into(), p.error).font(FontId::new(11.5, theme::font::sans_600()))
             } else {
-                small(text.into(), p.muted)
+                small(text.into(), p.faint)
             };
             c.label(rt);
         }
     } else if let Some(a) = ws.active.as_deref() {
         c.label(small(tree::base_name(a).to_owned(), p.muted));
     }
+    let errors = ws.build.errors();
+    let warnings = ws.build.warnings();
+    if !tight && (errors > 0 || warnings > 0) {
+        let mut parts = Vec::new();
+        if errors > 0 {
+            parts.push(format!(
+                "{errors} error{}",
+                if errors == 1 { "" } else { "s" }
+            ));
+        }
+        if warnings > 0 {
+            parts.push(format!(
+                "{warnings} warning{}",
+                if warnings == 1 { "" } else { "s" }
+            ));
+        }
+        let col = if errors > 0 { p.error } else { p.warn };
+        if status_link(&mut c, parts.join(" · "), col, "Show problems", errors > 0).clicked()
+            && ws.open_side(SidePanel::Problems, backend, settings)
+        {
+            changed = true;
+        }
+    } else if !tight
+        && ws.build.failed()
+        && status_link(
+            &mut c,
+            "Build failed".into(),
+            p.error,
+            "Show problems",
+            true,
+        )
+        .clicked()
+        && ws.open_side(SidePanel::Problems, backend, settings)
+    {
+        changed = true;
+    }
     c.with_layout(egui::Layout::right_to_left(egui::Align::Center), |c| {
         c.spacing_mut().item_spacing.x = if tight { 10.0 } else { 14.0 };
-        let bell_pill = (ws.unread_notices > 0).then(|| ws.unread_notices.to_string());
-        let bell = Button::icon(icons::BELL, "Notifications")
-            .kind(Kind::Ghost)
-            .size(Size::Sm)
-            .icon_size(14.0)
-            .on(matches!(ws.menu, Some(Menu::Notices(_))))
-            .pill(bell_pill.as_deref())
-            .show_icon(c, p)
-            .on_hover_text(if ws.notice_log.is_empty() {
-                "Notifications (none yet)"
-            } else {
-                "Notifications"
-            });
-        if bell.clicked() {
-            ws.menu = if matches!(ws.menu, Some(Menu::Notices(_))) {
-                None
-            } else {
-                ws.unread_notices = 0;
-                Some(Menu::Notices(bell.rect))
-            };
-        }
-        if let Some(o) = ws.build.outcome.as_ref().filter(|_| !ws.build.building) {
-            use lemmata_tex::Status;
-            if o.status == Status::Success {
-                let text = if tight {
-                    format!("{:.1} s", o.duration_ms as f64 / 1000.0)
-                } else {
-                    format!("Compiled in {:.1} s", o.duration_ms as f64 / 1000.0)
-                };
-                let r = c.label(small(text, p.ok));
-                if let Some(at) = ws.build.finished_at.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()) {
-                    r.on_hover_text(format!("Finished at {}", crate::when::time_ms(at.as_millis() as f64)));
-                }
-            } else {
-                // The failure opens the logs that explain it.
-                let errors = ws.build.errors();
-                let text = match o.status {
-                    Status::Timeout => "Stopped: took too long".to_owned(),
-                    Status::Cancelled => "Stopped".to_owned(),
-                    _ if errors > 0 => format!("{errors} error{}", if errors == 1 { "" } else { "s" }),
-                    _ => "Compile failed".to_owned(),
-                };
-                if status_link(c, text, p.error, "Show the logs", true).clicked() {
-                    ws.build.logs_open = true;
-                    if settings.layout == "editor" {
-                        settings.layout = "split".into();
-                        changed = true;
-                    }
-                }
-            }
-        }
         if !tight
-            && status_link(c, engine_name(ws.info.config.engine).into(), p.muted, "Compiler: change it in Project settings", false).clicked()
+            && status_link(
+                c,
+                engine_name(ws.info.config.engine).into(),
+                p.muted,
+                "Compiler: change it in Project settings",
+                false,
+            )
+            .clicked()
         {
             ws.open_project_settings();
         }
         if !tight
             && ws.total_words > 0
-            && status_link(c, format!("{} words", super::sheets::group_digits(ws.total_words)), p.muted, "Words in the document body, without commands, maths or comments. Click for the count per file.", false).clicked()
+            && status_link(
+                c,
+                format!("{} words", super::sheets::group_digits(ws.total_words)),
+                p.muted,
+                "Words in the document body, without commands, maths or comments. Click for the count per file.",
+                false,
+            )
+            .clicked()
         {
             ws.open_word_count(backend);
         }
         let lang = ws.spell_language(settings);
         if !medium
             && lang != "off"
-            && status_link(c, lang, p.muted, "Spell-check language: change it in Project settings", false).clicked()
+            && status_link(
+                c,
+                lang,
+                p.muted,
+                "Spell-check language: change it in Project settings",
+                false,
+            )
+            .clicked()
         {
             ws.open_project_settings();
         }
         if !medium
+            && !ws.trusted
+            && widgets::chip_button(
+                c,
+                p,
+                None,
+                "Restricted",
+                "Restricted project: click to manage trust",
+                ChipTone::Warn,
+            )
+            .on_hover_text("Restricted project: external tools and git are disabled. Click to change in Project settings.")
+            .clicked()
+        {
+            ws.open_project_trust_settings();
+        }
+        if !medium
             && ws.info.config.draft
-            && status_link(c, "Draft mode".into(), p.warn, "Figures are drawn as boxes. Click to build normally again.", false).clicked()
+            && status_link(
+                c,
+                "Draft mode".into(),
+                p.warn,
+                "Figures are drawn as boxes. Click to build normally again.",
+                false,
+            )
+            .clicked()
         {
             ws.set_config(backend, settings, |c| c.draft = false);
         }
@@ -1711,31 +2066,43 @@ pub fn status_bar(
             ws.notice(format!("Retrying grammar check ({err})"), Tone::Info);
         }
         if !medium && ws.tex_outdated {
-            c.label(small("Old TeX Live".into(), p.warn)).on_hover_text("Some packages may lack newer features");
+            c.label(small("Old TeX Live".into(), p.warn))
+                .on_hover_text("Some packages may lack newer features");
         }
         if !medium {
             match &ws.lsp.state {
                 crate::lsp::State::Starting => {
-                    // .starting: a small spinning ring, then the words.
-                    let r = c.label(small("Starting completion".into(), p.muted)).on_hover_text("The language server is starting");
-                    let ring = Rect::from_center_size(pos2(r.rect.left() - 10.0, r.rect.center().y), vec2(8.0, 8.0));
+                    let r = c
+                        .label(small("Starting completion".into(), p.muted))
+                        .on_hover_text("The language server is starting");
+                    let ring = Rect::from_center_size(
+                        pos2(r.rect.left() - 10.0, r.rect.center().y),
+                        vec2(8.0, 8.0),
+                    );
                     let t = c.input(|i| i.time) as f32;
                     c.painter().add(egui::Shape::Path(egui::epaint::PathShape::line(
-                        (0..=12).map(|k| {
-                            let a = t * std::f32::consts::TAU / 0.8 + k as f32 * 0.4;
-                            ring.center() + vec2(a.cos(), a.sin()) * 3.5
-                        }).collect(),
+                        (0..=12)
+                            .map(|k| {
+                                let a = t * std::f32::consts::TAU / 0.8 + k as f32 * 0.4;
+                                ring.center() + vec2(a.cos(), a.sin()) * 3.5
+                            })
+                            .collect(),
                         Stroke::new(1.5, p.muted),
                     )));
                     c.add_space(8.0);
                     c.ctx().request_repaint_after(theme::ANIMATION_FRAME);
                 }
                 crate::lsp::State::Failed(_)
-                    if status_link(c, "No completion".into(), p.muted, "Why is completion off?", false).clicked() =>
+                    if status_link(
+                        c,
+                        "No completion".into(),
+                        p.muted,
+                        "Why is completion off?",
+                        false,
+                    )
+                    .clicked() =>
                 {
-                    {
-                        ws.notice("Completion, hover and go to definition come from texlab, which Lemmata downloads the first time it's needed but couldn't start. Check the internet connection, or install texlab yourself (your package manager, or cargo install texlab), then reopen the project.", Tone::Info);
-                    }
+                    ws.notice("Completion, hover and go to definition come from texlab, which Lemmata downloads the first time it's needed but couldn't start. Check the internet connection, or install texlab yourself (your package manager, or cargo install texlab), then reopen the project.", Tone::Info);
                 }
                 _ => {}
             }
@@ -1962,8 +2329,10 @@ pub fn menus(
             let width = 360.0f32.min(screen.width() - 24.0);
             let max_h = 340.0f32.min(screen.height() - 80.0);
             let pos = pos2(
-                (anchor.right() - width).clamp(screen.left() + 8.0, screen.right() - width - 8.0),
-                (anchor.top() - 8.0).max(screen.top() + 8.0),
+                (anchor.right() + 8.0).clamp(screen.left() + 8.0, screen.right() - width - 8.0),
+                anchor
+                    .bottom()
+                    .clamp(screen.top() + 80.0, screen.bottom() - 8.0),
             );
             let seen_id = id.with("notices-seen");
             let frame = ctx.cumulative_frame_nr();

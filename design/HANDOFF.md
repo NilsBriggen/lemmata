@@ -74,9 +74,11 @@ Every screen depends on this.
 | `app` | `#e8ebee` → `#eceef1` | unchanged `#0f1418` | The ground now carries the rail, top bar and sidebar. |
 | `surface_3` | `#eef0f2` → `#e4e7eb` | `#222a32` → `#232b33` | Hover fill on the ground, and the track of segmented controls. |
 | `muted` | `#5c6873` → `#5a6671` | unchanged | Keeps 4.5:1 on the new ground. |
-| `faint` | unchanged `#616b76` | `#86919b` → `#8a95a0` | |
+| `faint` | `#616b76` → `#5c6670` | `#86919b` → `#8a95a0` | Keeps 4.5:1 on `surface_3` (4.65:1 light) and full-opacity gutter numbers. |
+| `error` | `#c4472f` → `#b83c24` | unchanged `#ec7f69` | Was 4.26:1 on `error_soft` and 4.21:1 on `app`; now 5.04:1 / 4.98:1. Error badges use `accent_ink` (6.79:1 dark). |
 | `ok` | `#2e7d55` → `#2a7550` | unchanged | Was 4.3:1 on the new ground, now 4.8:1. |
 | `warn` | `#9a6b0a` → `#8a5f08` | unchanged | Was 4.2:1 on `warn_soft`, now 5.1:1. |
+| `code_comment` | `#6b7681` → `#5f6b76` | `#8a95a0` | Was 4.28:1 on `line_hl`; now 4.95:1. |
 | `pdf_ground` | `#c8cdd2` → `#e1e5e9` | unchanged `#0b0f13` | The PDF now sits inside a card. |
 | `rail_active` **new** | `#ffffff` | `#1e262e` | Fill of the selected rail button, sidebar row and segment. |
 | `line_hl` **new** | `#f4f6f8` | `#1c232a` | Caret line in the editor. |
@@ -159,20 +161,21 @@ Each screen: what changes, where the code is, the steps, the labels that change,
 
 **Steps:**
 1. **Rail.** Draw a new `chrome::rail` at the left of `Workspace::show`, before the toolbar.
-   - Items in order: Files (`FILES`), Outline (`LIST_TREE`), Search (`SEARCH`), Problems (`CIRCLE_ALERT`, with an error-count badge in `error`), Git (`GIT_BRANCH`, with a change-count badge), History (`HISTORY`), Comments (`MESSAGE_SQUARE`, with an open-thread badge), To-dos (`CIRCLE_CHECK`).
-   - Then a spacer, then All projects (`LAYOUT_GRID`, today's "Back to all projects") and Preferences (`SETTINGS`).
-   - Clicking the active item hides the sidebar (`settings.sidebar_open = false`). Clicking another opens the sidebar on it.
+   - Items in order: Files (`FILES`), Outline (`LIST_TREE`), Search (`SEARCH`), Problems (`CIRCLE_ALERT`, with an error-count badge in `error` / `accent_ink`), Git (`GIT_BRANCH`, with a change-count badge), History (`HISTORY`), Comments (`MESSAGE_SQUARE`, with an open-thread badge), To-dos (`CIRCLE_CHECK`).
+   - Then a spacer, then Notifications (`BELL`, with unread badge), All projects (`LAYOUT_GRID`, accessible label `"Back to all projects"`) and Preferences (`SETTINGS`).
+   - Clicking the active item hides the sidebar (`settings.sidebar_open = false`). Clicking another opens the sidebar on it (on windows `<= 1000 px`, opens as an overlay drawer or compact sidebar so panels remain reachable).
    - The panel content is screen 4. For this PR, Files and Outline are enough, plus the move of the existing panels (see screen 4, step 1).
 2. **Top bar** (`chrome::toolbar`):
    - Paint `app` instead of `chrome`, with no bottom border.
-   - **Left:** the project name as a button with `CHEVRON_DOWN`. It opens today's `Menu::Main` items. Then `/`, then the current file's path in `ink_2`.
+   - **Left:** the project name as a button with `CHEVRON_DOWN`. It opens today's `Menu::Main` items. Then `/`, then the current file's path in `ink_2`. Truncate project name and file path independently so the centred layout control never collides.
    - **Centre:** the layout `segmented` with "Editor" (`SQUARE_PEN`), "Split" (`COLUMNS_2`) and "PDF" (`FILE_TEXT`). Keep the values `"editor"`/`"split"`/`"pdf"`.
    - **Right:**
-     - a command pill 260 px wide: `SEARCH`, "Search or run a command", `kbd("Ctrl K")`. It opens the palette (screen 6). Until screen 6 lands, it opens today's palette;
+     - a command pill ~240 px wide: `SEARCH`, "Run a command", `kbd("Ctrl Shift P")` (or `Cmd Shift P` on macOS). Opens Command Palette (`Mod-Shift-P`); Quick Open stays separate on `Mod-P`;
      - the build status: `CHECK` + "Compiled 1.1 s" in `ok`, or the error state in `error`. Today this is in the status bar as "Compiled in…";
-     - the Recompile split button: keep the existing button + caret + `Menu::Compile`.
+     - the Build targets picker (`<target> ▾`) whenever `config.targets.len() > 1`;
+     - the Recompile split button: keep the existing button + caret + `Menu::Compile` (with `accent_ink` alpha divider so dark mode looks crisp).
    - **Removed from the top bar:** the menu button, "Lemmata /", the sidebar toggle (the rail replaces it), the project settings gear (moves to the project menu and the settings window, screen 5), and the Git/History/Comments buttons (now in the rail).
-   - **Narrow:** below 1180 px the pill collapses to a 36 px search icon. Below 1000 px the sidebar hides (the rail stays) and the status text hides.
+   - **Narrow:** below 1180 px the pill collapses to a 36 px search icon. Below 1000 px the sidebar defaults collapsed (clicking any rail icon opens it as a drawer/panel) and the status text hides.
 3. **Sidebar:** paint `app` instead of `chrome_2`, with no vline. The header is 32 px: the title in sans 600 13 px, then its action icons (`FILE_PLUS`, `FOLDER_PLUS`, `UPLOAD` for Files).
    - File rows use `side_row`. The active file is `on`. Unsaved files get a 7 px `warn` dot. `main.tex` gets a `MAIN` tag in `accent_text` on `accent_soft`. Folder icons are in `atom`.
    - Footer line: `GIT_BRANCH` + "main · 3 changes" in `faint`.
@@ -194,9 +197,9 @@ Each screen: what changes, where the code is, the steps, the labels that change,
      - at 480 px or less, Figure and Table move too.
 
      "…" is a `drop_menu` listing the moved items, with their labels. Measure with the same approach as `segmented_width`.
-7. **Code area:** gutter numbers in `faint` at 80% opacity, and the current line's number in `ink_2`. The caret line is `line_hl`. The gutter has no separate background (today it uses `gutter`). Wrapped lines hang by 2 columns (the mockup's wrap indent).
+7. **Code area:** gutter numbers in `faint` at full opacity (keeping >= 4.5:1 contrast), and the current line's number in `ink_2`. The caret line is `line_hl`. The gutter has no separate background (today it uses `gutter`). Wrapped lines hang by 2 columns (the mockup's wrap indent).
 8. **Footer** (`chrome::status_bar`), 30 px, `faint` 12 px:
-   - left: "Ln 7, Col 78", the save state, then the error and warning counts (`CIRCLE_X` 1 in `error`, `TRIANGLE_ALERT` 3 in `warn`). Clicking a count opens Problems;
+   - left: "Ln 7, Col 78", the save state, then the error and warning counts (`CIRCLE_X` 1 in `error`, `TRIANGLE_ALERT` 3 in `warn`), plus clickable "Grammar error" retry link and Restricted indicator when applicable. Clicking a count opens Problems;
    - right: language, words, engine;
    - "Compiled in…" moves to the top bar.
 9. **PDF card header** (`pdf/pane.rs`):
@@ -369,8 +372,9 @@ The welcome flow (`screens/welcome.rs`, three steps) should use the same card an
    - **Keep the trust rule exactly:** turning shell escape on grants trust. It's a security behaviour with tests.
 4. **Rows** (`.setting`): label (500) and help text (`muted` 12.5 px) on the left; the control on the right, 200–280 px wide; a 1 px `border` between rows. Booleans use the new `switch`. Choices of 2–3 use `segmented`; longer ones use `select`.
 5. **Ways in:**
-   - Preferences (library sidebar, rail, palette) opens the Lemmata scope. The mockup's tooltip shows `Ctrl ,`, which doesn't exist today (`shortcuts.rs` has no binding). Add it to the `shortcuts.rs` table only if the user agrees;
+   - Preferences (library sidebar, rail, palette) opens the Lemmata scope. No `Ctrl+,` binding (per user decision);
    - Project settings (project menu, palette, and the minted notice's `NoticeAction::ProjectSettings`) opens the project scope on the right section; the minted notice opens Trust & safety.
+   - Switching from a dirty Project scope to Lemmata scope warns before discarding unsaved project edits.
 
 **Labels:**
 - "Preferences" (a MenuItem query at `app.rs:3135`) and "Project settings" stay as the entry points.
@@ -384,19 +388,17 @@ The welcome flow (`screens/welcome.rs`, three steps) should use the same card an
 **Mockup:** `design/mockups/popups.html`, compared with `today/palette-light.png` and the `quick-open-light`, `completion`, `completion-maths`, `hover-input` and `math-preview` snapshots.
 
 **Steps:**
-1. **One command box (Ctrl K).**
-   - Today `Palette` (`workspace/palette.rs:42`) already serves the palette and quick open, with `Kind` {Commands, Files, Environments, Headings, Symbols} (`:17`) on Mod-Shift-P and Mod-P (`shortcuts.rs:36-37`).
-   - Add a mixed mode that searches files, sections and labels (Headings/Symbols) and commands together, and shows them in groups with small uppercase headings ("FILES", "SECTIONS AND LABELS", "TEXT IN THE PROJECT", "COMMANDS").
-   - Bind Ctrl K to it. Keep Mod-P (opens the box limited to files) and Mod-Shift-P (commands; typing `>` does the same).
-   - The look:
+1. **Command Palette (`Mod-Shift-P`) and Quick Open (`Mod-P`).**
+   - Keep `Palette` (`workspace/palette.rs:42`) with its separate `Kind` modes (`Commands`, `Files`, `Environments`, `Headings`, `Symbols`) and existing shortcuts (`Mod-Shift-P` and `Mod-P`) — do NOT merge them into `Ctrl K` (per user decision).
+   - Restyle the popup to the new design tokens:
      - 500 px wide, 46 px input row with `SEARCH` and `kbd("Esc")`;
      - 34 px rows with icon, text (the match in sans 600 `ink`) and a mono detail on the right; the selected row on `accent_soft`;
-     - a footer with the key hints "↑↓ move · Enter open · > commands only".
+     - a footer with the key hints (`↑↓ move · Enter open/run`).
    - Draw it with `R_LG` and `shadow_lg` (as `palette.rs:292` does today).
 2. **Completion** (`editor/popup.rs:119`, logic in `editor/complete.rs`):
    - a 360 px list of 28 px rows: an 18 px kind badge (`\` for commands on `surface_3`, `{}` for environments on `ok_soft`/`ok`, `#` for labels on `warn_soft`/`warn`), the typed part in bold `ink`, and a short detail on the right in sans `faint`;
    - a one-line help section at the bottom for the selected item, where `complete.rs` has text for it.
-3. **Hover cards** (`editor/hover.rs:251`; maths preview `math_preview` at `editor/view.rs:2957`): a 330 px card with a 12 px `faint` title line (icon + "Equation (2.1)", or "key · refs.bib"), the content, then small ghost action buttons ("Open entry", "arXiv") where the actions exist.
+3. **Hover cards** (`editor/hover.rs:251`; maths preview `math_preview` at `editor/view.rs:2957`): a 330 px card with a 12 px `faint` title line (icon + "Equation (2.1)", or "key · refs.bib"), the content (using `surface_2`/`ink` in dark mode so maths previews don't flash pure white), then small ghost action buttons ("Open entry", "arXiv") where the actions exist.
 4. **Notices** (`Workspace::toasts`, `mod.rs:1973`; `Notice`/`NoticeAction`, `mod.rs:55-132`):
    - a bottom-centre stack of cards up to 420 px wide: the tone icon (`error`, `warn` or `ok`), the text with a bold lead, the action as a small button, and a dismiss `X`;
    - keep the 8 s expiry rule (errors and notices with actions stay);
@@ -415,14 +417,13 @@ The welcome flow (`screens/welcome.rs`, three steps) should use the same card an
 
 ---
 
-## 3. Decisions the user still has to make
+## 3. Resolved decisions
 
-Ask before building these. The mockups show the proposal, not a decision.
-
-1. **Panels move from the PDF side to the left sidebar** (screen 4). This is the biggest behaviour change.
-2. **Palette and quick open merge into one Ctrl K box** (screen 6).
-3. **The dark theme:** the mockups keep today's dark values plus the new tokens. Check it in the running app before calling it done.
-4. **Order:** the plan is 1, 4, 2, 3, 5, 6, with the foundation first. The user may pick a different order or stop after any screen.
+1. **Panels move from the PDF side to the left sidebar** (screen 4): **Approved.**
+2. **Unified Settings window** (screen 5): **Approved** (preserving Save/Cancel for Project scope and instant-apply for Lemmata scope).
+3. **Merge Command Palette & Quick Open into `Ctrl K`** (screen 6): **Declined.** Keep separate `Mod-Shift-P` and `Mod-P` boxes, restyled visually.
+4. **Bind `Ctrl ,` to Settings**: **Declined.** No `Mod-,` shortcut added.
+5. **3.3.0 features preserved:** Build targets picker in top bar, Notification Center bell in rail, Git Stash/Diff/Merge/Rebase/Restricted states, virtualized Raw Log, Confirm-before-Replace-All modal, Comments Reply & Delete-Cancel, Grammar error retry, Outline `Nw` word counts, Onboarding `found` chips & Continue without TeX.
 
 ## 4. Working on the mockups
 

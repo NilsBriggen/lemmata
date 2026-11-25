@@ -318,9 +318,12 @@ fn a_missing_package_is_named_and_the_logs_open() {
             .iter()
             .any(|d| d.message.contains("lemmata-does-not-exist.sty"))
     );
-    // No PDF, so the logs open by themselves, like Overleaf.
+    // No PDF, so the Problems sidebar opens by itself, keeping the PDF card visible.
     h.run_steps(3);
-    assert!(ws(&h).build.logs_open);
+    assert!(
+        h.state().settings.sidebar_open
+            && ws(&h).side_panel == crate::workspace::panels::SidePanel::Problems
+    );
 }
 
 #[test]
@@ -379,7 +382,8 @@ fn a_comment_moves_with_its_file() {
     h.run_steps(3);
     h.get_by_label("Write a comment").type_text("Check this.");
     h.run_steps(2);
-    h.query_all_by_label("Comment").last().unwrap().click();
+    // The left sidebar's composer button comes before the editor toolbar's.
+    h.query_all_by_label("Comment").next().unwrap().click();
     let comments = project.join(".lemmata/comments.json");
     wait_for(&mut h, "the comment on disk", |_| {
         std::fs::read_to_string(&comments).is_ok_and(|t| t.contains("Check this."))
@@ -452,7 +456,8 @@ fn a_resolved_comment_is_no_longer_marked() {
     h.get_by_label("Write a comment")
         .type_text("Is this the right title?");
     h.run_steps(2);
-    h.query_all_by_label("Comment").last().unwrap().click();
+    // The left sidebar's composer button comes before the editor toolbar's.
+    h.query_all_by_label("Comment").next().unwrap().click();
     wait_for(&mut h, "the mark", |h| {
         !ws(h).editors["main.tex"].comments.is_empty()
     });
@@ -461,6 +466,7 @@ fn a_resolved_comment_is_no_longer_marked() {
         std::fs::read_to_string(project.join(".lemmata/comments.json"))
             .is_ok_and(|t| t.contains("Is this the right title?"))
     });
+    h.run_steps(2);
     h.get_by_label("Resolve").click();
     wait_for(&mut h, "the mark to go", |h| {
         ws(h).editors["main.tex"].comments.is_empty()
@@ -835,21 +841,25 @@ fn a_very_large_image_is_drawn_after_another_large_one() {
 
 #[test]
 fn every_side_panel_shows_in_every_layout() {
+    use crate::workspace::panels::SidePanel;
     let tmp = tempfile::tempdir().unwrap();
     let Some((mut h, _)) = in_article(tmp.path()) else {
         return;
     };
-    let shown = |h: &Harness<App>, close: &str| {
+    let shown = |h: &Harness<App>, panel: SidePanel, title: &str| {
         let window = egui::Rect::from_min_size(egui::Pos2::ZERO, crate::testing::WINDOW.into());
-        h.query_by_label(close)
-            .is_some_and(|n| window.contains_rect(n.rect()) && n.rect().width() > 0.0)
+        h.state().settings.sidebar_open
+            && !ws(h).focus_mode
+            && ws(h).side_panel == panel
+            && h.query_by_role_and_label(egui::accesskit::Role::Label, title)
+                .is_some_and(|n| window.contains_rect(n.rect()) && n.rect().width() > 0.0)
     };
     for layout in ["editor", "split", "pdf", "focus"] {
-        for (id, close) in [
-            ("git", "Close Git"),
-            ("todos", "Close TODOs"),
-            ("comments", "Close comments"),
-            ("history", "Close history"),
+        for (id, panel, title) in [
+            ("git", SidePanel::Git, "GIT"),
+            ("todos", SidePanel::Todos, "TO-DOS"),
+            ("comments", SidePanel::Comments, "COMMENTS"),
+            ("history", SidePanel::History, "HISTORY"),
         ] {
             h.state_mut().settings.layout = if layout == "focus" { "split" } else { layout }.into();
             h.run_steps(2);
@@ -858,10 +868,15 @@ fn every_side_panel_shows_in_every_layout() {
                 cmd(&mut h, "focus");
             }
             cmd(&mut h, id);
-            wait_for(&mut h, &format!("{id} in {layout}"), |h| shown(h, close));
+            wait_for(&mut h, &format!("{id} in {layout}"), |h| {
+                shown(h, panel, title)
+            });
         }
     }
-    h.get_by_label("Close history").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "History")
+        .click();
+    h.run_steps(2);
+    assert!(!h.state().settings.sidebar_open);
     // From "PDF only", revealing the open file brings the tree back.
     h.state_mut().settings.layout = "pdf".into();
     h.run_steps(2);
@@ -899,8 +914,8 @@ fn controls_are_where_people_look() {
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
     // At 560 px the PDF toolbar's extras are in ⋯, Present among them.
-    if ws(&h).build.logs_open {
-        ws_mut(&mut h).0.build.logs_open = false;
+    if ws(&h).build.raw_log_open {
+        ws_mut(&mut h).0.build.raw_log_open = false;
     }
     h.state_mut().settings.pdf_width = 560.0;
     wait_for(&mut h, "the ⋯ menu", |h| {
@@ -1078,7 +1093,8 @@ fn projects_go_into_folders_by_dragging_or_from_their_menu() {
     h.run_steps(1);
     h.get_by_label("Create").click();
     wait_for(&mut h, "the folder", |h| {
-        h.query_by_label("Course").is_some()
+        h.query_by_role_and_label(egui::accesskit::Role::Row, "Course")
+            .is_some()
     });
     h.run_steps(2);
     let folder = |h: &Harness<App>| h.state().groups.members.get(&paper).cloned();

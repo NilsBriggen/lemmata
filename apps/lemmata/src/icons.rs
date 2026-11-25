@@ -4,6 +4,7 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2};
 use eframe::epaint::PathShape;
 
+#[allow(dead_code)]
 mod data {
     include!("icons_data.rs");
 }

@@ -9,7 +9,7 @@
 
   <!-- Rail: switches what the sidebar shows (replaces the top bar's Comments / History / Git buttons) -->
   <nav class="rail" aria-label="Panels">
-    <div class="logo" aria-hidden="true">L</div>
+    <div class="logo" aria-hidden="true" style="background:none;padding:0"><svg viewBox="0 0 512 512" width="32" height="32"><defs><linearGradient id="lm-bg" x1="0" y1="0" x2="0.6" y2="1"><stop offset="0%" stop-color="#1f2b38"/><stop offset="100%" stop-color="#111820"/></linearGradient><linearGradient id="lm-c" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#6dbbe9"/><stop offset="100%" stop-color="#2a71a4"/></linearGradient><linearGradient id="lm-f" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#bce2f9"/><stop offset="100%" stop-color="#7bc3ee"/></linearGradient></defs><rect x="24" y="24" width="464" height="464" rx="112" fill="url(#lm-bg)"/><path fill="#f2f6fa" d="M 114 114 C 114 101, 125 90, 138 90 L 172 90 C 185 90, 196 101, 196 114 L 196 312 C 196 326, 207 336, 220 336 L 374 336 C 387 336, 398 347, 398 360 L 398 394 C 398 407, 387 418, 374 418 L 164 418 C 136 418, 114 396, 114 368 Z"/><path fill="url(#lm-c)" d="M 232 114 C 232 101, 243 90, 256 90 L 336 90 L 398 152 L 398 278 C 398 291, 387 302, 374 302 L 256 302 C 243 302, 232 291, 232 278 Z"/><path fill="url(#lm-f)" d="M 336 90 L 336 136 C 336 145, 343 152, 352 152 L 398 152 Z"/><rect x="266" y="186" width="98" height="16" rx="8" fill="#fff" fill-opacity="0.94"/><rect x="266" y="222" width="68" height="14" rx="7" fill="#fff" fill-opacity="0.58"/></svg></div>
     <button class="rail-btn" data-panel="files" aria-label="Files" title="Files  Ctrl Shift E"><i data-i="FILES"></i></button>
     <button class="rail-btn" data-panel="outline" aria-label="Outline" title="Outline"><i data-i="LIST_TREE"></i></button>
     <button class="rail-btn" data-panel="search" aria-label="Search the project" title="Search  Ctrl Shift F"><i data-i="SEARCH"></i></button>
@@ -19,8 +19,9 @@
     <button class="rail-btn" data-panel="comments" aria-label="Comments, 2 open" title="Comments"><i data-i="MESSAGE_SQUARE"></i><span class="badge">2</span></button>
     <button class="rail-btn" data-panel="todos" aria-label="To-dos" title="To-dos"><i data-i="CIRCLE_CHECK"></i></button>
     <div class="rail-sep"></div>
-    <button class="rail-btn" aria-label="Back to projects" title="All projects"><i data-i="LAYOUT_GRID"></i></button>
-    <button class="rail-btn" aria-label="Preferences" title="Preferences  Ctrl ,"><i data-i="SETTINGS"></i></button>
+    <button class="rail-btn" aria-label="Notifications" title="Notifications"><i data-i="BELL"></i><span class="badge">2</span></button>
+    <button class="rail-btn" aria-label="Back to all projects" title="All projects"><i data-i="LAYOUT_GRID"></i></button>
+    <button class="rail-btn" aria-label="Preferences" title="Preferences"><i data-i="SETTINGS"></i></button>
   </nav>
 
   <!-- Top bar -->
@@ -36,7 +37,7 @@
       <button data-view="pdf"><i data-i="FILE_TEXT"></i>PDF</button>
     </div>
     <div class="top-right">
-      <button class="cmdk" aria-label="Search or run a command"><i data-i="SEARCH"></i><span class="t">Search or run a command</span><span class="kbd">Ctrl K</span></button>
+      <button class="cmdk" aria-label="Command palette"><i data-i="SEARCH"></i><span class="t">Run a command</span><span class="kbd">Ctrl Shift P</span></button>
       <div class="status" title="pdfLaTeX, compiled in 1.1 s"><i data-i="CHECK"></i><span>Compiled 1.1 s</span></div>
       <div class="split-btn">
         <button><i data-i="REFRESH_CW"></i>Recompile</button>
@@ -69,11 +70,11 @@
     <section class="panel outline" aria-label="Outline">
       <div class="side-head"><h2>Outline</h2><button class="act" aria-label="Collapse all"><i data-i="CHEVRONS_DOWN_UP"></i></button></div>
       <ul class="tree">
-        <li class="row outline-row"><span class="name">1 Introduction</span><span class="num">3</span></li>
-        <li class="row outline-row on"><span class="name">2 Method</span><span class="num">1</span></li>
-        <li class="row outline-row sub"><span class="name">2.1 Policy updates</span><span class="num">9</span></li>
-        <li class="row outline-row"><span class="name">3 Results</span><span class="num">1</span></li>
-        <li class="row outline-row"><span class="name">References</span><span class="num">12</span></li>
+        <li class="row outline-row"><span class="name">1 Introduction</span><span class="num">240w</span></li>
+        <li class="row outline-row on"><span class="name">2 Method</span><span class="num">412w</span></li>
+        <li class="row outline-row sub"><span class="name">2.1 Policy updates</span><span class="num">186w</span></li>
+        <li class="row outline-row"><span class="name">3 Results</span><span class="num">318w</span></li>
+        <li class="row outline-row"><span class="name">References</span><span class="num">128w</span></li>
       </ul>
     </section>
 
@@ -131,7 +132,7 @@
       <div class="side-head"><h2>Git</h2><button class="act" aria-label="Refresh"><i data-i="REFRESH_CW"></i></button></div>
       <div class="pad">
         <button class="select"><i data-i="GIT_BRANCH"></i><span class="grow">main</span><span class="muted">↑1 ↓0</span><i data-i="CHEVRON_DOWN"></i></button>
-        <div class="btn-row"><button class="btn sm ghost">Fetch</button><button class="btn sm ghost"><i data-i="ARROW_DOWN"></i>Pull</button><button class="btn sm ghost"><i data-i="ARROW_UP"></i>Push 1</button></div>
+        <div class="btn-row"><button class="btn sm ghost">Fetch</button><button class="btn sm ghost"><i data-i="ARROW_DOWN"></i>Pull</button><button class="btn sm ghost"><i data-i="ARROW_UP"></i>Push 1</button><button class="btn sm ghost">Stash</button></div>
       </div>
       <div class="sub-head">Changes <span class="count">3</span><span class="grow"></span><button class="link-btn">Stage all</button></div>
       <ul class="tree">
@@ -177,7 +178,7 @@
           <q>maximises the expected return</q>
           <div class="msg"><span class="av">AK</span><div><b>Anna K.</b> <span class="muted">· 2 h ago</span><p>Say which discount factor you use here, readers will ask.</p></div></div>
           <div class="msg"><span class="av me">NB</span><div><b>You</b> <span class="muted">· 1 h ago</span><p>Good point, adding γ = 0.99 in the setup.</p></div></div>
-          <div class="reply"><input placeholder="Reply…" aria-label="Reply"><button class="btn sm ghost">Resolve</button></div>
+          <div class="reply"><input placeholder="Reply…" aria-label="Reply"><button class="btn sm">Reply</button><button class="btn sm ghost">Resolve</button></div>
         </article>
         <article class="thread">
           <q>over a fixed number of epochs per batch</q>
@@ -216,8 +217,8 @@
         <button class="tb" aria-label="Italic  Ctrl I"><i data-i="ITALIC"></i></button>
         <button class="tb" aria-label="Link"><i data-i="LINK"></i></button>
         <span class="vr"></span>
-        <button class="tb" aria-label="Maths"><i data-i="SIGMA"></i></button>
-        <button class="tb" aria-label="Symbol"><i data-i="PI"></i></button>
+        <button class="tb" aria-label="Inline maths" title="Inline maths ($…$)"><i data-i="SIGMA"></i></button>
+        <button class="tb" aria-label="Symbols" title="Insert symbol"><i data-i="PI"></i></button>
         <button class="tb opt" aria-label="Figure"><i data-i="IMAGE"></i></button>
         <button class="tb opt" aria-label="Table"><i data-i="TABLE"></i></button>
         <button class="tb opt opt2" aria-label="Code block"><i data-i="CODE"></i></button>
@@ -308,6 +309,7 @@ document.querySelectorAll('[data-panel]').forEach(b => b.onclick = () => {
 });
 const open_ = p => { app.classList.remove('no-side'); swap('p', p); };
 const fromHash = () => { if (location.hash.length > 1) open_(location.hash.slice(1)); };   // workspace.html#git opens a panel
+if (window.innerWidth <= 1000 && location.hash.length <= 1) app.classList.add('no-side');
 fromHash(); addEventListener('hashchange', fromHash);
 // Draggable divider between editor and PDF.
 const drag = document.getElementById('drag'), ed = document.querySelector('.editor'), pdf = document.querySelector('.pdf');

@@ -46,7 +46,16 @@
 .s-foot .for-project, .scope-project .s-foot .for-app { display: none; }
 .scope-project .s-foot .for-project { display: inline-flex; }
 .s-foot .grow { flex: 1; }
-@media (max-width: 760px) { .dialog { grid-template-columns: minmax(0, 1fr); } .s-nav { display: none; } .setting { grid-template-columns: minmax(0, 1fr); gap: 8px; } .setting .ctl { justify-content: flex-start; } }
+@media (max-width: 760px) {
+  .dialog { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .s-nav { border-right: 0; border-bottom: 1px solid var(--border); padding: 10px 12px; gap: 8px; }
+  .s-nav h2, .s-nav .ver { display: none; }
+  .scope { margin: 0; }
+  .s-nav .group-app, .s-nav .group-project { flex-direction: row; overflow-x: auto; gap: 4px; }
+  .s-nav .row { width: auto; flex: none; }
+  .setting { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .setting .ctl { justify-content: flex-start; }
+}
 </style>
 </head>
 <body>
@@ -63,10 +72,10 @@
       <div class="group-app">
         <button class="row on" data-sec="appearance"><i data-i="SUN" class="ico"></i><span class="name">Appearance</span></button>
         <button class="row" data-sec="editing"><i data-i="SQUARE_PEN" class="ico"></i><span class="name">Editing</span></button>
-        <button class="row" data-sec="later"><i data-i="SPARKLES" class="ico"></i><span class="name">Language</span></button>
-        <button class="row" data-sec="later"><i data-i="FILES" class="ico"></i><span class="name">Files</span></button>
-        <button class="row" data-sec="later"><i data-i="SIGMA" class="ico"></i><span class="name">TeX</span></button>
-        <button class="row" data-sec="later"><i data-i="DOWNLOAD" class="ico"></i><span class="name">Updates</span></button>
+        <button class="row" data-sec="language"><i data-i="SPARKLES" class="ico"></i><span class="name">Language</span></button>
+        <button class="row" data-sec="files"><i data-i="FILES" class="ico"></i><span class="name">Files</span></button>
+        <button class="row" data-sec="tex"><i data-i="SIGMA" class="ico"></i><span class="name">TeX</span></button>
+        <button class="row" data-sec="updates"><i data-i="DOWNLOAD" class="ico"></i><span class="name">Updates</span></button>
       </div>
       <div class="group-project">
         <button class="row" data-sec="build"><i data-i="REFRESH_CW" class="ico"></i><span class="name">Build</span></button>
@@ -97,6 +106,28 @@
           <div class="setting"><div><b>Rename the matching \end</b><small>Editing \begin{…} renames its \end{…}, and the other way round.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Rename the matching end"></button></div></div>
           <div class="setting"><div><b>Close brackets and $ automatically</b></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Close brackets automatically"></button></div></div>
           <div class="setting"><div><b>Code folding</b><small>Fold sections and environments from the gutter.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="false" aria-label="Code folding"></button></div></div>
+          <div class="setting"><div><b>Snippets</b><small>Short triggers that expand into LaTeX templates when you press Tab.</small></div><div class="ctl"><button class="btn sm ghost">Manage snippets…</button></div></div>
+        </section>
+
+        <section class="sec" data-sec="language">
+          <div class="setting"><div><b>Spell check</b><small>Underline misspelled words in the editor.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Spell check"></button></div></div>
+          <div class="setting"><div><b>Default language</b><small>Used when a project does not set its own spell check language.</small></div><div class="ctl"><button class="select"><span class="grow">English (UK)</span><i data-i="CHEVRON_DOWN"></i></button></div></div>
+          <div class="setting"><div><b>Grammar check</b><small>Check prose with LanguageTool (optional).</small></div><div class="ctl"><button class="select"><span class="grow">Off</span><i data-i="CHEVRON_DOWN"></i></button></div></div>
+        </section>
+
+        <section class="sec" data-sec="files">
+          <div class="setting"><div><b>Default project folder</b><small>Where New project suggests creating folders.</small></div><div class="ctl"><label class="field"><input class="mono" value="~/Documents" aria-label="Default project folder"><button class="btn sm ghost">Choose…</button></label></div></div>
+          <div class="setting"><div><b>Snapshot history</b><small>Save automatic snapshots inside .lemmata/history.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Snapshot history"></button></div></div>
+        </section>
+
+        <section class="sec" data-sec="tex">
+          <div class="setting"><div><b>TeX bin folder</b><small>Leave empty to detect TeX Live on your PATH automatically.</small></div><div class="ctl"><label class="field"><input class="mono" placeholder="Auto-detected (/usr/bin)" aria-label="TeX bin folder"><button class="btn sm ghost">Choose…</button></label></div></div>
+          <div class="setting"><div><b>Default compiler</b><small>Used for projects without a compiler in lemmata.toml.</small></div><div class="ctl"><button class="select"><span class="grow">pdfLaTeX</span><i data-i="CHEVRON_DOWN"></i></button></div></div>
+        </section>
+
+        <section class="sec" data-sec="updates">
+          <div class="setting"><div><b>Check for updates automatically</b><small>Looks for new Lemmata releases on startup.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Check for updates automatically"></button></div></div>
+          <div class="setting"><div><b>Current version</b><small>Lemmata 3.3.0</small></div><div class="ctl"><button class="btn sm ghost">Check now</button></div></div>
         </section>
 
         <section class="sec" data-sec="build">
@@ -114,10 +145,6 @@
           <div class="setting"><div><b>Trust this project</b><small>It may run programs: its latexmkrc and Git hooks. Kept on this computer only.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Trust this project"></button></div></div>
           <div class="setting"><div><b>Allow shell escape</b><small>Needed by minted and svg.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Allow shell escape"></button></div></div>
           <p class="callout"><i data-i="TRIANGLE_ALERT"></i><span>With shell escape the document can run any command on your computer. Turn it on only for projects you trust.</span></p>
-        </section>
-
-        <section class="sec" data-sec="later">
-          <p class="note" style="padding:12px 0">Language, Files, TeX and Updates keep today's settings (prefs.rs) in the new layout: one row per setting, label and help text on the left, the control on the right. The snippet editor opens from a "Manage snippets" row under Editing.</p>
         </section>
       </div>
       <footer class="s-foot">

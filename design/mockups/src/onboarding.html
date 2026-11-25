@@ -22,6 +22,8 @@ body { background: var(--app); }
 .tool svg.i { width: 16px; height: 16px; }
 .tool b { font: 500 13px "IBM Plex Mono", monospace; display: block; }
 .tool small { color: var(--faint); font-size: 11.5px; }
+.tool.found svg.i { color: var(--ok); }
+.tool.found { background: var(--ok-soft); box-shadow: none; }
 .tool.miss svg.i { color: var(--error); }
 .tool.miss { background: var(--error-soft); box-shadow: none; }
 .tool.optional svg.i { color: var(--faint); }
@@ -95,6 +97,8 @@ body { background: var(--app); }
 
     <footer class="ob-foot">
       <span class="muted">Installed somewhere else? <a class="link-btn" href="#">Choose the TeX bin folder</a></span>
+      <span class="grow"></span>
+      <button class="btn ghost">Continue without TeX</button>
       <button class="btn primary"><i data-i="REFRESH_CW"></i>Check again</button>
     </footer>
   </main>

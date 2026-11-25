@@ -66,6 +66,12 @@ pub struct Settings {
     pub layout: String,
     pub sidebar_open: bool,
     pub sidebar_width: f64,
+    /// Width of tool panels (Search, Problems, Git, History, Comments, To-dos) in the sidebar.
+    #[serde(default = "default_tool_sidebar_width")]
+    pub tool_sidebar_width: f64,
+    /// Active left-sidebar panel: "files", "outline", "search", "problems", "git", "history", "comments", "todos".
+    #[serde(default = "default_side_panel")]
+    pub side_panel: String,
     /// Width of the PDF pane in split layout.
     pub pdf_width: f64,
     /// Spell-check language for projects that don't choose one.
@@ -106,6 +112,14 @@ pub struct Settings {
     pub ui_zoom: f64,
 }
 
+fn default_tool_sidebar_width() -> f64 {
+    312.0
+}
+
+fn default_side_panel() -> String {
+    "files".into()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -126,7 +140,9 @@ impl Default for Settings {
             pdf_dark: false,
             layout: "split".into(),
             sidebar_open: true,
-            sidebar_width: 240.0,
+            sidebar_width: 232.0,
+            tool_sidebar_width: 312.0,
+            side_panel: "files".into(),
             pdf_width: 560.0,
             spell_default: "auto".into(),
             library_view: "list".into(),

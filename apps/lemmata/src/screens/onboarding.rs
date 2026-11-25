@@ -88,20 +88,44 @@ pub fn show(
         ui.add_space(24.0);
         widgets::column(ui, 860.0, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            ui.label(
-                egui::RichText::new("Lemmata")
-                    .font(FontId::new(22.0, theme::font::display()))
-                    .color(p.ink),
-            );
-            ui.add_space(0.05 * full.height());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let _ = widgets::logo_mark(ui, 28.0);
+                ui.label(
+                    egui::RichText::new("Lemmata")
+                        .font(FontId::new(22.0, theme::font::display()))
+                        .color(p.ink),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 14.0;
+                    for (idx, lbl) in [(2, "Start"), (1, "Preferences"), (0, "TeX engine")] {
+                        let on = idx == 0;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let (dot, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+                            ui.painter().circle_filled(
+                                dot.center(),
+                                3.5,
+                                if on { p.accent } else { p.border_strong },
+                            );
+                            ui.label(
+                                egui::RichText::new(lbl)
+                                    .font(FontId::new(12.0, theme::font::sans_500()))
+                                    .color(if on { p.ink } else { p.faint }),
+                            );
+                        });
+                    }
+                });
+            });
+            ui.add_space(0.04 * full.height());
             widgets::card(
                 ui,
                 p,
-                14,
+                theme::R_XL,
                 Margin {
                     left: 36,
                     right: 36,
-                    top: 32,
+                    top: 30,
                     bottom: 26,
                 },
                 |ui| {
@@ -261,131 +285,91 @@ fn note(ui: &mut Ui, p: &Palette, text: &str) {
     );
 }
 
-/// Each tool as a small tile: found, or required (red), or optional.
+/// Each tool as a compact status chip: found (green check), missing required (red), or optional.
 fn checks(ui: &mut Ui, p: &Palette, status: &TexStatus) {
     let tools = &status.detection.tools;
-    let w = ui.available_width();
-    // grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px
-    let cols = (((w + 8.0) / 108.0).floor() as usize).max(1);
-    let cell = (w - 8.0 * (cols as f32 - 1.0)) / cols as f32;
-    let rows = tools.len().div_ceil(cols);
-    let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(
-            w,
-            rows as f32 * 53.0 + (rows.saturating_sub(1)) as f32 * 8.0,
-        ),
-        Sense::hover(),
-    );
-    let painter = ui.painter();
-    for (i, t) in tools.iter().enumerate() {
-        let (r, c) = (i / cols, i % cols);
-        let tile = egui::Rect::from_min_size(
-            rect.min + Vec2::new(c as f32 * (cell + 8.0), r as f32 * 61.0),
-            Vec2::new(cell, 53.0),
-        );
-        let missing_required = t.path.is_none() && t.required;
-        let (fill, border) = if missing_required {
-            (p.error_soft, p.error.lerp_to_gamma(p.border, 0.6))
-        } else {
-            (p.surface_2, p.border)
-        };
-        painter.rect(
-            tile,
-            CornerRadius::same(theme::R),
-            fill,
-            Stroke::new(1.0, border),
-            StrokeKind::Inside,
-        );
-        let (icon, icon_color) = match (&t.path, t.required) {
-            (Some(_), _) => (icons::CIRCLE_CHECK, p.ok),
-            (None, true) => (icons::CIRCLE_X, p.error),
-            (None, false) => (icons::CIRCLE_X, p.faint),
-        };
-        let top = tile.min + Vec2::new(11.0, 9.0);
-        icons::paint(
-            painter,
-            egui::Rect::from_min_size(top + Vec2::new(0.0, 2.0), Vec2::splat(14.0)),
-            icon,
-            icon_color,
-        );
-        painter.text(
-            top + Vec2::new(20.0, 0.0),
-            egui::Align2::LEFT_TOP,
-            &t.name,
-            FontId::new(12.5, theme::font::mono_500()),
-            p.ink,
-        );
-        let state = if t.path.is_some() {
-            "found"
-        } else if t.required {
-            "required"
-        } else {
-            "optional"
-        };
-        painter.text(
-            top + Vec2::new(0.0, 20.0),
-            egui::Align2::LEFT_TOP,
-            state,
-            FontId::proportional(11.5),
-            p.muted,
-        );
-    }
-}
-
-/// One tab per platform, this computer's marked.
-fn tabs(ui: &mut Ui, p: &Palette, status: &TexStatus, st: &mut State) {
-    let here = status.os.family.key();
-    let start = ui.cursor().min;
-    // The rule under the tabs goes behind them, so the active tab's accent line covers it.
-    let rule = ui.painter().add(egui::Shape::Noop);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        for key in ORDER
-            .iter()
-            .filter(|k| status.instructions.contains_key(**k))
-        {
-            let label = &status.instructions[*key].label;
-            let on = st.platform == *key;
-            let mut job = Rich::new().add(
-                label,
-                FontId::new(13.0, theme::font::sans_500()),
-                if on { p.ink } else { p.muted },
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+        for t in tools {
+            let (icon, bg, border, fg, state) = match (&t.path, t.required) {
+                (Some(_), _) => (
+                    icons::CHECK,
+                    p.ok_soft,
+                    p.ok.gamma_multiply(0.35),
+                    p.ok,
+                    "found",
+                ),
+                (None, true) => (
+                    icons::CIRCLE_X,
+                    p.error_soft,
+                    p.error.gamma_multiply(0.35),
+                    p.error,
+                    "required",
+                ),
+                (None, false) => (icons::CIRCLE, p.surface_2, p.border, p.muted, "optional"),
+            };
+            let ng = ui.painter().layout_no_wrap(
+                t.name.clone(),
+                FontId::new(12.0, theme::font::mono_500()),
+                fg,
             );
-            if *key == here {
-                job = job.add(
-                    " · this computer",
-                    FontId::new(13.0, theme::font::sans_500()),
-                    p.accent,
-                );
-            }
-            let galley = ui.fonts_mut(|f| f.layout_job(job.0));
-            let (rect, r) =
-                ui.allocate_exact_size(Vec2::new(galley.size().x + 24.0, 36.0), Sense::click());
-            r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, on, label));
-            ui.painter().galley(
-                pos2(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0),
-                galley,
-                p.ink,
+            let sg =
+                ui.painter()
+                    .layout_no_wrap(format!("· {state}"), FontId::proportional(11.5), fg);
+            let w = 10.0 + 13.0 + 6.0 + ng.size().x + 5.0 + sg.size().x + 10.0;
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::hover());
+            let painter = ui.painter();
+            painter.rect(
+                rect,
+                CornerRadius::same(theme::R_MD),
+                bg,
+                Stroke::new(1.0, border),
+                StrokeKind::Inside,
             );
-            if on {
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_max(pos2(rect.left(), rect.bottom() - 2.0), rect.max),
-                    0,
-                    p.accent,
-                );
-            }
-            if r.clicked() {
-                st.platform = (*key).into();
-            }
+            let mut x = rect.left() + 10.0;
+            icons::paint(
+                painter,
+                egui::Rect::from_min_size(pos2(x, rect.center().y - 6.5), Vec2::splat(13.0)),
+                icon,
+                fg,
+            );
+            x += 19.0;
+            painter.galley(pos2(x, rect.center().y - ng.size().y / 2.0), ng, fg);
+            let x2 = rect.right() - 10.0 - sg.size().x;
+            painter.galley(
+                pos2(x2, rect.center().y - sg.size().y / 2.0),
+                sg,
+                fg.gamma_multiply(0.85),
+            );
         }
     });
-    let y = start.y + 36.0 - 0.5;
-    let line = egui::Rect::from_min_max(
-        pos2(ui.max_rect().left(), y),
-        pos2(ui.max_rect().right(), y + 1.0),
-    );
-    ui.painter()
-        .set(rule, egui::Shape::rect_filled(line, 0, p.border));
+}
+
+/// OS picker using the modern segmented track.
+fn tabs(ui: &mut Ui, p: &Palette, status: &TexStatus, st: &mut State) {
+    let here = status.os.family.key();
+    let keys: Vec<&str> = ORDER
+        .iter()
+        .copied()
+        .filter(|k| status.instructions.contains_key(*k))
+        .collect();
+    let labels: Vec<String> = keys
+        .iter()
+        .map(|k| {
+            let lbl = &status.instructions[*k].label;
+            if *k == here {
+                format!("{lbl} · this computer")
+            } else {
+                lbl.clone()
+            }
+        })
+        .collect();
+    let opts: Vec<(Option<icons::Icon>, &str)> =
+        labels.iter().map(|l| (None, l.as_str())).collect();
+    let cur = keys.iter().position(|k| *k == st.platform).unwrap_or(0);
+    if let Some(i) = widgets::segmented(ui, p, &opts, cur, false) {
+        st.platform = keys[i].into();
+    }
 }
 
 fn sizes(ui: &mut Ui, p: &Palette, st: &mut State, recommended: &str, full: &str) {
@@ -404,41 +388,55 @@ fn sizes(ui: &mut Ui, p: &Palette, st: &mut State, recommended: &str, full: &str
                 "Every package, so you're never asked to install more",
             ),
         ] {
-            let (rect, r) = ui.allocate_exact_size(Vec2::new(w, 64.0), Sense::click());
+            let (rect, r) = ui.allocate_exact_size(Vec2::new(w, 66.0), Sense::click());
             let on = st.full == is_full;
             r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, &title));
             let painter = ui.painter();
+            let rad = CornerRadius::same(theme::R_MD);
             if on {
                 painter.rect_stroke(
                     rect.expand(1.5),
-                    CornerRadius::same(theme::R_LG + 2),
+                    CornerRadius::same(theme::R_MD + 2),
                     Stroke::new(3.0, Palette::mix(p.accent, 18.0)),
                     StrokeKind::Outside,
                 );
             }
             painter.rect(
                 rect,
-                CornerRadius::same(theme::R_LG),
-                p.surface,
-                Stroke::new(1.0, if on { p.accent } else { p.border }),
+                rad,
+                if on { p.accent_soft } else { p.surface },
+                Stroke::new(
+                    if on { 1.5 } else { 1.0 },
+                    if on { p.accent } else { p.border },
+                ),
                 StrokeKind::Inside,
             );
+            // Radio dot on left.
+            let radio = pos2(rect.left() + 18.0, rect.top() + 21.0);
+            painter.circle_stroke(
+                radio,
+                7.0,
+                Stroke::new(1.5, if on { p.accent } else { p.border_strong }),
+            );
+            if on {
+                painter.circle_filled(radio, 3.8, p.accent);
+            }
             painter.text(
-                rect.min + Vec2::new(14.0, 13.0),
+                rect.min + Vec2::new(34.0, 13.0),
                 egui::Align2::LEFT_TOP,
                 &title,
                 FontId::new(13.0, theme::font::sans_600()),
                 p.ink,
             );
             painter.text(
-                rect.min + Vec2::new(14.0, 35.0),
+                rect.min + Vec2::new(34.0, 35.0),
                 egui::Align2::LEFT_TOP,
                 body,
-                FontId::proportional(12.5),
+                FontId::proportional(12.0),
                 p.muted,
             );
-            widgets::focus_ring(ui, &r, rect, p, theme::R_LG);
-            if r.clicked() {
+            widgets::focus_ring(ui, &r, rect, p, theme::R_MD);
+            if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 st.full = is_full;
             }
         }
@@ -512,68 +510,55 @@ pub fn command_box(ui: &mut Ui, p: &Palette, command: &str, copied: &mut Option<
 }
 
 fn tectonic(ui: &mut Ui, p: &Palette, st: &mut State, checking: bool, action: &mut Option<Action>) {
-    let frame = egui::Frame::new()
+    egui::Frame::new()
         .fill(p.surface_2)
+        .stroke(Stroke::new(1.0, p.border))
         .corner_radius(theme::R_LG)
-        .inner_margin(Margin::symmetric(14, 12));
-    let r = frame.show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 16.0;
-            let label = if st.installing { "Downloading…" } else { "Use Tectonic (no install)" };
-            let btn_w = ui.fonts_mut(|f| f.layout_no_wrap(label.into(), FontId::new(13.0, theme::font::sans_500()), p.ink).size().x) + 24.0;
-            let text_w = (ui.available_width() - btn_w - 16.0).min(62.0 * 6.25);
-            ui.vertical(|ui| {
-                ui.set_width(ui.available_width() - btn_w - 16.0);
-                ui.spacing_mut().item_spacing.y = 2.0;
-                ui.label(egui::RichText::new("Or use Tectonic: nothing to install").font(FontId::new(13.0, theme::font::sans_600())).color(p.ink));
-                let body = format!(
-                    "A small LaTeX engine. Lemmata downloads it (~{} MB) and it fetches each package the first time a document needs it, so the first build needs an internet connection. biblatex with biber isn't supported; use BibTeX.",
-                    st.tectonic_mb
-                );
-                widgets::paragraph(ui, &body, FontId::proportional(12.5), p.muted, 1.45, text_w);
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if Button::new(label).enabled(!st.installing && !checking).show(ui, p).clicked() {
-                    *action = Some(Action::UseTectonic);
-                }
+        .inner_margin(Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                let label = if st.installing {
+                    "Downloading…"
+                } else {
+                    "Use Tectonic (no install)"
+                };
+                let btn_w = ui.fonts_mut(|f| {
+                    f.layout_no_wrap(
+                        label.into(),
+                        FontId::new(13.0, theme::font::sans_500()),
+                        p.ink,
+                    )
+                    .size()
+                    .x
+                }) + 24.0;
+                let text_w = (ui.available_width() - btn_w - 16.0).min(62.0 * 6.25);
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width() - btn_w - 16.0);
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(
+                        egui::RichText::new("Or use Tectonic: nothing to install")
+                            .font(FontId::new(13.0, theme::font::sans_600()))
+                            .color(p.ink),
+                    );
+                    let body = format!(
+                        "A small LaTeX engine. Lemmata downloads it (~{} MB) and it fetches each package the first time a document needs it, so the first build needs an internet connection. biblatex with biber isn't supported; use BibTeX.",
+                        st.tectonic_mb
+                    );
+                    widgets::paragraph(ui, &body, FontId::proportional(12.5), p.muted, 1.45, text_w);
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if Button::new(label)
+                        .enabled(!st.installing && !checking)
+                        .show(ui, p)
+                        .clicked()
+                    {
+                        *action = Some(Action::UseTectonic);
+                    }
+                });
             });
         });
-    });
-    dashed_rect(ui.painter(), r.response.rect, p.border);
-}
-
-/// `border: 1px dashed`, with rounded corners left out as CSS draws them.
-fn dashed_rect(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
-    let r = rect.shrink(0.5);
-    let k = theme::R_LG as f32;
-    let stroke = Stroke::new(1.0, color);
-    let sides = [
-        [pos2(r.left() + k, r.top()), pos2(r.right() - k, r.top())],
-        [
-            pos2(r.left() + k, r.bottom()),
-            pos2(r.right() - k, r.bottom()),
-        ],
-        [pos2(r.left(), r.top() + k), pos2(r.left(), r.bottom() - k)],
-        [
-            pos2(r.right(), r.top() + k),
-            pos2(r.right(), r.bottom() - k),
-        ],
-    ];
-    for side in sides {
-        painter.extend(egui::Shape::dashed_line(&side, stroke, 3.0, 3.0));
-    }
-    for (c, a0) in [
-        (r.left_top() + Vec2::splat(k), 180.0f32),
-        (r.right_top() + Vec2::new(-k, k), 270.0),
-        (r.right_bottom() - Vec2::splat(k), 0.0),
-        (r.left_bottom() + Vec2::new(k, -k), 90.0),
-    ] {
-        let pts: Vec<_> = (0..=6)
-            .map(|i| c + Vec2::angled((a0 + 15.0 * i as f32).to_radians()) * k)
-            .collect();
-        painter.add(egui::Shape::line(pts, stroke));
-    }
 }
 
 fn footer(ui: &mut Ui, p: &Palette, checking: bool, can_skip: bool, action: &mut Option<Action>) {

@@ -101,8 +101,10 @@ pub struct NewProject {
     pub parent: String,
     pub busy: bool,
     pub error: Option<String>,
-    /// The category whose templates are shown; None shows the categories.
+    /// The selected category filter; None shows all bundled + user templates.
     pub shown: Option<String>,
+    /// Filter query inside the template picker.
+    pub query: String,
     /// The template collection is being fetched.
     pub online_loading: bool,
     /// Why the collection couldn't be fetched.
@@ -123,6 +125,7 @@ impl NewProject {
             busy: false,
             error: None,
             shown: None,
+            query: String::new(),
             online_loading: true,
             online_error: None,
             initial,
@@ -225,12 +228,6 @@ impl NewProject {
     }
 }
 
-/// "Article, Preprint, Two-column paper, …".
-fn summary(list: &[&Template]) -> String {
-    let names: Vec<&str> = list.iter().take(3).map(|t| t.name.as_str()).collect();
-    names.join(", ") + if list.len() > 3 { ", …" } else { "" }
-}
-
 /// Text clamped to `lines` lines, the last one ending in "…" when cut.
 fn clamped(
     ui: &Ui,
@@ -244,14 +241,13 @@ fn clamped(
     job.wrap.max_rows = lines;
     job.wrap.overflow_character = Some('…');
     for s in &mut job.sections {
-        s.format.line_height = Some(12.0 * 1.4);
+        s.format.line_height = Some(11.5 * 1.4);
     }
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
 pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Option<Action> {
     let mut action = None;
-    let mut body_action = None;
     let can = st.can_create();
     let busy = st.busy;
     let chosen_name = st
@@ -259,22 +255,306 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
         .iter()
         .find(|t| t.id == st.chosen)
         .map(|t| t.name.clone());
-    let r = widgets::modal_with(
-        ctx,
-        p,
-        "New project",
-        Some("Start from a template. It's a normal folder you can open in any editor."),
-        720.0,
-        |ui| {
-            ui.spacing_mut().item_spacing.y = 16.0;
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 8.0;
-                match st.shown.clone() {
-                    None => gallery_categories(ui, p, st, &mut body_action),
-                    Some(c) => gallery_templates(ui, p, st, &c, &mut body_action),
-                }
+
+    let screen = ctx.content_rect();
+    let w = 940.0f32.min(screen.width() - 40.0).max(360.0);
+    let h = 640.0f32.min(screen.height() - 40.0).max(380.0);
+    let compact = w < 700.0;
+
+    let previous_focus = widgets::modal_focus_enter(ctx, "new-project-modal");
+    let any_popup_open = egui::Popup::is_any_open(ctx);
+    let _backdrop = egui::Area::new(egui::Id::unique("new-project-backdrop"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.min)
+        .show(ctx, |ui| {
+            let (rect, r) = ui.allocate_exact_size(screen.size(), Sense::click());
+            ui.painter()
+                .rect_filled(rect, 0, Color32::from_rgba_unmultiplied(12, 17, 22, 92));
+            r
+        });
+    let mut closed = false;
+
+    let area = egui::Area::new(egui::Id::unique("new-project-modal"))
+        .kind(egui::UiKind::Modal)
+        .order(egui::Order::Foreground)
+        .pivot(Align2::CENTER_CENTER)
+        .fixed_pos(screen.center());
+    let layer = area.layer();
+    ctx.memory_mut(|m| m.set_modal_layer(layer));
+    let panel_resp = area.show(ctx, |ui| {
+        let (outer, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
+        let rad = CornerRadius::same(theme::R_XL);
+        ui.painter().add(p.shadow_lg.as_shape(outer, rad));
+        ui.painter().rect(
+            outer,
+            rad,
+            p.surface,
+            Stroke::new(1.0, p.border),
+            StrokeKind::Inside,
+        );
+        let inner = outer.shrink(1.0);
+        let foot_h = if st.error.is_some() { 150.0 } else { 126.0 };
+        let foot = Rect::from_min_max(pos2(inner.left(), inner.bottom() - foot_h), inner.max);
+        let top = Rect::from_min_max(inner.min, pos2(inner.right(), foot.top()));
+
+        // Footer surface_2 bar with Folder name, Location, selected template, Cancel & Create.
+        ui.painter().rect_filled(
+            foot,
+            CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: theme::R_XL - 1,
+                se: theme::R_XL - 1,
+            },
+            p.surface_2,
+        );
+        ui.painter()
+            .hline(foot.x_range(), foot.top() + 0.5, Stroke::new(1.0, p.border));
+
+        // Left category nav (210 px) + Right template gallery (or stacked when compact).
+        let (nav_rect, main_rect) = if compact {
+            let nr = Rect::from_min_size(top.min, Vec2::new(top.width(), 88.0));
+            (
+                nr,
+                Rect::from_min_max(pos2(top.left(), nr.bottom()), top.max),
+            )
+        } else {
+            let nr = Rect::from_min_size(top.min, Vec2::new(212.0, top.height()));
+            (nr, Rect::from_min_max(pos2(nr.right(), top.top()), top.max))
+        };
+        ui.painter().rect_filled(
+            nav_rect,
+            CornerRadius {
+                nw: theme::R_XL - 1,
+                ne: if compact { theme::R_XL - 1 } else { 0 },
+                sw: 0,
+                se: 0,
+            },
+            p.surface_2,
+        );
+        if compact {
+            ui.painter().hline(
+                nav_rect.x_range(),
+                nav_rect.bottom() - 0.5,
+                Stroke::new(1.0, p.border),
+            );
+        } else {
+            ui.painter().vline(
+                nav_rect.right() - 0.5,
+                nav_rect.y_range(),
+                Stroke::new(1.0, p.border),
+            );
+        }
+
+        // Populate left category navigation.
+        let cats = st.categories();
+        let mine_n = st.in_cat(MINE).len();
+        let online_n = st.in_cat(FOLDER).len();
+        let all_n = st
+            .templates
+            .iter()
+            .filter(|t| NewProject::cat_of(t) != FOLDER)
+            .count();
+        let mut nav_ui =
+            ui.new_child(egui::UiBuilder::new().max_rect(nav_rect.shrink2(Vec2::new(12.0, 14.0))));
+        if compact {
+            nav_ui.spacing_mut().item_spacing.y = 6.0;
+            nav_ui.label(
+                egui::RichText::new("New project")
+                    .font(FontId::new(18.0, theme::font::display()))
+                    .color(p.ink),
+            );
+            egui::ScrollArea::horizontal()
+                .id_salt("np-cats-h")
+                .show(&mut nav_ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        if Button::new("All templates")
+                            .kind(Kind::Ghost)
+                            .size(widgets::Size::Sm)
+                            .on(st.shown.is_none())
+                            .show(ui, p)
+                            .clicked()
+                        {
+                            st.shown = None;
+                        }
+                        for c in &cats {
+                            if Button::new(c)
+                                .kind(Kind::Ghost)
+                                .size(widgets::Size::Sm)
+                                .on(st.shown.as_deref() == Some(c.as_str()))
+                                .show(ui, p)
+                                .clicked()
+                            {
+                                st.show_cat(c);
+                            }
+                        }
+                        if mine_n > 0
+                            && Button::new(MINE)
+                                .kind(Kind::Ghost)
+                                .size(widgets::Size::Sm)
+                                .on(st.shown.as_deref() == Some(MINE))
+                                .show(ui, p)
+                                .clicked()
+                        {
+                            st.show_cat(MINE);
+                        }
+                        if (online_n > 0 || st.online_loading || st.online_error.is_some())
+                            && Button::new(FOLDER)
+                                .kind(Kind::Ghost)
+                                .size(widgets::Size::Sm)
+                                .on(st.shown.as_deref() == Some(FOLDER))
+                                .show(ui, p)
+                                .clicked()
+                        {
+                            st.show_cat(FOLDER);
+                        }
+                    });
+                });
+        } else {
+            nav_ui.spacing_mut().item_spacing.y = 2.0;
+            nav_ui.horizontal(|ui| {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("New project")
+                        .font(FontId::new(20.0, theme::font::display()))
+                        .color(p.ink),
+                );
             });
-            widgets::field(ui, p, "Folder name", |ui| {
+            nav_ui.horizontal(|ui| {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("Pick a template")
+                        .size(12.0)
+                        .color(p.muted),
+                );
+            });
+            nav_ui.add_space(10.0);
+            let all_s = all_n.to_string();
+            if widgets::side_row(
+                &mut nav_ui,
+                p,
+                Some(icons::LAYOUT_GRID),
+                None,
+                "All templates",
+                st.shown.is_none(),
+                Some(all_s.as_str()),
+            )
+            .clicked()
+            {
+                st.shown = None;
+            }
+            for c in &cats {
+                let cnt = st.in_cat(c).len().to_string();
+                if widgets::side_row(
+                    &mut nav_ui,
+                    p,
+                    Some(category_icon(c)),
+                    None,
+                    c,
+                    st.shown.as_deref() == Some(c.as_str()),
+                    Some(cnt.as_str()),
+                )
+                .clicked()
+                {
+                    st.show_cat(c);
+                }
+            }
+            if mine_n > 0 {
+                nav_ui.add_space(8.0);
+                let cnt = mine_n.to_string();
+                if widgets::side_row(
+                    &mut nav_ui,
+                    p,
+                    Some(icons::STAR),
+                    Some(p.warn),
+                    MINE,
+                    st.shown.as_deref() == Some(MINE),
+                    Some(cnt.as_str()),
+                )
+                .clicked()
+                {
+                    st.show_cat(MINE);
+                }
+            }
+            if online_n > 0 || st.online_loading || st.online_error.is_some() {
+                nav_ui.add_space(8.0);
+                let cnt = if online_n > 0 {
+                    Some(online_n.to_string())
+                } else if st.online_loading {
+                    Some("…".into())
+                } else {
+                    None
+                };
+                if widgets::side_row(
+                    &mut nav_ui,
+                    p,
+                    Some(icons::FOLDER_OPEN),
+                    None,
+                    FOLDER,
+                    st.shown.as_deref() == Some(FOLDER),
+                    cnt.as_deref(),
+                )
+                .clicked()
+                {
+                    st.show_cat(FOLDER);
+                }
+            }
+        }
+
+        // Right gallery pane: top search + close button, then scrollable template cards.
+        let mut main_ui = ui.new_child(egui::UiBuilder::new().max_rect(main_rect));
+        let topbar = Rect::from_min_size(main_rect.min, Vec2::new(main_rect.width(), 52.0));
+        let mut tb = main_ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(topbar.shrink2(Vec2::new(16.0, 10.0)))
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        tb.spacing_mut().item_spacing.x = 8.0;
+        if Button::icon(icons::X, "Close")
+            .kind(Kind::Ghost)
+            .size(widgets::Size::Md)
+            .enabled(!busy)
+            .show_icon(&mut tb, p)
+            .clicked()
+        {
+            closed = true;
+        }
+        tb.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let sw = ui.available_width().min(320.0);
+            ui.allocate_ui(Vec2::new(sw, 32.0), |ui| {
+                widgets::search_input(ui, p, &mut st.query, "Search templates");
+            });
+        });
+
+        let gallery_rect =
+            Rect::from_min_max(pos2(main_rect.left(), topbar.bottom()), main_rect.max);
+        let mut gal_ui = main_ui.new_child(egui::UiBuilder::new().max_rect(gallery_rect));
+        egui::ScrollArea::vertical()
+            .id_salt("np-templates")
+            .auto_shrink([false, false])
+            .show(&mut gal_ui, |ui| {
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin {
+                        left: 16,
+                        right: 16,
+                        top: 4,
+                        bottom: 16,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 10.0;
+                        gallery_grid(ui, p, st, &mut action);
+                    });
+            });
+
+        // Footer controls: Folder name + Location row, error line, Cancel + Create row.
+        let mut fui =
+            ui.new_child(egui::UiBuilder::new().max_rect(foot.shrink2(Vec2::new(18.0, 12.0))));
+        fui.spacing_mut().item_spacing.y = 8.0;
+        fui.columns(2, |cols| {
+            cols[0].spacing_mut().item_spacing.y = 4.0;
+            widgets::field(&mut cols[0], p, "Folder name", |ui| {
                 let r = ui
                     .add_enabled_ui(!busy, |ui| {
                         widgets::text_input(ui, p, &mut st.name, "master-thesis", false)
@@ -289,13 +569,22 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
                     && st.can_create()
                     && !busy
                 {
-                    body_action = Some(Action::Submit);
+                    action = Some(Action::Submit);
                 }
             });
-            location(ui, p, "Location", &mut st.parent, !busy, &mut body_action);
-            error_line(ui, p, &st.error);
-        },
-        Some(&mut |ui: &mut Ui| {
+            cols[1].spacing_mut().item_spacing.y = 4.0;
+            location(
+                &mut cols[1],
+                p,
+                "Location",
+                &mut st.parent,
+                !busy,
+                &mut action,
+            );
+        });
+        error_line(&mut fui, p, &st.error);
+        fui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
             if Button::new("Create project")
                 .kind(Kind::Primary)
                 .enabled(can && !busy)
@@ -316,272 +605,73 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
                     );
                 });
             }
-        }),
-    );
-    if r.closed {
+        });
+    });
+
+    panel_resp
+        .response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Dialog, true, "New project"));
+    if !busy
+        && ctx.memory(|m| m.top_modal_layer() == Some(layer))
+        && !any_popup_open
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
+        closed = true;
+    }
+    if closed || matches!(action, Some(Action::Close)) {
+        widgets::modal_focus_restore(ctx, "new-project-modal", previous_focus);
         action = Some(Action::Close);
     }
-    action.or(body_action)
+    action
 }
 
-fn gallery_categories(ui: &mut Ui, p: &Palette, st: &mut NewProject, action: &mut Option<Action>) {
-    let cats = st.categories();
-    // grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px
-    let w = ui.available_width() - 4.0;
-    let cols = (((w + 8.0) / 208.0).floor() as usize).max(1);
-    let cw = (w - 8.0 * (cols as f32 - 1.0)) / cols as f32;
-    let mut clicked = None;
-    for row in cats.chunks(cols) {
-        let descs: Vec<_> = row
+fn gallery_grid(ui: &mut Ui, p: &Palette, st: &mut NewProject, action: &mut Option<Action>) {
+    let q = st.query.trim().to_lowercase();
+    let list: Vec<Template> = if !q.is_empty() {
+        st.templates
             .iter()
-            .map(|c| {
-                clamped(
-                    ui,
-                    &summary(&st.in_cat(c)),
-                    FontId::proportional(12.0),
-                    p.muted,
-                    cw - 28.0,
-                    3,
-                )
+            .filter(|t| {
+                t.name.to_lowercase().contains(&q)
+                    || t.description.to_lowercase().contains(&q)
+                    || t.category.to_lowercase().contains(&q)
             })
-            .collect();
-        let h = 14.0
-            + 20.0
-            + 4.0
-            + 4.0
-            + 18.0
-            + 4.0
-            + descs.iter().map(|g| g.size().y).fold(0.0, f32::max)
-            + 14.0;
-        ui.horizontal(|ui| {
-            ui.add_space(2.0);
-            ui.spacing_mut().item_spacing.x = 8.0;
-            for (c, desc) in row.iter().zip(descs) {
-                let (rect, r) = ui.allocate_exact_size(Vec2::new(cw, h), Sense::click());
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, c));
-                let t = ui
-                    .ctx()
-                    .animate_bool_with_time(r.id, r.hovered(), theme::ease_secs());
-                let painter = ui.painter();
-                painter.rect(
-                    rect,
-                    CornerRadius::same(theme::R_LG),
-                    p.surface,
-                    Stroke::new(1.0, p.border.lerp_to_gamma(p.accent, t)),
-                    StrokeKind::Inside,
-                );
-                icons::paint(
-                    painter,
-                    Rect::from_min_size(rect.min + Vec2::splat(14.0), Vec2::splat(20.0)),
-                    category_icon(c),
-                    p.accent,
-                );
-                painter.text(
-                    rect.min + Vec2::new(14.0, 14.0 + 28.0),
-                    Align2::LEFT_TOP,
-                    c,
-                    FontId::new(13.0, theme::font::sans_600()),
-                    p.ink,
-                );
-                painter.galley(
-                    rect.min + Vec2::new(14.0, 14.0 + 28.0 + 22.0),
-                    desc,
-                    p.muted,
-                );
-                widgets::focus_ring(ui, &r, rect, p, theme::R_LG);
-                if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    clicked = Some(c.clone());
-                }
-            }
-        });
-    }
-    let mine = st.in_cat(MINE);
-    if !mine.is_empty() && folder_bar(ui, p, icons::STAR, MINE, &summary(&mine)).clicked() {
-        clicked = Some(MINE.into());
-    }
-    let n = st.in_cat(FOLDER).len();
-    if n > 0 {
-        let text = format!(
-            "IEEE, ACM, Springer, Elsevier and more: {n} templates with a publisher's own class"
-        );
-        if folder_bar(ui, p, icons::FOLDER_OPEN, FOLDER, &text).clicked() {
-            clicked = Some(FOLDER.into());
-        }
-    }
-    if st.online_loading {
+            .cloned()
+            .collect()
+    } else if let Some(cat) = st.shown.as_deref() {
+        st.in_cat(cat).into_iter().cloned().collect()
+    } else {
+        st.templates
+            .iter()
+            .filter(|t| NewProject::cat_of(t) != FOLDER)
+            .cloned()
+            .collect()
+    };
+
+    if st.shown.as_deref() == Some(FOLDER) && q.is_empty() {
         ui.label(
-            egui::RichText::new("Getting more templates…")
-                .size(12.0)
-                .color(p.muted),
-        );
-    } else if let Some(e) = &st.online_error {
-        let err_tip = e.clone();
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.label(
-                egui::RichText::new(
-                    "More templates are online, but they couldn't be loaded right now.",
-                )
-                .size(12.0)
-                .color(p.muted),
+            egui::RichText::new(
+                "Templates with a publisher's own class, for submitting to their journals and conferences.",
             )
-            .on_hover_text(&err_tip);
-            let retry = ui
-                .add(
-                    egui::Label::new(
-                        egui::RichText::new("Retry")
-                            .size(12.0)
-                            .color(p.accent)
-                            .underline(),
-                    )
-                    .sense(Sense::click()),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            retry.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Retry"));
-            if retry.clicked() {
-                st.online_loading = true;
-                st.online_error = None;
-                *action = Some(Action::RetryOnline);
-            }
-        });
-    }
-    if let Some(c) = clicked {
-        st.show_cat(&c);
-    }
-}
-
-/// `.folder`: a full-width bar with an accent icon, a title and a one-line description.
-fn folder_bar(ui: &mut Ui, p: &Palette, icon: Icon, title: &str, desc: &str) -> egui::Response {
-    let w = ui.available_width() - 4.0;
-    let (rect, r) =
-        ui.allocate_exact_size(Vec2::new(w, 36.0 + 2.0 * 0.0 + 16.0 - 2.0), Sense::click());
-    let rect = rect.translate(Vec2::new(2.0, 0.0));
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, title));
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        CornerRadius::same(theme::R_LG),
-        p.surface,
-        Stroke::new(
-            1.0,
-            if r.hovered() {
-                p.border_strong
-            } else {
-                p.border
-            },
-        ),
-        StrokeKind::Inside,
-    );
-    icons::paint(
-        painter,
-        Rect::from_center_size(
-            pos2(rect.left() + 12.0 + 9.0, rect.center().y),
-            Vec2::splat(18.0),
-        ),
-        icon,
-        p.accent,
-    );
-    painter.text(
-        pos2(rect.left() + 40.0, rect.top() + 8.0),
-        Align2::LEFT_TOP,
-        title,
-        FontId::new(13.0, theme::font::sans_600()),
-        p.ink,
-    );
-    painter.text(
-        pos2(rect.left() + 40.0, rect.top() + 8.0 + 18.0),
-        Align2::LEFT_TOP,
-        desc,
-        FontId::proportional(12.0),
-        p.muted,
-    );
-    widgets::focus_ring(ui, &r, rect, p, theme::R_LG);
-    r.on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-/// A template's preview.png, from its `data:image/png;base64,` URL.
-fn preview(
-    ctx: &egui::Context,
-    cache: &mut HashMap<String, Option<egui::TextureHandle>>,
-    t: &Template,
-) -> Option<egui::TextureHandle> {
-    cache
-        .entry(t.id.clone())
-        .or_insert_with(|| {
-            use base64::Engine;
-            let data = t
-                .preview
-                .as_deref()?
-                .strip_prefix("data:image/png;base64,")?;
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(data)
-                .ok()?;
-            let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                .ok()?
-                .to_rgba8();
-            let size = [img.width() as usize, img.height() as usize];
-            Some(ctx.load_texture(
-                format!("template:{}", t.id),
-                egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()),
-                egui::TextureOptions::LINEAR,
-            ))
-        })
-        .clone()
-}
-
-fn gallery_templates(
-    ui: &mut Ui,
-    p: &Palette,
-    st: &mut NewProject,
-    cat: &str,
-    action: &mut Option<Action>,
-) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        let back = ui.scope(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let (rect, r) =
-                ui.allocate_exact_size(Vec2::new(12.0 + 14.0 + 4.0 + 84.0, 22.0), Sense::click());
-            if r.hovered() {
-                ui.painter()
-                    .rect_filled(rect, CornerRadius::same(theme::R_SM), p.surface_2);
-            }
-            icons::paint(
-                ui.painter(),
-                Rect::from_min_size(
-                    pos2(rect.left() + 6.0, rect.center().y - 7.0),
-                    Vec2::splat(14.0),
-                ),
-                icons::ARROW_LEFT,
-                p.accent,
-            );
-            ui.painter().text(
-                pos2(rect.left() + 24.0, rect.center().y),
-                Align2::LEFT_CENTER,
-                "All categories",
-                FontId::proportional(13.0),
-                p.accent,
-            );
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "All categories"));
-            r
-        });
-        if back.inner.clicked() {
-            st.shown = None;
-        }
-        ui.label(
-            egui::RichText::new(cat)
-                .font(FontId::new(14.0, theme::font::sans_600()))
-                .color(p.ink),
+            .size(12.0)
+            .color(p.muted),
         );
-    });
-    if cat == FOLDER {
-        ui.label(egui::RichText::new("Templates with a publisher's own class, for submitting to their journals and conferences.").color(p.muted));
     }
-    // grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 2px
+
+    if list.is_empty() && !st.online_loading {
+        ui.add_space(16.0);
+        ui.label(
+            egui::RichText::new(if !q.is_empty() {
+                format!("No templates match “{}”.", st.query)
+            } else {
+                "No templates in this category.".into()
+            })
+            .color(p.muted),
+        );
+    }
+
     let w = ui.available_width() - 4.0;
-    let cols = (((w + 10.0) / 160.0).floor() as usize).max(1);
-    let cw = (w - 10.0 * (cols as f32 - 1.0)) / cols as f32;
-    let list: Vec<Template> = st.in_cat(cat).into_iter().cloned().collect();
+    let cols = (((w + 12.0) / 184.0).floor() as usize).max(1);
+    let cw = (w - 12.0 * (cols as f32 - 1.0)) / cols as f32;
     for row in list.chunks(cols) {
         let descs: Vec<_> = row
             .iter()
@@ -591,20 +681,19 @@ fn gallery_templates(
                 } else {
                     &t.description
                 };
-                clamped(ui, d, FontId::proportional(12.0), p.muted, cw - 16.0, 3)
+                clamped(ui, d, FontId::proportional(11.5), p.muted, cw - 20.0, 2)
             })
             .collect();
         let h = 8.0
-            + 92.0
-            + 4.0
-            + 4.0
+            + 108.0
+            + 8.0
             + 18.0
             + 4.0
             + descs.iter().map(|g| g.size().y).fold(0.0, f32::max)
-            + 8.0;
+            + 10.0;
         ui.horizontal(|ui| {
             ui.add_space(2.0);
-            ui.spacing_mut().item_spacing.x = 10.0;
+            ui.spacing_mut().item_spacing.x = 12.0;
             for (t, desc) in row.iter().zip(descs) {
                 let (rect, r) = ui.allocate_exact_size(Vec2::new(cw, h), Sense::click());
                 let on = st.chosen == t.id;
@@ -612,34 +701,31 @@ fn gallery_templates(
                     egui::WidgetInfo::selected(egui::Role::RadioButton, true, on, &t.name)
                 });
                 let painter = ui.painter();
+                let rad = CornerRadius::same(theme::R_MD);
                 if on {
                     painter.rect_stroke(
                         rect.expand(1.5),
-                        CornerRadius::same(theme::R_LG + 2),
+                        CornerRadius::same(theme::R_MD + 2),
                         Stroke::new(3.0, Palette::mix(p.accent, 18.0)),
                         StrokeKind::Outside,
                     );
+                } else {
+                    painter.add(p.shadow_card.as_shape(rect, rad));
                 }
                 let border = if on {
-                    p.accent
+                    Stroke::new(2.0, p.accent)
                 } else if r.hovered() {
-                    p.border_strong
+                    Stroke::new(1.0, p.border_strong)
                 } else {
-                    p.border
+                    Stroke::new(1.0, p.border)
                 };
-                painter.rect(
-                    rect,
-                    CornerRadius::same(theme::R_LG),
-                    p.surface,
-                    Stroke::new(1.0, border),
-                    StrokeKind::Inside,
-                );
+                painter.rect(rect, rad, p.surface, border, StrokeKind::Inside);
+
                 let thumb =
-                    Rect::from_min_size(rect.min + Vec2::splat(8.0), Vec2::new(cw - 16.0, 92.0));
+                    Rect::from_min_size(rect.min + Vec2::splat(8.0), Vec2::new(cw - 16.0, 108.0));
                 painter.rect_filled(thumb, CornerRadius::same(theme::R_SM), p.surface_2);
                 match preview(ui.ctx(), &mut st.previews, t) {
                     Some(tex) => {
-                        // object-fit: cover; object-position: top, on white.
                         let [tw, th] = tex.size().map(|v| v as f32);
                         let uv_h = ((thumb.height() / thumb.width()) * tw / th).min(1.0);
                         painter.rect_filled(thumb, CornerRadius::same(theme::R_SM), Color32::WHITE);
@@ -650,28 +736,54 @@ fn gallery_templates(
                             Color32::WHITE,
                         );
                     }
-                    None => icons::paint(
-                        painter,
-                        Rect::from_center_size(thumb.center(), Vec2::splat(28.0)),
-                        if t.user {
-                            icons::STAR
-                        } else {
-                            icons::FILE_TEXT
-                        },
-                        p.faint,
-                    ),
+                    None => {
+                        // Crisp miniature page silhouette for templates without a PNG preview.
+                        let pw = (thumb.width() * 0.54).min(68.0);
+                        let page = Rect::from_min_max(
+                            pos2(thumb.center().x - pw / 2.0, thumb.top() + 10.0),
+                            pos2(thumb.center().x + pw / 2.0, thumb.bottom()),
+                        );
+                        painter.add(theme::SHADOW_SM.as_shape(page, 2));
+                        painter.rect_filled(page, 2, Color32::WHITE);
+                        let mut ly = page.top() + 14.0;
+                        painter.rect_filled(
+                            Rect::from_min_size(
+                                pos2(page.left() + 10.0, ly),
+                                Vec2::new(pw - 24.0, 5.0),
+                            ),
+                            2,
+                            Color32::from_rgb(0x9a, 0xa3, 0xad),
+                        );
+                        ly += 12.0;
+                        for k in 0..4 {
+                            let lw = pw - 18.0 - if k == 3 { 14.0 } else { 0.0 };
+                            painter.rect_filled(
+                                Rect::from_min_size(
+                                    pos2(page.left() + 9.0, ly),
+                                    Vec2::new(lw.max(10.0), 3.0),
+                                ),
+                                1,
+                                Color32::from_rgb(0xdf, 0xe3, 0xe7),
+                            );
+                            ly += 9.0;
+                        }
+                    }
                 }
                 let y = thumb.bottom() + 8.0;
-                painter.text(
-                    pos2(rect.left() + 8.0, y),
-                    Align2::LEFT_TOP,
-                    &t.name,
+                let mut nj = egui::text::LayoutJob::simple_singleline(
+                    t.name.clone(),
                     FontId::new(13.0, theme::font::sans_600()),
                     p.ink,
                 );
-                painter.galley(pos2(rect.left() + 8.0, y + 22.0), desc, p.muted);
-                widgets::focus_ring(ui, &r, rect, p, theme::R_LG);
-                if r.clicked() {
+                nj.wrap.max_width = cw - 20.0;
+                nj.wrap.max_rows = 1;
+                nj.wrap.overflow_character = Some('…');
+                let ng = ui.fonts_mut(|f| f.layout_job(nj));
+                ui.painter().galley(pos2(rect.left() + 10.0, y), ng, p.ink);
+                ui.painter()
+                    .galley(pos2(rect.left() + 10.0, y + 20.0), desc, p.muted);
+                widgets::focus_ring(ui, &r, rect, p, theme::R_MD);
+                if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     st.chosen = t.id.clone();
                 }
                 if t.user {
@@ -705,6 +817,76 @@ fn gallery_templates(
             }
         });
     }
+
+    if st.online_loading {
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("Getting more templates…")
+                .size(12.0)
+                .color(p.muted),
+        );
+    } else if let Some(e) = &st.online_error {
+        let err_tip = e.clone();
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(
+                egui::RichText::new(
+                    "More templates are online, but they couldn't be loaded right now.",
+                )
+                .size(12.0)
+                .color(p.muted),
+            )
+            .on_hover_text(&err_tip);
+            let retry = ui
+                .add(
+                    egui::Label::new(
+                        egui::RichText::new("Retry")
+                            .size(12.0)
+                            .color(p.accent_text)
+                            .underline(),
+                    )
+                    .sense(Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            retry.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Retry"));
+            if retry.clicked() {
+                st.online_loading = true;
+                st.online_error = None;
+                *action = Some(Action::RetryOnline);
+            }
+        });
+    }
+}
+
+/// A template's preview.png, from its `data:image/png;base64,` URL.
+fn preview(
+    ctx: &egui::Context,
+    cache: &mut HashMap<String, Option<egui::TextureHandle>>,
+    t: &Template,
+) -> Option<egui::TextureHandle> {
+    cache
+        .entry(t.id.clone())
+        .or_insert_with(|| {
+            use base64::Engine;
+            let data = t
+                .preview
+                .as_deref()?
+                .strip_prefix("data:image/png;base64,")?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .ok()?;
+            let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                .ok()?
+                .to_rgba8();
+            let size = [img.width() as usize, img.height() as usize];
+            Some(ctx.load_texture(
+                format!("template:{}", t.id),
+                egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()),
+                egui::TextureOptions::LINEAR,
+            ))
+        })
+        .clone()
 }
 
 // ── Clone ──────────────────────────────────────────────────────────────────

@@ -34,9 +34,16 @@
 .lbl-field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; font-weight: 500; color: var(--muted); }
 .lbl-field .field { box-shadow: var(--shadow-card); }
 .lbl-field .mono { color: var(--ink); }
-.foot-btns { display: flex; gap: 8px; }
+.foot-btns { display: flex; align-items: center; gap: 8px; }
 .foot-btns .btn { height: 34px; }
-@media (max-width: 760px) { .d-body { grid-template-columns: minmax(0, 1fr); } .cats { display: none; } .d-foot { grid-template-columns: minmax(0, 1fr); } }
+.sel-tpl { color: var(--faint); font-size: 12px; margin-right: 4px; white-space: nowrap; }
+@media (max-width: 760px) {
+  .d-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .cats { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 8px 12px; gap: 4px; }
+  .cats .row { width: auto; flex: none; }
+  .cats .sub-head { display: none; }
+  .d-foot { grid-template-columns: minmax(0, 1fr); }
+}
 </style>
 </head>
 <body>
@@ -50,48 +57,65 @@
     </header>
     <div class="d-body">
       <nav class="cats" aria-label="Template categories">
-        <button class="row on"><i data-i="LAYOUT_GRID" class="ico"></i><span class="name">All templates</span><span class="count">11</span></button>
-        <button class="row"><i data-i="FILE_TEXT" class="ico"></i><span class="name">Papers</span><span class="count">2</span></button>
-        <button class="row"><i data-i="GRADUATION_CAP" class="ico"></i><span class="name">School</span><span class="count">3</span></button>
-        <button class="row"><i data-i="BOOK_OPEN" class="ico"></i><span class="name">Theses &amp; reports</span><span class="count">1</span></button>
-        <button class="row"><i data-i="PRESENTATION" class="ico"></i><span class="name">Presentations</span><span class="count">1</span></button>
-        <button class="row"><i data-i="LAYOUT_PANEL_TOP" class="ico"></i><span class="name">Posters</span><span class="count">1</span></button>
-        <button class="row"><i data-i="MAIL" class="ico"></i><span class="name">Letters &amp; CV</span><span class="count">2</span></button>
+        <button class="row on" data-cat="all"><i data-i="LAYOUT_GRID" class="ico"></i><span class="name">All templates</span><span class="count">11</span></button>
+        <button class="row" data-cat="papers"><i data-i="FILE_TEXT" class="ico"></i><span class="name">Papers</span><span class="count">2</span></button>
+        <button class="row" data-cat="school"><i data-i="GRADUATION_CAP" class="ico"></i><span class="name">School</span><span class="count">3</span></button>
+        <button class="row" data-cat="theses"><i data-i="BOOK_OPEN" class="ico"></i><span class="name">Theses &amp; reports</span><span class="count">1</span></button>
+        <button class="row" data-cat="presentations"><i data-i="PRESENTATION" class="ico"></i><span class="name">Presentations</span><span class="count">1</span></button>
+        <button class="row" data-cat="posters"><i data-i="LAYOUT_PANEL_TOP" class="ico"></i><span class="name">Posters</span><span class="count">1</span></button>
+        <button class="row" data-cat="letters"><i data-i="MAIL" class="ico"></i><span class="name">Letters &amp; CV</span><span class="count">2</span></button>
         <div class="sub-head">Yours</div>
-        <button class="row"><i data-i="STAR" class="ico"></i><span class="name">My templates</span><span class="count">1</span></button>
-        <button class="row"><i data-i="FOLDER_SEARCH" class="ico"></i><span class="name">Journals &amp; conferences</span></button>
+        <button class="row" data-cat="mine"><i data-i="STAR" class="ico"></i><span class="name">My templates</span><span class="count">1</span></button>
+        <button class="row" data-cat="online"><i data-i="FOLDER_SEARCH" class="ico"></i><span class="name">Journals &amp; conferences</span></button>
       </nav>
       <div class="gallery">
-        <label class="field"><i data-i="SEARCH"></i><input placeholder="Search templates" aria-label="Search templates"></label>
+        <label class="field"><i data-i="SEARCH"></i><input id="tpl-search" placeholder="Search templates" aria-label="Search templates"></label>
         <div class="tgrid">
-          <button class="tcard"><div class="thumb"><div class="mini"><b>Title</b><i>Author</i><span></span><span></span><span class="s"></span><span></span></div></div><div class="tmeta"><b>Article</b><span>pdfLaTeX · biblatex</span></div></button>
-          <button class="tcard"><div class="thumb"><div class="mini"><b>Title</b><i>arXiv preprint</i><span></span><span class="s"></span><span></span><span></span></div></div><div class="tmeta"><b>Preprint</b><span>pdfLaTeX · biblatex</span></div></button>
-          <button class="tcard on" aria-pressed="true"><div class="thumb"><div class="mini"><b>Thesis</b><i>Chapters, front matter</i><span></span><span></span><span></span><span class="s"></span></div></div><div class="tmeta"><b>Thesis</b><span>pdfLaTeX · biber · chapters</span></div></button>
-          <button class="tcard"><div class="thumb"><div class="mini"><b>Homework 1</b><i>Course</i><span class="s"></span><span></span><span></span><span class="s"></span></div></div><div class="tmeta"><b>Homework</b><span>pdfLaTeX</span></div></button>
-          <button class="tcard"><div class="thumb"><div class="mini"><b>Lab report</b><i>Experiment</i><span></span><span></span><span class="s"></span><span></span></div></div><div class="tmeta"><b>Lab report</b><span>pdfLaTeX · figures</span></div></button>
-          <button class="tcard"><div class="thumb"><div class="mini"><b>Lecture 1</b><i>Notes</i><span></span><span class="s"></span><span></span><span></span></div></div><div class="tmeta"><b>Lecture notes</b><span>pdfLaTeX</span></div></button>
-          <button class="tcard"><div class="thumb"><div class="mini wide"><b>Talk title</b><i>Beamer</i><span class="s"></span></div></div><div class="tmeta"><b>Slides</b><span>Beamer</span></div></button>
-          <button class="tcard"><div class="thumb"><div class="mini poster"><b>Poster</b><i>A0</i><span></span><span></span><span></span></div></div><div class="tmeta"><b>Research poster</b><span>pdfLaTeX · A0</span></div></button>
-          <button class="tcard"><div class="thumb"><div class="mini"><b>Your Name</b><i>Curriculum vitae</i><span class="s"></span><span></span><span class="s"></span><span></span></div></div><div class="tmeta"><b>CV</b><span>XeLaTeX</span></div></button>
-          <button class="tcard"><div class="thumb"><div class="mini"><b>&nbsp;</b><i>Letter</i><span class="s"></span><span></span><span></span></div></div><div class="tmeta"><b>Letter</b><span>pdfLaTeX</span></div></button>
-          <button class="tcard"><div class="thumb"><div class="mini"><b>Course sheet</b><i>My template</i><span></span><span class="s"></span><span></span></div></div><div class="tmeta"><b>Course sheet</b><span>Saved by you</span></div></button>
+          <button class="tcard" data-cat="papers"><div class="thumb"><div class="mini"><b>Title</b><i>Author</i><span></span><span></span><span class="s"></span><span></span></div></div><div class="tmeta"><b>Article</b><span>pdfLaTeX · biblatex</span></div></button>
+          <button class="tcard" data-cat="papers"><div class="thumb"><div class="mini"><b>Title</b><i>arXiv preprint</i><span></span><span class="s"></span><span></span><span></span></div></div><div class="tmeta"><b>Preprint</b><span>pdfLaTeX · biblatex</span></div></button>
+          <button class="tcard on" data-cat="theses" aria-pressed="true"><div class="thumb"><div class="mini"><b>Thesis</b><i>Chapters, front matter</i><span></span><span></span><span></span><span class="s"></span></div></div><div class="tmeta"><b>Thesis</b><span>pdfLaTeX · biber · chapters</span></div></button>
+          <button class="tcard" data-cat="school"><div class="thumb"><div class="mini"><b>Homework 1</b><i>Course</i><span class="s"></span><span></span><span></span><span class="s"></span></div></div><div class="tmeta"><b>Homework</b><span>pdfLaTeX</span></div></button>
+          <button class="tcard" data-cat="school"><div class="thumb"><div class="mini"><b>Lab report</b><i>Experiment</i><span></span><span></span><span class="s"></span><span></span></div></div><div class="tmeta"><b>Lab report</b><span>pdfLaTeX · figures</span></div></button>
+          <button class="tcard" data-cat="school"><div class="thumb"><div class="mini"><b>Lecture 1</b><i>Notes</i><span></span><span class="s"></span><span></span><span></span></div></div><div class="tmeta"><b>Lecture notes</b><span>pdfLaTeX</span></div></button>
+          <button class="tcard" data-cat="presentations"><div class="thumb"><div class="mini wide"><b>Talk title</b><i>Beamer</i><span class="s"></span></div></div><div class="tmeta"><b>Slides</b><span>Beamer</span></div></button>
+          <button class="tcard" data-cat="posters"><div class="thumb"><div class="mini poster"><b>Poster</b><i>A0</i><span></span><span></span><span></span></div></div><div class="tmeta"><b>Research poster</b><span>pdfLaTeX · A0</span></div></button>
+          <button class="tcard" data-cat="letters"><div class="thumb"><div class="mini"><b>Your Name</b><i>Curriculum vitae</i><span class="s"></span><span></span><span class="s"></span><span></span></div></div><div class="tmeta"><b>CV</b><span>XeLaTeX</span></div></button>
+          <button class="tcard" data-cat="letters"><div class="thumb"><div class="mini"><b>&nbsp;</b><i>Letter</i><span class="s"></span><span></span><span></span></div></div><div class="tmeta"><b>Letter</b><span>pdfLaTeX</span></div></button>
+          <button class="tcard" data-cat="mine"><div class="thumb"><div class="mini"><b>Course sheet</b><i>My template</i><span></span><span class="s"></span><span></span></div></div><div class="tmeta"><b>Course sheet</b><span>Saved by you</span></div></button>
         </div>
       </div>
     </div>
     <footer class="d-foot">
       <label class="lbl-field">Folder name<span class="field"><input value="master-thesis" aria-label="Folder name"></span></label>
       <label class="lbl-field">Location<span class="field"><input class="mono" value="~/Documents/thesis" aria-label="Location"><button class="btn sm ghost">Choose…</button></span></label>
-      <div class="foot-btns"><a class="btn ghost" href="library.html">Cancel</a><a class="btn primary" href="workspace.html">Create project</a></div>
+      <div class="foot-btns"><span class="sel-tpl" id="sel-tpl">Template: Thesis</span><a class="btn ghost" href="library.html">Cancel</a><a class="btn primary" href="workspace.html">Create project</a></div>
     </footer>
   </section>
 </div>
 <!-- @include mock.html today=library-new-project-light.png -->
 <script>
-// Mockup behaviour only: pick a template card.
+// Mockup behaviour only: pick a template card, filter by category and query.
+let curCat = 'all';
+const search = document.getElementById('tpl-search');
+const selTpl = document.getElementById('sel-tpl');
+const applyFilter = () => {
+  const q = search.value.trim().toLowerCase();
+  document.querySelectorAll('.tcard').forEach(c => {
+    const matchCat = curCat === 'all' || c.dataset.cat === curCat;
+    const matchText = !q || c.textContent.toLowerCase().includes(q);
+    c.style.display = (matchCat && matchText) ? '' : 'none';
+  });
+};
 document.querySelectorAll('.tcard').forEach(c => c.onclick = () => {
   document.querySelectorAll('.tcard').forEach(o => { o.classList.toggle('on', o === c); o.setAttribute('aria-pressed', o === c); });
+  selTpl.textContent = 'Template: ' + c.querySelector('.tmeta b').textContent;
 });
-document.querySelectorAll('.cats .row').forEach(r => r.onclick = () => document.querySelectorAll('.cats .row').forEach(o => o.classList.toggle('on', o === r)));
+document.querySelectorAll('.cats .row').forEach(r => r.onclick = () => {
+  document.querySelectorAll('.cats .row').forEach(o => o.classList.toggle('on', o === r));
+  curCat = r.dataset.cat || 'all';
+  applyFilter();
+});
+search.oninput = applyFilter;
 </script>
 </body>
 </html>

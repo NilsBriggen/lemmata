@@ -82,6 +82,8 @@ pub struct Output {
     pub changed: bool,
     /// The main cursor is on another line now (1-based).
     pub cursor_line: Option<usize>,
+    /// The main cursor's column changed (1-based char column).
+    pub cursor_col: Option<usize>,
     /// The selection changed; its text ("" when empty).
     pub selection: Option<String>,
     /// Mod-j: show this line (1-based) and column in the PDF.
@@ -172,6 +174,7 @@ pub struct Editor {
     reported_version: u64,
     accesskit_snapshot: Option<(u64, String, Vec<u8>)>,
     last_cursor_line: usize,
+    last_cursor_col: usize,
     last_selection: Selection,
     /// Where the view is scrolled.
     pub scroll_y: f32,
@@ -253,6 +256,7 @@ impl Editor {
             reported_version: 0,
             accesskit_snapshot: None,
             last_cursor_line: 1,
+            last_cursor_col: 1,
             last_selection: Selection::cursor(0),
             scroll_y: 0.0,
             scroll_x: 0.0,
@@ -286,6 +290,13 @@ impl Editor {
     /// The main cursor's line, 1-based.
     pub fn cursor_line(&self) -> usize {
         self.doc.line_of(self.doc.selection.main().head) + 1
+    }
+
+    /// The main cursor's column on its line, 1-based chars.
+    pub fn cursor_col(&self) -> usize {
+        let head = self.doc.selection.main().head;
+        let n = self.doc.line_of(head);
+        head.saturating_sub(self.doc.line_start(n)) + 1
     }
 
     /// Puts the cursor at `col` (0-based chars) on `line` (1-based) and scrolls it to the middle.
@@ -538,7 +549,7 @@ fn hash(s: &str) -> u64 {
 fn token_color(t: Token, p: &Palette) -> Option<(Color32, bool)> {
     Some(match t {
         Token::Tag | Token::Keyword => (p.accent, false),
-        Token::Comment => (p.muted, true),
+        Token::Comment => (p.code_comment, true),
         Token::Atom => (p.atom, false),
         Token::Bracket => (p.muted, false),
         Token::Number => (p.ok, false),
@@ -1036,14 +1047,9 @@ pub fn show(
             .partition_point(|&t| t < viewport.max.y)
             .min(tops.len());
 
-        // Gutter: --gutter with a 1 px --border on its right.
+        // Gutter: seamless --gutter surface (no vertical border line).
         let gutter = Rect::from_min_size(visible.min, vec2(gutter_w, visible.height()));
         painter.rect_filled(gutter, 0, p.gutter);
-        painter.vline(
-            gutter.right() - 0.5,
-            gutter.y_range(),
-            Stroke::new(1.0, p.border),
-        );
 
         let focused = ui.memory(|m| m.has_focus(id));
         let head_lines: Vec<usize> = ed
@@ -1147,9 +1153,11 @@ pub fn show(
             let base = screen(text_x, top);
             let at = |col: usize| base + col_pos(&l, col, cw, tab).0.to_vec2();
 
-            // .cm-activeLine: 6 % accent on every line with a cursor.
+            // Active line tint spans seamlessly across gutter and text.
             if head_lines.contains(&n) {
-                painter.rect_filled(line_rect, 0, Palette::mix(p.accent, 6.0));
+                let full_row =
+                    Rect::from_min_max(pos2(gutter.left(), line_rect.top()), line_rect.max);
+                painter.rect_filled(full_row, 0, p.line_hl);
             }
             // Indent guides under each level but the first.
             let unit = style.indent.width() as f32 * cw;
@@ -1807,12 +1815,12 @@ pub fn show(
                         egui::Frame::new()
                             .fill(p.surface)
                             .stroke(Stroke::new(1.0, p.border))
-                            .corner_radius(8)
+                            .corner_radius(crate::theme::R_LG)
                             .shadow(p.shadow)
-                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .inner_margin(egui::Margin::symmetric(14, 12))
                             .show(ui, |ui| {
                                 let screen_r = ui.ctx().content_rect();
-                                ui.set_max_width(460.0f32.min(screen_r.width() * 0.7) - 24.0);
+                                ui.set_max_width(330.0f32.min(screen_r.width() * 0.7) - 28.0);
                                 egui::ScrollArea::vertical()
                                     .max_height(screen_r.height() * 0.5)
                                     .show(ui, |ui| {
@@ -2483,9 +2491,14 @@ pub fn show(
         out.changed = true;
     }
     let line = ed.cursor_line();
+    let col = ed.cursor_col();
     if line != ed.last_cursor_line {
         ed.last_cursor_line = line;
         out.cursor_line = Some(line);
+    }
+    if col != ed.last_cursor_col {
+        ed.last_cursor_col = col;
+        out.cursor_col = Some(col);
     }
     if ed.doc.selection != ed.last_selection {
         ed.last_selection = ed.doc.selection.clone();
@@ -3167,31 +3180,38 @@ fn math_preview(
                 .stroke(Stroke::new(1.0, p.border))
                 .corner_radius(crate::theme::R_LG)
                 .shadow(p.shadow)
-                .inner_margin(egui::Margin::symmetric(14, 10))
+                .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
                     ui.set_max_width(ui.ctx().content_rect().width() * 0.7);
-                    match &result {
-                        Ok(m) => {
-                            ui.image((m.texture.id(), m.size));
-                        }
-                        Err(e) => {
-                            if let Some(old) = &ed.last_math {
-                                ui.add(
-                                    egui::Image::new((old.texture.id(), old.size))
-                                        .tint(Color32::from_white_alpha(115)),
+                    egui::Frame::new()
+                        .fill(p.surface_2)
+                        .stroke(Stroke::new(1.0, p.border))
+                        .corner_radius(crate::theme::R_MD)
+                        .inner_margin(egui::Margin::symmetric(14, 10))
+                        .show(ui, |ui| match &result {
+                            Ok(m) => {
+                                ui.image((m.texture.id(), m.size));
+                            }
+                            Err(e) => {
+                                if let Some(old) = &ed.last_math {
+                                    ui.add(
+                                        egui::Image::new((old.texture.id(), old.size))
+                                            .tint(Color32::from_white_alpha(115)),
+                                    );
+                                }
+                                ui.add_space(4.0);
+                                // Still drawing is not a mistake in the formula.
+                                ui.label(
+                                    egui::RichText::new(e).font(FontId::monospace(12.0)).color(
+                                        if e == render::PENDING {
+                                            p.muted
+                                        } else {
+                                            p.error
+                                        },
+                                    ),
                                 );
                             }
-                            ui.add_space(4.0);
-                            // Still drawing is not a mistake in the formula.
-                            ui.label(egui::RichText::new(e).font(FontId::monospace(12.0)).color(
-                                if e == render::PENDING {
-                                    p.muted
-                                } else {
-                                    p.error
-                                },
-                            ));
-                        }
-                    }
+                        });
                 });
         });
 }

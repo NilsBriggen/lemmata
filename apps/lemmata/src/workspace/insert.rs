@@ -430,7 +430,7 @@ fn figure_body(ui: &mut Ui, p: &Palette, f: &mut FigureDialog, list: &[String], 
             .iter()
             .position(|(v, _)| *v == f.placement)
             .unwrap_or(0);
-        if let Some(i) = widgets::segmented(ui, p, &options, sel, false, false) {
+        if let Some(i) = widgets::segmented(ui, p, &options, sel, false) {
             f.placement = PLACES[i].0.into();
         }
     });

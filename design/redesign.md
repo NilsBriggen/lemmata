@@ -29,7 +29,7 @@ It changes the frame around the work:
 - **A calm top bar:**
   - left: the project switcher and the file path;
   - centre: the Editor / Split / PDF segmented control;
-  - right: a command pill (Ctrl K), the build status, and Recompile as the only filled button.
+  - right: a command pill (`Ctrl Shift P` / `Cmd Shift P`), the build status, the build target picker when multiple targets are configured, and Recompile as the only filled button.
 - **Two cards:** editor and PDF, 8 px apart, with a draggable divider. Each card has its own header (tabs, or PDF controls) and toolbar.
 - **The toolbar shrinks on its own.** A "Paragraph ▾" style picker replaces "H ▾", and groups are split by thin dividers. When the card is narrow, labels go first, then the less-used tools move into "…".
 - **Problems are visible where they matter:**
@@ -52,9 +52,9 @@ Everything in the mockup can be drawn in egui: solid fills, 1 px strokes, rounde
 4. **Workspace panels.** Search, Problems, Git, History, Comments and To-dos open in the left sidebar, which widens to 312 px, instead of replacing the PDF. The PDF's "4 issues" chip opens Problems.
 5. **Settings.** Preferences and project settings are one window, with a "Lemmata | rl-thesis" switch and sections on the left. Each row has its label and help text on the left and the control on the right. Switches replace checkboxes. Project settings still save to lemmata.toml with Save/Cancel; preferences apply at once.
 6. **Popups:**
-   - one command palette (Ctrl K) for commands, files, sections and labels, replacing the separate palette and quick open;
+   - Command Palette (`Ctrl Shift P`) and Quick Open (`Ctrl P`) remain separate with their existing shortcuts, restyled in the new card and row tokens;
    - completion with kind badges and a help line;
-   - maths and citation hover cards;
+   - maths and citation hover cards (with dark-mode themed maths backgrounds);
    - notices at the bottom centre with their action inline.
 
 ## Token changes for `apps/lemmata/src/theme.rs`
@@ -66,17 +66,18 @@ The mockup's `:root` variables use the `Palette` field names.
 | `app` | `#e8ebee` | `#eceef1` | The ground now carries the rail, top bar and sidebar too. |
 | `surface_3` | `#eef0f2` | `#e4e7eb` | Hover fill on the ground, and the segmented control's track. |
 | `muted` | `#5c6873` | `#5a6671` | Keeps 4.5:1 on the new ground. |
+| `faint` | `#616b76` | `#5c6670` | 4.65:1 on `surface_3` and full-opacity gutter line numbers (was 4.37:1). |
+| `error` | `#c4472f` | `#b83c24` | 5.04:1 on `error_soft` and 4.98:1 on `app` (was 4.26 / 4.21). |
 | `ok` | `#2e7d55` | `#2a7550` | 4.8:1 on the new ground (was 4.3). |
 | `warn` | `#9a6b0a` | `#8a5f08` | 5.1:1 on `warn_soft` for the issues chip (was 4.2). |
+| `code_comment` | `#6b7681` | `#5f6b76` | 4.95:1 on `line_hl` (was 4.28:1). |
 | `pdf_ground` | `#c8cdd2` | `#e1e5e9` | Lighter, because the PDF is now inside a card. |
-| `chrome*` (8 fields) | navy | not used in the workspace | The library and dialogs keep them until their own redesign. |
+| `chrome*` (8 fields) | navy | removed after migration | Quiet chrome uses `app`/`surface`/`surface_3` across every screen. |
 | `rail_active` | (new) | `#ffffff` / dark `#1e262e` | The selected rail and sidebar item, lifted with `shadow_card`. |
 | `line_hl` | (new) | `#f4f6f8` / dark `#1c232a` | Caret line. |
 | `shadow_card` | (new) | 1 px hairline + 2 px soft shadow | The cards and the selected items. |
 
-The dark theme keeps today's values apart from the new tokens. Small accent text on `accent_soft` (the `MAIN` tag) uses `accent_on_dark` there, because `accent` reaches only 4.4:1.
-
-All text pairs in the mockup reach 4.5:1 in both themes.
+The dark theme keeps today's values apart from the new tokens. Small accent text on `accent_soft` (the `MAIN` tag) uses `accent_text` (`#7cbbe6`), and error rail badges use `accent_ink` (`#0b1620` in dark, `#ffffff` in light) so every text pair reaches at least 4.5:1 in both themes.
 
 ## Mobbin references
 

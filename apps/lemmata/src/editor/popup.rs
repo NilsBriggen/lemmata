@@ -5,8 +5,7 @@
 use super::complete::{Item, Kind};
 use crate::theme::{self, Palette};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2,
-    text::LayoutJob, vec2,
+    self, Align2, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, Ui, pos2, text::LayoutJob, vec2,
 };
 
 /// An open completion list.
@@ -47,64 +46,32 @@ impl Completion {
     }
 }
 
-/// `.cm-completionIcon`: ƒ, ○, 𝐶, abc, ▢ and a key, drawn so they don't depend on fonts.
-fn icon(ui: &Ui, rect: Rect, kind: Kind, color: Color32) {
-    let p = ui.painter();
-    let c = rect.center();
-    let s = Stroke::new(1.0, color);
-    match kind {
-        Kind::Function => {
-            p.text(
-                c,
-                Align2::CENTER_CENTER,
-                "ƒ",
-                FontId::proportional(11.7),
-                color,
-            );
-        }
-        Kind::Class => {
-            p.circle_stroke(c, 3.6, s);
-        }
-        Kind::Constant => {
-            let mut job = LayoutJob::default();
-            job.append(
-                "C",
-                0.0,
-                egui::TextFormat {
-                    font_id: FontId::proportional(11.7),
-                    color,
-                    italics: true,
-                    ..Default::default()
-                },
-            );
-            let g = ui.fonts_mut(|f| f.layout_job(job));
-            p.galley(c - g.size() / 2.0, g, color);
-        }
+/// 18×18 rounded kind badge matching Screen 6 (`.comp-item .k`).
+fn kind_badge(ui: &Ui, p: &Palette, rect: Rect, item: &Item) {
+    let (bg, fg, glyph) = match item.kind {
+        Kind::Function => (p.surface_3, p.muted, "\\"),
+        Kind::Class => (p.ok_soft, p.ok, "{}"),
+        Kind::Constant => (p.warn_soft, p.warn, "#"),
+        Kind::Keyword => (p.accent_soft, p.accent_text, "Σ"),
+        Kind::Namespace => (p.surface_3, p.muted, "[]"),
         Kind::Text => {
-            p.text(
-                c,
-                Align2::CENTER_CENTER,
-                "abc",
-                FontId::proportional(6.5),
-                color,
-            );
+            if matches!(item.apply, super::complete::Apply::Text(_)) {
+                (p.accent_soft, p.accent_text, "@")
+            } else {
+                (p.surface_3, p.muted, "ab")
+            }
         }
-        Kind::Namespace => {
-            p.rect_stroke(
-                Rect::from_center_size(c, vec2(7.0, 7.0)),
-                1,
-                s,
-                StrokeKind::Inside,
-            );
-        }
-        Kind::Keyword => {
-            // A small key.
-            p.circle_stroke(c + vec2(-2.0, -1.5), 2.2, s);
-            p.line_segment([c + vec2(-0.5, 0.0), c + vec2(3.5, 4.0)], s);
-            p.line_segment([c + vec2(2.0, 2.5), c + vec2(3.2, 1.3)], s);
-        }
-        Kind::File => {}
-    }
+        Kind::File => (p.surface_3, p.muted, "/"),
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(theme::R_SM), bg);
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        glyph,
+        FontId::new(10.0, theme::font::sans_600()),
+        fg,
+    );
 }
 
 /// What the user did with the list this frame.
@@ -114,7 +81,7 @@ pub enum Picked {
 }
 
 /// Draws the list under `anchor` (the start of the completed word on its line, `line_h` tall);
-/// `glyph` renders an item's maths preview, `info` the side panel.
+/// `glyph` renders an item's maths preview, `info` renders the documentation footer or side card.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ctx: &egui::Context,
@@ -128,26 +95,35 @@ pub fn show(
 ) -> Picked {
     let mut picked = Picked::None;
     let size = font.size;
-    let row_h = (size * 1.2 + 6.0).round();
+    let row_h = (size * 1.2 + 12.0).round().max(28.0);
     let rows = c.items.len().min(ROWS);
     let screen = ctx.content_rect();
-    let list_h = rows as f32 * row_h + 2.0;
+    let list_pad = 4.0;
+    let list_h = rows as f32 * row_h + list_pad * 2.0 + 2.0;
+    let has_info = c
+        .items
+        .get(c.selected)
+        .is_some_and(|(it, _)| it.info.is_some() || it.preview.is_some());
+    let est_h = list_h + if has_info { 42.0 } else { 0.0 };
     // Below the line, or above it when there is no room.
-    let below = anchor.y + line_h + 2.0 + list_h <= screen.bottom();
+    let below = anchor.y + line_h + 4.0 + est_h <= screen.bottom();
     let top_left = if below {
-        pos2(anchor.x - 4.0, anchor.y + line_h + 2.0)
+        pos2(anchor.x - 4.0, anchor.y + line_h + 4.0)
     } else {
-        pos2(anchor.x - 4.0, anchor.y - list_h - 2.0)
+        pos2(anchor.x - 4.0, anchor.y - est_h - 4.0)
     };
     let mono = FontId::monospace(size);
+    let mono_bold = FontId::new(size, theme::font::mono_500());
+    let det_font = FontId::proportional(12.0);
     let mut list_rect = Rect::NOTHING;
+    let selected_item = c.items.get(c.selected).map(|(it, _)| it.clone());
     egui::Area::new(egui::Id::unique("completion"))
         .order(egui::Order::Tooltip)
         .fixed_pos(top_left)
         .constrain_to(screen.shrink(4.0))
         .show(ctx, |ui| {
-            // Width: the widest of the rows shown, between 250 and 700 px (clamped to viewport).
-            let max_w = (screen.width() - 12.0).clamp(180.0, 700.0);
+            // Width: widest of the shown rows, between 280 and 480 px (clamped to viewport).
+            let max_w = (screen.width() - 12.0).clamp(180.0, 480.0);
             let width = c.items[c.top..(c.top + rows).min(c.items.len())]
                 .iter()
                 .map(|(it, _)| {
@@ -156,183 +132,176 @@ pub fn show(
                         f.layout_no_wrap(label.into(), mono.clone(), p.ink).size().x
                     });
                     let d = it.detail.as_deref().map_or(0.0, |d| {
-                        ui.fonts_mut(|f| f.layout_no_wrap(d.into(), mono.clone(), p.ink).size().x)
-                            + size * 0.5
+                        ui.fonts_mut(|f| {
+                            f.layout_no_wrap(d.into(), det_font.clone(), p.faint)
+                                .size()
+                                .x
+                        }) + 16.0
                     });
-                    let g = if it.preview.is_some() {
-                        12.0 + 40.0
-                    } else {
-                        0.0
-                    };
-                    20.0 + size * 1.4 + w + g + d
+                    let g = if it.preview.is_some() { 48.0 } else { 0.0 };
+                    48.0 + w + g + d
                 })
-                .fold(250.0f32.min(max_w), f32::max)
+                .fold(280.0f32.min(max_w), f32::max)
                 .min(max_w);
-            let (rect, list) = ui.allocate_exact_size(vec2(width, list_h), Sense::hover());
-            list.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::Role::ListBox, true, "Suggestions")
-            });
-            list_rect = rect;
-            let painter = ui.painter();
-            painter.add(p.shadow.as_shape(rect, CornerRadius::same(8)));
-            painter.rect(
-                rect,
-                CornerRadius::same(8),
-                p.surface,
-                Stroke::new(1.0, p.border),
-                StrokeKind::Inside,
-            );
-            let clip = rect.shrink(1.0);
-            for (k, i) in (c.top..(c.top + rows).min(c.items.len())).enumerate() {
-                let (it, hits) = &c.items[i];
-                let r = Rect::from_min_size(
-                    pos2(rect.left() + 1.0, rect.top() + 1.0 + k as f32 * row_h),
-                    vec2(rect.width() - 2.0, row_h),
-                );
-                let resp = ui.interact(r, egui::Id::unique(("completion-row", i)), Sense::click());
-                resp.widget_info(|| {
-                    egui::WidgetInfo::labeled(
-                        egui::Role::ListBoxOption,
-                        true,
-                        it.display.as_deref().unwrap_or(&it.label),
-                    )
-                });
-                if i == c.selected {
-                    ui.painter().with_clip_rect(clip).rect_filled(
-                        r,
-                        if k == 0 { 6 } else { 0 },
-                        p.accent_soft,
+            egui::Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(theme::R_LG)
+                .shadow(p.shadow)
+                .show(ui, |ui| {
+                    ui.set_width(width - 2.0);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let (rect, list) = ui.allocate_exact_size(
+                        vec2(width - 2.0, rows as f32 * row_h + list_pad * 2.0),
+                        Sense::hover(),
                     );
-                }
-                if resp.clicked() {
-                    picked = Picked::Item(i);
-                }
-                let mut x = r.left() + 10.0;
-                let icon_w = size * 0.9 * 0.8;
-                icon(
-                    ui,
-                    Rect::from_min_size(pos2(x, r.top()), vec2(icon_w, row_h)),
-                    it.kind,
-                    p.ink.gamma_multiply(0.6),
-                );
-                x += icon_w + size * 0.9 * 0.6;
-                // The label, typed letters underlined (.cm-completionMatchedText).
-                let label = it.display.as_deref().unwrap_or(&it.label);
-                let mut job = LayoutJob::default();
-                for (ci, ch) in label.chars().enumerate() {
-                    let mut f = egui::TextFormat {
-                        font_id: mono.clone(),
-                        color: p.ink,
-                        ..Default::default()
-                    };
-                    if hits.contains(&ci) {
-                        f.underline = Stroke::new(1.0, p.ink);
+                    list.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::ListBox, true, "Suggestions")
+                    });
+                    list_rect = rect;
+                    let clip = rect;
+                    for (k, i) in (c.top..(c.top + rows).min(c.items.len())).enumerate() {
+                        let (it, hits) = &c.items[i];
+                        let r = Rect::from_min_size(
+                            pos2(
+                                rect.left() + list_pad,
+                                rect.top() + list_pad + k as f32 * row_h,
+                            ),
+                            vec2(rect.width() - list_pad * 2.0, row_h),
+                        );
+                        let resp =
+                            ui.interact(r, egui::Id::unique(("completion-row", i)), Sense::click());
+                        resp.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::Role::ListBoxOption,
+                                true,
+                                it.display.as_deref().unwrap_or(&it.label),
+                            )
+                        });
+                        let selected = i == c.selected;
+                        if selected {
+                            ui.painter().with_clip_rect(clip).rect_filled(
+                                r,
+                                CornerRadius::same(theme::R),
+                                p.accent_soft,
+                            );
+                        }
+                        if resp.clicked() {
+                            picked = Picked::Item(i);
+                        }
+                        let mut x = r.left() + 8.0;
+                        let badge_rect =
+                            Rect::from_min_size(pos2(x, r.center().y - 9.0), vec2(18.0, 18.0));
+                        kind_badge(ui, p, badge_rect, it);
+                        x = badge_rect.right() + 8.0;
+                        let label = it.display.as_deref().unwrap_or(&it.label);
+                        let base_ink = if selected { p.ink } else { p.ink_2 };
+                        let mut job = LayoutJob::default();
+                        for (ci, ch) in label.chars().enumerate() {
+                            let matched = hits.contains(&ci);
+                            let f = egui::TextFormat {
+                                font_id: if matched {
+                                    mono_bold.clone()
+                                } else {
+                                    mono.clone()
+                                },
+                                color: if matched { p.accent_text } else { base_ink },
+                                ..Default::default()
+                            };
+                            job.append(&ch.to_string(), 0.0, f);
+                        }
+                        let g = ui.fonts_mut(|f| f.layout_job(job));
+                        let gy = r.center().y - g.size().y / 2.0;
+                        let gw = g.size().x;
+                        let right_edge = r.right() - 8.0;
+                        let detail_g = it.detail.as_deref().map(|d| {
+                            ui.fonts_mut(|f| f.layout_no_wrap(d.into(), det_font.clone(), p.faint))
+                        });
+                        let det_w = detail_g
+                            .as_ref()
+                            .map_or(0.0, |dg| dg.size().x.min(r.width() * 0.4) + 10.0);
+                        let label_clip = Rect::from_min_max(
+                            pos2(x, r.top()),
+                            pos2((right_edge - det_w).max(x + 20.0), r.bottom()),
+                        );
+                        ui.painter()
+                            .with_clip_rect(label_clip)
+                            .galley(pos2(x, gy), g, base_ink);
+                        x += gw;
+                        if let Some(tex) = &it.preview
+                            && x + 10.0 < right_edge - det_w
+                        {
+                            x += 10.0;
+                            let _ = glyph(ui, tex, pos2(x, r.center().y), size * 0.95);
+                        }
+                        if let Some(dg) = detail_g {
+                            let dw = dg.size().x.min(r.width() * 0.4);
+                            let dclip = Rect::from_min_max(
+                                pos2(right_edge - dw, r.top()),
+                                pos2(right_edge, r.bottom()),
+                            );
+                            ui.painter().with_clip_rect(dclip).galley(
+                                pos2(
+                                    right_edge - dg.size().x.min(dw),
+                                    r.center().y - dg.size().y / 2.0,
+                                ),
+                                dg,
+                                p.faint,
+                            );
+                        }
                     }
-                    job.append(&ch.to_string(), 0.0, f);
-                }
-                let g = ui.fonts_mut(|f| f.layout_job(job));
-                let gy = r.center().y - g.size().y / 2.0;
-                let gw = g.size().x;
-                ui.painter()
-                    .with_clip_rect(clip)
-                    .galley(pos2(x, gy), g, p.ink);
-                x += gw;
-                if let Some(tex) = &it.preview {
-                    x += 12.0;
-                    x += glyph(ui, tex, pos2(x, r.center().y), size * 0.95);
-                }
-                if let Some(d) = &it.detail {
-                    let mut job = LayoutJob::default();
-                    job.append(
-                        d,
-                        size * 0.5,
-                        egui::TextFormat {
-                            font_id: mono.clone(),
-                            color: p.ink,
-                            italics: true,
-                            ..Default::default()
-                        },
-                    );
-                    let g = ui.fonts_mut(|f| f.layout_job(job));
-                    ui.painter().with_clip_rect(clip).galley(
-                        pos2(x, r.center().y - g.size().y / 2.0),
-                        g,
-                        p.ink,
-                    );
-                }
-            }
-            // A thin scrollbar when there are more rows than fit: clicked or dragged, the rows follow.
-            if c.items.len() > rows {
-                let track = Rect::from_min_max(
-                    pos2(rect.right() - 5.0, rect.top() + 2.0),
-                    pos2(rect.right() - 2.0, rect.bottom() - 2.0),
-                );
-                let frac = rows as f32 / c.items.len() as f32;
-                let h = (track.height() * frac).max(12.0);
-                // Grows only rightwards: to the left it would take clicks meant for the rows.
-                let grab = ui.interact(
-                    track.with_max_x(rect.right()),
-                    ui.scope_id().with("completion-bar"),
-                    Sense::click_and_drag(),
-                );
-                if let Some(at) = grab.interact_pointer_pos()
-                    && (grab.dragged() || grab.clicked())
-                {
-                    // The thumb's middle goes where the pointer is.
-                    let span = (track.height() - h).max(1.0);
-                    let t = ((at.y - track.top() - h / 2.0) / span).clamp(0.0, 1.0);
-                    c.top = (t * (c.items.len() - rows) as f32).round() as usize;
-                }
-                let y = track.top()
-                    + (track.height() - h) * (c.top as f32 / (c.items.len() - rows) as f32);
-                ui.painter().rect_filled(
-                    Rect::from_min_size(pos2(track.left(), y), vec2(3.0, h)),
-                    2,
-                    p.faint.gamma_multiply(0.6),
-                );
-            }
-            // The wheel scrolls the rows.
-            if ui.rect_contains_pointer(rect) {
-                c.scrolled -= ui.input(|i| i.smooth_scroll_delta.y);
-                let steps = (c.scrolled / row_h).trunc();
-                c.scrolled -= steps * row_h;
-                let max = c.items.len().saturating_sub(rows);
-                c.top = (c.top as isize + steps as isize).clamp(0, max as isize) as usize;
-            }
+                    // Thin scrollbar when more rows exist.
+                    if c.items.len() > rows {
+                        let track = Rect::from_min_max(
+                            pos2(rect.right() - 4.0, rect.top() + 4.0),
+                            pos2(rect.right() - 1.0, rect.bottom() - 4.0),
+                        );
+                        let frac = rows as f32 / c.items.len() as f32;
+                        let h = (track.height() * frac).max(12.0);
+                        let grab = ui.interact(
+                            track.with_max_x(rect.right()),
+                            ui.scope_id().with("completion-bar"),
+                            Sense::click_and_drag(),
+                        );
+                        if let Some(at) = grab.interact_pointer_pos()
+                            && (grab.dragged() || grab.clicked())
+                        {
+                            let span = (track.height() - h).max(1.0);
+                            let t = ((at.y - track.top() - h / 2.0) / span).clamp(0.0, 1.0);
+                            c.top = (t * (c.items.len() - rows) as f32).round() as usize;
+                        }
+                        let y = track.top()
+                            + (track.height() - h) * (c.top as f32 / (c.items.len() - rows) as f32);
+                        ui.painter().rect_filled(
+                            Rect::from_min_size(pos2(track.left(), y), vec2(3.0, h)),
+                            2,
+                            p.faint.gamma_multiply(0.55),
+                        );
+                    }
+                    // Wheel scrolling.
+                    if ui.rect_contains_pointer(rect) {
+                        c.scrolled -= ui.input(|i| i.smooth_scroll_delta.y);
+                        let steps = (c.scrolled / row_h).trunc();
+                        c.scrolled -= steps * row_h;
+                        let max = c.items.len().saturating_sub(rows);
+                        c.top = (c.top as isize + steps as isize).clamp(0, max as isize) as usize;
+                    }
+                    // Integrated documentation footer for the selected item (`.comp-doc`).
+                    if let Some(it) = &selected_item
+                        && (it.info.is_some() || it.preview.is_some())
+                    {
+                        let y = ui.cursor().top();
+                        ui.painter()
+                            .hline(rect.x_range(), y + 0.5, Stroke::new(1.0, p.border));
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .show(ui, |ui| {
+                                ui.set_width((width - 26.0).max(120.0));
+                                info(ui, it);
+                            });
+                    }
+                });
         });
     c.rect = list_rect;
-
-    // .cm-completionInfo beside the list, for the selected item.
-    if let Some((it, _)) = c.items.get(c.selected)
-        && (it.info.is_some() || it.preview.is_some())
-    {
-        let right = list_rect.right() + 4.0 + 300.0 <= screen.right();
-        let at = if right {
-            pos2(list_rect.right() + 4.0, list_rect.top())
-        } else {
-            pos2(list_rect.left() - 4.0, list_rect.top())
-        };
-        egui::Area::new(egui::Id::unique("completion-info"))
-            .order(egui::Order::Tooltip)
-            .fixed_pos(at)
-            .constrain_to(screen.shrink(4.0))
-            .pivot(if right {
-                Align2::LEFT_TOP
-            } else {
-                Align2::RIGHT_TOP
-            })
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(p.surface)
-                    .stroke(Stroke::new(1.0, p.border))
-                    .corner_radius(theme::R)
-                    .shadow(p.shadow)
-                    .inner_margin(egui::Margin::symmetric(12, 8))
-                    .show(ui, |ui| {
-                        ui.set_max_width(300.0);
-                        info(ui, it);
-                    });
-            });
-    }
     picked
 }

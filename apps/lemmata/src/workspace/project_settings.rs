@@ -1,25 +1,50 @@
-//! Project settings (ProjectSettings.svelte): lemmata.toml for the open project, edited on a
-//! working copy that is written on Save.
+//! Project settings (`lemmata.toml` for the open project), edited on a working copy inside the
+//! unified Settings window and written only on Save.
 
-use super::{Action, Tone, Workspace};
+use super::{Tone, Workspace};
 use crate::backend::Backend;
 use crate::icons;
 use crate::store::Settings;
-use crate::theme::Palette;
+use crate::theme::{self, Palette};
 use crate::widgets::{self, Button, Kind, Size};
-use eframe::egui::{self, Margin, RichText, Stroke, Ui, vec2};
+use eframe::egui::{self, FontId, Margin, RichText, Stroke, Ui, vec2};
 use lemmata_project::{Bib, Config, Engine, Target};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ProjectSection {
+    #[default]
+    Build,
+    Trust,
+}
+
 pub struct ProjectSettings {
-    config: Config,
-    timeout: String,
-    words_open: bool,
-    rules_open: bool,
+    pub config: Config,
+    pub timeout: String,
+    pub words_open: bool,
+    pub rules_open: bool,
     /// The chapters the main file `\include`s, for "Build only these chapters".
-    chapters: Vec<String>,
+    pub chapters: Vec<String>,
     /// "Trust this project", kept on this computer rather than in lemmata.toml.
-    trusted: bool,
-    pub(super) busy: bool,
+    pub trusted: bool,
+    pub(crate) busy: bool,
+    pub initial_section: ProjectSection,
+    /// One-shot signal so the unified Settings window focuses Project scope when reopened.
+    pub focus_project_scope: bool,
+    orig_config: Config,
+    orig_timeout: String,
+    orig_trusted: bool,
+}
+
+impl ProjectSettings {
+    pub fn is_valid(&self) -> bool {
+        outdir_error(&self.config.outdir).is_none() && timeout_ok(&self.timeout).is_some()
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.config != self.orig_config
+            || self.timeout != self.orig_timeout
+            || self.trusted != self.orig_trusted
+    }
 }
 
 const ENGINES: [(Engine, &str, &str); 4] = [
@@ -62,85 +87,56 @@ fn grants_shell_escape_trust(config: &Config, trusted: bool, was_on: bool) -> bo
 
 impl Workspace {
     pub fn open_project_settings(&mut self) {
+        self.open_project_settings_on(ProjectSection::Build);
+    }
+
+    pub fn open_project_trust_settings(&mut self) {
+        self.open_project_settings_on(ProjectSection::Trust);
+    }
+
+    pub fn open_project_settings_on(&mut self, section: ProjectSection) {
         let mut config = self.info.config.clone();
         config.main.get_or_insert_with(|| self.info.main.clone());
+        let timeout = config.timeout_secs.to_string();
         let chapters = lemmata_env::fs::read_text(self.info.root.join(&self.info.main))
             .map(|t| lemmata_project::included_chapters(&t))
             .unwrap_or_default();
         self.project_settings = Some(ProjectSettings {
             chapters,
-            timeout: config.timeout_secs.to_string(),
+            orig_config: config.clone(),
+            orig_timeout: timeout.clone(),
+            orig_trusted: self.trusted,
+            timeout,
             config,
             words_open: false,
             rules_open: false,
             trusted: self.trusted,
             busy: false,
+            initial_section: section,
+            focus_project_scope: true,
         });
     }
 
-    pub(super) fn project_settings_dialog(
-        &mut self,
-        ctx: &egui::Context,
-        p: &Palette,
-        backend: &Backend,
-        settings: &mut Settings,
-        action: &mut Option<Action>,
-    ) {
-        let Some(d) = &mut self.project_settings else {
-            return;
-        };
+    pub fn main_candidates(&self) -> Vec<String> {
         let mut candidates = vec![self.info.main.clone()];
         for c in &self.info.main_candidates {
             if !candidates.contains(c) {
                 candidates.push(c.clone());
             }
         }
+        candidates
+    }
+
+    /// Commits the open project's Settings working copy to `lemmata.toml` (and trust store).
+    pub fn save_project_settings(&mut self, backend: &Backend, settings: &mut Settings) {
+        let Some(d) = &mut self.project_settings else {
+            return;
+        };
+        if !d.is_valid() || d.busy {
+            return;
+        }
         let trusted = self.trusted;
         let was_on = self.info.config.shell_escape;
-        let invalid = outdir_error(&d.config.outdir).is_some() || timeout_ok(&d.timeout).is_none();
-        let (mut save, mut cancel) = (false, false);
-        let r = widgets::modal_editing(
-            ctx,
-            p,
-            "Project settings",
-            Some("Saved in lemmata.toml in the project folder, so they travel with it."),
-            540.0,
-            |ui| {
-                let vh = ui.ctx().content_rect().height();
-                let max_h = (vh - 220.0).clamp(160.0, vh * 0.62);
-                let w = ui.available_width();
-                ui.allocate_ui(vec2(w, max_h), |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(max_h)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            ui.set_width(w - 12.0);
-                            ui.spacing_mut().item_spacing.y = 14.0;
-                            body(ui, p, d, &candidates, trusted, was_on);
-                        });
-                });
-            },
-            Some(&mut |ui: &mut Ui| {
-                if Button::new("Save")
-                    .kind(Kind::Primary)
-                    .enabled(!invalid)
-                    .show(ui, p)
-                    .clicked()
-                {
-                    save = true;
-                }
-                if Button::new("Cancel").show(ui, p).clicked() {
-                    cancel = true;
-                }
-            }),
-        );
-        if r.closed || cancel {
-            self.project_settings = None;
-            return;
-        }
-        if !save || invalid || d.busy {
-            return;
-        }
         d.busy = true;
         let mut config = d.config.clone();
         config.timeout_secs =
@@ -150,7 +146,6 @@ impl Workspace {
         // never silently promotes a restricted project.
         let trust = d.trusted || grants_shell_escape_trust(&config, trusted, was_on);
         let trust_changed = trust != trusted;
-        let _ = action;
         let main_changed = config.main.as_deref() != Some(self.info.main.as_str());
         self.after_saving(backend, settings, move |_, b| {
             Workspace::job(
@@ -159,6 +154,7 @@ impl Workspace {
                 move |ws, b, r| match r {
                     Ok(info) => {
                         ws.project_settings = None;
+                        ws.project_settings_saved = true;
                         ws.checks.grammar.ignored =
                             info.config.grammar_ignore.iter().cloned().collect();
                         ws.checks.grammar.generation += 1;
@@ -200,13 +196,11 @@ fn err(ui: &mut Ui, p: &Palette, text: &str) {
     ui.label(RichText::new(text).size(12.0).color(p.error));
 }
 
-fn body(
+pub fn show_build_section(
     ui: &mut Ui,
     p: &Palette,
     d: &mut ProjectSettings,
     candidates: &[String],
-    trusted: bool,
-    was_on: bool,
 ) {
     let c = &mut d.config;
     let opts: Vec<(&str, &str)> = candidates
@@ -259,12 +253,11 @@ fn body(
             }
         });
     });
-    // Tectonic can't run biber: the build would fail on the bibliography.
     if c.engine == Engine::Tectonic || c.targets.iter().any(|t| t.engine == Some(Engine::Tectonic))
     {
         c.bib = Bib::Bibtex;
     }
-    ui.add_space(-8.0);
+    ui.add_space(-6.0);
     hint(
         ui,
         p,
@@ -354,11 +347,7 @@ fn body(
                 chips(ui, p, |ui| {
                     for r in &c.grammar_ignore {
                         chip(ui, p, |ui| {
-                            ui.label(
-                                RichText::new(r)
-                                    .font(egui::FontId::monospace(12.0))
-                                    .color(p.ink),
-                            );
+                            ui.label(RichText::new(r).font(FontId::monospace(12.0)).color(p.ink));
                             if Button::new("Check again")
                                 .kind(Kind::Ghost)
                                 .size(Size::Sm)
@@ -462,51 +451,106 @@ fn body(
             }
         });
     }
-    widgets::checkbox(
-        ui,
-        p,
-        &mut d.trusted,
-        "Trust this project: it may run programs (its latexmkrc, Git hooks)",
-    );
-    ui.add_space(-8.0);
-    hint(
-        ui,
-        p,
-        if d.trusted {
-            "Kept on this computer only. Take the trust back if you don't know where the project comes from."
-        } else {
-            "Restricted: it builds and shows its PDF, but nothing of its own runs, and the Git panel is off."
-        },
-    );
-    widgets::checkbox(
-        ui,
-        p,
-        &mut c.shell_escape,
-        "Allow the document to run programs (shell escape)",
-    );
+}
+
+pub fn show_trust_section(
+    ui: &mut Ui,
+    p: &Palette,
+    d: &mut ProjectSettings,
+    trusted: bool,
+    was_on: bool,
+) {
+    let c = &mut d.config;
+    // Trust toggle row.
+    ui.horizontal(|ui| {
+        let w = (ui.available_width() - 48.0).max(160.0);
+        ui.vertical(|ui| {
+            ui.set_width(w);
+            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.label(
+                RichText::new("Trust this project")
+                    .font(FontId::new(13.5, theme::font::sans_500()))
+                    .color(p.ink),
+            );
+            hint(
+                ui,
+                p,
+                if d.trusted {
+                    "It may run programs (its latexmkrc, Git hooks). Kept on this computer only. Turn off if you don't know where the project comes from."
+                } else {
+                    "Restricted: it builds and shows its PDF, but nothing of its own runs, and the Git panel is off."
+                },
+            );
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            widgets::switch(
+                ui,
+                p,
+                &mut d.trusted,
+                "Trust this project: it may run programs (its latexmkrc, Git hooks)",
+            );
+        });
+    });
+    ui.add_space(6.0);
+    let y = ui.cursor().top();
+    ui.painter()
+        .hline(ui.max_rect().x_range(), y, Stroke::new(1.0, p.border));
+    ui.add_space(10.0);
+
+    // Shell escape toggle row.
+    ui.horizontal(|ui| {
+        let w = (ui.available_width() - 48.0).max(160.0);
+        ui.vertical(|ui| {
+            ui.set_width(w);
+            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.label(
+                RichText::new("Shell escape")
+                    .font(FontId::new(13.5, theme::font::sans_500()))
+                    .color(p.ink),
+            );
+            hint(
+                ui,
+                p,
+                "Allow the document to run external programs during compilation (needed by packages like minted and svg).",
+            );
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            widgets::switch(
+                ui,
+                p,
+                &mut c.shell_escape,
+                "Allow the document to run programs (shell escape)",
+            );
+        });
+    });
     if c.shell_escape && was_on && !trusted {
-        ui.add_space(-8.0);
         hint(
             ui,
             p,
-            "The project's lemmata.toml turns this on, but the project isn't trusted, so builds run without it. Tick \"Trust this project\" above to use it.",
+            "The project's lemmata.toml turns this on, but the project isn't trusted, so builds run without it. Turn on \"Trust this project\" above to use it.",
         );
     }
     if c.shell_escape {
-        egui::Frame::new().fill(p.warn_soft).corner_radius(crate::theme::R).inner_margin(Margin::symmetric(12, 10)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                icons::show(ui, icons::TRIANGLE_ALERT, 16.0, p.warn);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new("Only for projects you trust: with shell escape, the document can run any command on your computer. Packages like minted and svg need it.")
-                            .color(p.ink_2),
-                    )
-                    .wrap(),
-                );
+        egui::Frame::new()
+            .fill(p.warn_soft)
+            .stroke(Stroke::new(1.0, p.warn.gamma_multiply(0.35)))
+            .corner_radius(theme::R_MD)
+            .inner_margin(Margin::symmetric(12, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    icons::show(ui, icons::TRIANGLE_ALERT, 16.0, p.warn);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("Only for projects you trust: with shell escape, the document can run any command on your computer. Packages like minted and svg need it.")
+                                .size(12.5)
+                                .color(p.ink_2),
+                        )
+                        .wrap(),
+                    );
+                });
             });
-        });
     }
 }
 

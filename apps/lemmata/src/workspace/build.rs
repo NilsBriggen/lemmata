@@ -38,7 +38,10 @@ pub struct BuildState {
     pub diag_gen: u64,
     problem: Option<(String, usize, String)>,
     pub(crate) problem_focus: Option<String>,
-    pub logs_open: bool,
+    /// Show the raw TeX log inside the PDF card instead of the rendered PDF.
+    pub raw_log_open: bool,
+    /// One-shot signal to open the Problems sidebar panel after a failed build.
+    pub want_problems: bool,
     /// What the engine says it is doing (Tectonic fetching packages).
     pub note: Option<String>,
     /// A build waits until then; `force` with it.
@@ -80,6 +83,12 @@ impl BuildState {
         self.diagnostics
             .iter()
             .filter(|d| d.severity == Severity::Error)
+            .count()
+    }
+    pub fn warnings(&self) -> usize {
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
             .count()
     }
     /// The last build ended without writing a PDF.
@@ -515,6 +524,49 @@ impl Workspace {
         });
     }
 
+    /// The Problems panel in the left sidebar.
+    pub fn problems_sidebar(
+        &mut self,
+        ui: &mut eframe::egui::Ui,
+        p: &crate::theme::Palette,
+        backend: &Backend,
+        settings: &mut Settings,
+    ) -> bool {
+        let root = &self.info.root;
+        let (sources, generation) = (&self.build.sources, self.build.diag_gen);
+        let source = |f: &str, from: usize, to: usize| -> Vec<String> {
+            let mut cache = sources.borrow_mut();
+            if cache.0 != generation {
+                *cache = (generation, Default::default());
+            }
+            let text = cache
+                .1
+                .entry(f.to_owned())
+                .or_insert_with(|| lemmata_env::fs::read_text(root.join(f)).ok());
+            text.as_deref().map_or(Vec::new(), |t| {
+                t.split('\n')
+                    .skip(from - 1)
+                    .take(to + 1 - from)
+                    .map(|l| l.trim_end_matches('\r').to_owned())
+                    .collect()
+            })
+        };
+        let combined_diags = self.all_panel_diagnostics();
+        let b = pane::Build {
+            diagnostics: &combined_diags,
+            building: self.build.building,
+            note: self.build.note.as_deref(),
+            failed: self.build.failed(),
+            status: self.build.outcome.as_ref().map(|o| o.status),
+            id: self.build.seq,
+            problems_open: true,
+            raw_log_open: self.build.raw_log_open,
+            source: &source,
+        };
+        let actions = self.pane.problems.show_sidebar(ui, p, &b);
+        self.handle_pane_actions(ui.ctx(), actions, backend, settings)
+    }
+
     /// The PDF pane, and what its buttons ask for.
     pub fn pdf_pane(
         &mut self,
@@ -546,6 +598,9 @@ impl Workspace {
             })
         };
         let combined_diags = self.all_panel_diagnostics();
+        let problems_open = settings.sidebar_open
+            && !self.focus_mode
+            && self.side_panel == super::panels::SidePanel::Problems;
         let b = pane::Build {
             diagnostics: &combined_diags,
             building: self.build.building,
@@ -553,16 +608,38 @@ impl Workspace {
             failed: self.build.failed(),
             status: self.build.outcome.as_ref().map(|o| o.status),
             id: self.build.seq,
-            logs_open: self.build.logs_open,
+            problems_open,
+            raw_log_open: self.build.raw_log_open,
             source: &source,
         };
         let actions = self.pane.show(ui, p, &b);
+        self.handle_pane_actions(ui.ctx(), actions, backend, settings)
+    }
+
+    fn handle_pane_actions(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        actions: Vec<PaneAction>,
+        backend: &Backend,
+        settings: &mut Settings,
+    ) -> bool {
         let mut settings_changed = false;
         for a in actions {
             match a {
-                PaneAction::Logs(open) => {
-                    self.build.logs_open = open;
-                    if !open && !self.pane.has_pdf() {
+                PaneAction::Problems => {
+                    if self.toggle_side(super::panels::SidePanel::Problems, backend, settings) {
+                        settings_changed = true;
+                    }
+                }
+                PaneAction::RawLog(open) => {
+                    self.build.raw_log_open = open;
+                    if open {
+                        self.history.clear_viewer();
+                        if settings.layout == "editor" {
+                            settings.layout = "split".into();
+                            settings_changed = true;
+                        }
+                    } else if !self.pane.has_pdf() {
                         let seq = self.build.seq;
                         self.spawn(backend, move |shell| Msg::Pdf {
                             seq,
@@ -584,7 +661,7 @@ impl Workspace {
                 PaneAction::OpenExternally => {
                     self.spawn(backend, |shell| Msg::Done(shell.open_pdf_externally()));
                 }
-                PaneAction::Present => self.present(ui.ctx()),
+                PaneAction::Present => self.present(ctx),
                 PaneAction::Layout(l) => {
                     settings.pdf_layout = l.into();
                     settings_changed = true;
@@ -672,9 +749,9 @@ impl Workspace {
                         self.build.diagnostics = o.diagnostics.clone();
                         self.build.diag_gen += 1;
                         self.build.finished_at = Some(std::time::SystemTime::now());
-                        // Like Overleaf: a failed build with no PDF opens the logs.
+                        // A failed build with no PDF opens Problems in the left sidebar.
                         if matches!(o.status, Status::Failed | Status::Timeout) && o.pdf.is_none() && self.build.errors() > 0 {
-                            self.build.logs_open = true;
+                            self.build.want_problems = true;
                         }
                         let wrote = o.pdf.is_some();
                         let ok = o.status == Status::Success;
@@ -736,7 +813,7 @@ impl Workspace {
                             fix: None,
                         }];
                         self.build.diag_gen += 1;
-                        self.build.logs_open = true;
+                        self.build.want_problems = true;
                         if let Some((_, what)) = export {
                             self.offer_stale_export(what);
                         }
@@ -751,7 +828,8 @@ impl Workspace {
             Msg::Pdf { .. } => {}
             Msg::Synced(Ok(boxes)) => {
                 if let Some(b) = boxes.first() {
-                    self.build.logs_open = false;
+                    self.build.raw_log_open = false;
+                    self.history.clear_viewer();
                     let ctx = backend.ctx().clone();
                     self.pane.view.show_box(&ctx, b.page as usize, b.h as f32, b.v as f32, b.width as f32, b.height as f32);
                 } else {
@@ -861,7 +939,7 @@ impl Workspace {
             NoticeAction::DraftOff => self.set_config(backend, settings, |c| c.draft = false),
             NoticeAction::LinkZotero => self.link_zotero(backend, settings),
             NoticeAction::UndoFiles => self.undo_files(backend, settings),
-            NoticeAction::ProjectSettings => self.open_project_settings(),
+            NoticeAction::ProjectSettings => self.open_project_trust_settings(),
             NoticeAction::PasteAsText(path, from, table, text) => {
                 if let Some(ed) = self.editors.get_mut(&path) {
                     let to = from + table.chars().count();

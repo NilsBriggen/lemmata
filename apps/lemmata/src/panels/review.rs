@@ -1,10 +1,11 @@
 //! Review comments (comments/model.ts and ReviewPanel.svelte): threads anchored to a quoted piece
 //! of text in a file, kept in `.lemmata/comments.json`, and the panel that lists them.
 
-use super::bar;
 use crate::theme::{self, Palette};
 use crate::widgets::{self, Button, Kind, Size};
-use eframe::egui::{self, FontId, Margin, Stroke, Ui, vec2};
+use eframe::egui::{
+    self, Color32, CornerRadius, FontId, Margin, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -152,7 +153,6 @@ pub enum Action {
     Reply(String, String),
     Resolve(String, bool),
     Delete(String),
-    Close,
 }
 
 #[derive(Default)]
@@ -189,181 +189,429 @@ impl Review {
     ) -> Vec<Action> {
         let mut out = Vec::new();
         let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, 0, p.surface_2);
-        let open = threads.iter().filter(|t| !t.resolved).count();
-        let body = bar(ui, p, "Comments", "Close comments", &mut |ui| {
-            ui.label(
-                egui::RichText::new(format!("{open} open"))
-                    .size(12.0)
-                    .color(p.muted),
+        ui.painter().rect_filled(rect, 0, p.app);
+        let open_count = threads.iter().filter(|t| !t.resolved).count();
+
+        // 32 px quiet sidebar header with compact Open / Resolved pill switch.
+        let head = Rect::from_min_size(rect.min, vec2(rect.width(), 32.0));
+        let mut hjob = egui::text::LayoutJob::default();
+        hjob.append(
+            "COMMENTS",
+            0.0,
+            egui::TextFormat {
+                font_id: FontId::new(11.0, theme::font::sans_600()),
+                color: p.faint,
+                extra_letter_spacing: 0.77,
+                ..Default::default()
+            },
+        );
+        let mut hleft = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    pos2(head.left() + 12.0, head.top()),
+                    pos2(head.left() + 92.0, head.bottom()),
+                ))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        hleft.label(hjob);
+        let mut hright = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    pos2(head.left() + 92.0, head.top()),
+                    pos2(head.right() - 8.0, head.bottom()),
+                ))
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        // Compact pill switch: "Open N" | "Resolved".
+        let open_lbl = format!("Open {open_count}");
+        let res_lbl = "Resolved";
+        let font = FontId::new(11.5, theme::font::sans_500());
+        let ow = hright
+            .painter()
+            .layout_no_wrap(open_lbl.clone(), font.clone(), p.ink)
+            .size()
+            .x
+            + 16.0;
+        let rw = hright
+            .painter()
+            .layout_no_wrap(res_lbl.into(), font.clone(), p.ink)
+            .size()
+            .x
+            + 16.0;
+        let (track, _) = hright.allocate_exact_size(vec2(ow + rw + 4.0, 24.0), Sense::hover());
+        hright
+            .painter()
+            .rect_filled(track, CornerRadius::same(7), p.surface_3);
+        let open_rect = Rect::from_min_size(track.min + vec2(2.0, 2.0), vec2(ow, 20.0));
+        let res_rect =
+            Rect::from_min_size(pos2(open_rect.right(), track.top() + 2.0), vec2(rw, 20.0));
+        for (i, (r, lbl, on)) in [
+            (open_rect, open_lbl.as_str(), !self.show_resolved),
+            (res_rect, res_lbl, self.show_resolved),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let resp = hright
+                .interact(r, hright.scope_id().with(("cm-tab", i)), Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, lbl));
+            if on {
+                hright
+                    .painter()
+                    .add(p.shadow_card.as_shape(r, CornerRadius::same(5)));
+                hright.painter().rect(
+                    r,
+                    CornerRadius::same(5),
+                    p.surface,
+                    Stroke::new(1.0, p.card_hairline),
+                    StrokeKind::Inside,
+                );
+            }
+            hright.painter().text(
+                r.center(),
+                egui::Align2::CENTER_CENTER,
+                lbl,
+                font.clone(),
+                if on { p.ink } else { p.muted },
             );
-            ui.add_space(10.0);
-            widgets::checkbox(ui, p, &mut self.show_resolved, "Show resolved");
-        });
-        if body.closed {
-            self.confirm_delete = None;
-            out.push(Action::Close);
+            if resp.clicked() {
+                self.show_resolved = i == 1;
+            }
         }
+
         if draft.is_none() {
             self.draft_focused = false;
         }
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(body.rest));
+        let body_rect = Rect::from_min_max(pos2(rect.left(), head.bottom()), rect.max);
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(body_rect));
         let mut shown: Vec<&Thread> = threads
             .iter()
-            .filter(|t| self.show_resolved || !t.resolved)
+            .filter(|t| {
+                if self.show_resolved {
+                    t.resolved
+                } else {
+                    !t.resolved
+                }
+            })
             .collect();
         shown.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
-        egui::ScrollArea::vertical().id_salt("review").auto_shrink([false, false]).show(&mut c, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let item = |ui: &mut Ui, fill: egui::Color32, add: &mut dyn FnMut(&mut Ui)| {
-                let r = egui::Frame::new().fill(fill).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                    add(ui);
-                });
-                ui.painter().hline(r.response.rect.x_range(), r.response.rect.bottom() - 0.5, Stroke::new(1.0, p.border));
-            };
-            let quote = |ui: &mut Ui, q: &str| {
-                let r = egui::Frame::NONE.inner_margin(Margin { left: 11, right: 8, top: 2, bottom: 2 }).show(ui, |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(excerpt(q)).font(FontId::monospace(12.0)).color(p.ink)).wrap());
-                });
-                let b = r.response.rect;
-                ui.painter().vline(b.left() + 1.5, b.y_range(), Stroke::new(3.0, egui::Color32::from_rgba_unmultiplied(220, 160, 20, 179)));
-            };
-            if let Some((file, line, q)) = draft {
-                let mut add = false;
-                let mut cancel = false;
-                item(ui, p.surface, &mut |ui| {
-                    ui.label(egui::RichText::new(format!("{file}:{line}")).font(FontId::monospace(11.5)).color(p.muted));
-                    quote(ui, q);
-                    let r = widgets::text_area(ui, p, &mut self.text, "Write a comment", 3, true);
-                    if !self.draft_focused {
-                        r.request_focus();
-                        self.draft_focused = true;
-                    }
-                    if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command) {
-                        add = true;
-                    }
-                    if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        cancel = true;
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        if Button::new("Comment").kind(Kind::Primary).size(Size::Sm).enabled(!self.text.trim().is_empty()).show(ui, p).clicked() {
-                            add = true;
-                        }
-                        if Button::new("Cancel").size(Size::Sm).show(ui, p).clicked() {
-                            cancel = true;
-                        }
-                    });
-                });
-                if add && !self.text.trim().is_empty() {
-                    out.push(Action::Add(self.text.trim().to_owned()));
-                    self.text.clear();
-                }
-                if cancel {
-                    self.text.clear();
-                    out.push(Action::CancelDraft);
-                }
-            }
-            if shown.is_empty() && draft.is_none() {
-                egui::Frame::NONE.inner_margin(Margin::symmetric(14, 12)).show(ui, |ui| {
-                    let t = if threads.is_empty() {
-                        "No comments yet. Select some text and choose Add comment (in the editor toolbar or the command palette)."
-                    } else {
-                        "No open comments."
-                    };
-                    ui.add(egui::Label::new(egui::RichText::new(t).color(p.muted)).wrap());
-                });
-            }
-            for t in shown {
-                let is_active = active == Some(t.id.as_str());
-                let fill = if is_active { p.accent_soft } else { p.surface };
-                item(ui, fill, &mut |ui| {
-                    if t.resolved {
-                        ui.set_opacity(0.7);
-                    }
-                    let head = ui
-                        .scope(|ui| {
-                            ui.label(egui::RichText::new(format!("{}:{}", t.file, t.line)).font(FontId::monospace(11.5)).color(p.muted));
-                            quote(ui, &t.quote);
-                        })
-                        .response;
-                    let head = ui.interact(head.rect, ui.scope_id().with(("thread", &t.id)), egui::Sense::click()).on_hover_text("Show in the editor");
-                    if head.clicked() {
-                        self.confirm_delete = None;
-                        out.push(Action::Select(t.clone()));
-                    }
-                    ui.add(egui::Label::new(egui::RichText::new(&t.body).color(p.ink)).wrap());
-                    if t.created > 0.0 {
-                        ui.label(egui::RichText::new(crate::when::medium_ms(t.created)).size(11.5).color(p.muted));
-                    }
-                    for r in &t.replies {
-                        let fr = egui::Frame::NONE.inner_margin(Margin { left: 20, right: 0, top: 0, bottom: 0 }).show(ui, |ui| {
-                            ui.add(egui::Label::new(egui::RichText::new(&r.body).color(p.ink)).wrap());
-                            if r.created > 0.0 {
-                                ui.label(egui::RichText::new(crate::when::medium_ms(r.created)).size(11.5).color(p.muted));
-                            }
-                        });
-                        let b = fr.response.rect;
-                        ui.painter().vline(b.left() + 13.0, b.y_range(), Stroke::new(2.0, p.border));
-                    }
-                    if is_active && !t.resolved {
-                        let reply = self.replies.entry(t.id.clone()).or_default();
-                        let mut submit_reply = false;
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            let bw = 58.0;
-                            let iw = (ui.available_width() - bw - 6.0).max(80.0);
-                            let r = ui
-                                .allocate_ui(vec2(iw, 32.0), |ui| {
-                                    widgets::text_input(ui, p, reply, "Reply", false)
+        egui::ScrollArea::vertical()
+            .id_salt("review")
+            .auto_shrink([false, false])
+            .show(&mut c, |ui| {
+                egui::Frame::NONE
+                    .inner_margin(Margin {
+                        left: 10,
+                        right: 10,
+                        top: 6,
+                        bottom: 14,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 8.0;
+                        let card =
+                            |ui: &mut Ui, is_active: bool, add: &mut dyn FnMut(&mut Ui)| {
+                                let stroke = if is_active {
+                                    Stroke::new(2.0, p.accent)
+                                } else {
+                                    Stroke::new(1.0, p.card_hairline)
+                                };
+                                egui::Frame::new()
+                                    .fill(p.surface)
+                                    .stroke(stroke)
+                                    .corner_radius(theme::R_MD)
+                                    .shadow(p.shadow_card)
+                                    .inner_margin(Margin::symmetric(11, 10))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.spacing_mut().item_spacing.y = 6.0;
+                                        add(ui);
+                                    });
+                            };
+                        let quote = |ui: &mut Ui, q: &str| {
+                            let r = egui::Frame::NONE
+                                .inner_margin(Margin {
+                                    left: 9,
+                                    right: 4,
+                                    top: 1,
+                                    bottom: 1,
                                 })
-                                .inner;
-                            ui.ctx().accesskit_node_builder(r.id, |n| n.set_label("Reply"));
-                            if r.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                && !reply.trim().is_empty()
-                            {
-                                submit_reply = true;
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(excerpt(q))
+                                                .size(12.0)
+                                                .italics()
+                                                .color(p.muted),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
+                            let b = r.response.rect;
+                            ui.painter().vline(
+                                b.left() + 1.0,
+                                b.y_range(),
+                                Stroke::new(2.0, p.warn),
+                            );
+                        };
+                        if let Some((file, line, q)) = draft {
+                            let mut add = false;
+                            let mut cancel = false;
+                            card(ui, true, &mut |ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("{file}:{line}"))
+                                        .font(FontId::monospace(11.0))
+                                        .color(p.faint),
+                                );
+                                quote(ui, q);
+                                let r = widgets::text_area(
+                                    ui,
+                                    p,
+                                    &mut self.text,
+                                    "Write a comment",
+                                    3,
+                                    true,
+                                );
+                                if !self.draft_focused {
+                                    r.request_focus();
+                                    self.draft_focused = true;
+                                }
+                                if r.has_focus()
+                                    && ui.input(|i| {
+                                        i.key_pressed(egui::Key::Enter) && i.modifiers.command
+                                    })
+                                {
+                                    add = true;
+                                }
+                                if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                    cancel = true;
+                                }
+                                ui.allocate_ui_with_layout(
+                                    vec2(ui.available_width(), 28.0),
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        if Button::new("Comment")
+                                            .kind(Kind::Primary)
+                                            .size(Size::Sm)
+                                            .enabled(!self.text.trim().is_empty())
+                                            .show(ui, p)
+                                            .clicked()
+                                        {
+                                            add = true;
+                                        }
+                                        if Button::new("Cancel").size(Size::Sm).show(ui, p).clicked()
+                                        {
+                                            cancel = true;
+                                        }
+                                    },
+                                );
+                            });
+                            if add && !self.text.trim().is_empty() {
+                                out.push(Action::Add(self.text.trim().to_owned()));
+                                self.text.clear();
                             }
-                            if Button::new("Reply")
-                                .kind(Kind::Primary)
-                                .size(Size::Sm)
-                                .enabled(!reply.trim().is_empty())
-                                .show(ui, p)
-                                .clicked()
-                            {
-                                submit_reply = true;
+                            if cancel {
+                                self.text.clear();
+                                out.push(Action::CancelDraft);
                             }
-                        });
-                        if submit_reply {
-                            out.push(Action::Reply(t.id.clone(), reply.trim().to_owned()));
-                            reply.clear();
                         }
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        if self.confirm_delete.as_deref() == Some(t.id.as_str()) {
-                            if Button::new("Delete for good").size(Size::Sm).fill(p.error).ink(egui::Color32::WHITE).show(ui, p).clicked() {
-                                self.confirm_delete = None;
-                                out.push(Action::Delete(t.id.clone()));
-                            }
-                            if Button::new("Cancel").size(Size::Sm).show(ui, p).clicked() {
-                                self.confirm_delete = None;
-                            }
-                        } else if Button::new("Delete").kind(Kind::Ghost).size(Size::Sm).show(ui, p).clicked() {
-                            self.confirm_delete = Some(t.id.clone());
+                        if shown.is_empty() && draft.is_none() {
+                            egui::Frame::NONE
+                                .inner_margin(Margin::symmetric(4, 10))
+                                .show(ui, |ui| {
+                                    let t = if threads.is_empty() {
+                                        "No comments yet. Select some text and choose Add comment (in the editor toolbar or the command palette)."
+                                    } else if self.show_resolved {
+                                        "No resolved comments."
+                                    } else {
+                                        "No open comments."
+                                    };
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(t).size(12.5).color(p.muted),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
                         }
-                        if Button::new(if t.resolved { "Reopen" } else { "Resolve" }).size(Size::Sm).show(ui, p).clicked() {
-                            out.push(Action::Resolve(t.id.clone(), !t.resolved));
+                        for t in shown {
+                            let is_active = active == Some(t.id.as_str());
+                            card(ui, is_active, &mut |ui| {
+                                if t.resolved {
+                                    ui.set_opacity(0.75);
+                                }
+                                let head = ui
+                                    .scope(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{}:{}",
+                                                    t.file, t.line
+                                                ))
+                                                .font(FontId::monospace(11.0))
+                                                .color(p.faint),
+                                            );
+                                            if t.created > 0.0 {
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.label(
+                                                            egui::RichText::new(
+                                                                crate::when::medium_ms(t.created),
+                                                            )
+                                                            .size(11.0)
+                                                            .color(p.faint),
+                                                        );
+                                                    },
+                                                );
+                                            }
+                                        });
+                                        quote(ui, &t.quote);
+                                    })
+                                    .response;
+                                let head = ui
+                                    .interact(
+                                        head.rect,
+                                        ui.scope_id().with(("thread", &t.id)),
+                                        Sense::click(),
+                                    )
+                                    .on_hover_text("Show in the editor")
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                                if head.clicked() {
+                                    self.confirm_delete = None;
+                                    out.push(Action::Select(t.clone()));
+                                }
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&t.body).size(12.5).color(p.ink),
+                                    )
+                                    .wrap(),
+                                );
+                                for r in &t.replies {
+                                    let fr = egui::Frame::NONE
+                                        .inner_margin(Margin {
+                                            left: 12,
+                                            right: 0,
+                                            top: 2,
+                                            bottom: 2,
+                                        })
+                                        .show(ui, |ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(&r.body)
+                                                        .size(12.5)
+                                                        .color(p.ink),
+                                                )
+                                                .wrap(),
+                                            );
+                                            if r.created > 0.0 {
+                                                ui.label(
+                                                    egui::RichText::new(crate::when::medium_ms(
+                                                        r.created,
+                                                    ))
+                                                    .size(11.0)
+                                                    .color(p.faint),
+                                                );
+                                            }
+                                        });
+                                    let b = fr.response.rect;
+                                    ui.painter().vline(
+                                        b.left() + 4.0,
+                                        b.y_range(),
+                                        Stroke::new(2.0, p.border),
+                                    );
+                                }
+                                if is_active && !t.resolved {
+                                    let reply = self.replies.entry(t.id.clone()).or_default();
+                                    let mut submit_reply = false;
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        let bw = 56.0;
+                                        let iw = (ui.available_width() - bw - 6.0).max(80.0);
+                                        let r = ui
+                                            .allocate_ui(vec2(iw, 30.0), |ui| {
+                                                widgets::text_input(ui, p, reply, "Reply", false)
+                                            })
+                                            .inner;
+                                        ui.ctx().accesskit_node_builder(r.id, |n| {
+                                            n.set_label("Reply")
+                                        });
+                                        if r.lost_focus()
+                                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                            && !reply.trim().is_empty()
+                                        {
+                                            submit_reply = true;
+                                        }
+                                        if Button::new("Reply")
+                                            .kind(Kind::Primary)
+                                            .size(Size::Sm)
+                                            .enabled(!reply.trim().is_empty())
+                                            .show(ui, p)
+                                            .clicked()
+                                        {
+                                            submit_reply = true;
+                                        }
+                                    });
+                                    if submit_reply {
+                                        out.push(Action::Reply(
+                                            t.id.clone(),
+                                            reply.trim().to_owned(),
+                                        ));
+                                        reply.clear();
+                                    }
+                                }
+                                ui.allocate_ui_with_layout(
+                                    vec2(ui.available_width(), 28.0),
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        if self.confirm_delete.as_deref() == Some(t.id.as_str()) {
+                                            if Button::new("Delete for good")
+                                                .size(Size::Sm)
+                                                .fill(p.error)
+                                                .ink(Color32::WHITE)
+                                                .show(ui, p)
+                                                .clicked()
+                                            {
+                                                self.confirm_delete = None;
+                                                out.push(Action::Delete(t.id.clone()));
+                                            }
+                                            if Button::new("Cancel")
+                                                .size(Size::Sm)
+                                                .show(ui, p)
+                                                .clicked()
+                                            {
+                                                self.confirm_delete = None;
+                                            }
+                                        } else if Button::new("Delete")
+                                            .kind(Kind::Ghost)
+                                            .size(Size::Sm)
+                                            .show(ui, p)
+                                            .clicked()
+                                        {
+                                            self.confirm_delete = Some(t.id.clone());
+                                        }
+                                        if Button::new(if t.resolved {
+                                            "Reopen"
+                                        } else {
+                                            "Resolve"
+                                        })
+                                        .size(Size::Sm)
+                                        .show(ui, p)
+                                        .clicked()
+                                        {
+                                            out.push(Action::Resolve(t.id.clone(), !t.resolved));
+                                        }
+                                    },
+                                );
+                            });
                         }
                     });
-                });
-            }
-            ui.add_space(vec2(0.0, 1.0).y);
-        });
-        let _ = theme::R;
+            });
         out
     }
 }

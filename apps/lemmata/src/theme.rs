@@ -1,5 +1,5 @@
-//! Lemmata's look, ported token for token from the Svelte app's `app.css`: Overleaf's layout (dark
-//! toolbar and file sidebar, light editor, grey PDF ground) in the identity of `docs/pitch.html`.
+//! Lemmata's visual tokens: a quiet stone ground (`app`) carrying elevated white/dark-slate
+//! document cards (`surface`), paired with Lemmata blue (`accent`) and WCAG AA text contrast.
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Shadow,
@@ -21,20 +21,12 @@ pub struct Palette {
     pub muted: Color32,
     pub faint: Color32,
 
-    pub chrome: Color32,
-    pub chrome_2: Color32,
-    pub chrome_3: Color32,
-    pub chrome_border: Color32,
-    pub chrome_ink: Color32,
-    pub chrome_muted: Color32,
-    pub chrome_hover: Color32,
-    pub chrome_active: Color32,
-
     pub accent: Color32,
     pub accent_hover: Color32,
     pub accent_ink: Color32,
     pub accent_soft: Color32,
-    pub accent_on_dark: Color32,
+    /// Small accent text on `accent_soft` and quiet surfaces (4.5:1+ in both themes).
+    pub accent_text: Color32,
 
     pub error: Color32,
     pub error_soft: Color32,
@@ -47,7 +39,16 @@ pub struct Palette {
     pub gutter: Color32,
     pub pdf_ground: Color32,
     pub atom: Color32,
+    pub code_comment: Color32,
 
+    /// Selected rail button, sidebar row and segment fill.
+    pub rail_active: Color32,
+    /// Editor caret line background.
+    pub line_hl: Color32,
+    /// Subtle 1 px hairline around cards, active rows and inputs.
+    pub card_hairline: Color32,
+
+    pub shadow_card: Shadow,
     pub shadow: Shadow,
     pub shadow_lg: Shadow,
     pub dark: bool,
@@ -76,46 +77,43 @@ const fn shadow(y: i8, blur: u8, spread: i8, color: Color32) -> Shadow {
 }
 
 pub const LIGHT: Palette = Palette {
-    app: hex(0xe8ebee),
+    app: hex(0xeceef1),
     surface: hex(0xffffff),
     surface_2: hex(0xf6f7f8),
-    surface_3: hex(0xeef0f2),
+    surface_3: hex(0xe4e7eb),
     border: hex(0xdfe3e7),
     border_strong: hex(0xc9cfd5),
     ink: hex(0x18212b),
     ink_2: hex(0x3a4652),
-    muted: hex(0x5c6873),
-    faint: hex(0x616b76),
-
-    chrome: hex(0x1d2630),
-    chrome_2: hex(0x232e39),
-    chrome_3: hex(0x2b3743),
-    chrome_border: hex(0x33404d),
-    chrome_ink: hex(0xdbe3ea),
-    chrome_muted: hex(0x9aa8b6),
-    chrome_hover: rgba(255, 255, 255, 0.06),
-    chrome_active: rgba(111, 179, 227, 0.16),
+    muted: hex(0x5a6671),
+    faint: hex(0x5c6670),
 
     accent: hex(0x2a71a4),
     accent_hover: hex(0x2d6b9b),
     accent_ink: hex(0xffffff),
     accent_soft: hex(0xe4f0f8),
-    accent_on_dark: hex(0x7cbbe6),
+    accent_text: hex(0x2a71a4),
 
-    error: hex(0xc4472f),
+    error: hex(0xb83c24),
     error_soft: hex(0xfbece8),
-    warn: hex(0x9a6b0a),
+    warn: hex(0x8a5f08),
     warn_soft: hex(0xfbf3e1),
-    ok: hex(0x2e7d55),
+    ok: hex(0x2a7550),
     ok_soft: hex(0xe5f3eb),
 
     code_bg: hex(0xffffff),
-    gutter: hex(0xf6f7f8),
-    pdf_ground: hex(0xc8cdd2),
+    gutter: hex(0xffffff),
+    pdf_ground: hex(0xe1e5e9),
     atom: hex(0x9a5b14),
+    code_comment: hex(0x5f6b76),
 
-    shadow: shadow(8, 24, -8, rgba(16, 24, 32, 0.25)),
-    shadow_lg: shadow(24, 60, -20, rgba(16, 24, 32, 0.45)),
+    rail_active: hex(0xffffff),
+    line_hl: hex(0xf4f6f8),
+    card_hairline: rgba(16, 24, 32, 0.08),
+
+    shadow_card: shadow(1, 2, 0, rgba(16, 24, 32, 0.06)),
+    shadow: shadow(8, 24, -8, rgba(16, 24, 32, 0.18)),
+    shadow_lg: shadow(24, 60, -20, rgba(16, 24, 32, 0.35)),
     dark: false,
 };
 
@@ -123,28 +121,19 @@ pub const DARK: Palette = Palette {
     app: hex(0x0f1418),
     surface: hex(0x171d23),
     surface_2: hex(0x1b2229),
-    surface_3: hex(0x222a32),
+    surface_3: hex(0x232b33),
     border: hex(0x2a333c),
     border_strong: hex(0x38434e),
     ink: hex(0xe2e8ed),
     ink_2: hex(0xc3ccd4),
     muted: hex(0x93a0ac),
-    faint: hex(0x86919b),
-
-    chrome: hex(0x12181e),
-    chrome_2: hex(0x161d24),
-    chrome_3: hex(0x1e262e),
-    chrome_border: hex(0x26303a),
-    chrome_ink: LIGHT.chrome_ink,
-    chrome_muted: LIGHT.chrome_muted,
-    chrome_hover: LIGHT.chrome_hover,
-    chrome_active: LIGHT.chrome_active,
+    faint: hex(0x8a95a0),
 
     accent: hex(0x4a97cf),
     accent_hover: hex(0x5aa5db),
     accent_ink: hex(0x0b1620),
     accent_soft: hex(0x1b2e3e),
-    accent_on_dark: hex(0x7cbbe6),
+    accent_text: hex(0x7cbbe6),
 
     error: hex(0xec7f69),
     error_soft: hex(0x3a211c),
@@ -157,7 +146,13 @@ pub const DARK: Palette = Palette {
     gutter: hex(0x171d23),
     pdf_ground: hex(0x0b0f13),
     atom: hex(0xe0a85a),
+    code_comment: hex(0x8a95a0),
 
+    rail_active: hex(0x1e262e),
+    line_hl: hex(0x1c232a),
+    card_hairline: rgba(255, 255, 255, 0.06),
+
+    shadow_card: shadow(1, 2, 0, rgba(0, 0, 0, 0.40)),
     shadow: shadow(8, 24, -8, rgba(0, 0, 0, 0.6)),
     shadow_lg: shadow(24, 60, -20, rgba(0, 0, 0, 0.75)),
     dark: true,
@@ -168,7 +163,9 @@ pub const SHADOW_SM: Shadow = shadow(1, 2, 0, rgba(16, 24, 32, 0.08));
 
 pub const R_SM: u8 = 4;
 pub const R: u8 = 6;
+pub const R_MD: u8 = 8;
 pub const R_LG: u8 = 10;
+pub const R_XL: u8 = 14;
 
 /// The 0.12 s hover and pop transitions.
 pub const EASE_SECS: f32 = 0.12;
@@ -540,6 +537,7 @@ pub fn apply(ctx: &egui::Context, p: &Palette) {
     };
     ctx.set_theme(theme);
     ctx.set_visuals_of(theme, visuals);
+    ctx.all_styles_mut(|s| s.interaction.selectable_labels = false);
     ctx.style_mut_of(theme, |s| {
         // Labels are the interface's text, not a document: no I-beam over them, as in the
         // Svelte app. Text worth copying turns selection back on where it is drawn.
@@ -568,17 +566,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tokens_match_app_css() {
+    fn tokens_match_redesign_spec() {
+        assert_eq!(LIGHT.app, Color32::from_rgb(0xec, 0xee, 0xf1));
         assert_eq!(LIGHT.accent, Color32::from_rgb(0x2a, 0x71, 0xa4));
+        assert_eq!(LIGHT.error, Color32::from_rgb(0xb8, 0x3c, 0x24));
         assert_eq!(DARK.app, Color32::from_rgb(0x0f, 0x14, 0x18));
-        // rgba(255,255,255,.06) rounds to alpha 15.
-        assert_eq!(LIGHT.chrome_hover.a(), 15);
-        assert_eq!(DARK.chrome_ink, LIGHT.chrome_ink);
+        assert_eq!(DARK.rail_active, Color32::from_rgb(0x1e, 0x26, 0x2e));
+        assert_eq!(DARK.accent_text, Color32::from_rgb(0x7c, 0xbb, 0xe6));
     }
 
-    /// WCAG contrast of the muted chrome text (12 px) on the chrome's raised surfaces.
+    /// WCAG AA contrast (>= 4.5:1) for every foreground/background text pair in both palettes.
     #[test]
-    fn muted_chrome_text_is_readable_on_the_chrome_surfaces() {
+    fn every_redesign_text_pair_meets_wcag_aa() {
         let lum = |c: Color32| {
             let f = |v: u8| {
                 let v = f64::from(v) / 255.0;
@@ -590,10 +589,49 @@ mod tests {
             };
             0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
         };
-        for p in [&LIGHT, &DARK] {
-            let (a, b) = (lum(p.chrome_muted), lum(p.chrome_3));
-            let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
-            assert!(ratio >= 4.5, "{ratio}");
+        let ratio = |a: Color32, b: Color32| {
+            let (la, lb) = (lum(a), lum(b));
+            (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+        };
+        for (theme, p) in [("light", &LIGHT), ("dark", &DARK)] {
+            let pairs: [(&str, Color32, &str, Color32); 32] = [
+                ("ink", p.ink, "app", p.app),
+                ("ink", p.ink, "surface", p.surface),
+                ("ink", p.ink, "surface_2", p.surface_2),
+                ("ink", p.ink, "surface_3", p.surface_3),
+                ("ink", p.ink, "rail_active", p.rail_active),
+                ("ink_2", p.ink_2, "app", p.app),
+                ("ink_2", p.ink_2, "surface", p.surface),
+                ("ink_2", p.ink_2, "surface_2", p.surface_2),
+                ("ink_2", p.ink_2, "rail_active", p.rail_active),
+                ("muted", p.muted, "app", p.app),
+                ("muted", p.muted, "surface", p.surface),
+                ("muted", p.muted, "surface_2", p.surface_2),
+                ("muted", p.muted, "rail_active", p.rail_active),
+                ("faint", p.faint, "app", p.app),
+                ("faint", p.faint, "surface", p.surface),
+                ("faint", p.faint, "surface_2", p.surface_2),
+                ("faint", p.faint, "surface_3", p.surface_3),
+                ("faint", p.faint, "rail_active", p.rail_active),
+                ("ok", p.ok, "app", p.app),
+                ("ok", p.ok, "surface", p.surface),
+                ("ok", p.ok, "ok_soft", p.ok_soft),
+                ("warn", p.warn, "warn_soft", p.warn_soft),
+                ("warn", p.warn, "surface", p.surface),
+                ("error", p.error, "error_soft", p.error_soft),
+                ("error", p.error, "surface", p.surface),
+                ("error", p.error, "app", p.app),
+                ("accent_text", p.accent_text, "accent_soft", p.accent_soft),
+                ("accent_text", p.accent_text, "surface", p.surface),
+                ("accent_text", p.accent_text, "app", p.app),
+                ("accent_ink", p.accent_ink, "accent", p.accent),
+                ("accent_ink", p.accent_ink, "error", p.error),
+                ("code_comment", p.code_comment, "line_hl", p.line_hl),
+            ];
+            for (fg_n, fg, bg_n, bg) in pairs {
+                let r = ratio(fg, bg);
+                assert!(r >= 4.5, "{theme}: {fg_n} on {bg_n} = {r:.2}:1 (< 4.5)");
+            }
         }
     }
 }

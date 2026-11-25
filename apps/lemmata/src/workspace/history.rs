@@ -5,10 +5,10 @@
 use super::{Tone, Workspace};
 use crate::backend::{Backend, Msg};
 use crate::icons;
-use crate::panels::{bar, hunks};
+use crate::panels::hunks;
 use crate::theme::{self, Palette};
 use crate::widgets::{self, Button, Kind, Size};
-use eframe::egui::{self, Color32, FontId, Margin, Stroke, Ui, vec2};
+use eframe::egui::{self, Color32, CornerRadius, FontId, Margin, Rect, Stroke, Ui, pos2, vec2};
 use lemmata_history::{Change, Snapshot};
 use lemmata_shell::history::HistoryStatus;
 use std::collections::HashSet;
@@ -143,6 +143,15 @@ fn diff_rows(then: &str, now: &str) -> DiffRows {
 }
 
 impl History {
+    pub fn has_viewer(&self) -> bool {
+        self.diff.is_some() || self.review.is_some()
+    }
+
+    pub fn clear_viewer(&mut self) {
+        self.diff = None;
+        self.review = None;
+    }
+
     pub(super) fn remap(&mut self, from: &str, to: &str) {
         let moved = |p: &str| super::files::remap(p, from, to);
         if let Some((_, p, _, _, _)) = &mut self.diff {
@@ -366,7 +375,7 @@ impl Workspace {
         }
     }
 
-    pub(super) fn history_panel(
+    pub(super) fn show_history_viewer(
         &mut self,
         ui: &mut Ui,
         p: &Palette,
@@ -374,49 +383,77 @@ impl Workspace {
         settings: &mut crate::store::Settings,
     ) {
         let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, 0, p.surface_2);
+        ui.painter().rect_filled(rect, 0, p.surface);
+        if self.history.diff.is_some() {
+            self.history_diff(ui, p, backend, settings);
+        } else if self.history.review.is_some() {
+            self.history_review(ui, p, backend, settings);
+        }
+    }
+
+    pub(super) fn history_panel(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        backend: &Backend,
+        settings: &mut crate::store::Settings,
+    ) -> bool {
+        let mut settings_changed = false;
+        let rect = ui.max_rect();
+        ui.painter().rect_filled(rect, 0, p.app);
         let can_snap = !matches!(self.history.status, Some(HistoryStatus::NotARepo) | None);
         let mut snap = false;
-        let b = bar(ui, p, "History", "Close history", &mut |ui| {
-            ui.add_space(4.0);
-            if can_snap
-                && Button::new("Save a snapshot")
+        let rest = super::panels::side_head(ui, p, "History", |ui| {
+            if can_snap {
+                let btn = Button::new("Snapshot")
                     .with_icon(icons::PLUS)
                     .icon_size(13.0)
                     .kind(Kind::Ghost)
                     .size(Size::Sm)
-                    .show(ui, p)
+                    .show(ui, p);
+                ui.ctx()
+                    .accesskit_node_builder(btn.id, |n| n.set_label("Save a snapshot"));
+                if btn
+                    .on_hover_text("Save a snapshot (Ctrl+Shift+S)")
                     .clicked()
-            {
-                snap = true;
+                {
+                    snap = true;
+                }
             }
         });
-        if b.closed {
-            self.panel = None;
-        }
         if snap {
             self.history.label = Some(String::new());
         }
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(b.rest));
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(rest));
         let ui = &mut c;
         if let Some(e) = self.history.error.clone() {
             egui::Frame::NONE
-                .inner_margin(Margin::symmetric(14, 8))
+                .inner_margin(Margin::symmetric(12, 6))
                 .show(ui, |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(e).color(p.error)).wrap());
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(e).size(12.0).color(p.error)).wrap(),
+                    );
                 });
         }
         let intro = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
             egui::Frame::NONE
-                .inner_margin(Margin::symmetric(14, 12))
+                .inner_margin(Margin::symmetric(10, 8))
                 .show(ui, |ui| {
-                    ui.set_max_width(520.0);
-                    ui.spacing_mut().item_spacing.y = 10.0;
-                    add(ui);
+                    egui::Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0, p.card_hairline))
+                        .corner_radius(theme::R_MD)
+                        .shadow(p.shadow_card)
+                        .inner_margin(Margin::symmetric(12, 12))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.spacing_mut().item_spacing.y = 10.0;
+                            add(ui);
+                        });
                 });
         };
         let muted = |ui: &mut Ui, t: &str| {
-            ui.add(egui::Label::new(egui::RichText::new(t).color(p.muted)).wrap());
+            ui.add(egui::Label::new(egui::RichText::new(t).size(12.5).color(p.muted)).wrap());
         };
         match self.history.status.clone() {
             None => {}
@@ -452,22 +489,19 @@ impl Workspace {
             }
             Some(HistoryStatus::NoGit { message }) => intro(ui, &mut |ui| muted(ui, &message)),
             Some(HistoryStatus::On) => {
-                if self.history.diff.is_some() {
-                    self.history_diff(ui, p, backend, settings);
-                } else if self.history.review.is_some() {
-                    self.history_review(ui, p, backend, settings);
-                } else if self.history.snapshots.is_empty() {
+                if self.history.snapshots.is_empty() {
                     intro(ui, &mut |ui| {
                         muted(
                             ui,
                             "No snapshots yet. The first one is taken after your next save.",
                         )
                     });
-                } else {
-                    self.history_list(ui, p, backend, settings);
+                } else if self.history_list(ui, p, backend, settings) {
+                    settings_changed = true;
                 }
             }
         }
+        settings_changed
     }
 
     fn base_snapshot(&self) -> Option<Snapshot> {
@@ -488,7 +522,8 @@ impl Workspace {
         p: &Palette,
         backend: &Backend,
         settings: &mut crate::store::Settings,
-    ) {
+    ) -> bool {
+        let mut settings_changed = false;
         let busy = self.history.busy;
         let last_reviewed = self
             .history
@@ -497,69 +532,128 @@ impl Workspace {
             .find(|s| s.label.starts_with(REVIEWED))
             .cloned();
         let base = self.base_snapshot();
-        // The review bar.
+        // Review card on quiet ground.
         let mut act: Option<&str> = None;
-        let r = egui::Frame::new().fill(p.surface).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                ui.label(egui::RichText::new("Review changes since").size(12.0).color(p.muted));
-                let first = match &last_reviewed {
-                    Some(s) => format!("my last review · {}", crate::when::medium_secs(s.time)),
-                    None => "Choose a snapshot…".into(),
-                };
-                let mut opts: Vec<(String, String)> = vec![(String::new(), first)];
-                opts.extend(self.history.snapshots.iter().map(|s| (s.id.clone(), format!("{} · {}", s.label, crate::when::medium_secs(s.time)))));
-                let o: Vec<(&str, &str)> = opts.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-                ui.allocate_ui(vec2(220.0, 26.0), |ui| widgets::select(ui, p, "Review changes since", &mut self.history.since, &o));
-                if Button::new(if busy == Some("review") { "Looking…" } else { "Review changes" }).size(Size::Sm).enabled(base.is_some() && busy.is_none()).show(ui, p).clicked() {
-                    act = Some("review");
-                }
-                if Button::new(if busy == Some("pdf") { "Making the PDF…" } else { "PDF of the changes" })
-                    .with_icon(icons::FILE_TEXT)
-                    .icon_size(13.0)
-                    .kind(Kind::Ghost)
-                    .size(Size::Sm)
-                    .enabled(base.is_some() && busy.is_none() && self.trusted)
-                    .show(ui, p)
-                    .on_hover_text(if !self.trusted {
-                        "Needs latexmk, which restricted projects don't run. Trust the project in its settings to use it."
-                    } else if base.is_none() {
-                        "Choose a snapshot first."
-                    } else {
-                        "Compiles the old and the new version with latexdiff into one PDF with the changes marked."
-                    })
-                    .clicked()
-                {
-                    act = Some("pdf");
-                }
-                if let Some((id, path)) = self.history.pdf.clone()
-                    && base.as_ref().is_some_and(|b| b.id == id)
-                    && Button::new("Open PDF of the changes").kind(Kind::Primary).size(Size::Sm).show(ui, p).clicked()
-                {
-                    self.spawn(backend, move |shell| Msg::Done(shell.open_project_file(path)));
-                }
-                if Button::new("Mark as reviewed")
-                    .with_icon(icons::CHECK)
-                    .icon_size(13.0)
-                    .kind(Kind::Ghost)
-                    .size(Size::Sm)
-                    .enabled(busy.is_none() && !self.history.snapshots.is_empty())
-                    .show(ui, p)
-                    .on_hover_text("Takes a snapshot called Reviewed, where the next review starts.")
-                    .clicked()
-                {
-                    act = Some("mark");
-                }
+        egui::Frame::NONE
+            .inner_margin(Margin {
+                left: 10,
+                right: 10,
+                top: 4,
+                bottom: 8,
+            })
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0, p.card_hairline))
+                    .corner_radius(theme::R_MD)
+                    .shadow(p.shadow_card)
+                    .inner_margin(Margin::symmetric(10, 9))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        ui.label(
+                            egui::RichText::new("Review changes since")
+                                .size(11.5)
+                                .color(p.muted),
+                        );
+                        let first = match &last_reviewed {
+                            Some(s) => {
+                                format!("my last review · {}", crate::when::medium_secs(s.time))
+                            }
+                            None => "Choose a snapshot…".into(),
+                        };
+                        let mut opts: Vec<(String, String)> = vec![(String::new(), first)];
+                        opts.extend(self.history.snapshots.iter().map(|s| {
+                            (
+                                s.id.clone(),
+                                format!("{} · {}", s.label, crate::when::medium_secs(s.time)),
+                            )
+                        }));
+                        let o: Vec<(&str, &str)> =
+                            opts.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+                        let sw = ui.available_width();
+                        ui.allocate_ui(vec2(sw, 28.0), |ui| {
+                            widgets::select(
+                                ui,
+                                p,
+                                "Review changes since",
+                                &mut self.history.since,
+                                &o,
+                            )
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                            if Button::new(if busy == Some("review") {
+                                "Looking…"
+                            } else {
+                                "Review changes"
+                            })
+                            .size(Size::Sm)
+                            .enabled(base.is_some() && busy.is_none())
+                            .show(ui, p)
+                            .clicked()
+                            {
+                                act = Some("review");
+                            }
+                            if Button::new(if busy == Some("pdf") {
+                                "Making PDF…"
+                            } else {
+                                "PDF of the changes"
+                            })
+                            .with_icon(icons::FILE_TEXT)
+                            .icon_size(13.0)
+                            .kind(Kind::Ghost)
+                            .size(Size::Sm)
+                            .enabled(base.is_some() && busy.is_none() && self.trusted)
+                            .show(ui, p)
+                            .on_hover_text(if !self.trusted {
+                                "Needs latexmk, which restricted projects don't run. Trust the project in its settings to use it."
+                            } else if base.is_none() {
+                                "Choose a snapshot first."
+                            } else {
+                                "Compiles the old and the new version with latexdiff into one PDF with the changes marked."
+                            })
+                            .clicked()
+                            {
+                                act = Some("pdf");
+                            }
+                            if let Some((id, path)) = self.history.pdf.clone()
+                                && base.as_ref().is_some_and(|b| b.id == id)
+                                && Button::new("Open PDF of the changes")
+                                    .kind(Kind::Primary)
+                                    .size(Size::Sm)
+                                    .show(ui, p)
+                                    .clicked()
+                            {
+                                self.spawn(backend, move |shell| {
+                                    Msg::Done(shell.open_project_file(path))
+                                });
+                            }
+                            if Button::new("Mark as reviewed")
+                                .with_icon(icons::CHECK)
+                                .icon_size(13.0)
+                                .kind(Kind::Ghost)
+                                .size(Size::Sm)
+                                .enabled(busy.is_none() && !self.history.snapshots.is_empty())
+                                .show(ui, p)
+                                .on_hover_text(
+                                    "Takes a snapshot called Reviewed, where the next review starts.",
+                                )
+                                .clicked()
+                            {
+                                act = Some("mark");
+                            }
+                        });
+                    });
             });
-        });
-        ui.painter().hline(
-            r.response.rect.x_range(),
-            r.response.rect.bottom() - 0.5,
-            Stroke::new(1.0, p.border),
-        );
         match act {
-            Some("review") => self.start_review(backend, settings),
+            Some("review") => {
+                if settings.layout == "editor" {
+                    settings.layout = "split".into();
+                    settings_changed = true;
+                }
+                self.start_review(backend, settings);
+            }
             Some("pdf") => self.make_pdf(backend, settings),
             Some("mark") => self.mark_reviewed(backend, settings),
             _ => {}
@@ -567,137 +661,329 @@ impl Workspace {
 
         let snapshots = self.history.snapshots.clone();
         let mut show_diff = None;
-        egui::ScrollArea::vertical().id_salt("history").auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for s in &snapshots {
-                let open = self.history.open.as_deref() == Some(s.id.as_str());
-                let w = ui.available_width();
-                let (r, resp) = ui.allocate_exact_size(vec2(w, 54.0), egui::Sense::click());
-                resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, open, &s.label));
-                let fill = if open {
-                    p.accent_soft
-                } else if resp.hovered() {
-                    p.surface_3
-                } else {
-                    p.surface
-                };
-                ui.painter().rect_filled(r, 0, fill);
-                ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, p.border));
-                let editing = self.history.editing.as_ref().filter(|e| e.0 == s.id).cloned();
-                if let Some((_, mut text)) = editing {
-                    let mut c = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(r.min + vec2(14.0, 6.0), vec2(w - 28.0, 24.0))));
-                    let t = c.add(egui::TextEdit::singleline(&mut text).desired_width(w - 28.0).font(FontId::proportional(13.0)));
-                    c.ctx().accesskit_node_builder(t.id, |n| n.set_label("Snapshot name"));
-                    if !self.history.editing_focused {
-                        t.request_focus();
-                        self.history.editing_focused = true;
-                    }
-                    if t.lost_focus() {
-                        self.history.editing = None;
-                        self.history.editing_focused = false;
-                        let (id, l) = (s.id.clone(), text.trim().to_owned());
-                        if !l.is_empty() && !c.input(|i| i.key_pressed(egui::Key::Escape)) {
-                            Self::job(backend, move |sh| sh.history_relabel(id, l), |ws, b, r| match r {
-                                Ok(()) => ws.load_history(b),
-                                Err(e) => ws.history.error = Some(e),
+        egui::ScrollArea::vertical()
+            .id_salt("history")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Frame::NONE
+                    .inner_margin(Margin {
+                        left: 10,
+                        right: 10,
+                        top: 2,
+                        bottom: 14,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        let total_snaps = snapshots.len();
+                        for (idx, s) in snapshots.iter().enumerate() {
+                            let open = self.history.open.as_deref() == Some(s.id.as_str());
+                            let w = ui.available_width();
+                            let (r, resp) =
+                                ui.allocate_exact_size(vec2(w, 48.0), egui::Sense::click());
+                            resp.widget_info(|| {
+                                egui::WidgetInfo::selected(egui::Role::Button, true, open, &s.label)
                             });
-                        }
-                    } else {
-                        self.history.editing = Some((s.id.clone(), text));
-                    }
-                } else {
-                    ui.painter().text(r.min + vec2(14.0, 10.0), egui::Align2::LEFT_TOP, &s.label, FontId::new(13.0, theme::font::sans_500()), p.ink);
-                }
-                let n = s.changes.len();
-                ui.painter().text(
-                    r.min + vec2(14.0, 30.0),
-                    egui::Align2::LEFT_TOP,
-                    format!("{} · {n} file{}", crate::when::medium_secs(s.time), if n == 1 { "" } else { "s" }),
-                    FontId::proportional(12.0),
-                    p.muted,
-                );
-                if resp.clicked() {
-                    self.history.open = if open { None } else { Some(s.id.clone()) };
-                    self.history.compare = None;
-                    self.history.confirm_all = None;
-                }
-                if !open {
-                    continue;
-                }
-                // .tools: rename, restore the project, compare with another snapshot.
-                let mut compare_changed = false;
-                let r = egui::Frame::new().fill(p.surface).inner_margin(Margin::symmetric(12, 6)).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                        if Button::new("Rename").with_icon(icons::PENCIL).icon_size(13.0).kind(Kind::Ghost).size(Size::Sm).show(ui, p).clicked() {
-                            self.history.editing = Some((s.id.clone(), s.label.clone()));
-                            self.history.editing_focused = false;
-                        }
-                        if self.history.confirm_all.as_deref() == Some(s.id.as_str()) {
-                            ui.label(egui::RichText::new("Replace all files? Your current work is saved as a snapshot first.").size(12.0).color(p.ink));
-                            if Button::new("Cancel").size(Size::Sm).show(ui, p).clicked() {
+                            let fill = if open {
+                                p.rail_active
+                            } else if resp.hovered() {
+                                p.surface_3
+                            } else {
+                                Color32::TRANSPARENT
+                            };
+                            if fill != Color32::TRANSPARENT {
+                                ui.painter()
+                                    .rect_filled(r, CornerRadius::same(theme::R_MD), fill);
+                            }
+                            // Timeline vertical stem & dot.
+                            let dot_x = r.left() + 13.0;
+                            let dot_y = r.top() + 17.0;
+                            if idx > 0 {
+                                ui.painter().vline(
+                                    dot_x,
+                                    r.top()..=(dot_y - 5.0),
+                                    Stroke::new(1.0, p.border_strong),
+                                );
+                            }
+                            if idx + 1 < total_snaps {
+                                ui.painter().vline(
+                                    dot_x,
+                                    (dot_y + 5.0)..=r.bottom(),
+                                    Stroke::new(1.0, p.border_strong),
+                                );
+                            }
+                            ui.painter().circle_filled(
+                                pos2(dot_x, dot_y),
+                                3.5,
+                                if open || idx == 0 {
+                                    p.accent
+                                } else {
+                                    p.border_strong
+                                },
+                            );
+
+                            let text_x = r.left() + 26.0;
+                            let editing =
+                                self.history.editing.as_ref().filter(|e| e.0 == s.id).cloned();
+                            if let Some((_, mut text)) = editing {
+                                let mut c = ui.new_child(egui::UiBuilder::new().max_rect(
+                                    Rect::from_min_size(
+                                        pos2(text_x, r.top() + 5.0),
+                                        vec2((w - 34.0).max(80.0), 24.0),
+                                    ),
+                                ));
+                                let t = c.add(
+                                    egui::TextEdit::singleline(&mut text)
+                                        .desired_width((w - 34.0).max(80.0))
+                                        .font(FontId::proportional(12.5)),
+                                );
+                                c.ctx().accesskit_node_builder(t.id, |n| {
+                                    n.set_label("Snapshot name")
+                                });
+                                if !self.history.editing_focused {
+                                    t.request_focus();
+                                    self.history.editing_focused = true;
+                                }
+                                if t.lost_focus() {
+                                    self.history.editing = None;
+                                    self.history.editing_focused = false;
+                                    let (id, l) = (s.id.clone(), text.trim().to_owned());
+                                    if !l.is_empty()
+                                        && !c.input(|i| i.key_pressed(egui::Key::Escape))
+                                    {
+                                        Self::job(
+                                            backend,
+                                            move |sh| sh.history_relabel(id, l),
+                                            |ws, b, r| match r {
+                                                Ok(()) => ws.load_history(b),
+                                                Err(e) => ws.history.error = Some(e),
+                                            },
+                                        );
+                                    }
+                                } else {
+                                    self.history.editing = Some((s.id.clone(), text));
+                                }
+                            } else {
+                                let mut job = egui::text::LayoutJob::simple_singleline(
+                                    s.label.clone(),
+                                    FontId::new(12.5, theme::font::sans_500()),
+                                    p.ink,
+                                );
+                                job.wrap.max_width = (r.right() - text_x - 8.0).max(40.0);
+                                job.wrap.max_rows = 1;
+                                job.wrap.overflow_character = Some('…');
+                                let g = ui.fonts_mut(|f| f.layout_job(job));
+                                ui.painter().galley(pos2(text_x, r.top() + 8.0), g, p.ink);
+                            }
+                            let n = s.changes.len();
+                            ui.painter().text(
+                                pos2(text_x, r.top() + 26.0),
+                                egui::Align2::LEFT_TOP,
+                                format!(
+                                    "{} · {n} file{}",
+                                    crate::when::medium_secs(s.time),
+                                    if n == 1 { "" } else { "s" }
+                                ),
+                                FontId::proportional(11.5),
+                                p.faint,
+                            );
+                            if resp
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                self.history.open = if open { None } else { Some(s.id.clone()) };
+                                self.history.compare = None;
                                 self.history.confirm_all = None;
                             }
-                            if Button::new("Restore").kind(Kind::Primary).size(Size::Sm).show(ui, p).clicked() {
-                                self.restore_all(backend, settings, s.id.clone());
+                            if !open {
+                                continue;
                             }
-                        } else if Button::new("Restore project").with_icon(icons::ROTATE_CCW).icon_size(13.0).kind(Kind::Ghost).size(Size::Sm).show(ui, p).clicked() {
-                            self.history.confirm_all = Some(s.id.clone());
+                            // Expanded snapshot card: actions, compare select, changed files.
+                            let mut compare_changed = false;
+                            egui::Frame::new()
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0, p.card_hairline))
+                                .corner_radius(theme::R_MD)
+                                .shadow(p.shadow_card)
+                                .inner_margin(Margin::symmetric(10, 8))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.spacing_mut().item_spacing.y = 6.0;
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                                        if Button::new("Rename")
+                                            .with_icon(icons::PENCIL)
+                                            .icon_size(13.0)
+                                            .kind(Kind::Ghost)
+                                            .size(Size::Sm)
+                                            .show(ui, p)
+                                            .clicked()
+                                        {
+                                            self.history.editing =
+                                                Some((s.id.clone(), s.label.clone()));
+                                            self.history.editing_focused = false;
+                                        }
+                                        if self.history.confirm_all.as_deref() == Some(s.id.as_str())
+                                        {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(
+                                                        "Replace all files? Your current work is saved as a snapshot first.",
+                                                    )
+                                                    .size(12.0)
+                                                    .color(p.ink),
+                                                )
+                                                .wrap(),
+                                            );
+                                            if Button::new("Cancel")
+                                                .size(Size::Sm)
+                                                .show(ui, p)
+                                                .clicked()
+                                            {
+                                                self.history.confirm_all = None;
+                                            }
+                                            if Button::new("Restore")
+                                                .kind(Kind::Primary)
+                                                .size(Size::Sm)
+                                                .show(ui, p)
+                                                .clicked()
+                                            {
+                                                self.restore_all(backend, settings, s.id.clone());
+                                            }
+                                        } else if Button::new("Restore project")
+                                            .with_icon(icons::ROTATE_CCW)
+                                            .icon_size(13.0)
+                                            .kind(Kind::Ghost)
+                                            .size(Size::Sm)
+                                            .show(ui, p)
+                                            .clicked()
+                                        {
+                                            self.history.confirm_all = Some(s.id.clone());
+                                        }
+                                    });
+                                    ui.label(
+                                        egui::RichText::new("Compare with")
+                                            .size(11.5)
+                                            .color(p.muted),
+                                    );
+                                    let mut opts: Vec<(String, String)> =
+                                        vec![(String::new(), "this snapshot's own changes".into())];
+                                    opts.extend(
+                                        snapshots.iter().filter(|o| o.id != s.id).map(|o| {
+                                            (
+                                                o.id.clone(),
+                                                format!(
+                                                    "{} · {}",
+                                                    o.label,
+                                                    crate::when::medium_secs(o.time)
+                                                ),
+                                            )
+                                        }),
+                                    );
+                                    let o: Vec<(&str, &str)> = opts
+                                        .iter()
+                                        .map(|(a, b)| (a.as_str(), b.as_str()))
+                                        .collect();
+                                    let mut cur = self.history.compare.clone().unwrap_or_default();
+                                    let cw = ui.available_width();
+                                    ui.allocate_ui(vec2(cw, 28.0), |ui| {
+                                        if widgets::select(ui, p, "Compare with", &mut cur, &o) {
+                                            compare_changed = true;
+                                        }
+                                    });
+                                    self.history.compare = (!cur.is_empty()).then_some(cur);
+                                    let files = if self.history.compare.is_some() {
+                                        self.history.compared.clone()
+                                    } else {
+                                        s.changes.clone()
+                                    };
+                                    for ch in files {
+                                        let (fr, fresp) = ui.allocate_exact_size(
+                                            vec2(ui.available_width(), 24.0),
+                                            egui::Sense::click(),
+                                        );
+                                        if fresp.hovered() {
+                                            ui.painter().rect_filled(
+                                                fr,
+                                                CornerRadius::same(5),
+                                                p.rail_active,
+                                            );
+                                        }
+                                        let (letter, color) = match ch.status {
+                                            "added" => ("A", p.ok),
+                                            "deleted" => ("D", p.error),
+                                            _ => ("M", p.warn),
+                                        };
+                                        ui.painter().text(
+                                            fr.min + vec2(6.0, 12.0),
+                                            egui::Align2::LEFT_CENTER,
+                                            letter,
+                                            FontId::new(11.5, theme::font::mono_500()),
+                                            color,
+                                        );
+                                        ui.painter().text(
+                                            fr.min + vec2(22.0, 12.0),
+                                            egui::Align2::LEFT_CENTER,
+                                            &ch.path,
+                                            FontId::monospace(11.5),
+                                            p.ink,
+                                        );
+                                        fresp.widget_info(|| {
+                                            egui::WidgetInfo::labeled(
+                                                egui::Role::Button,
+                                                true,
+                                                &ch.path,
+                                            )
+                                        });
+                                        if fresp
+                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                            .clicked()
+                                        {
+                                            show_diff = Some((s.id.clone(), ch.path.clone()));
+                                        }
+                                    }
+                                });
+                            if compare_changed {
+                                self.history.compared.clear();
+                                if let Some(other) = self.history.compare.clone() {
+                                    let a = s.id.clone();
+                                    Self::job(
+                                        backend,
+                                        move |sh| {
+                                            sh.history_compare(a.clone(), other.clone())
+                                                .map(|c| (a, other, c))
+                                        },
+                                        |ws, _, r| match r {
+                                            Ok((a, b, c))
+                                                if ws.history.open.as_deref() == Some(&a)
+                                                    && ws.history.compare.as_deref() == Some(&b) =>
+                                            {
+                                                ws.history.compared = c
+                                            }
+                                            Ok(_) => {}
+                                            Err(e) => ws.history.error = Some(e),
+                                        },
+                                    );
+                                }
+                            }
                         }
-                        ui.label(egui::RichText::new("Compare with").size(12.0).color(p.muted));
-                        let mut opts: Vec<(String, String)> = vec![(String::new(), "this snapshot's own changes".into())];
-                        opts.extend(snapshots.iter().filter(|o| o.id != s.id).map(|o| (o.id.clone(), format!("{} · {}", o.label, crate::when::medium_secs(o.time)))));
-                        let o: Vec<(&str, &str)> = opts.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-                        let mut cur = self.history.compare.clone().unwrap_or_default();
-                        ui.allocate_ui(vec2(220.0, 26.0), |ui| {
-                            if widgets::select(ui, p, "Compare with", &mut cur, &o) {
-                                compare_changed = true;
-                            }
-                        });
-                        self.history.compare = (!cur.is_empty()).then_some(cur);
+                        if snapshots.len() >= self.history.limit
+                            && Button::new("Show older snapshots")
+                                .kind(Kind::Ghost)
+                                .size(Size::Sm)
+                                .show(ui, p)
+                                .clicked()
+                        {
+                            self.history.limit += PAGE;
+                            self.load_history(backend);
+                        }
                     });
-                });
-                ui.painter().hline(r.response.rect.x_range(), r.response.rect.bottom() - 0.5, Stroke::new(1.0, p.border));
-                if compare_changed {
-                    self.history.compared.clear();
-                    if let Some(other) = self.history.compare.clone() {
-                        let a = s.id.clone();
-                        Self::job(backend, move |sh| sh.history_compare(a.clone(), other.clone()).map(|c| (a, other, c)), |ws, _, r| match r {
-                            Ok((a, b, c)) if ws.history.open.as_deref() == Some(&a) && ws.history.compare.as_deref() == Some(&b) => ws.history.compared = c,
-                            Ok(_) => {}
-                            Err(e) => ws.history.error = Some(e),
-                        });
-                    }
-                }
-                // The changed files: a click shows the diff.
-                let files = if self.history.compare.is_some() { self.history.compared.clone() } else { s.changes.clone() };
-                for ch in files {
-                    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), egui::Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(r, 0, Palette::mix(p.accent, 8.0));
-                    }
-                    let (letter, color) = match ch.status {
-                        "added" => ("A", p.ok),
-                        "deleted" => ("D", p.error),
-                        _ => ("M", p.warn),
-                    };
-                    ui.painter().text(r.min + vec2(26.0, 11.0), egui::Align2::LEFT_CENTER, letter, FontId::monospace(12.0), color);
-                    ui.painter().text(r.min + vec2(46.0, 11.0), egui::Align2::LEFT_CENTER, &ch.path, FontId::monospace(12.0), p.ink);
-                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &ch.path));
-                    if resp.clicked() {
-                        show_diff = Some((s.id.clone(), ch.path.clone()));
-                    }
-                }
-            }
-            if snapshots.len() >= self.history.limit
-                && Button::new("Show older snapshots").kind(Kind::Ghost).size(Size::Sm).show(ui, p).clicked()
-            {
-                self.history.limit += PAGE;
-                self.load_history(backend);
-            }
-        });
+            });
         if let Some((id, path)) = show_diff {
+            if settings.layout == "editor" {
+                settings.layout = "split".into();
+                settings_changed = true;
+            }
             let other = self.history.compare.clone();
             let now = if other.is_none() {
                 self.current_text(&path)
@@ -728,6 +1014,7 @@ impl Workspace {
                 },
             );
         }
+        settings_changed
     }
 
     /// The diff of one file: removed lines red, added green, long unchanged stretches folded.

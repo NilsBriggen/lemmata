@@ -57,6 +57,14 @@ pub fn show(
         widgets::column(ui, 720.0, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let _ = widgets::logo_mark(ui, 26.0);
+                ui.label(
+                    egui::RichText::new("Lemmata")
+                        .font(FontId::new(20.0, theme::font::display()))
+                        .color(p.ink),
+                );
+                ui.add_space(12.0);
                 steps(ui, p, *step);
                 ui.allocate_ui_with_layout(
                     Vec2::new(ui.available_width(), 30.0),
@@ -74,15 +82,15 @@ pub fn show(
                     },
                 );
             });
-            ui.add_space(0.08 * full.height());
+            ui.add_space(0.06 * full.height());
             widgets::card(
                 ui,
                 p,
-                14,
+                theme::R_XL,
                 Margin {
                     left: 40,
                     right: 40,
-                    top: 36,
+                    top: 34,
                     bottom: 28,
                 },
                 |ui| {
@@ -345,7 +353,7 @@ fn step_settings(
             .iter()
             .position(|t| *t == s.theme)
             .unwrap_or(0);
-        if let Some(i) = widgets::segmented(ui, p, &options, current, false, false) {
+        if let Some(i) = widgets::segmented(ui, p, &options, current, false) {
             s.theme = ["system", "light", "dark"][i].into();
             changed = true;
         }
@@ -357,7 +365,6 @@ fn step_settings(
             p,
             &[(None, "As I type"), (None, "With Ctrl+S")],
             current,
-            false,
             false,
         ) {
             s.autosave_ms = if i == 0 {

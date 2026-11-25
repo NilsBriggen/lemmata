@@ -1,20 +1,103 @@
-//! The panels that take the PDF's place (App.svelte `panel`): review comments, TODOs and Git.
-//! History lives in history.rs.
+//! Left-sidebar tool panels: review comments, TODOs, Git, plus the `SidePanel` switcher that
+//! keeps every workspace tool beside the editor without replacing the PDF.
+//! History lives in history.rs; Search in search.rs; Problems in pdf/problems.rs.
 
-use super::{Tone, Workspace, tree};
+use super::{Tone, Workspace, chrome, tree};
 use crate::backend::Backend;
 use crate::icons;
-use crate::panels::{bar, review};
+use crate::panels::review;
 use crate::theme::{self, Palette};
-use crate::widgets::{self, Button, Kind, Size};
-use eframe::egui::{self, Color32, FontId, Margin, Rect, Sense, Stroke, Ui, pos2, vec2};
+use crate::widgets::{self, Button, ChipTone, Kind, Size};
+use eframe::egui::{
+    self, Color32, CornerRadius, FontId, Margin, Rect, Sense, Stroke, Ui, pos2, vec2,
+};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Panel {
-    Review,
-    History,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidePanel {
+    Files,
+    Outline,
+    Search,
+    Problems,
     Git,
+    History,
+    Comments,
     Todos,
+}
+
+impl SidePanel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Files => "files",
+            Self::Outline => "outline",
+            Self::Search => "search",
+            Self::Problems => "problems",
+            Self::Git => "git",
+            Self::History => "history",
+            Self::Comments => "comments",
+            Self::Todos => "todos",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "outline" => Self::Outline,
+            "search" => Self::Search,
+            "problems" => Self::Problems,
+            "git" => Self::Git,
+            "history" => Self::History,
+            "comments" => Self::Comments,
+            "todos" => Self::Todos,
+            _ => Self::Files,
+        }
+    }
+
+    /// Files and Outline use the compact 232 px width; tool panels use 312 px.
+    pub fn is_wide(self) -> bool {
+        !matches!(self, Self::Files | Self::Outline)
+    }
+}
+
+/// 32 px quiet sidebar header on `--app` with uppercase 11 px `faint` title and right actions.
+/// Returns the remaining rect underneath.
+pub(crate) fn side_head(
+    ui: &mut Ui,
+    p: &Palette,
+    title: &str,
+    right: impl FnOnce(&mut Ui),
+) -> Rect {
+    let rect = ui.max_rect();
+    let head = Rect::from_min_size(rect.min, vec2(rect.width(), 32.0));
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &title.to_uppercase(),
+        0.0,
+        egui::TextFormat {
+            font_id: FontId::new(11.0, theme::font::sans_600()),
+            color: p.faint,
+            extra_letter_spacing: 0.77,
+            ..Default::default()
+        },
+    );
+    let mut left = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(Rect::from_min_max(
+                pos2(head.left() + 12.0, head.top()),
+                pos2(head.right() - 8.0, head.bottom()),
+            ))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    left.label(job);
+    let mut acts = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(Rect::from_min_max(
+                pos2(head.left() + 12.0, head.top()),
+                pos2(head.right() - 8.0, head.bottom()),
+            ))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    acts.spacing_mut().item_spacing.x = 2.0;
+    right(&mut acts);
+    Rect::from_min_max(pos2(rect.left(), head.bottom()), rect.max)
 }
 
 /// The comments of the project and what the review panel is doing.
@@ -84,57 +167,84 @@ impl Git {
 }
 
 impl Workspace {
-    /// Shows a panel where the PDF is, leaving focus mode and "Editor only" so it can be seen.
-    pub fn open_panel(
+    /// Opens a panel in the left sidebar without replacing the PDF pane.
+    pub fn open_side(
         &mut self,
-        panel: Panel,
+        panel: SidePanel,
         backend: &Backend,
         settings: &mut crate::store::Settings,
     ) -> bool {
-        self.panel = Some(panel);
+        self.side_panel = panel;
         self.focus_mode = false;
+        settings.sidebar_open = true;
+        settings.side_panel = panel.as_str().into();
         match panel {
-            Panel::Todos => self.load_todos(backend),
-            Panel::Git => self.load_git(backend),
-            Panel::History => self.load_history(backend),
-            Panel::Review => {}
+            SidePanel::Todos => self.load_todos(backend),
+            SidePanel::Git => self.load_git(backend),
+            SidePanel::History => self.load_history(backend),
+            SidePanel::Search => {
+                if self.search.is_none() {
+                    self.search = Some(Default::default());
+                }
+                if let Some(s) = &mut self.search {
+                    s.focus();
+                }
+            }
+            SidePanel::Files | SidePanel::Outline | SidePanel::Problems | SidePanel::Comments => {}
         }
-        if settings.layout == "editor" {
-            settings.layout = "split".into();
-            return true;
-        }
-        false
+        true
     }
 
-    pub fn toggle_panel(
+    pub fn toggle_side(
         &mut self,
-        panel: Panel,
+        panel: SidePanel,
         backend: &Backend,
         settings: &mut crate::store::Settings,
     ) -> bool {
-        if self.panel == Some(panel) {
-            self.panel = None;
+        if settings.sidebar_open && !self.focus_mode && self.side_panel == panel {
+            settings.sidebar_open = false;
             self.comments.draft = None;
-            false
+            true
         } else {
-            self.open_panel(panel, backend, settings)
+            self.open_side(panel, backend, settings)
         }
     }
 
-    /// Draws the open panel into `ui`.
-    pub fn show_panel(
+    /// Draws the active left-sidebar panel into `ui`. Returns true if settings changed.
+    pub fn show_side_panel(
         &mut self,
         ui: &mut Ui,
         p: &Palette,
         backend: &Backend,
         settings: &mut crate::store::Settings,
-    ) {
-        match self.panel {
-            Some(Panel::Review) => self.review_panel(ui, p, backend, settings),
-            Some(Panel::Todos) => self.todos_panel(ui, p, backend),
-            Some(Panel::Git) => self.git_panel(ui, p, backend, settings),
-            Some(Panel::History) => self.history_panel(ui, p, backend, settings),
-            None => {}
+    ) -> bool {
+        match self.side_panel {
+            SidePanel::Files => {
+                chrome::files_panel(ui, p, self, settings, backend);
+                false
+            }
+            SidePanel::Outline => {
+                chrome::outline_panel(ui, p, self, backend);
+                false
+            }
+            SidePanel::Search => {
+                self.search_panel(ui, p, backend, settings);
+                false
+            }
+            SidePanel::Problems => self.problems_sidebar(ui, p, backend, settings),
+            SidePanel::Git => {
+                self.git_panel(ui, p, backend, settings);
+                false
+            }
+            SidePanel::History => self.history_panel(ui, p, backend, settings),
+            SidePanel::Comments => {
+                self.review_panel(ui, p, backend, settings);
+                false
+            }
+            SidePanel::Todos => {
+                self.todos_panel(ui, p, backend);
+                false
+            }
         }
     }
 
@@ -224,7 +334,7 @@ impl Workspace {
             Some(t) => {
                 self.comments.draft = Some(t);
                 self.comments.ui.clear_draft();
-                self.open_panel(Panel::Review, backend, settings)
+                self.open_side(SidePanel::Comments, backend, settings)
             }
             None => {
                 self.notice(
@@ -375,10 +485,6 @@ impl Workspace {
                     backend,
                     threads.iter().filter(|t| t.id != id).cloned().collect(),
                 ),
-                review::Action::Close => {
-                    self.panel = None;
-                    self.comments.draft = None;
-                }
             }
         }
     }
@@ -397,10 +503,10 @@ impl Workspace {
         );
     }
 
-    /// Todos.svelte: the project's TODO, FIXME and XXX comments and `\todo` notes, by file.
+    /// Todos panel: the project's TODO, FIXME and XXX comments and `\todo` notes, by file.
     fn todos_panel(&mut self, ui: &mut Ui, p: &Palette, backend: &Backend) {
         let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, 0, p.surface_2);
+        ui.painter().rect_filled(rect, 0, p.app);
         let count = self
             .todos
             .list
@@ -409,59 +515,51 @@ impl Workspace {
             .map_or(0, Vec::len);
         let busy = self.todos.busy;
         let mut refresh = false;
-        let b = bar(ui, p, "TODOs", "Close TODOs", &mut |ui| {
-            ui.label(
-                egui::RichText::new(count.to_string())
-                    .size(13.0)
-                    .color(p.faint),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if Button::icon(icons::REFRESH_CW, "Refresh TODOs")
-                    .size(Size::Sm)
-                    .icon_size(15.0)
-                    .enabled(!busy)
-                    .show_icon(ui, p)
-                    .on_hover_text("Refresh")
-                    .clicked()
-                {
-                    refresh = true;
-                }
-            });
+        let rest = side_head(ui, p, "To-dos", |ui| {
+            if Button::icon(icons::REFRESH_CW, "Refresh TODOs")
+                .size(Size::Sm)
+                .icon_size(14.0)
+                .enabled(!busy)
+                .show_icon(ui, p)
+                .on_hover_text("Refresh")
+                .clicked()
+            {
+                refresh = true;
+            }
+            if count > 0 {
+                widgets::chip(ui, p, None, &count.to_string(), ChipTone::Neutral);
+            }
         });
-        if b.closed {
-            self.panel = None;
-        }
         if refresh {
             self.load_todos(backend);
         }
         let mut go = None;
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(b.rest));
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(rest));
         egui::ScrollArea::vertical()
             .id_salt("todos")
             .auto_shrink([false, false])
             .show(&mut c, |ui| {
                 egui::Frame::NONE
                     .inner_margin(Margin {
-                        left: 12,
-                        right: 12,
-                        top: 10,
+                        left: 10,
+                        right: 10,
+                        top: 6,
                         bottom: 16,
                     })
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         match &self.todos.list {
                             Some(Err(e)) => {
-                                ui.label(egui::RichText::new(e).size(13.0).color(p.error));
+                                ui.label(egui::RichText::new(e).size(12.5).color(p.error));
                             }
                             Some(Ok(list)) if list.is_empty() && !busy => {
                                 ui.label(
                                     egui::RichText::new("No TODOs in the project.")
-                                        .size(13.0)
+                                        .size(12.5)
                                         .color(p.muted),
                                 );
                             }
                             Some(Ok(list)) => {
-                                // Grouped by file, in the order they come (sorted by file, then line).
                                 let mut groups: Vec<(&str, Vec<&lemmata_shell::tools::Todo>)> =
                                     Vec::new();
                                 for t in list {
@@ -473,27 +571,24 @@ impl Workspace {
                                 for (gi, (file, todos)) in groups.iter().enumerate() {
                                     if gi > 0 {
                                         ui.add_space(10.0);
-                                        let y = ui.cursor().top();
-                                        ui.painter().hline(
-                                            ui.max_rect().x_range(),
-                                            y,
-                                            Stroke::new(1.0, p.border),
-                                        );
-                                        ui.add_space(10.0);
                                     }
-                                    widgets::Rich::new()
-                                        .add(
-                                            file,
-                                            FontId::new(12.0, theme::font::sans_600()),
-                                            p.muted,
-                                        )
-                                        .add(
-                                            &format!(" {}", todos.len()),
-                                            FontId::new(12.0, theme::font::sans_500()),
-                                            p.faint,
-                                        )
-                                        .wrap(ui.available_width())
-                                        .show(ui);
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(*file)
+                                                .font(FontId::new(11.5, theme::font::sans_600()))
+                                                .color(p.ink_2),
+                                        );
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(
+                                                    egui::RichText::new(todos.len().to_string())
+                                                        .font(FontId::monospace(10.5))
+                                                        .color(p.faint),
+                                                );
+                                            },
+                                        );
+                                    });
                                     ui.add_space(4.0);
                                     for t in todos {
                                         let w = ui.available_width();
@@ -502,13 +597,29 @@ impl Workspace {
                                         } else {
                                             t.text.as_str()
                                         };
+                                        let kg = ui.painter().layout_no_wrap(
+                                            t.kind.clone(),
+                                            FontId::new(10.0, theme::font::mono_500()),
+                                            p.accent_text,
+                                        );
+                                        let kw = kg.size().x + 10.0;
+                                        let line_lbl = format!(":{}", t.line);
+                                        let lw = ui
+                                            .painter()
+                                            .layout_no_wrap(
+                                                line_lbl.clone(),
+                                                FontId::monospace(11.0),
+                                                p.faint,
+                                            )
+                                            .size()
+                                            .x;
                                         let galley = ui.painter().layout(
                                             text.to_owned(),
-                                            FontId::proportional(13.0),
+                                            FontId::proportional(12.5),
                                             p.ink,
-                                            w - 120.0,
+                                            (w - kw - lw - 28.0).max(60.0),
                                         );
-                                        let h = galley.size().y.max(18.0) + 10.0;
+                                        let h = galley.size().y.max(18.0) + 12.0;
                                         let (r, resp) =
                                             ui.allocate_exact_size(vec2(w, h), Sense::click());
                                         resp.widget_info(|| {
@@ -519,39 +630,41 @@ impl Workspace {
                                             )
                                         });
                                         if resp.hovered() {
-                                            ui.painter().rect_filled(r, 5, p.surface_3);
+                                            ui.painter().rect_filled(
+                                                r,
+                                                CornerRadius::same(6),
+                                                p.rail_active,
+                                            );
                                         }
-                                        // .kind: a small outlined accent tag.
-                                        let kg = ui.painter().layout_no_wrap(
-                                            t.kind.clone(),
-                                            FontId::new(10.0, theme::font::mono_500()),
-                                            p.accent,
-                                        );
                                         let kr = Rect::from_min_size(
                                             pos2(r.left() + 6.0, r.top() + 6.0),
-                                            kg.size() + vec2(10.0, 2.0),
+                                            vec2(kw, kg.size().y + 3.0),
                                         );
-                                        ui.painter().rect_stroke(
+                                        ui.painter().rect_filled(
                                             kr,
-                                            4,
-                                            Stroke::new(1.0, p.accent),
-                                            egui::StrokeKind::Inside,
+                                            CornerRadius::same(4),
+                                            p.accent_soft,
                                         );
-                                        ui.painter().galley(kr.min + vec2(5.0, 1.0), kg, p.accent);
                                         ui.painter().galley(
-                                            pos2(kr.right() + 8.0, r.top() + 5.0),
+                                            kr.min + vec2(5.0, 1.5),
+                                            kg,
+                                            p.accent_text,
+                                        );
+                                        ui.painter().galley(
+                                            pos2(kr.right() + 7.0, r.top() + 6.0),
                                             galley,
                                             p.ink,
                                         );
                                         ui.painter().text(
-                                            pos2(r.right() - 6.0, r.top() + 5.0),
+                                            pos2(r.right() - 6.0, r.top() + 6.0),
                                             egui::Align2::RIGHT_TOP,
-                                            format!(":{}", t.line),
-                                            FontId::monospace(12.0),
+                                            line_lbl,
+                                            FontId::monospace(11.0),
                                             p.faint,
                                         );
                                         if resp
                                             .on_hover_text(format!("Go to line {}", t.line))
+                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
                                             .clicked()
                                         {
                                             go = Some((t.file.clone(), t.line));
@@ -596,7 +709,7 @@ impl Workspace {
                 }
             },
         );
-        if self.panel == Some(Panel::Git) && self.git.busy.is_none() {
+        if self.side_panel == SidePanel::Git && self.git.busy.is_none() {
             self.load_git(backend);
         }
     }
@@ -709,7 +822,7 @@ impl Workspace {
         );
     }
 
-    /// GitPanel.svelte: status, commit, pull and push, branches and recent commits.
+    /// Git sidebar panel: status, commit, pull and push, stashes, branches and recent commits.
     fn git_panel(
         &mut self,
         ui: &mut Ui,
@@ -718,7 +831,7 @@ impl Workspace {
         settings: &crate::store::Settings,
     ) {
         let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, 0, p.surface_2);
+        ui.painter().rect_filled(rect, 0, p.app);
         let busy = self.git.busy;
         if busy.is_none()
             && let Some(sent) = self.git.sent.take()
@@ -729,52 +842,55 @@ impl Workspace {
         }
         let mut refresh = false;
         let trusted = self.trusted;
-        let b = bar(ui, p, "Git", "Close Git", &mut |ui| {
-            if let Some(b) = busy {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(b).size(12.0).color(p.muted));
+        let rest = side_head(ui, p, "Git", |ui| {
+            if trusted
+                && Button::icon(icons::REFRESH_CW, "Refresh")
+                    .size(Size::Sm)
+                    .icon_size(14.0)
+                    .enabled(busy.is_none())
+                    .show_icon(ui, p)
+                    .on_hover_text("Refresh")
+                    .clicked()
+            {
+                refresh = true;
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if trusted
-                    && Button::icon(icons::REFRESH_CW, "Refresh")
-                        .size(Size::Sm)
-                        .icon_size(14.0)
-                        .enabled(busy.is_none())
-                        .show_icon(ui, p)
-                        .on_hover_text("Refresh")
-                        .clicked()
-                {
-                    refresh = true;
-                }
-            });
+            if let Some(b) = busy {
+                ui.label(egui::RichText::new(b).size(11.5).color(p.muted));
+            }
         });
-        if b.closed {
-            self.panel = None;
-        }
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(b.rest));
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(rest));
         if !self.trusted {
             egui::Frame::NONE
-                .inner_margin(Margin::symmetric(14, 14))
+                .inner_margin(Margin::symmetric(10, 8))
                 .show(&mut c, |ui| {
-                    ui.set_max_width(480.0);
-                    ui.spacing_mut().item_spacing.y = 10.0;
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(
-                                "Git is turned off in restricted projects because a repository can run hooks and filters. Trust this project in Project settings to use Git.",
-                            )
-                            .color(p.muted),
-                        )
-                        .wrap(),
-                    );
-                    if Button::new("Project settings")
-                        .kind(Kind::Primary)
-                        .size(Size::Sm)
-                        .show(ui, p)
-                        .clicked()
-                    {
-                        self.open_project_settings();
-                    }
+                    egui::Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0, p.card_hairline))
+                        .corner_radius(theme::R_MD)
+                        .shadow(p.shadow_card)
+                        .inner_margin(Margin::symmetric(12, 12))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.spacing_mut().item_spacing.y = 10.0;
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(
+                                        "Git is turned off in restricted projects because a repository can run hooks and filters. Trust this project in Project settings to use Git.",
+                                    )
+                                    .size(12.5)
+                                    .color(p.muted),
+                                )
+                                .wrap(),
+                            );
+                            if Button::new("Project settings")
+                                .kind(Kind::Primary)
+                                .size(Size::Sm)
+                                .show(ui, p)
+                                .clicked()
+                            {
+                                self.open_project_trust_settings();
+                            }
+                        });
                 });
             return;
         }
@@ -785,9 +901,9 @@ impl Workspace {
         }
         let note = |ui: &mut Ui, t: &str, color: Color32| {
             egui::Frame::NONE
-                .inner_margin(Margin::symmetric(14, 8))
+                .inner_margin(Margin::symmetric(12, 6))
                 .show(ui, |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(t).size(12.5).color(color)).wrap());
+                    ui.add(egui::Label::new(egui::RichText::new(t).size(12.0).color(color)).wrap());
                 });
         };
         if let Some(e) = self.git.error.clone() {
@@ -798,10 +914,21 @@ impl Workspace {
         }
         let intro = |ui: &mut Ui, t: &str| {
             egui::Frame::NONE
-                .inner_margin(Margin::symmetric(14, 12))
+                .inner_margin(Margin::symmetric(10, 8))
                 .show(ui, |ui| {
-                    ui.set_max_width(480.0);
-                    ui.add(egui::Label::new(egui::RichText::new(t).color(p.muted)).wrap());
+                    egui::Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0, p.card_hairline))
+                        .corner_radius(theme::R_MD)
+                        .shadow(p.shadow_card)
+                        .inner_margin(Margin::symmetric(12, 12))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(t).size(12.5).color(p.muted))
+                                    .wrap(),
+                            );
+                        });
                 });
         };
         match self.git.overview.clone() {
@@ -813,9 +940,10 @@ impl Workspace {
                     "This project isn't in a git repository. A repository keeps every commit you make, lets you go back to any of them, and lets you sync with GitHub, GitLab or Overleaf.",
                 );
                 c.horizontal(|ui| {
-                    ui.add_space(14.0);
+                    ui.add_space(10.0);
                     if Button::new("Turn this project into a git repository")
                         .kind(Kind::Primary)
+                        .size(Size::Sm)
                         .enabled(busy.is_none())
                         .show(ui, p)
                         .clicked()
@@ -851,17 +979,25 @@ impl Workspace {
     ) {
         let busy = self.git.busy.is_some();
         let section = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
-            let r = egui::Frame::NONE
-                .inner_margin(Margin::symmetric(12, 8))
+            egui::Frame::NONE
+                .inner_margin(Margin {
+                    left: 10,
+                    right: 10,
+                    top: 0,
+                    bottom: 8,
+                })
                 .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    add(ui);
+                    egui::Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0, p.card_hairline))
+                        .corner_radius(theme::R_MD)
+                        .shadow(p.shadow_card)
+                        .inner_margin(Margin::symmetric(10, 9))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            add(ui);
+                        });
                 });
-            ui.painter().hline(
-                r.response.rect.x_range(),
-                r.response.rect.bottom() - 0.5,
-                Stroke::new(1.0, p.border),
-            );
         };
         let dirty =
             !repo.staged.is_empty() || !repo.unstaged.is_empty() || !repo.conflicted.is_empty();
@@ -869,6 +1005,7 @@ impl Workspace {
             .id_salt("git")
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                ui.add_space(4.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 // In-progress merge / rebase / cherry-pick banner with Abort button.
                 if let Some(op) = repo.operation.as_deref() {
@@ -878,7 +1015,7 @@ impl Workspace {
                             ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
                             ui.label(
                                 egui::RichText::new(format!("A git {op} is in progress."))
-                                    .size(12.5)
+                                    .size(12.0)
                                     .color(p.warn),
                             );
                             if Button::new(&format!("Abort {op}"))
@@ -898,11 +1035,12 @@ impl Workspace {
                         });
                     }
                 }
-                // The branch, a new branch, and where it stands against its upstream.
+                // Branch selector, new branch button, upstream status & add remote.
                 let mut switch = None;
                 let mut toggle_new = false;
                 let mut toggle_remote = false;
                 section(ui, &mut |ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         icons::show(ui, icons::GIT_BRANCH, 14.0, p.muted);
@@ -918,7 +1056,7 @@ impl Workspace {
                         }
                         let o: Vec<(&str, &str)> =
                             opts.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-                        let w = (ui.available_width() - 28.0 - 90.0).max(80.0);
+                        let w = (ui.available_width() - 34.0).max(80.0);
                         ui.allocate_ui(vec2(w, 28.0), |ui| {
                             if widgets::select(ui, p, "Branch", &mut cur, &o) && !cur.is_empty() {
                                 switch = Some(cur.clone());
@@ -934,6 +1072,9 @@ impl Workspace {
                         {
                             toggle_new = true;
                         }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
                         let ab = [(repo.ahead, "↑"), (repo.behind, "↓")]
                             .iter()
                             .filter(|(n, _)| *n > 0)
@@ -953,21 +1094,19 @@ impl Workspace {
                             .upstream
                             .as_ref()
                             .map_or("Not pushed yet".to_owned(), |u| format!("Tracking {u}"));
-                        ui.label(egui::RichText::new(sync).size(12.0).color(p.muted))
+                        ui.label(egui::RichText::new(sync).size(11.5).color(p.muted))
                             .on_hover_text(tip);
-                    });
-                    if repo.upstream.is_none() {
-                        ui.add_space(6.0);
-                        if Button::new("Add remote…")
-                            .kind(Kind::Ghost)
-                            .size(Size::Sm)
-                            .enabled(!busy)
-                            .show(ui, p)
-                            .clicked()
+                        if repo.upstream.is_none()
+                            && Button::new("Add remote…")
+                                .kind(Kind::Ghost)
+                                .size(Size::Sm)
+                                .enabled(!busy)
+                                .show(ui, p)
+                                .clicked()
                         {
                             toggle_remote = true;
                         }
-                    }
+                    });
                 });
                 if let Some(name) = switch {
                     self.git_act(

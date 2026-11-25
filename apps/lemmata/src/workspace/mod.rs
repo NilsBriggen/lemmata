@@ -13,7 +13,7 @@ mod insert;
 mod language;
 pub mod palette;
 pub mod panels;
-mod project_settings;
+pub mod project_settings;
 mod rename;
 mod search;
 pub mod session;
@@ -187,7 +187,6 @@ pub struct Workspace {
     /// The tree folder files dragged in from the computer are over ("" is the root).
     pub os_drop: Option<String>,
     pub files: files::FileActions,
-    pub outline_open: bool,
     pub outline_folded: HashSet<String>,
     pub open_error: Option<String>,
     pub save_error: Option<(String, String)>,
@@ -208,6 +207,8 @@ pub struct Workspace {
     pub conflict_deferred: HashSet<String>,
     /// The line the cursor is on, for the status bar and the outline.
     pub cursor: (String, usize),
+    /// The 1-based char column on the cursor's line, for the status bar.
+    pub cursor_col: usize,
     /// Lines and optional 0-based char columns the session or LSP wants the cursor on, applied when the file opens.
     pending_line: HashMap<String, usize>,
     pending_col: HashMap<String, usize>,
@@ -255,6 +256,8 @@ pub struct Workspace {
     pub figure: Option<insert::FigureDialog>,
     pub rename: Option<rename::RenameSymbol>,
     pub project_settings: Option<project_settings::ProjectSettings>,
+    /// Set once an async project-settings save finishes, so the unified Settings window closes.
+    pub project_settings_saved: bool,
     pub palette: Option<palette::Palette>,
     /// Presenting the PDF full screen.
     pub presentation: Option<crate::pdf::present::Presentation>,
@@ -276,8 +279,9 @@ pub struct Workspace {
     dictionaries_offered: HashSet<String>,
     /// The main file's language from babel or polyglossia, for "auto".
     detected: &'static str,
-    /// The panel shown where the PDF is, if any.
-    pub panel: Option<panels::Panel>,
+    /// The active tool or navigation panel in the left sidebar.
+    pub side_panel: panels::SidePanel,
+    side_panel_loaded: bool,
     pub comments: panels::Comments,
     pub todos: panels::Todos,
     pub git: panels::Git,
@@ -366,7 +370,6 @@ impl Workspace {
             tree_drag: None,
             os_drop: None,
             files: Default::default(),
-            outline_open: true,
             outline_folded: HashSet::new(),
             open_error: None,
             save_error: None,
@@ -381,6 +384,7 @@ impl Workspace {
             deleted_conflicts: HashSet::new(),
             conflict_deferred: HashSet::new(),
             cursor: (String::new(), 1),
+            cursor_col: 1,
             pending_line: HashMap::new(),
             pending_col: HashMap::new(),
             pending_folds: HashMap::new(),
@@ -412,6 +416,7 @@ impl Workspace {
             figure: None,
             rename: None,
             project_settings: None,
+            project_settings_saved: false,
             palette: None,
             presentation: None,
             words: None,
@@ -424,7 +429,8 @@ impl Workspace {
             spell_asked: None,
             dictionaries_offered: HashSet::new(),
             detected: "en",
-            panel: None,
+            side_panel: panels::SidePanel::Files,
+            side_panel_loaded: false,
             comments: Default::default(),
             todos: Default::default(),
             git: Default::default(),
@@ -1452,7 +1458,7 @@ impl Workspace {
             let now = Instant::now();
             if now >= due {
                 self.analysis_due = None;
-                if self.panel == Some(panels::Panel::Todos) {
+                if self.side_panel == panels::SidePanel::Todos {
                     self.load_todos(backend);
                 }
                 self.refresh_analysis(backend);
@@ -1462,6 +1468,24 @@ impl Workspace {
         }
         let ctx = ui.ctx().clone();
         self.poll_build(&ctx, backend);
+
+        // Restore persisted sidebar panel on first frame.
+        if !self.side_panel_loaded {
+            self.side_panel = panels::SidePanel::from_str(&settings.side_panel);
+            self.side_panel_loaded = true;
+            if settings.sidebar_open {
+                match self.side_panel {
+                    panels::SidePanel::Todos => self.load_todos(backend),
+                    panels::SidePanel::Git => self.load_git(backend),
+                    panels::SidePanel::History => self.load_history(backend),
+                    _ => {}
+                }
+            }
+        }
+        if std::mem::take(&mut self.build.want_problems) {
+            self.open_side(panels::SidePanel::Problems, backend, settings);
+            action = Some(Action::Settings);
+        }
 
         // The app's own keys come before the editor's; an open dialog keeps them.
         self.tree_keys(&ctx, backend, settings);
@@ -1475,9 +1499,38 @@ impl Workspace {
             }
         }
 
+        // Search lives in the sidebar: ensure it is open and active when just triggered.
+        if self.search.as_ref().is_some_and(|s| s.wants_sidebar()) {
+            self.side_panel = panels::SidePanel::Search;
+            self.side_panel_loaded = true;
+            if !settings.sidebar_open || settings.side_panel != "search" {
+                settings.sidebar_open = true;
+                settings.side_panel = "search".into();
+                action = Some(Action::Settings);
+            }
+        }
+
         let full = ui.max_rect();
-        ui.painter().rect_filled(full, 0, p.surface);
-        let toolbar = Rect::from_min_size(full.min, vec2(full.width(), 46.0));
+        ui.painter().rect_filled(full, 0, p.app);
+
+        let rail_w = if self.focus_mode { 0.0 } else { 52.0 };
+        if !self.focus_mode {
+            let rail_rect = Rect::from_min_size(full.min, vec2(rail_w, full.height()));
+            if let Some(a) = chrome::rail(
+                &mut ui.new_child(egui::UiBuilder::new().max_rect(rail_rect)),
+                p,
+                self,
+                settings,
+                backend,
+            ) {
+                action = Some(a);
+            }
+        }
+
+        let toolbar = Rect::from_min_size(
+            pos2(full.left() + rail_w, full.top()),
+            vec2(full.width() - rail_w, 48.0),
+        );
         if let Some(a) = chrome::toolbar(
             &mut ui.new_child(egui::UiBuilder::new().max_rect(toolbar)),
             p,
@@ -1488,74 +1541,89 @@ impl Workspace {
             action = Some(a);
         }
 
-        // The panes under the toolbar.
-        let panes = Rect::from_min_max(pos2(full.left(), toolbar.bottom()), full.max);
+        // The panes under the toolbar: quiet stone ground with elevated white Editor & PDF cards.
+        let panes = Rect::from_min_max(pos2(full.left() + rail_w, toolbar.bottom()), full.max);
         let show_editor = settings.layout != "pdf" || self.focus_mode;
         let show_pdf = settings.layout != "editor" && !self.focus_mode;
-        // The search lives in the sidebar: make sure it can be seen.
-        if self.search.as_ref().is_some_and(|s| s.wants_sidebar()) && !settings.sidebar_open {
-            settings.sidebar_open = true;
-            action = Some(Action::Settings);
-        }
-        let show_sidebar = settings.sidebar_open && !self.focus_mode && settings.layout != "pdf";
-        let side_w = if show_sidebar {
+        let show_sidebar = settings.sidebar_open && !self.focus_mode;
+        let drawer_mode = full.width() <= 1000.0;
+        let raw_side_w = if self.side_panel.is_wide() {
+            settings.tool_sidebar_width as f32
+        } else {
             settings.sidebar_width as f32
+        };
+        let side_w = if show_sidebar {
+            raw_side_w.clamp(180.0, (panes.width() * 0.45).max(200.0))
+        } else {
+            0.0
+        };
+        let card_pad = 8.0;
+        let cards_left = if show_sidebar && !drawer_mode {
+            panes.left() + side_w + card_pad
+        } else if self.focus_mode {
+            panes.left() + card_pad
+        } else {
+            panes.left()
+        };
+        let cards_rect = Rect::from_min_max(
+            pos2(cards_left, panes.top()),
+            pos2(panes.right() - card_pad, panes.bottom() - card_pad),
+        );
+        let gap = if show_pdf && show_editor {
+            card_pad
         } else {
             0.0
         };
         let pdf_w = if show_pdf && show_editor {
             // The editor keeps at least 320 px.
             (settings.pdf_width as f32)
-                .min(panes.width() - side_w - 320.0)
+                .min((cards_rect.width() - gap - 320.0).max(0.0))
                 .max(0.0)
         } else if show_pdf {
-            panes.width()
+            cards_rect.width()
         } else {
             0.0
         };
         let side = Rect::from_min_size(panes.min, vec2(side_w, panes.height()));
         let code = Rect::from_min_max(
-            pos2(side.right(), panes.top()),
-            pos2(panes.right() - pdf_w, panes.bottom()),
+            cards_rect.min,
+            pos2(
+                (cards_rect.right() - pdf_w - gap).max(cards_rect.left()),
+                cards_rect.bottom(),
+            ),
         );
-        let pdf = Rect::from_min_max(pos2(panes.right() - pdf_w, panes.top()), panes.max);
+        let pdf = Rect::from_min_max(
+            pos2(cards_rect.right() - pdf_w, cards_rect.top()),
+            cards_rect.max,
+        );
 
-        if show_sidebar && self.search.is_some() {
-            self.search_panel(
+        if show_sidebar
+            && !drawer_mode
+            && self.show_side_panel(
                 &mut ui.new_child(egui::UiBuilder::new().max_rect(side)),
                 p,
                 backend,
                 settings,
-            );
-        } else if show_sidebar {
-            chrome::sidebar(
-                &mut ui.new_child(egui::UiBuilder::new().max_rect(side)),
-                p,
-                self,
-                settings,
-                backend,
-            );
-        }
-        if show_editor
-            && self.code_column(
-                &mut ui.new_child(egui::UiBuilder::new().max_rect(code)),
-                p,
-                settings,
-                backend,
             )
         {
             action = Some(Action::Settings);
         }
-        if show_pdf {
-            // The pane starts right of its 1 px border.
-            let inner = if show_editor {
-                pdf.with_min_x(pdf.left() + 1.0)
-            } else {
-                pdf
-            };
-            if self.panel.is_some() {
-                // The PDF pane keeps its state while a panel covers it.
-                self.show_panel(
+        if show_editor && code.width() > 2.0 {
+            widgets::paint_card(ui, p, code);
+            if self.code_column(
+                &mut ui.new_child(egui::UiBuilder::new().max_rect(code.shrink(1.0))),
+                p,
+                settings,
+                backend,
+            ) {
+                action = Some(Action::Settings);
+            }
+        }
+        if show_pdf && pdf.width() > 2.0 {
+            widgets::paint_card(ui, p, pdf);
+            let inner = pdf.shrink(1.0);
+            if self.history.has_viewer() {
+                self.show_history_viewer(
                     &mut ui.new_child(egui::UiBuilder::new().max_rect(inner)),
                     p,
                     backend,
@@ -1569,31 +1637,38 @@ impl Workspace {
             ) {
                 action = Some(Action::Settings);
             }
-            if show_editor {
-                ui.painter()
-                    .vline(pdf.left() + 0.5, pdf.y_range(), Stroke::new(1.0, p.border));
-            }
         }
-        // Splitters over the pane edges.
-        if show_sidebar {
+        // Splitters in the quiet 8 px gaps between panes.
+        if show_sidebar && !drawer_mode {
+            let wide = self.side_panel.is_wide();
+            let min_w = if wide { 240.0 } else { 180.0 };
+            let max_w = 480.0_f32.min((panes.width() - 360.0).max(min_w));
             match widgets::splitter(
                 ui,
                 p,
                 egui::Id::unique("split-side"),
-                side.right(),
-                panes.y_range(),
+                side.right() + card_pad / 2.0,
+                cards_rect.y_range(),
                 side_w,
-                180.0,
-                480.0,
+                min_w,
+                max_w,
                 false,
                 "Resize the file panel",
             ) {
                 Some(w) if w.is_nan() => {
-                    settings.sidebar_width = Settings::default().sidebar_width;
+                    if wide {
+                        settings.tool_sidebar_width = Settings::default().tool_sidebar_width;
+                    } else {
+                        settings.sidebar_width = Settings::default().sidebar_width;
+                    }
                     action = Some(Action::Settings);
                 }
                 Some(w) => {
-                    settings.sidebar_width = w as f64;
+                    if wide {
+                        settings.tool_sidebar_width = w as f64;
+                    } else {
+                        settings.sidebar_width = w as f64;
+                    }
                     action = Some(Action::Settings);
                 }
                 None => {}
@@ -1604,11 +1679,13 @@ impl Workspace {
                 ui,
                 p,
                 egui::Id::unique("split-pdf"),
-                pdf.left(),
-                panes.y_range(),
+                code.right() + gap / 2.0,
+                cards_rect.y_range(),
                 pdf_w,
                 300.0,
-                1400.0_f32.min(panes.width() - side_w - 320.0).max(300.0),
+                1400.0_f32
+                    .min((cards_rect.width() - gap - 320.0).max(300.0))
+                    .max(300.0),
                 true,
                 "Resize the PDF panel",
             ) {
@@ -1623,6 +1700,42 @@ impl Workspace {
                 None => {}
             }
         }
+        // Responsive overlay drawer at narrow window widths (<= 1000 px).
+        if show_sidebar && drawer_mode {
+            let drawer_w = side_w.min((panes.width() - 44.0).max(200.0));
+            let drawer = Rect::from_min_size(panes.min, vec2(drawer_w, panes.height()));
+            let scrim = Rect::from_min_max(pos2(drawer.right(), panes.top()), panes.max);
+            let scrim_resp = ui.interact(
+                scrim,
+                egui::Id::unique("drawer-scrim"),
+                egui::Sense::click(),
+            );
+            ui.painter().rect_filled(
+                scrim,
+                0,
+                egui::Color32::from_rgba_unmultiplied(12, 17, 22, 48),
+            );
+            ui.painter()
+                .add(p.shadow_lg.as_shape(drawer, egui::CornerRadius::ZERO));
+            ui.painter().rect_filled(drawer, 0, p.app);
+            ui.painter().vline(
+                drawer.right() - 0.5,
+                drawer.y_range(),
+                Stroke::new(1.0, p.border),
+            );
+            if self.show_side_panel(
+                &mut ui.new_child(egui::UiBuilder::new().max_rect(drawer)),
+                p,
+                backend,
+                settings,
+            ) {
+                action = Some(Action::Settings);
+            }
+            if scrim_resp.clicked() {
+                settings.sidebar_open = false;
+                action = Some(Action::Settings);
+            }
+        }
 
         self.dialogs(&ctx, p, backend, settings);
         self.search_dialog(&ctx, p, backend, settings);
@@ -1630,7 +1743,6 @@ impl Workspace {
         self.insert_dialogs(&ctx, p, backend);
         self.rename_dialog(&ctx, p, backend, settings);
         self.file_dialogs(&ctx, p, backend, settings);
-        self.project_settings_dialog(&ctx, p, backend, settings, &mut action);
         self.sheets(&ctx, p, settings, &mut action);
         if let Some(show) = &mut self.presentation
             && !show.show(&ctx)
@@ -1677,7 +1789,7 @@ impl Workspace {
         ui.painter().rect_filled(rect, 0, p.code_bg);
         let mut y = rect.top();
         if !self.focus_mode {
-            let strip = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 36.0));
+            let strip = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 40.0));
             chrome::tabs(
                 &mut ui.new_child(egui::UiBuilder::new().max_rect(strip)),
                 p,
@@ -1687,7 +1799,7 @@ impl Workspace {
             );
             y = strip.bottom();
         }
-        let bar = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 37.0));
+        let bar = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 40.0));
         let (sync, comment, cite) = chrome::edit_bar(
             &mut ui.new_child(egui::UiBuilder::new().max_rect(bar)),
             p,
@@ -1740,7 +1852,7 @@ impl Workspace {
             });
             y = r.bottom();
         }
-        let status = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 26.0), rect.max);
+        let status = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 30.0), rect.max);
         let mut body = Rect::from_min_max(pos2(rect.left(), y), pos2(rect.right(), status.top()));
         // .cm-lsp-reference-panel: Find references' list, under the text.
         if let Some(refs) = self.references.clone() {
@@ -1883,6 +1995,10 @@ impl Workspace {
                     self.cursor = (path.clone(), line);
                 } else if self.cursor.0 != path {
                     self.cursor = (path.clone(), ed.cursor_line());
+                    self.cursor_col = ed.cursor_col();
+                }
+                if let Some(col) = out.cursor_col {
+                    self.cursor_col = col;
                 }
                 if let Some(sel) = out.selection {
                     self.selection_words = if sel.is_empty() { 0 } else { count_words(&sel) };
@@ -1917,7 +2033,7 @@ impl Workspace {
                 if let Some(id) = comment_click {
                     self.comments.active = Some(id);
                     self.comments.generation += 1;
-                    if self.open_panel(panels::Panel::Review, backend, settings) {
+                    if self.open_side(panels::SidePanel::Comments, backend, settings) {
                         changed = true;
                     }
                 }
@@ -2222,9 +2338,9 @@ impl Workspace {
             .pivot(egui::Align2::CENTER_BOTTOM)
             .fixed_pos(pos2(screen.center().x, screen.bottom() - 20.0))
             .show(ctx, |ui| {
-                ui.set_max_width((screen.width() * 0.9).min(720.0));
+                ui.set_max_width((screen.width() - 32.0).min(480.0));
                 let border = if tone == Tone::Error {
-                    p.error
+                    p.error.gamma_multiply(0.45)
                 } else {
                     p.border
                 };
@@ -2232,27 +2348,57 @@ impl Workspace {
                     .fill(p.surface)
                     .stroke(Stroke::new(1.0, border))
                     .corner_radius(theme::R_LG)
-                    .shadow(p.shadow)
+                    .shadow(p.shadow_lg)
                     .inner_margin(egui::Margin {
-                        left: 12,
-                        right: 8,
-                        top: 8,
-                        bottom: 8,
+                        left: 14,
+                        right: 10,
+                        top: 10,
+                        bottom: 10,
                     })
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 10.0;
                             let (icon, color) = match tone {
                                 Tone::Ok => (crate::icons::CIRCLE_CHECK, p.ok),
-                                Tone::Error => (crate::icons::INFO, p.error),
+                                Tone::Error => (crate::icons::CIRCLE_X, p.error),
                                 Tone::Info => (crate::icons::INFO, p.accent),
                             };
                             crate::icons::show(ui, icon, 16.0, color);
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(&text).color(p.ink)).wrap(),
-                            );
+                            let mut job = egui::text::LayoutJob::default();
+                            if let Some((lead, rest)) = text.split_once(": ") {
+                                job.append(
+                                    &format!("{lead}: "),
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: FontId::new(13.0, theme::font::sans_600()),
+                                        color: p.ink,
+                                        ..Default::default()
+                                    },
+                                );
+                                job.append(
+                                    rest,
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: FontId::proportional(13.0),
+                                        color: p.ink,
+                                        ..Default::default()
+                                    },
+                                );
+                            } else {
+                                job.append(
+                                    &text,
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: FontId::proportional(13.0),
+                                        color: p.ink,
+                                        ..Default::default()
+                                    },
+                                );
+                            }
+                            ui.add(egui::Label::new(job).wrap());
                             for a in acts.iter().flatten() {
                                 if Button::new(a.label())
+                                    .kind(Kind::Ghost)
                                     .size(widgets::Size::Sm)
                                     .show(ui, p)
                                     .clicked()

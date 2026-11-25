@@ -47,7 +47,7 @@ body { background: var(--app); }
 /* hover card */
 .hov { width: 330px; padding: 12px 14px; }
 .hov .ttl { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); margin-bottom: 8px; }
-.hov .math { display: flex; justify-content: center; padding: 14px 0; border-radius: 8px; background: #fff; color: #111; font: italic 18px Georgia, serif; box-shadow: inset 0 0 0 1px var(--border); }
+.hov .math { display: flex; justify-content: center; padding: 14px 0; border-radius: 8px; background: var(--surface-2); color: var(--ink); font: italic 18px Georgia, serif; box-shadow: inset 0 0 0 1px var(--border); }
 .hov .math sub, .hov .math sup { font-size: 11px; }
 .hov .acts { display: flex; gap: 6px; margin-top: 10px; }
 .cite-card b { display: block; font-weight: 600; margin-bottom: 2px; }
@@ -72,8 +72,8 @@ body { background: var(--app); }
 
   <div class="spec-grid">
     <section class="spec">
-      <h2>Command palette and quick open (Ctrl K)</h2>
-      <p class="cap">One box for commands, files, labels and sections, grouped. Typing a path finds files; "&gt;" limits it to commands. Today's palette and quick open are two separate popups.</p>
+      <h2>Command palette (Ctrl Shift P) &amp; Quick open (Ctrl P)</h2>
+      <p class="cap">Command palette and Quick open stay separate with their existing shortcuts, restyled in the new card and row tokens.</p>
       <div class="stage dim">
         <div class="code" aria-hidden="true">
           <div class="ln"><span class="n">1</span><span class="t"><span class="c">\section</span>{<span class="a">Method</span>}<span class="c">\label</span>{<span class="a">sec:method</span>}</span></div>
@@ -81,17 +81,15 @@ body { background: var(--app); }
           <div class="ln"><span class="n">3</span><span class="t"><span class="c">\begin</span>{<span class="a">equation</span>}</span></div>
         </div>
         <div class="pop pal" role="dialog" aria-label="Command palette">
-          <div class="pal-in"><i data-i="SEARCH"></i><span class="typed">meth</span><span class="kbd">Esc</span></div>
+          <div class="pal-in"><i data-i="SEARCH"></i><span class="typed">comp</span><span class="kbd">Esc</span></div>
           <div class="pal-list">
-            <div class="pal-grp">Files</div>
-            <div class="pal-item on"><i data-i="FILE_TEXT"></i><span class="grow">chapters/<b>meth</b>od.tex</span><span class="det">Enter</span></div>
-            <div class="pal-grp">Sections and labels</div>
-            <div class="pal-item"><i data-i="HEADING"></i><span class="grow">2 <b>Meth</b>od</span><span class="det">method.tex:1</span></div>
-            <div class="pal-item"><i data-i="LINK"></i><span class="grow">sec:<b>meth</b>od</span><span class="det">label</span></div>
-            <div class="pal-grp">Text in the project</div>
-            <div class="pal-item"><i data-i="SEARCH"></i><span class="grow">Search all files for "meth"</span><span class="det">Ctrl Shift F</span></div>
+            <div class="pal-grp">Commands</div>
+            <div class="pal-item on"><i data-i="REFRESH_CW"></i><span class="grow">Re<b>comp</b>ile</span><span class="det">Ctrl Enter</span></div>
+            <div class="pal-item"><i data-i="REFRESH_CW"></i><span class="grow"><b>Comp</b>ile from scratch</span><span class="det">Ctrl Shift Enter</span></div>
+            <div class="pal-item"><i data-i="SETTINGS"></i><span class="grow">Project settings (<b>comp</b>iler &amp; build)</span><span class="det"></span></div>
+            <div class="pal-item"><i data-i="FILE_TEXT"></i><span class="grow">Open file…</span><span class="det">Ctrl P</span></div>
           </div>
-          <div class="pal-foot"><span><span class="kbd">↑↓</span>move</span><span><span class="kbd">Enter</span>open</span><span><span class="kbd">&gt;</span>commands only</span></div>
+          <div class="pal-foot"><span><span class="kbd">↑↓</span>move</span><span><span class="kbd">Enter</span>run</span><span><span class="kbd">Ctrl P</span>quick open</span></div>
         </div>
       </div>
     </section>

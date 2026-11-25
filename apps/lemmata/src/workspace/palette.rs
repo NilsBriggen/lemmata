@@ -2,15 +2,17 @@
 //! open (Ctrl+P), wrap in an environment, go to a section, go to a label or citation. The main
 //! menu runs the same commands, so a command has one name wherever it appears.
 
-use super::{Action, Tone, Workspace, panels::Panel};
+use super::{Action, Tone, Workspace, panels::SidePanel};
 use crate::backend::{Backend, Msg, Save};
+use crate::icons::{self, Icon};
 use crate::shortcuts::{display, keys_of};
 use crate::store::Settings;
 use crate::theme::{self, Palette as Colors};
+use crate::widgets;
 use crate::workspace::tree;
 use eframe::egui::{
     self, Color32, CornerRadius, FontId, Key, Margin, Modifiers, Rect, RichText, Sense, Stroke,
-    pos2, vec2,
+    StrokeKind, pos2, vec2,
 };
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -237,6 +239,39 @@ impl Palette {
             .collect()
     }
 
+    fn group_title(&self) -> &'static str {
+        match self.kind {
+            Kind::Commands => "Commands",
+            Kind::Files => "Files",
+            Kind::Environments => "Environments",
+            Kind::Headings => "Sections",
+            Kind::Symbols => "Labels & citations",
+        }
+    }
+
+    fn item_icon(&self, item: &Item) -> Icon {
+        match (&self.kind, &item.cmd) {
+            (Kind::Files, _) => icons::FILE_TEXT,
+            (Kind::Environments, _) => icons::CODE,
+            (Kind::Headings, _) => icons::LIST_TREE,
+            (Kind::Symbols, _) => icons::BOOK_OPEN,
+            (Kind::Commands, Cmd::Command(id)) => match *id {
+                "recompile" => icons::REFRESH_CW,
+                "open-file" | "new-file" | "reveal" => icons::FILE_TEXT,
+                "search" | "find" => icons::SEARCH,
+                "project-settings" | "preferences" => icons::SETTINGS,
+                "git" => icons::GIT_BRANCH,
+                "history" | "snapshot" => icons::HISTORY,
+                "comments" | "comment" => icons::MESSAGE_SQUARE,
+                "todos" => icons::CIRCLE_CHECK,
+                "cite" | "bib-manager" | "zotero-cite" | "zotero-sync" => icons::BOOK_OPEN,
+                "symbols" => icons::SIGMA,
+                _ => icons::SPARKLES,
+            },
+            _ => icons::SPARKLES,
+        }
+    }
+
     /// None while open; Some(None) when closed, Some(Some(cmd)) when an item was picked.
     fn show(&mut self, ctx: &egui::Context, p: &Colors) -> Option<Option<Cmd>> {
         let screen = ctx.content_rect();
@@ -269,7 +304,6 @@ impl Palette {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
             picked = Some(self.results().get(self.selected).map(|i| i.cmd.clone()));
         }
-        // .backdrop: rgba(12, 17, 22, .32), the panel 12vh from the top.
         let backdrop = egui::Area::new(egui::Id::unique("palette-backdrop"))
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
@@ -279,7 +313,15 @@ impl Palette {
                     .rect_filled(rect, 0, Color32::from_rgba_unmultiplied(12, 17, 22, 82));
                 r
             });
-        let width = 620.0f32.min(screen.width() - 48.0);
+        let width = 500.0f32.min(screen.width() - 32.0).max(280.0);
+        let group_title = self.group_title();
+        let is_commands = self.kind == Kind::Commands;
+        let query_chars: Vec<char> = self
+            .query
+            .to_lowercase()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
         let panel = egui::Area::new(egui::Id::unique("palette"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::CENTER_TOP)
@@ -292,22 +334,36 @@ impl Palette {
                 egui::Frame::new()
                     .fill(p.surface)
                     .stroke(Stroke::new(1.0, p.border))
-                    .corner_radius(12)
+                    .corner_radius(theme::R_LG)
                     .shadow(p.shadow_lg)
                     .show(ui, |ui| {
                         ui.set_width(width - 2.0);
                         ui.spacing_mut().item_spacing.y = 0.0;
+                        // 46 px search header with leading search icon and trailing Esc badge.
+                        let (head_rect, _) = ui
+                            .allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
+                        let mut head = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(head_rect.shrink2(vec2(14.0, 0.0)))
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        head.spacing_mut().item_spacing.x = 10.0;
+                        icons::show(&mut head, icons::SEARCH, 15.0, p.faint);
                         let before = self.query.clone();
                         let placeholder = self.placeholder();
+                        let input_w = (head.available_width() - 42.0).max(100.0);
                         let r = egui::TextEdit::singleline(&mut self.query)
-                            .hint_text(RichText::new(placeholder).size(15.0).color(p.faint))
-                            .font(FontId::proportional(15.0))
+                            .hint_text(RichText::new(placeholder).size(14.0).color(p.faint))
+                            .font(FontId::proportional(14.0))
                             .text_color(p.ink)
-                            .frame(egui::Frame::NONE.inner_margin(Margin::symmetric(16, 14)))
-                            .desired_width(width - 2.0)
-                            .show(ui)
+                            .frame(egui::Frame::NONE)
+                            .desired_width(input_w)
+                            .show(&mut head)
                             .response
                             .response;
+                        head.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            widgets::kbd(ui, p, "Esc");
+                        });
                         ui.ctx()
                             .accesskit_node_builder(r.id, |n| n.set_label(placeholder));
                         if std::mem::take(&mut self.focus) || !r.has_focus() {
@@ -315,15 +371,14 @@ impl Palette {
                         }
                         if self.query != before {
                             self.selected = 0;
-                            // The list starts over: row 0 must be in view.
                             self.scroll = true;
                         }
                         ui.painter().hline(
-                            r.rect.x_range(),
-                            r.rect.bottom(),
+                            head_rect.x_range(),
+                            head_rect.bottom() - 0.5,
                             Stroke::new(1.0, p.border),
                         );
-                        let max_h = (screen.height() - 180.0).clamp(140.0, screen.height() * 0.52);
+                        let max_h = (screen.height() - 210.0).clamp(140.0, screen.height() * 0.50);
                         let results: Vec<Item> = self.results().into_iter().cloned().collect();
                         let w = ui.available_width();
                         ui.allocate_ui(vec2(w, max_h + 12.0), |ui| {
@@ -338,7 +393,27 @@ impl Palette {
                                         .auto_shrink([false, true])
                                         .show(ui, |ui| {
                                             ui.spacing_mut().item_spacing.y = 0.0;
-                                            if results.is_empty() {
+                                            if !results.is_empty() {
+                                                egui::Frame::new()
+                                                    .inner_margin(Margin {
+                                                        left: 8,
+                                                        right: 8,
+                                                        top: 6,
+                                                        bottom: 4,
+                                                    })
+                                                    .show(ui, |ui| {
+                                                        ui.label(
+                                                            RichText::new(
+                                                                group_title.to_uppercase(),
+                                                            )
+                                                            .font(FontId::new(
+                                                                11.0,
+                                                                theme::font::sans_600(),
+                                                            ))
+                                                            .color(p.faint),
+                                                        );
+                                                    });
+                                            } else {
                                                 egui::Frame::new()
                                                     .inner_margin(Margin::same(12))
                                                     .show(ui, |ui| {
@@ -350,7 +425,7 @@ impl Palette {
                                             }
                                             for (i, item) in results.iter().enumerate() {
                                                 let (rect, row) = ui.allocate_exact_size(
-                                                    vec2(ui.available_width(), 35.0),
+                                                    vec2(ui.available_width(), 34.0),
                                                     Sense::click(),
                                                 );
                                                 row.widget_info(|| {
@@ -368,8 +443,8 @@ impl Palette {
                                                 {
                                                     self.selected = i;
                                                 }
-                                                if i == self.selected {
-                                                    // The input keeps the focus: it points at the option.
+                                                let selected = i == self.selected;
+                                                if selected {
                                                     ui.ctx().accesskit_node_builder(r.id, |n| {
                                                         n.set_active_descendant(
                                                             egui::accesskit::NodeId::from(
@@ -379,45 +454,122 @@ impl Palette {
                                                     });
                                                     ui.painter().rect_filled(
                                                         rect,
-                                                        CornerRadius::same(theme::R),
+                                                        CornerRadius::same(7),
                                                         p.accent_soft,
                                                     );
                                                     if std::mem::take(&mut self.scroll) {
                                                         ui.scroll_to_rect(rect, None);
                                                     }
                                                 }
-                                                let inner = rect.shrink2(vec2(10.0, 0.0));
+                                                let inner = rect.shrink2(vec2(8.0, 0.0));
+                                                let ico_rect = Rect::from_min_size(
+                                                    pos2(inner.left(), inner.center().y - 7.5),
+                                                    vec2(15.0, 15.0),
+                                                );
+                                                icons::paint(
+                                                    ui.painter(),
+                                                    ico_rect,
+                                                    self.item_icon(item),
+                                                    if selected { p.accent_text } else { p.faint },
+                                                );
+                                                let label_x = ico_rect.right() + 10.0;
                                                 let detail = ui.painter().layout_no_wrap(
                                                     item.detail.clone(),
                                                     FontId::monospace(11.0),
-                                                    p.muted,
+                                                    p.faint,
                                                 );
-                                                let dw = detail.size().x.min(inner.width() * 0.5);
+                                                let has_kbd =
+                                                    is_commands && !item.detail.is_empty();
+                                                let pill_pad = if has_kbd { 12.0 } else { 0.0 };
+                                                let dw = (detail.size().x + pill_pad)
+                                                    .min(inner.width() * 0.45);
                                                 let label_clip = Rect::from_min_max(
-                                                    inner.min,
-                                                    pos2(inner.right() - dw - 12.0, inner.bottom()),
+                                                    pos2(label_x, inner.top()),
+                                                    pos2(
+                                                        (inner.right() - dw - 10.0)
+                                                            .max(label_x + 20.0),
+                                                        inner.bottom(),
+                                                    ),
                                                 );
-                                                ui.painter().with_clip_rect(label_clip).text(
-                                                    pos2(inner.left(), inner.center().y),
-                                                    egui::Align2::LEFT_CENTER,
-                                                    &item.label,
-                                                    FontId::proportional(13.0),
-                                                    p.ink,
+                                                let base_ink =
+                                                    if selected { p.ink } else { p.ink_2 };
+                                                let mut job = egui::text::LayoutJob::default();
+                                                let mut qi = 0usize;
+                                                for ch in item.label.chars() {
+                                                    let hit = qi < query_chars.len()
+                                                        && ch.to_lowercase().next().is_some_and(
+                                                            |lc| lc == query_chars[qi],
+                                                        );
+                                                    if hit {
+                                                        qi += 1;
+                                                    }
+                                                    job.append(
+                                                        &ch.to_string(),
+                                                        0.0,
+                                                        egui::TextFormat {
+                                                            font_id: if hit {
+                                                                FontId::new(
+                                                                    13.0,
+                                                                    theme::font::sans_600(),
+                                                                )
+                                                            } else {
+                                                                FontId::proportional(13.0)
+                                                            },
+                                                            color: if hit {
+                                                                p.ink
+                                                            } else {
+                                                                base_ink
+                                                            },
+                                                            ..Default::default()
+                                                        },
+                                                    );
+                                                }
+                                                let lg = ui.fonts_mut(|f| f.layout_job(job));
+                                                ui.painter().with_clip_rect(label_clip).galley(
+                                                    pos2(
+                                                        label_x,
+                                                        inner.center().y - lg.size().y / 2.0,
+                                                    ),
+                                                    lg,
+                                                    base_ink,
                                                 );
                                                 if !item.detail.is_empty() {
-                                                    let clip = Rect::from_min_max(
-                                                        pos2(inner.right() - dw, inner.top()),
-                                                        inner.max,
-                                                    );
-                                                    ui.painter().with_clip_rect(clip).galley(
-                                                        pos2(
-                                                            inner.right() - detail.size().x.min(dw),
-                                                            inner.center().y
-                                                                - detail.size().y / 2.0,
-                                                        ),
-                                                        detail,
-                                                        p.muted,
-                                                    );
+                                                    if has_kbd {
+                                                        let pr = Rect::from_min_size(
+                                                            pos2(
+                                                                inner.right() - dw,
+                                                                inner.center().y - 10.0,
+                                                            ),
+                                                            vec2(dw, 20.0),
+                                                        );
+                                                        ui.painter().rect(
+                                                            pr,
+                                                            CornerRadius::same(theme::R_SM),
+                                                            p.surface_2,
+                                                            Stroke::new(1.0, p.border),
+                                                            StrokeKind::Inside,
+                                                        );
+                                                        ui.painter().with_clip_rect(pr).galley(
+                                                            pr.center() - detail.size() / 2.0,
+                                                            detail,
+                                                            p.faint,
+                                                        );
+                                                    } else {
+                                                        let clip = Rect::from_min_max(
+                                                            pos2(inner.right() - dw, inner.top()),
+                                                            inner.max,
+                                                        );
+                                                        ui.painter().with_clip_rect(clip).galley(
+                                                            pos2(
+                                                                inner.right()
+                                                                    - detail.size().x.min(dw),
+                                                                inner.center().y
+                                                                    - detail.size().y / 2.0,
+                                                            ),
+                                                            detail,
+                                                            p.faint,
+                                                        );
+                                                    }
                                                 }
                                                 if row.clicked() {
                                                     picked = Some(Some(item.cmd.clone()));
@@ -426,6 +578,34 @@ impl Palette {
                                         });
                                 });
                         });
+                        // Key-hint footer strip.
+                        let (foot_rect, _) = ui
+                            .allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+                        ui.painter().hline(
+                            foot_rect.x_range(),
+                            foot_rect.top() + 0.5,
+                            Stroke::new(1.0, p.border),
+                        );
+                        let mut foot = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(foot_rect.shrink2(vec2(14.0, 0.0)))
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        foot.spacing_mut().item_spacing.x = 6.0;
+                        let hint = |ui: &mut egui::Ui, key: &str, what: &str| {
+                            widgets::kbd(ui, p, key);
+                            ui.label(RichText::new(what).size(11.5).color(p.faint));
+                            ui.add_space(6.0);
+                        };
+                        hint(&mut foot, "↑↓", "move");
+                        hint(&mut foot, "Enter", if is_commands { "run" } else { "open" });
+                        if is_commands {
+                            let qo = display(keys_of("quick-open"));
+                            hint(&mut foot, &qo, "quick open");
+                        } else if self.kind == Kind::Files {
+                            let cp = display(keys_of("palette"));
+                            hint(&mut foot, &cp, "commands");
+                        }
                     });
             })
             .response
@@ -607,15 +787,20 @@ impl Workspace {
         settings: &mut Settings,
     ) -> Option<Action> {
         let mut action = None;
-        let mut panel = |ws: &mut Workspace, which: Panel, settings: &mut Settings| {
-            if ws.open_panel(which, backend, settings) {
+        let mut panel = |ws: &mut Workspace, which: SidePanel, settings: &mut Settings| {
+            if ws.open_side(which, backend, settings) {
                 action = Some(Action::Settings);
             }
         };
         match id {
             "recompile" => self.recompile(backend, settings),
             "open-file" => self.open_palette(Kind::Files, settings),
-            "search" => self.open_search(None),
+            "search" => {
+                self.open_search(None);
+                settings.sidebar_open = true;
+                settings.side_panel = "search".into();
+                action = Some(Action::Settings);
+            }
             "cite" => self.open_cite(backend, None),
             "figure" => self.open_figure(),
             "table" => self.open_table(),
@@ -625,16 +810,16 @@ impl Workspace {
             "words" => self.open_word_count(backend),
             "shortcuts" => self.shortcut_sheet = Some(String::new()),
             "snapshot" => self.history.label = Some(String::new()),
-            "history" => panel(self, Panel::History, settings),
+            "history" => panel(self, SidePanel::History, settings),
             "comment" => {
                 if self.add_comment(backend, settings) {
                     return Some(Action::Settings);
                 }
             }
-            "comments" => panel(self, Panel::Review, settings),
+            "comments" => panel(self, SidePanel::Comments, settings),
             "bib-manager" => self.open_bib_manager(backend, settings),
-            "git" => panel(self, Panel::Git, settings),
-            "todos" => panel(self, Panel::Todos, settings),
+            "git" => panel(self, SidePanel::Git, settings),
+            "todos" => panel(self, SidePanel::Todos, settings),
             "format" => self.format_document(backend),
             "reindent" => {
                 let indent = self.indent;
@@ -667,15 +852,11 @@ impl Workspace {
                     }
                     self.sel.selected = vec![a.clone()];
                     self.tree_cursor = Some(a);
-                    self.search = None;
+                    self.side_panel = SidePanel::Files;
                     self.focus_mode = false;
-                    if !settings.sidebar_open || settings.layout == "pdf" {
-                        settings.sidebar_open = true;
-                        if settings.layout == "pdf" {
-                            settings.layout = "split".into();
-                        }
-                        action = Some(Action::Settings);
-                    }
+                    settings.sidebar_open = true;
+                    settings.side_panel = "files".into();
+                    action = Some(Action::Settings);
                 }
             }
             "unused" => self.show_unused(backend),

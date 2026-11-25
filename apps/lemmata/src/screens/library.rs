@@ -5,7 +5,7 @@
 use crate::icons::{self, Icon};
 use crate::store::{Groups, Recent, Recents, Settings, View};
 use crate::theme::{self, Palette};
-use crate::widgets::{self, Button, Kind, MenuItem, MenuResult, Size};
+use crate::widgets::{self, Button, ChipTone, Kind, MenuItem, MenuResult, Size};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2,
 };
@@ -105,6 +105,7 @@ fn thumbnail_workers() -> &'static std::sync::mpsc::SyncSender<ThumbnailJob> {
 pub struct State {
     query: String,
     view: View,
+    recent_only: bool,
     pub sort_by_name: bool,
     editing: Option<Editing>,
     project_menu: Option<(String, Rect)>,
@@ -261,18 +262,23 @@ fn shown<'a>(st: &State, c: &'a Ctx) -> Vec<&'a Recent> {
         .0
         .iter()
         .filter(|r| {
-            if term.is_empty() {
-                c.groups.in_view(&r.path, &st.view)
-            } else {
+            if !term.is_empty() {
                 r.path.to_lowercase().contains(&term)
+            } else if st.recent_only {
+                true
+            } else {
+                c.groups.in_view(&r.path, &st.view)
             }
         })
         .collect();
-    if st.sort_by_name || c.settings.library_sort == "name" {
+    if !st.recent_only && (st.sort_by_name || c.settings.library_sort == "name") {
         list.sort_by(|a, b| natural_cmp(name_of(&a.path), name_of(&b.path)));
     }
     if !term.is_empty() {
         list.sort_by_key(|r| !name_of(&r.path).to_lowercase().contains(&term));
+    }
+    if st.recent_only && term.is_empty() {
+        list.truncate(12);
     }
     list
 }
@@ -284,11 +290,15 @@ struct Folder {
     last: f64,
 }
 
-/// The folders, at the top level (not during a search), by name, with what's in them.
+/// The folders, at the top level (not during a search or Recent filter), by name, with what's in them.
 fn folders(st: &State, c: &Ctx) -> Vec<Folder> {
-    if st.view != View::Root || !st.query.trim().is_empty() {
+    if st.view != View::Root || st.recent_only || !st.query.trim().is_empty() {
         return Vec::new();
     }
+    all_folders(c)
+}
+
+fn all_folders(c: &Ctx) -> Vec<Folder> {
     let mut out: Vec<Folder> = c
         .groups
         .groups
@@ -338,25 +348,48 @@ pub fn show(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx) -> Option<Act
         }
     }
     let full = ui.max_rect();
-    let rail = Rect::from_min_size(full.min, Vec2::new(248.0, full.height()));
-    let main = Rect::from_min_max(pos2(rail.right(), full.top()), full.max);
-    rail_ui(
-        &mut ui.new_child(egui::UiBuilder::new().max_rect(rail)),
-        p,
-        st,
-        &mut action,
-    );
-    let mut m = ui.new_child(egui::UiBuilder::new().max_rect(main));
-    m.painter().rect_filled(main, 0, p.app);
+    ui.painter().rect_filled(full, 0, p.app);
+    let compact_nav = full.width() < 760.0;
+    let main_card = if compact_nav {
+        let top = Rect::from_min_size(full.min, Vec2::new(full.width(), 52.0));
+        compact_bar_ui(
+            &mut ui.new_child(egui::UiBuilder::new().max_rect(top)),
+            p,
+            st,
+            c,
+            &mut action,
+        );
+        Rect::from_min_max(
+            pos2(full.left() + 8.0, top.bottom()),
+            pos2(full.right() - 8.0, full.bottom() - 8.0),
+        )
+    } else {
+        let rail_w = if full.width() < 900.0 { 208.0 } else { 236.0 };
+        let rail = Rect::from_min_size(full.min, Vec2::new(rail_w, full.height()));
+        rail_ui(
+            &mut ui.new_child(egui::UiBuilder::new().max_rect(rail)),
+            p,
+            st,
+            c,
+            &mut action,
+        );
+        Rect::from_min_max(
+            pos2(rail.right(), full.top() + 8.0),
+            pos2(full.right() - 8.0, full.bottom() - 8.0),
+        )
+    };
+    widgets::paint_card(ui, p, main_card);
+    let mut m = ui.new_child(egui::UiBuilder::new().max_rect(main_card.shrink(1.0)));
     egui::ScrollArea::vertical()
         .id_salt("library")
         .show(&mut m, |ui| {
+            let pad_x = if main_card.width() < 640.0 { 20 } else { 32 };
             egui::Frame::new()
                 .inner_margin(egui::Margin {
-                    left: 36,
-                    right: 36,
-                    top: 28,
-                    bottom: 40,
+                    left: pad_x,
+                    right: pad_x,
+                    top: 24,
+                    bottom: 36,
                 })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -402,67 +435,96 @@ pub fn show(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx) -> Option<Act
     action
 }
 
-fn nav(ui: &mut Ui, p: &Palette, icon: Option<Icon>, label: &str, subtle: bool) -> egui::Response {
-    let h = if subtle { 28.0 } else { 34.0 };
-    let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::click());
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
-    let t = ui
-        .ctx()
-        .animate_bool_with_time(r.id, r.hovered(), theme::ease_secs());
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius::same(theme::R),
-        p.chrome_hover.gamma_multiply(t),
+fn section_label(ui: &mut Ui, p: &Palette, text: &str) {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &text.to_uppercase(),
+        0.0,
+        egui::TextFormat {
+            font_id: FontId::new(10.5, theme::font::sans_600()),
+            color: p.faint,
+            extra_letter_spacing: 0.75,
+            ..Default::default()
+        },
     );
-    let mut x = rect.left() + 10.0;
-    if let Some(icon) = icon {
-        icons::paint(
-            ui.painter(),
-            Rect::from_min_size(pos2(x, rect.center().y - 8.0), Vec2::splat(16.0)),
-            icon,
-            p.chrome_muted,
-        );
-        x += 26.0;
-    }
-    let (size, ink) = if subtle {
-        (12.0, p.chrome_muted)
-    } else {
-        (13.0, p.chrome_ink)
-    };
-    ui.painter().text(
-        pos2(x, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        FontId::proportional(size),
-        ink,
-    );
-    widgets::focus_ring(ui, &r, rect, p, theme::R);
-    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+    ui.label(job);
 }
 
-fn rail_ui(ui: &mut Ui, p: &Palette, st: &mut State, action: &mut Option<Action>) {
-    let rect = ui.max_rect();
-    ui.painter().rect_filled(rect, 0, p.chrome);
-    ui.painter().vline(
-        rect.right() - 0.5,
-        rect.y_range(),
-        Stroke::new(1.0, p.chrome_border),
+fn compact_bar_ui(
+    ui: &mut Ui,
+    p: &Palette,
+    st: &mut State,
+    c: &mut Ctx,
+    action: &mut Option<Action>,
+) {
+    let rect = ui.max_rect().shrink2(Vec2::new(12.0, 0.0));
+    let mut bar = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
+    bar.spacing_mut().item_spacing.x = 8.0;
+    let _ = widgets::logo_mark(&mut bar, 26.0);
+    bar.label(
+        egui::RichText::new("Lemmata")
+            .font(FontId::new(19.0, theme::font::display()))
+            .color(p.ink),
+    );
+    bar.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if Button::icon(icons::SETTINGS, "Preferences")
+            .kind(Kind::Ghost)
+            .size(Size::Sm)
+            .show_icon(ui, p)
+            .clicked()
+        {
+            *action = Some(Action::Preferences);
+        }
+        if Button::icon(icons::FOLDER_PLUS, "New folder")
+            .kind(Kind::Ghost)
+            .size(Size::Sm)
+            .show_icon(ui, p)
+            .clicked()
+        {
+            start_edit(st, c, None, None);
+        }
+        if Button::new("New project")
+            .with_icon(icons::PLUS)
+            .kind(Kind::Primary)
+            .size(Size::Sm)
+            .show(ui, p)
+            .clicked()
+        {
+            *action = Some(Action::NewProject);
+        }
+    });
+}
+
+fn rail_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut Option<Action>) {
+    let rect = ui.max_rect();
+    ui.painter().rect_filled(rect, 0, p.app);
     let inner = rect
-        .shrink2(Vec2::new(14.0, 0.0))
-        .with_min_y(rect.top() + 20.0)
+        .shrink2(Vec2::new(12.0, 0.0))
+        .with_min_y(rect.top() + 16.0)
         .with_max_y(rect.bottom() - 14.0);
-    let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+    let foot_h = 68.0;
+    let body_rect = Rect::from_min_max(inner.min, pos2(inner.right(), inner.bottom() - foot_h));
+    let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(body_rect));
     ui.spacing_mut().item_spacing.y = 6.0;
+
+    // Brand mark + Young Serif wordmark on quiet stone ground.
     ui.horizontal(|ui| {
-        ui.add_space(8.0);
+        ui.add_space(6.0);
+        ui.spacing_mut().item_spacing.x = 9.0;
+        let _ = widgets::logo_mark(ui, 26.0);
         ui.label(
             egui::RichText::new("Lemmata")
-                .font(FontId::new(24.0, theme::font::display()))
-                .color(p.chrome_ink),
+                .font(FontId::new(21.0, theme::font::display()))
+                .color(p.ink),
         );
     });
-    ui.add_space(14.0 - 6.0);
+    ui.add_space(8.0);
+
     let w = ui.available_width();
     if Button::new("New project")
         .with_icon(icons::PLUS)
@@ -474,70 +536,222 @@ fn rail_ui(ui: &mut Ui, p: &Palette, st: &mut State, action: &mut Option<Action>
     {
         *action = Some(Action::NewProject);
     }
-    ui.add_space(12.0);
-    ui.spacing_mut().item_spacing.y = 2.0;
-    for (icon, label, act) in [
-        (icons::FOLDER_OPEN, "Open folder…", Action::OpenFolder),
-        (icons::GIT_BRANCH, "Clone a repository…", Action::Clone),
-        (icons::FILE_ARCHIVE, "Import from Overleaf…", Action::Import),
-        (icons::SPARKLES, "Example document", Action::Example),
-    ] {
-        if nav(&mut ui, p, Some(icon), label, false).clicked() {
-            *action = Some(act);
-        }
-    }
-    let note_font = FontId::proportional(12.5);
-    if let Some((note, _)) = &st.template_note {
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.add_space(6.0);
-            widgets::paragraph(
+    ui.add_space(6.0);
+
+    // Primary library navigation.
+    let scroll_rect = Rect::from_min_max(pos2(body_rect.left(), ui.cursor().top()), body_rect.max);
+    let mut sc = ui.new_child(egui::UiBuilder::new().max_rect(scroll_rect));
+    egui::ScrollArea::vertical()
+        .id_salt("library-rail")
+        .auto_shrink([false, false])
+        .show(&mut sc, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 2.0;
+
+            let total_n = c.recents.0.len();
+            let total_s = (total_n > 0).then(|| total_n.to_string());
+            if widgets::side_row(
                 ui,
-                note,
-                note_font.clone(),
-                p.chrome_muted,
-                1.45,
-                ui.available_width() - 6.0,
-            );
-        });
-    }
-    if let Some(u) = &st.undo {
-        ui.add_space(8.0);
-        let mut undo = false;
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(6.0);
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.label(
-                egui::RichText::new(format!("Folder “{}” deleted · ", u.name))
-                    .font(note_font.clone())
-                    .color(p.chrome_muted),
-            );
-            undo = ui
-                .add(
-                    egui::Label::new(
-                        egui::RichText::new("Undo")
+                p,
+                Some(icons::LAYOUT_GRID),
+                None,
+                "All projects",
+                st.view == View::Root && !st.recent_only,
+                total_s.as_deref(),
+            )
+            .clicked()
+            {
+                st.view = View::Root;
+                st.recent_only = false;
+            }
+            if widgets::side_row(
+                ui,
+                p,
+                Some(icons::HISTORY),
+                None,
+                "Recent",
+                st.view == View::Root && st.recent_only,
+                None,
+            )
+            .clicked()
+            {
+                st.view = View::Root;
+                st.recent_only = true;
+            }
+            if widgets::side_row(
+                ui,
+                p,
+                Some(icons::LAYOUT_TEMPLATE),
+                None,
+                "Templates",
+                false,
+                None,
+            )
+            .clicked()
+            {
+                *action = Some(Action::NewProject);
+            }
+
+            // Folders section with inline '+' button (single "New folder" trigger).
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                section_label(ui, p, "Folders");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if Button::icon(icons::FOLDER_PLUS, "New folder")
+                        .kind(Kind::Ghost)
+                        .size(Size::Sm)
+                        .icon_size(14.0)
+                        .show_icon(ui, p)
+                        .on_hover_text("New folder")
+                        .clicked()
+                    {
+                        start_edit(st, c, None, None);
+                    }
+                });
+            });
+            let side_folders = all_folders(c);
+            if side_folders.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("Organize projects into folders")
+                            .size(11.5)
+                            .color(p.faint),
+                    );
+                });
+            } else {
+                for f in &side_folders {
+                    let on = st.view == View::Group(f.id.clone());
+                    let cnt = f.count.to_string();
+                    let r = widgets::side_row(
+                        ui,
+                        p,
+                        Some(if on {
+                            icons::FOLDER_OPEN
+                        } else {
+                            icons::FOLDER
+                        }),
+                        Some(p.warn),
+                        &f.name,
+                        on,
+                        Some(cnt.as_str()),
+                    );
+                    if egui::DragAndDrop::has_payload_of_type::<Dragged>(ui.ctx())
+                        && r.contains_pointer()
+                    {
+                        ui.painter().rect_stroke(
+                            r.rect,
+                            CornerRadius::same(7),
+                            Stroke::new(1.5, p.accent),
+                            StrokeKind::Inside,
+                        );
+                    }
+                    if let Some(d) = r.dnd_release_payload::<Dragged>() {
+                        c.groups.move_project(&d.0, Some(&f.id));
+                        commit(st, action);
+                    }
+                    if r.secondary_clicked() {
+                        st.folder_menu = Some((f.id.clone(), r.rect));
+                    } else if r.clicked() {
+                        st.view = View::Group(f.id.clone());
+                        st.recent_only = false;
+                    }
+                }
+            }
+
+            // Bring in a project section.
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                section_label(ui, p, "Bring in a project");
+            });
+            for (icon, label, act) in [
+                (icons::FOLDER_OPEN, "Open folder…", Action::OpenFolder),
+                (icons::GIT_BRANCH, "Clone a repository…", Action::Clone),
+                (icons::FILE_ARCHIVE, "Import from Overleaf…", Action::Import),
+                (icons::SPARKLES, "Example document", Action::Example),
+            ] {
+                if widgets::side_row(ui, p, Some(icon), None, label, false, None).clicked() {
+                    *action = Some(act);
+                }
+            }
+
+            let note_font = FontId::proportional(12.0);
+            if let Some((note, _)) = &st.template_note {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    widgets::paragraph(
+                        ui,
+                        note,
+                        note_font.clone(),
+                        p.muted,
+                        1.45,
+                        ui.available_width() - 6.0,
+                    );
+                });
+            }
+            if let Some(u) = &st.undo {
+                ui.add_space(8.0);
+                let mut undo = false;
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(6.0);
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label(
+                        egui::RichText::new(format!("Folder “{}” deleted · ", u.name))
                             .font(note_font.clone())
-                            .color(p.chrome_ink)
-                            .underline(),
-                    )
-                    .sense(Sense::click()),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked();
+                            .color(p.muted),
+                    );
+                    undo = ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new("Undo")
+                                    .font(note_font.clone())
+                                    .color(p.accent_text)
+                                    .underline(),
+                            )
+                            .sense(Sense::click()),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked();
+                });
+                if undo {
+                    st.undo_requested = true;
+                }
+            }
         });
-        if undo {
-            st.undo_requested = true;
-        }
-    }
-    // The foot sits at the bottom of the rail.
-    let foot_h = 34.0 + 2.0 + 28.0;
-    let foot = Rect::from_min_max(pos2(inner.left(), inner.bottom() - foot_h), inner.max);
+
+    // Bottom pinned utilities on quiet ground.
+    let foot = Rect::from_min_max(pos2(inner.left(), inner.bottom() - foot_h + 6.0), inner.max);
+    ui.painter()
+        .hline(foot.x_range(), foot.top() - 4.0, Stroke::new(1.0, p.border));
     let mut f = ui.new_child(egui::UiBuilder::new().max_rect(foot));
     f.spacing_mut().item_spacing.y = 2.0;
-    if nav(&mut f, p, Some(icons::SETTINGS), "Preferences", false).clicked() {
+    if widgets::side_row(
+        &mut f,
+        p,
+        Some(icons::SETTINGS),
+        None,
+        "Preferences",
+        false,
+        None,
+    )
+    .clicked()
+    {
         *action = Some(Action::Preferences);
     }
-    if nav(&mut f, p, None, "Show welcome screen", true).clicked() {
+    if widgets::side_row(
+        &mut f,
+        p,
+        Some(icons::SPARKLES),
+        None,
+        "Show welcome screen",
+        false,
+        None,
+    )
+    .clicked()
+    {
         *action = Some(Action::Welcome);
     }
 }
@@ -624,7 +838,6 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
                     (Some(icons::LAYOUT_GRID), "Grid"),
                 ],
                 grid as usize,
-                false,
                 true,
             ) {
                 c.settings.library_view = ["list", "grid"][i].into();
@@ -648,35 +861,23 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
                     *action = Some(Action::Settings);
                 }
             });
-            match (&active, searching) {
-                (Some(g), false) => {
-                    if Button::new("Rename")
-                        .with_icon(icons::SQUARE_PEN)
-                        .size(Size::Sm)
-                        .show(ui, p)
-                        .clicked()
-                    {
-                        start_edit(st, c, Some(g.id.clone()), None);
-                    }
-                    if Button::new("Delete folder")
-                        .with_icon(icons::TRASH)
-                        .size(Size::Sm)
-                        .show(ui, p)
-                        .clicked()
-                    {
-                        remove_group(st, c, &g.id, action);
-                    }
-                }
-                (None, false)
-                    if Button::new("New folder")
-                        .with_icon(icons::FOLDER_PLUS)
-                        .size(Size::Sm)
-                        .show(ui, p)
-                        .clicked() =>
+            if let (Some(g), false) = (&active, searching) {
+                if Button::new("Rename")
+                    .with_icon(icons::SQUARE_PEN)
+                    .size(Size::Sm)
+                    .show(ui, p)
+                    .clicked()
                 {
-                    start_edit(st, c, None, None);
+                    start_edit(st, c, Some(g.id.clone()), None);
                 }
-                _ => {}
+                if Button::new("Delete folder")
+                    .with_icon(icons::TRASH)
+                    .size(Size::Sm)
+                    .show(ui, p)
+                    .clicked()
+                {
+                    remove_group(st, c, &g.id, action);
+                }
             }
         });
     } else {
@@ -718,7 +919,6 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
                         (Some(icons::LAYOUT_GRID), "Grid"),
                     ],
                     grid as usize,
-                    false,
                     true,
                 ) {
                     c.settings.library_view = ["list", "grid"][i].into();
@@ -727,35 +927,23 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
                 ui.allocate_ui(Vec2::new(260.0, 32.0), |ui| {
                     widgets::search_input(ui, p, &mut st.query, "Search projects");
                 });
-                match (&active, searching) {
-                    (Some(g), false) => {
-                        if Button::new("Delete folder")
-                            .with_icon(icons::TRASH)
-                            .size(Size::Sm)
-                            .show(ui, p)
-                            .clicked()
-                        {
-                            remove_group(st, c, &g.id, action);
-                        }
-                        if Button::new("Rename")
-                            .with_icon(icons::SQUARE_PEN)
-                            .size(Size::Sm)
-                            .show(ui, p)
-                            .clicked()
-                        {
-                            start_edit(st, c, Some(g.id.clone()), None);
-                        }
-                    }
-                    (None, false)
-                        if Button::new("New folder")
-                            .with_icon(icons::FOLDER_PLUS)
-                            .size(Size::Sm)
-                            .show(ui, p)
-                            .clicked() =>
+                if let (Some(g), false) = (&active, searching) {
+                    if Button::new("Delete folder")
+                        .with_icon(icons::TRASH)
+                        .size(Size::Sm)
+                        .show(ui, p)
+                        .clicked()
                     {
-                        start_edit(st, c, None, None);
+                        remove_group(st, c, &g.id, action);
                     }
-                    _ => {}
+                    if Button::new("Rename")
+                        .with_icon(icons::SQUARE_PEN)
+                        .size(Size::Sm)
+                        .show(ui, p)
+                        .clicked()
+                    {
+                        start_edit(st, c, Some(g.id.clone()), None);
+                    }
                 }
                 // Tools first, so the breadcrumb gets what is left and truncates instead of running under them.
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -805,7 +993,173 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
     } else if c.settings.library_view == "grid" {
         grid(ui, p, st, c, &folders, &shown, action);
     } else {
+        // Hero "Continue writing" cards above the table on the root view when not searching.
+        if active.is_none() && !searching && !st.recent_only && !c.recents.0.is_empty() {
+            continue_writing_row(ui, p, st, c, action);
+            ui.add_space(22.0);
+            section_label(ui, p, "All projects");
+            ui.add_space(8.0);
+        }
         table(ui, p, st, c, &folders, &shown, action);
+    }
+}
+
+/// Up to 3 recent-project hero cards in list view ("Continue writing").
+fn continue_writing_row(
+    ui: &mut Ui,
+    p: &Palette,
+    st: &mut State,
+    c: &mut Ctx,
+    action: &mut Option<Action>,
+) {
+    let top: Vec<Recent> = c.recents.0.iter().take(3).cloned().collect();
+    if top.is_empty() {
+        return;
+    }
+    section_label(ui, p, "Continue writing");
+    ui.add_space(10.0);
+    let w = ui.available_width();
+    let cols = if w < 560.0 {
+        1
+    } else if w < 820.0 {
+        2
+    } else {
+        3
+    }
+    .min(top.len());
+    let gap = 14.0;
+    let cw = (w - gap * (cols as f32 - 1.0)) / cols as f32;
+    let ch = 134.0;
+    let (area, _) = ui.allocate_exact_size(Vec2::new(w, ch), Sense::hover());
+    let painter = ui.painter().clone();
+    for (i, rec) in top.iter().take(cols).enumerate() {
+        let rect = Rect::from_min_size(
+            pos2(area.left() + i as f32 * (cw + gap), area.top()),
+            Vec2::new(cw, ch),
+        );
+        let r = ui
+            .interact(
+                rect,
+                ui.make_persistent_id(("hero-card", &rec.path)),
+                Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let pname = name_of(&rec.path);
+        r.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Button,
+                true,
+                format!("Continue writing: {pname}"),
+            )
+        });
+        let hovered = r.hovered();
+        let rad = CornerRadius::same(theme::R_LG);
+        if hovered {
+            painter.add(p.shadow.as_shape(rect, rad));
+        } else {
+            painter.add(p.shadow_card.as_shape(rect, rad));
+        }
+        painter.rect(
+            rect,
+            rad,
+            p.surface,
+            Stroke::new(1.0, if hovered { p.border_strong } else { p.border }),
+            StrokeKind::Inside,
+        );
+        // Left miniature page thumbnail (76 x 106).
+        let thumb_r = Rect::from_min_size(rect.min + Vec2::new(12.0, 14.0), Vec2::new(76.0, 106.0));
+        painter.rect(
+            thumb_r,
+            CornerRadius::same(theme::R_SM),
+            p.surface_2,
+            Stroke::new(1.0, p.border),
+            StrokeKind::Inside,
+        );
+        if ui.is_rect_visible(thumb_r) {
+            match thumb(ui, st, c, &rec.path) {
+                Some(tex) => {
+                    let [tw, th] = tex.size().map(|v| v as f32);
+                    let inner = thumb_r.shrink(1.0);
+                    let uv_h = ((inner.height() / inner.width()) * tw / th).min(1.0);
+                    painter.rect_filled(inner, CornerRadius::same(3), Color32::WHITE);
+                    painter.image(
+                        tex.id(),
+                        inner,
+                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, uv_h)),
+                        Color32::WHITE,
+                    );
+                }
+                None => {
+                    let inner = thumb_r.shrink(1.0);
+                    painter.rect_filled(inner, CornerRadius::same(3), Color32::WHITE);
+                    let mut ly = inner.top() + 14.0;
+                    painter.rect_filled(
+                        Rect::from_min_size(
+                            pos2(inner.left() + 12.0, ly),
+                            Vec2::new(inner.width() - 28.0, 5.0),
+                        ),
+                        2,
+                        Color32::from_rgb(0xa6, 0xae, 0xb6),
+                    );
+                    ly += 13.0;
+                    for k in 0..5 {
+                        let lw = inner.width() - 20.0 - if k == 4 { 16.0 } else { 0.0 };
+                        painter.rect_filled(
+                            Rect::from_min_size(
+                                pos2(inner.left() + 10.0, ly),
+                                Vec2::new(lw.max(12.0), 3.0),
+                            ),
+                            1,
+                            Color32::from_rgb(0xdf, 0xe3, 0xe7),
+                        );
+                        ly += 9.0;
+                    }
+                }
+            }
+        }
+        // Right metadata column.
+        let tx = thumb_r.right() + 14.0;
+        let tw = (rect.right() - tx - 14.0).max(40.0);
+        let tg = one_line(
+            &painter,
+            pname,
+            FontId::new(14.0, theme::font::sans_600()),
+            if hovered { p.accent_text } else { p.ink },
+            tw,
+        );
+        painter.galley(pos2(tx, rect.top() + 18.0), tg, p.ink);
+        let loc = one_line(
+            &painter,
+            &home(folder_of(&rec.path)),
+            FontId::monospace(11.0),
+            p.faint,
+            tw,
+        );
+        painter.galley(pos2(tx, rect.top() + 40.0), loc, p.faint);
+        let when = one_line(
+            &painter,
+            &ago(c.now_ms, rec.last_opened),
+            FontId::proportional(12.0),
+            p.muted,
+            tw,
+        );
+        painter.galley(pos2(tx, rect.top() + 62.0), when, p.muted);
+        if let Some(fname) = folder_name(c.groups, &rec.path) {
+            let mut chip_ui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(
+                pos2(tx, rect.bottom() - 34.0),
+                Vec2::new(tw, 22.0),
+            )));
+            widgets::chip(
+                &mut chip_ui,
+                p,
+                Some(icons::FOLDER),
+                &fname,
+                ChipTone::Neutral,
+            );
+        }
+        if r.clicked() {
+            *action = Some(Action::Open(rec.path.clone()));
+        }
     }
 }
 
@@ -2002,7 +2356,9 @@ mod snapshots {
             show(ui, &theme::LIGHT, &mut st, &mut c);
         });
         h.run();
-        let title = h.get_by_label(name).rect();
+        let title = h
+            .get_by_role_and_label(egui::accesskit::Role::Label, name)
+            .rect();
         let rename = h.get_by_label("Rename").rect();
         assert!(
             title.width() > 0.0 && title.right() <= rename.left(),

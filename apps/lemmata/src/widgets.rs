@@ -14,8 +14,6 @@ pub enum Kind {
     Primary,
     Ghost,
     Danger,
-    /// A button on the dark toolbar or sidebar (`.chrome .btn`).
-    Chrome,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -42,7 +40,6 @@ pub struct Button<'a> {
     angle: f32,
     radius: Option<CornerRadius>,
     icon_size: f32,
-    pill: Option<String>,
 }
 
 impl<'a> Button<'a> {
@@ -62,7 +59,6 @@ impl<'a> Button<'a> {
             angle: 0.0,
             radius: None,
             icon_size: 16.0,
-            pill: None,
         }
     }
     /// An icon-only button (`.btn.icon`, drawn with `show_icon`); `label` is its accessible name.
@@ -119,15 +115,10 @@ impl<'a> Button<'a> {
         self.size = size;
         self
     }
-    /// `.chrome .btn.on`: a toggled toolbar button.
+    /// A toggled button.
     pub fn on(mut self, on: bool) -> Self {
         self.on = on;
         self.toggle = true;
-        self
-    }
-    /// `.pill`: a count after the label (open comments, git changes).
-    pub fn pill(mut self, text: Option<&str>) -> Self {
-        self.pill = text.map(str::to_owned);
         self
     }
     pub fn enabled(mut self, enabled: bool) -> Self {
@@ -156,14 +147,6 @@ impl<'a> Button<'a> {
             ui.painter()
                 .layout_no_wrap(self.text.to_owned(), font, Color32::PLACEHOLDER)
         });
-        let pill = self.pill.as_ref().map(|t| {
-            ui.painter().layout_no_wrap(
-                t.clone(),
-                FontId::proportional(11.0),
-                Color32::from_rgb(0x1b, 0x1b, 0x1b),
-            )
-        });
-        let pill_w = pill.as_ref().map_or(0.0, |g| g.size().x + 12.0 + 4.0);
         let width = if icon_only {
             height
         } else {
@@ -181,7 +164,6 @@ impl<'a> Button<'a> {
         } else {
             Sense::hover()
         };
-        let width = width + pill_w;
         let content_w = width;
         let width = width.max(self.min_width);
         let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), sense);
@@ -212,23 +194,21 @@ impl<'a> Button<'a> {
                     p.accent_ink,
                 ),
                 // `.btn.on`: a pressed toggle shows in the accent colour.
+                // Labeled ghost buttons get a 1 px border inset (`.btn.ghost`); icon-only ghost
+                // buttons stay borderless until hover (`.tb`, `.side-head .act`).
                 Kind::Ghost => (
                     lerp(Color32::TRANSPARENT, p.surface_3),
-                    Color32::TRANSPARENT,
+                    if icon_only {
+                        Color32::TRANSPARENT
+                    } else {
+                        p.border
+                    },
                     if self.on { p.accent } else { p.ink },
                 ),
                 Kind::Danger => (
                     lerp(p.surface, p.surface_2),
                     lerp(p.border_strong, p.faint),
                     p.error,
-                ),
-                Kind::Chrome if self.on => {
-                    (p.chrome_active, Color32::TRANSPARENT, p.accent_on_dark)
-                }
-                Kind::Chrome => (
-                    lerp(Color32::TRANSPARENT, p.chrome_hover),
-                    Color32::TRANSPARENT,
-                    p.chrome_ink,
                 ),
             };
             let ink = self.ink.unwrap_or(ink);
@@ -242,15 +222,19 @@ impl<'a> Button<'a> {
                 stroke.gamma_multiply(alpha),
                 ink.gamma_multiply(alpha),
             );
+            let default_r = match self.size {
+                Size::Sm => theme::R,
+                Size::Md | Size::Lg => theme::R_MD,
+            };
             let painter = ui.painter();
             painter.rect(
                 rect,
-                self.radius.unwrap_or(CornerRadius::same(theme::R)),
+                self.radius.unwrap_or(CornerRadius::same(default_r)),
                 fill,
                 Stroke::new(1.0, stroke),
                 StrokeKind::Inside,
             );
-            focus_ring(ui, &response, rect, p, theme::R);
+            focus_ring(ui, &response, rect, p, default_r);
 
             let mut x = rect.left()
                 + if icon_only {
@@ -270,24 +254,6 @@ impl<'a> Button<'a> {
                 let pos = egui::pos2(x, rect.center().y - galley.size().y / 2.0);
                 x += galley.size().x + 6.0;
                 painter.galley(pos, galley, ink);
-            }
-            if let Some(g) = pill {
-                let pill_alpha = if self.enabled { 1.0 } else { 0.45 };
-                let r = egui::Rect::from_min_size(
-                    egui::pos2(x - 2.0, rect.center().y - 8.5),
-                    Vec2::new(g.size().x + 12.0, 17.0),
-                );
-                painter.rect_filled(
-                    r,
-                    CornerRadius::same(9),
-                    Color32::from_rgba_unmultiplied(220, 160, 20, (217.0 * pill_alpha) as u8),
-                );
-                painter.galley(
-                    r.center() - g.size() / 2.0,
-                    g,
-                    Color32::from_rgb(0x1b, 0x1b, 0x1b).gamma_multiply(pill_alpha),
-                );
-                x = r.right() + 6.0;
             }
             if let Some(icon) = self.trailing {
                 let r = egui::Rect::from_min_size(
@@ -346,7 +312,7 @@ pub fn segmented_width(ui: &Ui, options: &[(Option<Icon>, &str)], icon_only: boo
             20.0 + if icon.is_some() { 14.0 + gap } else { 0.0 } + tw
         })
         .sum();
-    widths + 2.0 * (options.len() as f32 - 1.0) + 4.0
+    widths + 2.0 * (options.len() as f32 - 1.0) + 6.0
 }
 
 /// `.segmented`: a track with one pressed option. Returns the clicked index, if any. With `icon_only`
@@ -356,7 +322,6 @@ pub fn segmented(
     p: &Palette,
     options: &[(Option<Icon>, &str)],
     selected: usize,
-    chrome: bool,
     icon_only: bool,
 ) -> Option<usize> {
     let font = FontId::new(12.0, theme::font::sans_500());
@@ -383,36 +348,30 @@ pub fn segmented(
             20.0 + icon_w + g.size().x
         })
         .collect();
-    let total = widths.iter().sum::<f32>() + 2.0 * (options.len() as f32 - 1.0) + 4.0;
-    let (track, _) = ui.allocate_exact_size(Vec2::new(total, 30.0), Sense::hover());
+    let total = widths.iter().sum::<f32>() + 2.0 * (options.len() as f32 - 1.0) + 6.0;
+    let (track, _) = ui.allocate_exact_size(Vec2::new(total, 32.0), Sense::hover());
     let painter = ui.painter().clone();
-    painter.rect_filled(
-        track,
-        CornerRadius::same(theme::R),
-        if chrome { p.chrome_3 } else { p.surface_3 },
-    );
+    painter.rect_filled(track, CornerRadius::same(9), p.surface_3);
     let mut clicked = None;
-    let mut x = track.left() + 2.0;
+    let mut x = track.left() + 3.0;
     for (i, (((icon, text), galley), w)) in options.iter().zip(galleys).zip(&widths).enumerate() {
-        let rect = egui::Rect::from_min_size(egui::pos2(x, track.top() + 2.0), Vec2::new(*w, 26.0));
+        let rect = egui::Rect::from_min_size(egui::pos2(x, track.top() + 3.0), Vec2::new(*w, 26.0));
         let id = ui.scope_id().with(("segmented", i, *text));
         let response = ui.interact(rect, id, Sense::click());
         response
             .widget_info(|| WidgetInfo::selected(egui::Role::Button, true, i == selected, *text));
         let on = i == selected;
-        let ink = match (chrome, on) {
-            (true, true) => p.accent_on_dark,
-            (true, false) => p.chrome_muted,
-            (false, true) => p.ink,
-            (false, false) => p.muted,
-        };
+        let hovered = response.hovered();
+        let ink = if on || hovered { p.ink } else { p.muted };
         if on {
-            if chrome {
-                painter.rect_filled(rect, CornerRadius::same(theme::R_SM), p.chrome_active);
-            } else {
-                painter.add(theme::SHADOW_SM.as_shape(rect, CornerRadius::same(theme::R_SM)));
-                painter.rect_filled(rect, CornerRadius::same(theme::R_SM), p.surface);
-            }
+            painter.add(p.shadow_card.as_shape(rect, CornerRadius::same(theme::R)));
+            painter.rect(
+                rect,
+                CornerRadius::same(theme::R),
+                p.surface,
+                Stroke::new(1.0, p.card_hairline),
+                StrokeKind::Inside,
+            );
         }
         let mut cx = rect.left() + 10.0;
         if let Some(icon) = icon {
@@ -429,13 +388,366 @@ pub fn segmented(
             galley,
             ink,
         );
-        focus_ring(ui, &response, rect, p, theme::R_SM);
+        focus_ring(ui, &response, rect, p, theme::R);
         if response.clicked() {
             clicked = Some(i);
         }
+        let _ = response.on_hover_cursor(egui::CursorIcon::PointingHand);
         x += w + 2.0;
     }
     clicked
+}
+
+/// Colour tone for chips, pills and rail badges.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChipTone {
+    Ok,
+    Warn,
+    Error,
+    Accent,
+    Neutral,
+}
+
+impl ChipTone {
+    fn soft_colors(self, p: &Palette) -> (Color32, Color32) {
+        match self {
+            ChipTone::Ok => (p.ok_soft, p.ok),
+            ChipTone::Warn => (p.warn_soft, p.warn),
+            ChipTone::Error => (p.error_soft, p.error),
+            ChipTone::Accent => (p.accent_soft, p.accent_text),
+            ChipTone::Neutral => (p.surface_3, p.muted),
+        }
+    }
+    fn solid_colors(self, p: &Palette) -> (Color32, Color32) {
+        match self {
+            ChipTone::Error => (p.error, p.accent_ink),
+            ChipTone::Warn => (p.warn, p.accent_ink),
+            ChipTone::Ok => (p.ok, p.accent_ink),
+            ChipTone::Accent | ChipTone::Neutral => (p.accent, p.accent_ink),
+        }
+    }
+}
+
+/// `.sw`: a 36×20 toggle switch with a 16 px sliding knob, used in Settings.
+pub fn switch(ui: &mut Ui, p: &Palette, value: &mut bool, label: &str) -> Response {
+    let (rect, r) = ui.allocate_exact_size(Vec2::new(36.0, 20.0), Sense::click());
+    if r.clicked() {
+        *value = !*value;
+    }
+    r.widget_info(|| WidgetInfo::selected(egui::Role::CheckBox, true, *value, label));
+    if ui.is_rect_visible(rect) {
+        let t = ui
+            .ctx()
+            .animate_bool_with_time(r.id, *value, theme::ease_secs());
+        let track = p.border_strong.lerp_to_gamma(p.accent, t);
+        let painter = ui.painter();
+        painter.rect_filled(rect, CornerRadius::same(10), track);
+        let knob_x = rect.left() + 10.0 + t * 16.0;
+        let center = egui::pos2(knob_x, rect.center().y);
+        painter.circle_filled(
+            center + Vec2::new(0.0, 1.0),
+            8.0,
+            Color32::from_black_alpha(52),
+        );
+        painter.circle_filled(center, 8.0, Color32::WHITE);
+        focus_ring(ui, &r, rect, p, 10);
+    }
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// `.chip` / `.pill` / `.badge-st`: compact rounded status tag.
+pub fn chip(ui: &mut Ui, p: &Palette, icon: Option<Icon>, text: &str, tone: ChipTone) -> Response {
+    chip_inner(ui, p, icon, text, tone, 20.0, 9, false, None)
+}
+
+/// Clickable 28 px action chip (e.g. `"4 issues"` in the PDF card header).
+pub fn chip_button(
+    ui: &mut Ui,
+    p: &Palette,
+    icon: Option<Icon>,
+    text: &str,
+    a11y_label: &str,
+    tone: ChipTone,
+) -> Response {
+    chip_inner(ui, p, icon, text, tone, 28.0, 7, true, Some(a11y_label))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn chip_inner(
+    ui: &mut Ui,
+    p: &Palette,
+    icon: Option<Icon>,
+    text: &str,
+    tone: ChipTone,
+    height: f32,
+    radius: u8,
+    clickable: bool,
+    a11y_label: Option<&str>,
+) -> Response {
+    let (bg, fg) = tone.soft_colors(p);
+    let font_size = if height >= 26.0 { 12.5 } else { 11.0 };
+    let icon_size = if height >= 26.0 { 14.0 } else { 12.0 };
+    let pad = if height >= 26.0 { 10.0 } else { 6.0 };
+    let galley = (!text.is_empty()).then(|| {
+        ui.painter().layout_no_wrap(
+            text.to_owned(),
+            FontId::new(font_size, theme::font::sans_600()),
+            fg,
+        )
+    });
+    let text_w = galley.as_ref().map_or(0.0, |g| g.size().x);
+    let icon_w = if icon.is_some() {
+        icon_size + if text_w > 0.0 { 5.0 } else { 0.0 }
+    } else {
+        0.0
+    };
+    let width = (pad * 2.0 + icon_w + text_w).max(height);
+    let sense = if clickable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, r) = ui.allocate_exact_size(Vec2::new(width, height), sense);
+    if clickable {
+        let name = a11y_label.unwrap_or(text);
+        r.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, name));
+    }
+    if ui.is_rect_visible(rect) {
+        let fill = if clickable && r.hovered() {
+            bg.lerp_to_gamma(fg, 0.08)
+        } else {
+            bg
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, CornerRadius::same(radius), fill);
+        let mut x = rect.left() + (width - (icon_w + text_w)) / 2.0;
+        if let Some(ic) = icon {
+            icons::paint(
+                painter,
+                Rect::from_min_size(
+                    egui::pos2(x, rect.center().y - icon_size / 2.0),
+                    Vec2::splat(icon_size),
+                ),
+                ic,
+                fg,
+            );
+            x += icon_size + 5.0;
+        }
+        if let Some(g) = galley {
+            painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, fg);
+        }
+        if clickable {
+            focus_ring(ui, &r, rect, p, radius);
+        }
+    }
+    if clickable {
+        r.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        r
+    }
+}
+
+/// `.rail-btn`: 36×36 workspace rail button on `p.app`, with optional top-right count badge.
+pub fn rail_button(
+    ui: &mut Ui,
+    p: &Palette,
+    icon: Icon,
+    label: &str,
+    on: bool,
+    toggle: bool,
+    badge: Option<(usize, ChipTone)>,
+) -> Response {
+    let (rect, r) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+    r.widget_info(|| {
+        if toggle {
+            WidgetInfo::selected(egui::Role::Button, true, on, label)
+        } else {
+            WidgetInfo::labeled(egui::Role::Button, true, label)
+        }
+    });
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let rad = CornerRadius::same(theme::R_MD);
+        if on {
+            painter.add(p.shadow_card.as_shape(rect, rad));
+            painter.rect(
+                rect,
+                rad,
+                p.rail_active,
+                Stroke::new(1.0, p.card_hairline),
+                StrokeKind::Inside,
+            );
+        } else if r.hovered() {
+            painter.rect_filled(rect, rad, p.surface_3);
+        }
+        let icon_color = if on {
+            p.accent
+        } else if r.hovered() {
+            p.ink
+        } else {
+            p.muted
+        };
+        icons::paint(
+            painter,
+            Rect::from_center_size(rect.center(), Vec2::splat(18.0)),
+            icon,
+            icon_color,
+        );
+        if let Some((count, tone)) = badge
+            && count > 0
+        {
+            let (bg, fg) = tone.solid_colors(p);
+            let txt = if count > 99 {
+                "99+".to_owned()
+            } else {
+                count.to_string()
+            };
+            let g = painter.layout_no_wrap(txt, FontId::new(10.0, theme::font::sans_600()), fg);
+            let bw = (g.size().x + 8.0).max(15.0);
+            let br = Rect::from_min_size(
+                egui::pos2(rect.right() - bw - 1.0, rect.top() + 2.0),
+                Vec2::new(bw, 15.0),
+            );
+            painter.rect_filled(br, CornerRadius::same(8), bg);
+            painter.galley(br.center() - g.size() / 2.0, g, fg);
+        }
+        focus_ring(ui, &r, rect, p, theme::R_MD);
+    }
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// `.row`: 30 px full-width navigation/list row used in sidebars, library nav and settings nav.
+pub fn side_row(
+    ui: &mut Ui,
+    p: &Palette,
+    icon: Option<Icon>,
+    icon_color: Option<Color32>,
+    text: &str,
+    on: bool,
+    trailing: Option<&str>,
+) -> Response {
+    let w = ui.available_width().max(60.0);
+    let (rect, r) = ui.allocate_exact_size(Vec2::new(w, 30.0), Sense::click());
+    r.widget_info(|| WidgetInfo::selected(egui::Role::Button, true, on, text));
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let rad = CornerRadius::same(7);
+        if on {
+            painter.add(p.shadow_card.as_shape(rect, rad));
+            painter.rect(
+                rect,
+                rad,
+                p.rail_active,
+                Stroke::new(1.0, p.card_hairline),
+                StrokeKind::Inside,
+            );
+        } else if r.hovered() {
+            painter.rect_filled(rect, rad, p.surface_3);
+        }
+        let mut x = rect.left() + 8.0;
+        let trail_g = trailing.map(|t| {
+            painter.layout_no_wrap(
+                t.to_owned(),
+                FontId::new(11.5, theme::font::mono_500()),
+                p.faint,
+            )
+        });
+        let right_edge = rect.right() - 8.0 - trail_g.as_ref().map_or(0.0, |g| g.size().x + 8.0);
+        if let Some(ic) = icon {
+            let ic_col = if on {
+                p.accent
+            } else {
+                icon_color.unwrap_or(p.faint)
+            };
+            icons::paint(
+                painter,
+                Rect::from_min_size(egui::pos2(x, rect.center().y - 7.5), Vec2::splat(15.0)),
+                ic,
+                ic_col,
+            );
+            x += 15.0 + 7.0;
+        }
+        let font = if on {
+            FontId::new(13.0, theme::font::sans_500())
+        } else {
+            FontId::proportional(13.0)
+        };
+        let ink = if on { p.ink } else { p.ink_2 };
+        let avail_text = (right_edge - x).max(16.0);
+        let mut job = egui::text::LayoutJob::single_section(
+            text.to_owned(),
+            egui::TextFormat {
+                font_id: font,
+                color: ink,
+                ..Default::default()
+            },
+        );
+        job.wrap = egui::text::TextWrapping {
+            max_width: avail_text,
+            max_rows: 1,
+            break_anywhere: true,
+            overflow_character: Some('…'),
+        };
+        let g = ui.fonts_mut(|f| f.layout_job(job));
+        painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, ink);
+        if let Some(tg) = trail_g {
+            painter.galley(
+                egui::pos2(
+                    rect.right() - 8.0 - tg.size().x,
+                    rect.center().y - tg.size().y / 2.0,
+                ),
+                tg,
+                p.faint,
+            );
+        }
+        focus_ring(ui, &r, rect, p, 7);
+    }
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Paints a rounded white workspace card directly onto `rect` (Editor card, PDF card, Library main).
+pub fn paint_card(ui: &Ui, p: &Palette, rect: Rect) {
+    let rad = CornerRadius::same(theme::R_LG);
+    let painter = ui.painter();
+    painter.add(p.shadow_card.as_shape(rect, rad));
+    painter.rect(
+        rect,
+        rad,
+        p.surface,
+        Stroke::new(1.0, p.card_hairline),
+        StrokeKind::Inside,
+    );
+}
+
+/// Cached 128×128 Typeset Split app icon texture for crisp rendering in the rail and dialogs.
+pub fn logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = egui::Id::unique("lemmata-logo-tex");
+    if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return tex;
+    }
+    let img = image::load_from_memory(include_bytes!("../icons/128x128.png"))
+        .expect("bundled 128x128 logo PNG")
+        .to_rgba8();
+    let size = [img.width() as usize, img.height() as usize];
+    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+    let tex = ctx.load_texture("lemmata-logo", color, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    tex
+}
+
+/// Draws the Lemmata Typeset Split logo at `size × size`.
+pub fn logo_mark(ui: &mut Ui, size: f32) -> Response {
+    let (rect, r) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let tex = logo_texture(ui.ctx());
+        ui.painter().image(
+            tex.id(),
+            rect,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
+    r
 }
 
 /// `kbd`: 11 px mono on the surface, with a 2 px bottom border.
@@ -875,48 +1187,6 @@ pub fn text_input(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, mono:
     response
 }
 
-/// An input on the dark sidebar (`.search .row input`): 28 px, --chrome-3 with a --chrome-border.
-pub fn chrome_input(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str) -> Response {
-    let fill_slot = ui.painter().add(egui::Shape::Noop);
-    let r = ui
-        .scope(|ui| {
-            let v = ui.visuals_mut();
-            v.weak_text_color = Some(p.chrome_muted);
-            v.override_text_color = Some(p.chrome_ink);
-            v.selection.stroke = Stroke::new(1.0, p.chrome_ink);
-            v.selection.bg_fill = p.accent_on_dark.gamma_multiply(0.35);
-            egui::TextEdit::singleline(text)
-                .hint_text(egui::RichText::new(hint).size(12.5).color(p.chrome_muted))
-                .font(FontId::proportional(12.5))
-                .text_color(p.chrome_ink)
-                .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 0)))
-                .align(egui::Align2::LEFT_CENTER)
-                .min_size(Vec2::new(0.0, 28.0))
-                .desired_width(ui.available_width())
-                .show(ui)
-                .response
-                .response
-        })
-        .inner;
-    ui.ctx().accesskit_node_builder(r.id, |n| n.set_label(hint));
-    let border = if r.has_focus() {
-        p.accent_on_dark
-    } else {
-        p.chrome_border
-    };
-    ui.painter().rect_stroke(
-        r.rect,
-        CornerRadius::same(theme::R_SM),
-        Stroke::new(1.0, border),
-        StrokeKind::Inside,
-    );
-    ui.painter().set(
-        fill_slot,
-        egui::Shape::rect_filled(r.rect, CornerRadius::same(theme::R_SM), p.chrome_3),
-    );
-    r
-}
-
 /// `textarea.input`: the multi-line field, styled like `text_input`, `rows` tall.
 pub fn text_area(
     ui: &mut Ui,
@@ -1018,6 +1288,44 @@ pub fn modal_with<R>(
     footer: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> ModalResponse {
     modal_placed(ctx, p, title, subtitle, width, false, body, footer)
+}
+
+/// Records the previously focused widget when a custom modal enters, so closing restores it.
+pub fn modal_focus_enter(ctx: &egui::Context, id_salt: &str) -> Option<egui::Id> {
+    let entered_id = egui::Id::unique(("modal-entered", id_salt));
+    let restore_id = egui::Id::unique(("modal-restore", id_salt));
+    let seen_id = egui::Id::unique(("modal-seen", id_salt));
+    let pass = ctx.cumulative_pass_nr();
+    let drawn_just_before = ctx.data_mut(|d| {
+        let last = d.get_temp::<u64>(seen_id);
+        d.insert_temp(seen_id, pass);
+        last.is_some_and(|l| l + 1 >= pass)
+    });
+    let entered =
+        drawn_just_before && ctx.data_mut(|d| d.get_temp::<bool>(entered_id).unwrap_or(false));
+    if entered {
+        ctx.data_mut(|d| {
+            d.get_temp::<Option<egui::Id>>(restore_id)
+                .unwrap_or_default()
+        })
+    } else {
+        let focused = ctx.memory(|m| m.focused());
+        ctx.data_mut(|d| {
+            d.insert_temp(entered_id, true);
+            d.insert_temp(restore_id, focused);
+        });
+        focused
+    }
+}
+
+/// Restores focus saved by `modal_focus_enter` when a custom modal closes.
+pub fn modal_focus_restore(ctx: &egui::Context, id_salt: &str, previous: Option<egui::Id>) {
+    let entered_id = egui::Id::unique(("modal-entered", id_salt));
+    ctx.data_mut(|d| d.insert_temp(entered_id, false));
+    if let Some(id) = previous {
+        ctx.add_plugin(ModalFocus::default());
+        ctx.with_plugin(|plugin: &mut ModalFocus| plugin.0.push((1, id)));
+    }
 }
 
 /// `modal_with` for a dialog the user types into: a click beside the panel doesn't close it (and
@@ -1140,7 +1448,7 @@ fn modal_full<R>(
         egui::Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0, p.border))
-            .corner_radius(12)
+            .corner_radius(theme::R_XL)
             .shadow(p.shadow_lg)
             .show(ui, |ui| {
                 // Inside the 1 px border; the header, body and footer frames add their own padding.
@@ -1148,7 +1456,7 @@ fn modal_full<R>(
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let head = egui::Frame::new()
                     .inner_margin(egui::Margin {
-                        left: 20,
+                        left: 22,
                         right: 20,
                         top: 18,
                         bottom: 4,
@@ -1156,7 +1464,7 @@ fn modal_full<R>(
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| {
                             ui.vertical(|ui| {
-                                ui.set_width(ui.available_width() - 26.0 - 12.0);
+                                ui.set_width(ui.available_width() - 32.0 - 12.0);
                                 ui.label(
                                     egui::RichText::new(title)
                                         .font(FontId::new(16.0, theme::font::sans_600()))
@@ -1178,7 +1486,7 @@ fn modal_full<R>(
                                 // Not given the first focus: Enter or Space right after opening
                                 // would close a dialog that only wants an answer.
                                 let close = Button::icon(icons::X, "Close")
-                                    .size(Size::Sm)
+                                    .size(Size::Md)
                                     .show_icon(ui, p);
                                 if close.clicked() {
                                     closed = true;
@@ -1222,12 +1530,12 @@ fn modal_full<R>(
                 if let Some(footer) = footer {
                     let r = egui::Frame::new()
                         .fill(p.surface_2)
-                        // Inside the panel's 12 px corners.
+                        // Inside the panel's R_XL (14 px) corners.
                         .corner_radius(CornerRadius {
                             nw: 0,
                             ne: 0,
-                            sw: 11,
-                            se: 11,
+                            sw: theme::R_XL - 1,
+                            se: theme::R_XL - 1,
                         })
                         .inner_margin(egui::Margin::symmetric(20, 12))
                         .show(ui, |ui| {
@@ -1790,7 +2098,7 @@ mod tests {
 
     fn gallery(p: Palette) -> Harness<'static> {
         let mut harness = Harness::builder()
-            .with_size([520.0, 220.0])
+            .with_size([560.0, 290.0])
             .with_context_setup(move |ctx| {
                 theme::install_fonts(ctx);
                 theme::apply(ctx, &p);
@@ -1798,8 +2106,10 @@ mod tests {
             .wgpu()
             .build_ui(move |ui| {
                 ui.painter().rect_filled(ui.max_rect(), 0, p.app);
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    Button::new("Cancel").show(ui, &p);
+                    ui.add_space(6.0);
+                    Button::new("Cancel").kind(Kind::Ghost).show(ui, &p);
                     Button::new("Recompile")
                         .with_icon(icons::REFRESH_CW)
                         .kind(Kind::Primary)
@@ -1812,47 +2122,86 @@ mod tests {
                     Button::icon(icons::SETTINGS, "Settings").show_icon(ui, &p);
                 });
                 ui.horizontal(|ui| {
+                    ui.add_space(6.0);
                     segmented(
                         ui,
                         &p,
                         &[
-                            (Some(icons::PANEL_LEFT), "Editor"),
+                            (Some(icons::SQUARE_PEN), "Editor"),
                             (Some(icons::COLUMNS_2), "Split"),
-                            (None, "PDF"),
+                            (Some(icons::FILE_TEXT), "PDF"),
                         ],
                         1,
-                        false,
                         false,
                     );
                     kbd(ui, &p, "Ctrl+Enter");
                 });
-                label(ui, &p, "Main file");
-                egui::Frame::new()
-                    .fill(p.chrome)
-                    .inner_margin(6)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            Button::icon(icons::MENU, "Menu")
-                                .kind(Kind::Chrome)
-                                .show_icon(ui, &p);
-                            Button::icon(icons::GIT_BRANCH, "Git")
-                                .kind(Kind::Chrome)
-                                .on(true)
-                                .show_icon(ui, &p);
-                            segmented(
-                                ui,
-                                &p,
-                                &[
-                                    (Some(icons::PANEL_LEFT), "Editor"),
-                                    (Some(icons::COLUMNS_2), "Split"),
-                                    (Some(icons::FILE_TEXT), "PDF"),
-                                ],
-                                1,
-                                true,
-                                true,
-                            );
-                        });
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    let mut sw_on = true;
+                    let mut sw_off = false;
+                    switch(ui, &p, &mut sw_on, "Auto compile");
+                    switch(ui, &p, &mut sw_off, "Dark PDF");
+                    chip(ui, &p, Some(icons::CHECK), "Compiled", ChipTone::Ok);
+                    chip_button(
+                        ui,
+                        &p,
+                        Some(icons::TRIANGLE_ALERT),
+                        "4 issues",
+                        "Problems",
+                        ChipTone::Warn,
+                    );
+                    chip(ui, &p, Some(icons::CIRCLE_X), "1", ChipTone::Error);
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    logo_mark(ui, 32.0);
+                    rail_button(ui, &p, icons::FILES, "Files", true, true, None);
+                    rail_button(
+                        ui,
+                        &p,
+                        icons::CIRCLE_ALERT,
+                        "Problems",
+                        false,
+                        true,
+                        Some((1, ChipTone::Error)),
+                    );
+                    rail_button(
+                        ui,
+                        &p,
+                        icons::GIT_BRANCH,
+                        "Git",
+                        true,
+                        true,
+                        Some((3, ChipTone::Accent)),
+                    );
+                    ui.vertical(|ui| {
+                        ui.set_width(220.0);
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        side_row(
+                            ui,
+                            &p,
+                            Some(icons::FILE_TEXT),
+                            None,
+                            "method.tex",
+                            true,
+                            None,
+                        );
+                        side_row(
+                            ui,
+                            &p,
+                            Some(icons::FOLDER),
+                            Some(p.atom),
+                            "chapters",
+                            false,
+                            Some("3"),
+                        );
                     });
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    label(ui, &p, "Main file");
+                });
             });
         harness.run();
         harness
@@ -2002,43 +2351,6 @@ mod tests {
         h.key_press(egui::Key::Escape);
         h.run();
         assert_eq!(depth.load(std::sync::atomic::Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn chrome_input_uses_light_placeholder_on_dark_sidebar_in_light_theme() {
-        let p = theme::LIGHT;
-        let mut text = String::new();
-        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
-        let cap = captured.clone();
-        let mut h = egui_kittest::Harness::builder()
-            .with_size([300.0, 80.0])
-            .with_context_setup(move |ctx| {
-                theme::install_fonts(ctx);
-                theme::apply(ctx, &p);
-            })
-            .build_ui(move |ui| {
-                ui.painter().rect_filled(ui.max_rect(), 0, p.chrome_3);
-                let _ = chrome_input(ui, &p, &mut text, "Search the project");
-                // Verify the dark-chrome placeholder color has sufficient luminance contrast
-                // against chrome_3 (#2b3743), unlike Light theme's dark weak_text_color.
-                let lum = |c: Color32| {
-                    0.2126 * (c.r() as f32 / 255.0)
-                        + 0.7152 * (c.g() as f32 / 255.0)
-                        + 0.0722 * (c.b() as f32 / 255.0)
-                };
-                *cap.lock().unwrap() =
-                    Some((lum(p.chrome_muted), lum(p.chrome_3), lum(p.chrome_ink)));
-            });
-        h.run_steps(2);
-        let (muted_lum, bg_lum, ink_lum) = captured.lock().unwrap().unwrap();
-        assert!(
-            muted_lum > bg_lum + 0.25,
-            "chrome_muted placeholder too dark against chrome_3: muted={muted_lum} bg={bg_lum}"
-        );
-        assert!(
-            ink_lum > muted_lum,
-            "chrome_ink must be brighter than placeholder: ink={ink_lum} muted={muted_lum}"
-        );
     }
 
     #[test]

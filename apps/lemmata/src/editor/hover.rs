@@ -242,8 +242,10 @@ pub enum Search {
 
 /// The note for a missing name, with its search button.
 fn missing(ui: &mut Ui, p: &Palette, text: String, button: &str, search: Search) -> Option<Search> {
-    ui.label(egui::RichText::new(text).color(p.muted));
+    ui.label(egui::RichText::new(text).size(12.5).color(p.muted));
+    ui.add_space(4.0);
     crate::widgets::Button::new(button)
+        .kind(crate::widgets::Kind::Ghost)
         .size(crate::widgets::Size::Sm)
         .show(ui, p)
         .clicked()
@@ -305,18 +307,22 @@ pub fn card(
     look: &Lookups,
     root: &std::path::Path,
 ) -> Option<Search> {
-    ui.spacing_mut().item_spacing.y = 4.0;
-    let head = |ui: &mut Ui, s: String| {
-        ui.label(egui::RichText::new(s).size(11.0).color(p.muted));
+    ui.spacing_mut().item_spacing.y = 6.0;
+    let head = |ui: &mut Ui, icon: crate::icons::Icon, s: String| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            crate::icons::show(ui, icon, 13.0, p.faint);
+            ui.label(egui::RichText::new(s).size(12.0).color(p.faint));
+        });
     };
     let note = |ui: &mut Ui, s: String| {
-        ui.label(egui::RichText::new(s).color(p.muted));
+        ui.label(egui::RichText::new(s).size(12.5).color(p.muted));
     };
     let file_line = |ui: &mut Ui, s: &str| {
         ui.label(
             egui::RichText::new(s)
-                .font(FontId::monospace(11.5))
-                .color(p.muted),
+                .font(FontId::monospace(12.0))
+                .color(p.faint),
         );
     };
     match t.kind {
@@ -332,44 +338,58 @@ pub fn card(
                 );
             };
             let env = l.env.as_str();
-            let kind = if MATH_ENV.is_match(env) {
-                "Equation".into()
+            let (icon, kind) = if MATH_ENV.is_match(env) {
+                (crate::icons::SIGMA, "Equation".into())
             } else if FIGURE_ENV.is_match(env) {
-                "Figure".into()
+                (crate::icons::IMAGE, "Figure".into())
             } else if TABLE_ENV.is_match(env) {
-                "Table".into()
+                (crate::icons::TABLE, "Table".into())
             } else if HEADING.is_match(env) || !env.is_empty() {
-                cap(env.trim_end_matches('*'))
+                (crate::icons::LIST_TREE, cap(env.trim_end_matches('*')))
             } else {
-                "Label".into()
+                (crate::icons::LIST_TREE, "Label".into())
             };
-            head(ui, format!("{kind} · {}:{}", l.file, l.line));
+            head(ui, icon, format!("{kind} · {}:{}", l.file, l.line));
             if MATH_ENV.is_match(env) && !l.snippet.is_empty() {
-                match render::render(
-                    ui.ctx(),
-                    &math_source(env, &l.snippet),
-                    true,
-                    13.0 * 1.1 * 1.21,
-                    p.ink,
-                ) {
-                    Ok(m) => {
-                        ui.image((m.texture.id(), m.size));
-                    }
-                    Err(_) => {
-                        ui.label(
-                            egui::RichText::new(&l.snippet)
-                                .font(FontId::monospace(11.5))
-                                .color(p.ink),
-                        );
-                    }
-                }
+                egui::Frame::new()
+                    .fill(p.surface_2)
+                    .stroke(egui::Stroke::new(1.0, p.border))
+                    .corner_radius(crate::theme::R_MD)
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.vertical_centered(|ui| {
+                            match render::render(
+                                ui.ctx(),
+                                &math_source(env, &l.snippet),
+                                true,
+                                13.0 * 1.1 * 1.21,
+                                p.ink,
+                            ) {
+                                Ok(m) => {
+                                    ui.image((m.texture.id(), m.size));
+                                }
+                                Err(_) => {
+                                    ui.label(
+                                        egui::RichText::new(&l.snippet)
+                                            .font(FontId::monospace(11.5))
+                                            .color(p.ink),
+                                    );
+                                }
+                            }
+                        });
+                    });
             } else if HEADING.is_match(env) {
                 let s = if l.snippet.is_empty() {
                     &l.context
                 } else {
                     &l.snippet
                 };
-                ui.label(egui::RichText::new(s).strong().color(p.ink));
+                ui.label(
+                    egui::RichText::new(s)
+                        .font(FontId::new(13.0, crate::theme::font::sans_600()))
+                        .color(p.ink),
+                );
             } else {
                 if FIGURE_ENV.is_match(env) && !l.graphic.is_empty() {
                     match resolve_file(&l.graphic, &look.files, GRAPHIC_EXTS) {
@@ -397,9 +417,14 @@ pub fn card(
                     Search::Online(t.name.clone()),
                 );
             };
+            head(
+                ui,
+                crate::icons::BOOK_OPEN,
+                format!("{} · {}", e.key, e.file),
+            );
             ui.label(
                 egui::RichText::new(if e.title.is_empty() { &e.key } else { &e.title })
-                    .strong()
+                    .font(FontId::new(13.0, crate::theme::font::sans_600()))
                     .color(p.ink),
             );
             let who = [e.authors.as_str(), e.year.as_str()]
@@ -407,16 +432,13 @@ pub fn card(
                 .filter(|s| !s.is_empty())
                 .copied()
                 .collect::<Vec<_>>()
-                .join(", ");
+                .join(" · ");
             if !who.is_empty() {
-                ui.label(egui::RichText::new(who).color(p.ink));
+                ui.label(egui::RichText::new(who).size(12.5).color(p.muted));
             }
-            let where_ = if e.kind.is_empty() {
-                String::new()
-            } else {
-                format!("{} · ", e.kind)
-            };
-            head(ui, format!("{where_}{}", e.file));
+            if !e.kind.is_empty() {
+                file_line(ui, &e.kind);
+            }
         }
         Kind::Graphic | Kind::Input => {
             let graphic = t.kind == Kind::Graphic;
@@ -425,7 +447,15 @@ pub fn card(
                 note(ui, format!("No file {} in the project.", t.name));
                 return None;
             };
-            file_line(ui, &f);
+            head(
+                ui,
+                if graphic {
+                    crate::icons::IMAGE
+                } else {
+                    crate::icons::FILE_TEXT
+                },
+                f.clone(),
+            );
             if graphic {
                 if IMAGE_EXT.is_match(&f) {
                     image(ui, p, &root.join(&f));

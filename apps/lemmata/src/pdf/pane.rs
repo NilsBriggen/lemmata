@@ -29,7 +29,10 @@ pub struct Build<'a> {
     pub status: Option<Status>,
     /// Changes after every build, so the raw log reloads.
     pub id: u64,
-    pub logs_open: bool,
+    /// True when the Problems panel is currently open in the left sidebar.
+    pub problems_open: bool,
+    /// True when the Raw TeX log is replacing the PDF canvas.
+    pub raw_log_open: bool,
     /// Lines `from..=to` (1-based) of a project file, for the excerpts under errors; fewer
     /// at its end.
     pub source: &'a dyn Fn(&str, usize, usize) -> Vec<String>,
@@ -37,7 +40,10 @@ pub struct Build<'a> {
 
 /// What the pane asks of the workspace.
 pub enum Action {
-    Logs(bool),
+    /// Open or toggle the Problems sidebar panel.
+    Problems,
+    /// Open or close the raw TeX log view in the PDF card.
+    RawLog(bool),
     SourceClick(usize, f32, f32),
     OpenUrl(String),
     Goto(String, usize),
@@ -129,10 +135,10 @@ impl Pane {
         if (self.view_focused(&ctx) || self.search_focused)
             && crate::shortcuts::consume(&ctx, "pdf-search")
         {
-            out.push(Action::Logs(false));
+            out.push(Action::RawLog(false));
             self.open_search();
         }
-        if self.search_open && !b.logs_open && (self.view_focused(&ctx) || self.search_focused) {
+        if self.search_open && !b.raw_log_open && (self.view_focused(&ctx) || self.search_focused) {
             let f3 = ctx.input_mut(|i| {
                 if i.consume_key(egui::Modifiers::SHIFT, egui::Key::F3) {
                     Some(-1)
@@ -180,7 +186,7 @@ impl Pane {
         }
         let mut y = progress.bottom();
 
-        if self.search_open && !b.logs_open {
+        if self.search_open && !b.raw_log_open {
             let r = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 35.0));
             ui.painter().rect_filled(r, 0, p.surface);
             ui.painter()
@@ -204,7 +210,7 @@ impl Pane {
         }
 
         let mut body = Rect::from_min_max(pos2(rect.left(), y), rect.max);
-        if let Some(side) = self.side.filter(|_| !b.logs_open) {
+        if let Some(side) = self.side.filter(|_| !b.raw_log_open) {
             let r = Rect::from_min_size(body.min, vec2(220.0, body.height()));
             ui.painter().rect_filled(r, 0, p.surface);
             ui.painter()
@@ -237,7 +243,7 @@ impl Pane {
             );
             body.min.y = r.bottom();
         }
-        if b.failed && has_pdf && !b.logs_open && !b.building {
+        if b.failed && has_pdf && !b.raw_log_open && !b.building {
             let errors = b
                 .diagnostics
                 .iter()
@@ -252,12 +258,12 @@ impl Pane {
                     .max_rect(r.shrink2(vec2(10.0, 0.0)))
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
             );
-            if Button::new("Show logs")
+            if Button::new("View problems")
                 .size(Size::Sm)
                 .show(&mut c, p)
                 .clicked()
             {
-                out.push(Action::Logs(true));
+                out.push(Action::Problems);
             }
             let with = if errors > 0 {
                 format!(" with {errors} error{}", if errors == 1 { "" } else { "s" })
@@ -280,10 +286,10 @@ impl Pane {
         }
 
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(body));
-        if b.logs_open {
-            // Not drawn, so it can't tell that it lost focus: Ctrl+F is the logs' own meanwhile.
+        if b.raw_log_open {
+            // Not drawn, so it can't tell that it lost focus: Ctrl+F is the raw log's own meanwhile.
             self.view.focused = false;
-            out.extend(self.problems.show(&mut c, p, b));
+            out.extend(self.problems.show_raw_log(&mut c, p, b));
         } else if has_pdf {
             match self.view.show(&mut c, p) {
                 Some(super::view::Event::SourceClick(n, x, y)) => {
@@ -295,7 +301,7 @@ impl Pane {
         } else {
             self.view.show(&mut c, p);
             if self.view.error.is_none() && empty_state(&mut c, p, b) {
-                out.push(Action::Logs(true));
+                out.push(Action::Problems);
             }
         }
         self.menus(&ctx, p, &mut out);
@@ -321,12 +327,71 @@ impl Pane {
                 .iter()
                 .filter(|d| d.severity == Severity::Warning)
                 .count();
-            if logs_button(ui, p, b.logs_open, errors, warnings).clicked() {
-                out.push(Action::Logs(!b.logs_open));
-            }
-            if b.logs_open || !self.has_pdf() {
+            if b.raw_log_open {
+                if Button::new("Back to PDF")
+                    .with_icon(icons::CHEVRON_LEFT)
+                    .kind(Kind::Ghost)
+                    .size(Size::Sm)
+                    .icon_size(14.0)
+                    .show(ui, p)
+                    .clicked()
+                {
+                    out.push(Action::RawLog(false));
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Raw TeX log")
+                        .font(FontId::new(13.0, theme::font::sans_600()))
+                        .color(p.ink),
+                );
                 return;
             }
+            let total_issues = errors + warnings;
+            let (chip_icon, chip_text, chip_tone) = if errors > 0 {
+                (
+                    Some(icons::CIRCLE_X),
+                    format!(
+                        "{total_issues} issue{}",
+                        if total_issues == 1 { "" } else { "s" }
+                    ),
+                    widgets::ChipTone::Error,
+                )
+            } else if warnings > 0 {
+                (
+                    Some(icons::TRIANGLE_ALERT),
+                    format!(
+                        "{total_issues} issue{}",
+                        if total_issues == 1 { "" } else { "s" }
+                    ),
+                    widgets::ChipTone::Warn,
+                )
+            } else {
+                (
+                    Some(icons::CHECK),
+                    "No issues".to_owned(),
+                    widgets::ChipTone::Ok,
+                )
+            };
+            let chip =
+                widgets::chip_button(ui, p, chip_icon, &chip_text, "Build issues", chip_tone)
+                    .on_hover_text("Open Problems panel");
+            if b.problems_open {
+                ui.painter().rect_stroke(
+                    chip.rect,
+                    CornerRadius::same(12),
+                    Stroke::new(1.5, p.accent),
+                    StrokeKind::Inside,
+                );
+            }
+            if chip.clicked() {
+                out.push(Action::Problems);
+            }
+            if !self.has_pdf() {
+                return;
+            }
+            // Thin vertical divider between issues chip and pager.
+            let (vr, _) = ui.allocate_exact_size(vec2(1.0, 18.0), Sense::hover());
+            ui.painter().rect_filled(vr, 0, p.border);
             let n = self.view.page_count();
             let cur = self.view.current_page;
             self.pages_in_bar = width > 340.0;
@@ -363,7 +428,11 @@ impl Pane {
                 {
                     self.view.zoom_by(1.0 / 1.15);
                 }
-                let text = format!("{}%", self.view.percent);
+                let text = match self.view.fit {
+                    Fit::Width => "Fit width".to_owned(),
+                    Fit::Page => "Fit page".to_owned(),
+                    Fit::Zoom(_) => format!("{}%", self.view.percent),
+                };
                 let z = Button::new(&text)
                     .kind(Kind::Ghost)
                     .size(Size::Sm)
@@ -854,92 +923,6 @@ fn group(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
         ui.spacing_mut().item_spacing.x = 2.0;
         add(ui);
     });
-}
-
-/// `.btn.sm.logs`: "Logs" with the error and warning counts, accent while the logs show.
-fn logs_button(
-    ui: &mut Ui,
-    p: &Palette,
-    on: bool,
-    errors: usize,
-    warnings: usize,
-) -> egui::Response {
-    let font = FontId::new(12.0, theme::font::sans_500());
-    let text = ui
-        .painter()
-        .layout_no_wrap("Logs".into(), font, Color32::PLACEHOLDER);
-    let badge_w = |n: usize| {
-        ui.painter()
-            .layout_no_wrap(
-                n.to_string(),
-                FontId::new(11.0, theme::font::sans_600()),
-                Color32::WHITE,
-            )
-            .size()
-            .x
-            + 12.0
-    };
-    let mut w = 9.0 + 15.0 + 6.0 + text.size().x + 9.0;
-    for n in [errors, warnings].into_iter().filter(|n| *n > 0) {
-        w += 6.0 + badge_w(n);
-    }
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, "Logs"));
-    let resp = resp
-        .on_hover_text("Logs and problems")
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let t = ui
-        .ctx()
-        .animate_bool_with_time(resp.id, resp.hovered(), theme::ease_secs());
-    let (fill, stroke, ink) = if on {
-        (p.accent_soft, p.accent, p.accent)
-    } else {
-        (
-            p.surface.lerp_to_gamma(p.surface_2, t),
-            p.border_strong.lerp_to_gamma(p.faint, t),
-            p.ink,
-        )
-    };
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        CornerRadius::same(theme::R),
-        fill,
-        Stroke::new(1.0, stroke),
-        StrokeKind::Inside,
-    );
-    let mut x = rect.left() + 9.0;
-    icons::paint(
-        painter,
-        Rect::from_min_size(pos2(x, rect.center().y - 7.5), vec2(15.0, 15.0)),
-        icons::SCROLL_TEXT,
-        ink,
-    );
-    x += 21.0;
-    painter.galley(
-        pos2(x, rect.center().y - text.size().y / 2.0),
-        text.clone(),
-        ink,
-    );
-    x += text.size().x + 6.0;
-    for (n, fill) in [(errors, p.error), (warnings, p.warn)] {
-        if n == 0 {
-            continue;
-        }
-        let g = painter.layout_no_wrap(
-            n.to_string(),
-            FontId::new(11.0, theme::font::sans_600()),
-            Color32::WHITE,
-        );
-        let r = Rect::from_min_size(
-            pos2(x, rect.center().y - 9.0),
-            vec2(g.size().x + 12.0, 18.0),
-        );
-        painter.rect_filled(r, CornerRadius::same(9), fill);
-        painter.galley(r.center() - g.size() / 2.0, g, Color32::WHITE);
-        x = r.right() + 6.0;
-    }
-    resp
 }
 
 fn outline_nodes(

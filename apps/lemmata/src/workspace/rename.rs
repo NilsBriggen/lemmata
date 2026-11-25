@@ -248,7 +248,6 @@ impl Workspace {
                     &[(None, "Label"), (None, "Citation key")],
                     sel,
                     false,
-                    false,
                 ) {
                     d.kind = if i == 0 {
                         SymbolKind::Label
