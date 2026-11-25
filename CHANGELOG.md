@@ -2,6 +2,13 @@
 
 All notable changes to Lemmata.
 
+## 4.0.0-rc.3 (2026-11-25)
+
+A major visual refresh paired with a comprehensive performance, security, and install-size overhaul—with zero features removed.
+
+### Fixed (since rc.2)
+- Fixed macOS Find-bar test flake caused by an async startup toast overlapping the bottom Find bar and normalized CRLF line endings in the Windows table-insertion test.
+
 ## 4.0.0-rc.2 (2026-11-25)
 
 A major visual refresh paired with a comprehensive performance, security, and install-size overhaul—with zero features removed.

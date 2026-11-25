@@ -3061,7 +3061,7 @@ pub(crate) mod tests {
         snap(&mut h, "table-light");
         h.get_by_label("Insert").click();
         h.run_steps(2);
-        let t = text(&h);
+        let t = text(&h).replace("\r\n", "\n");
         assert!(
             t.contains(
                 "\\maketitle\n\\begin{table}[htbp]\n    \\centering\n    \\begin{tabular}{ll}"
@@ -5804,14 +5804,10 @@ pub(crate) mod tests {
         h.set_size(egui::vec2(1400.0, 900.0));
         h.run_steps(2);
         {
-            let ed = h
-                .state_mut()
-                .project
-                .as_mut()
-                .unwrap()
-                .editors
-                .get_mut("main.tex")
-                .unwrap();
+            let ws = h.state_mut().project.as_mut().unwrap();
+            // Dismiss any async startup toast (which renders at bottom-center) so it doesn't intercept clicks on the Find bar.
+            ws.notices.clear();
+            let ed = ws.editors.get_mut("main.tex").unwrap();
             ed.search = Some(crate::editor::search::Search::open(
                 ed.search.take(),
                 "Hello",
@@ -5833,6 +5829,8 @@ pub(crate) mod tests {
             h.query_by_label_contains("2 matches").is_some(),
             "inline Find bar should show live match count"
         );
+        h.state_mut().project.as_mut().unwrap().notices.clear();
+        h.run_steps(1);
         h.get_by_role_and_label(egui::accesskit::Role::Button, "next")
             .click();
         h.run_steps(4);
