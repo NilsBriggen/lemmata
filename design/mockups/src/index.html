@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!-- @include head.html -->
+<title>Lemmata redesign</title>
+<style>
+body { background: var(--app); }
+.idx { max-width: 1100px; margin: 0 auto; padding: 40px 24px 90px; }
+.idx h1 { margin: 0 0 8px; font: 34px/1.15 "Young Serif", serif; }
+.idx > p { margin: 0 0 28px; color: var(--ink-2); max-width: 68ch; font-size: 14px; line-height: 1.55; }
+.screens { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 16px; list-style: none; margin: 0; padding: 0; }
+.screens a { display: flex; flex-direction: column; gap: 6px; height: 100%; padding: 18px 20px; border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-card); color: inherit; text-decoration: none; }
+.screens a:hover { box-shadow: 0 0 0 2px var(--accent); }
+.screens .no { font: 500 12px "IBM Plex Mono", monospace; color: var(--faint); }
+.screens b { font-size: 15px; font-weight: 600; }
+.screens span.d { color: var(--muted); line-height: 1.45; }
+.screens .links { margin-top: auto; padding-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; font-size: 12.5px; }
+.principles { margin: 36px 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 12px 24px; }
+.principles h2 { grid-column: 1 / -1; margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.principles p { margin: 0; color: var(--ink-2); line-height: 1.5; }
+.principles b { display: block; color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="idx">
+  <h1>Lemmata redesign</h1>
+  <p>Mockups for every screen, in the order they would be built. Each page has a switch at the bottom right for dark mode and for today's UI, to compare. Nothing here is built in Rust yet; everything is drawn with what egui can draw.</p>
+  <ol class="screens">
+    <li><a href="workspace.html"><span class="no">1</span><b>Workspace</b><span class="d">Icon rail, quiet top bar, editor and PDF as two cards, a toolbar that shrinks on its own.</span><span class="links"><span class="link-btn">Open →</span></span></a></li>
+    <li><a href="library.html"><span class="no">2</span><b>Library</b><span class="d">Continue writing with page thumbnails and build status, then all projects as a table. Import and clone move to the sidebar.</span><span class="links"><span class="link-btn">Open →</span></span></a></li>
+    <li><a href="new-project.html"><span class="no">3a</span><b>New project</b><span class="d">A template gallery with page previews and categories; name and location stay in view at the bottom.</span><span class="links"><span class="link-btn">Open →</span></span></a></li>
+    <li><a href="onboarding.html"><span class="no">3b</span><b>Set up TeX</b><span class="d">The first-run check in the same card style, with steps, found and missing tools, and the install command.</span><span class="links"><span class="link-btn">Open →</span></span></a></li>
+    <li><a href="workspace.html#problems"><span class="no">4</span><b>Workspace panels</b><span class="d">Search, Problems, Git, History, Comments and To-dos in the sidebar, so the PDF stays visible.</span><span class="links"><span class="link-btn">Open →</span></span></a></li>
+    <li><a href="settings.html"><span class="no">5</span><b>Settings</b><span class="d">Preferences and project settings in one window: a Lemmata / project switch, sections on the left, switches instead of checkboxes.</span><span class="links"><span class="link-btn">Open →</span></span></a></li>
+    <li><a href="popups.html"><span class="no">6</span><b>Popups</b><span class="d">One command palette for commands, files and labels; completion with kinds and help; hover cards; notices.</span><span class="links"><span class="link-btn">Open →</span></span></a></li>
+  </ol>
+  <div class="principles">
+    <h2>What stays the same on every screen</h2>
+    <p><b>Quiet chrome</b>Navigation sits on the grey ground; only the work is on white cards.</p>
+    <p><b>One accent</b>Blue marks the selection and the one main action of a screen. Red and amber only for problems.</p>
+    <p><b>Lemmata's type</b>Young Serif for page titles, IBM Plex Sans for the interface, IBM Plex Mono for code and paths.</p>
+    <p><b>egui-ready</b>Solid fills, 1 px lines, rounded corners and one soft shadow. No blur, no gradients.</p>
+  </div>
+</div>
+<!-- @include mock.html today=library-grid-light.png -->
+</body>
+</html>

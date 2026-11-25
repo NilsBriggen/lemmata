@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!-- @include head.html -->
+<title>Lemmata popups</title>
+<style>
+body { background: var(--app); }
+.sheet { max-width: 1240px; margin: 0 auto; padding: 32px 24px 90px; }
+.sheet > h1 { margin: 0 0 6px; font: 28px/1.15 "Young Serif", serif; }
+.sheet > p { margin: 0 0 24px; color: var(--muted); max-width: 70ch; }
+.spec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 540px), 1fr)); gap: 20px; }
+.spec { display: flex; flex-direction: column; gap: 8px; }
+.spec h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.spec .cap { margin: 0; color: var(--muted); font-size: 12.5px; }
+.stage { position: relative; height: 400px; border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-card); overflow: hidden; }
+.stage .code { padding-top: 14px; }
+.stage.dim::after { content: ""; position: absolute; inset: 0; background: rgba(15,20,24,.32); }
+.pop { position: absolute; z-index: 2; background: var(--surface); border-radius: 10px; box-shadow: var(--shadow-pop), 0 0 0 1px var(--border); color: var(--ink); }
+/* command palette */
+.pal { left: 50%; top: 24px; transform: translateX(-50%); width: min(500px, calc(100% - 32px)); overflow: hidden; }
+.pal-in { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 14px; border-bottom: 1px solid var(--border); font-size: 14px; }
+.pal-in svg.i { color: var(--faint); }
+.pal-in .typed { flex: 1; }
+.pal-in .typed::after { content: ""; display: inline-block; width: 1.5px; height: 16px; margin-left: 1px; vertical-align: -3px; background: var(--accent); }
+.pal-list { padding: 6px; max-height: 250px; overflow: hidden; }
+.pal-grp { padding: 8px 8px 4px; color: var(--faint); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.pal-item { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 8px; border-radius: 7px; color: var(--ink-2); }
+.pal-item svg.i { color: var(--faint); }
+.pal-item.on { background: var(--accent-soft); color: var(--ink); }
+.pal-item.on svg.i { color: var(--accent-text, var(--accent)); }
+.pal-item .grow b { font-weight: 600; color: var(--ink); }
+.pal-item .det { color: var(--faint); font: 12px "IBM Plex Mono", monospace; }
+.pal-foot { display: flex; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--border); color: var(--faint); font-size: 12px; }
+.pal-foot span { display: flex; align-items: center; gap: 5px; }
+/* completion */
+.comp { width: 360px; overflow: hidden; }
+.comp-list { padding: 4px; }
+.comp-item { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 6px; font: 13px "IBM Plex Mono", monospace; color: var(--ink-2); }
+.comp-item.on { background: var(--accent-soft); color: var(--ink); }
+.comp-item .k { width: 18px; height: 18px; border-radius: 4px; display: grid; place-items: center; font: 600 10px "IBM Plex Sans"; flex: none; background: var(--surface-3); color: var(--muted); }
+.comp-item .k.env { background: var(--ok-soft); color: var(--ok); }
+.comp-item .k.ref { background: var(--warn-soft); color: var(--warn); }
+.comp-item u { text-decoration: none; font-weight: 600; color: var(--ink); }
+.comp-item .det { margin-left: auto; color: var(--faint); font: 12px "IBM Plex Sans"; }
+.comp-doc { padding: 8px 12px 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.comp-doc code { font: 12px "IBM Plex Mono", monospace; color: var(--ink); }
+/* hover card */
+.hov { width: 330px; padding: 12px 14px; }
+.hov .ttl { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); margin-bottom: 8px; }
+.hov .math { display: flex; justify-content: center; padding: 14px 0; border-radius: 8px; background: #fff; color: #111; font: italic 18px Georgia, serif; box-shadow: inset 0 0 0 1px var(--border); }
+.hov .math sub, .hov .math sup { font-size: 11px; }
+.hov .acts { display: flex; gap: 6px; margin-top: 10px; }
+.cite-card b { display: block; font-weight: 600; margin-bottom: 2px; }
+.cite-card .who { color: var(--muted); font-size: 12.5px; }
+.cite-card .src { color: var(--faint); font-size: 12px; margin-top: 6px; font-family: "IBM Plex Mono", monospace; }
+/* toasts */
+.toasts { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; width: min(420px, calc(100% - 32px)); z-index: 2; }
+.toast { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px; position: static; }
+.toast svg.i { flex: none; }
+.toast .grow { min-width: 0; }
+.toast b { font-weight: 600; }
+.toast.err > svg.i { color: var(--error); }
+.toast.ok > svg.i { color: var(--ok); }
+.toast .warn-i { color: var(--warn); }
+.toast .x { width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; color: var(--faint); }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <h1>Popups and small surfaces</h1>
+  <p>Screen 6: the command palette, quick open, completion, hover cards and notices, in the same tokens as the other screens. Each one sits on a white card with a hairline, one soft shadow and 10 px corners.</p>
+
+  <div class="spec-grid">
+    <section class="spec">
+      <h2>Command palette and quick open (Ctrl K)</h2>
+      <p class="cap">One box for commands, files, labels and sections, grouped. Typing a path finds files; "&gt;" limits it to commands. Today's palette and quick open are two separate popups.</p>
+      <div class="stage dim">
+        <div class="code" aria-hidden="true">
+          <div class="ln"><span class="n">1</span><span class="t"><span class="c">\section</span>{<span class="a">Method</span>}<span class="c">\label</span>{<span class="a">sec:method</span>}</span></div>
+          <div class="ln"><span class="n">2</span><span class="t">The objective maximises the expected return</span></div>
+          <div class="ln"><span class="n">3</span><span class="t"><span class="c">\begin</span>{<span class="a">equation</span>}</span></div>
+        </div>
+        <div class="pop pal" role="dialog" aria-label="Command palette">
+          <div class="pal-in"><i data-i="SEARCH"></i><span class="typed">meth</span><span class="kbd">Esc</span></div>
+          <div class="pal-list">
+            <div class="pal-grp">Files</div>
+            <div class="pal-item on"><i data-i="FILE_TEXT"></i><span class="grow">chapters/<b>meth</b>od.tex</span><span class="det">Enter</span></div>
+            <div class="pal-grp">Sections and labels</div>
+            <div class="pal-item"><i data-i="HEADING"></i><span class="grow">2 <b>Meth</b>od</span><span class="det">method.tex:1</span></div>
+            <div class="pal-item"><i data-i="LINK"></i><span class="grow">sec:<b>meth</b>od</span><span class="det">label</span></div>
+            <div class="pal-grp">Text in the project</div>
+            <div class="pal-item"><i data-i="SEARCH"></i><span class="grow">Search all files for "meth"</span><span class="det">Ctrl Shift F</span></div>
+          </div>
+          <div class="pal-foot"><span><span class="kbd">↑↓</span>move</span><span><span class="kbd">Enter</span>open</span><span><span class="kbd">&gt;</span>commands only</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="spec">
+      <h2>Completion</h2>
+      <p class="cap">A kind badge (command, environment, reference), the match in bold, a short detail on the right, and one line of help for the selected item.</p>
+      <div class="stage">
+        <div class="code" aria-hidden="true">
+          <div class="ln"><span class="n">8</span><span class="t"> </span></div>
+          <div class="ln cur"><span class="n">9</span><span class="t"><span class="c">\subsec</span><span class="caret"></span></span></div>
+          <div class="ln"><span class="n">10</span><span class="t"><span class="k">% TODO: compare the clipped and the KL-penalised objective</span></span></div>
+        </div>
+        <div class="pop comp" style="left: 92px; top: 80px" role="listbox" aria-label="Suggestions">
+          <div class="comp-list">
+            <div class="comp-item on"><span class="k">\</span><span><u>\subsec</u>tion</span><span class="det">sectioning</span></div>
+            <div class="comp-item"><span class="k">\</span><span><u>\subsub</u>section</span><span class="det">sectioning</span></div>
+            <div class="comp-item"><span class="k env">{}</span><span>subequations</span><span class="det">amsmath</span></div>
+            <div class="comp-item"><span class="k ref">#</span><span><u>sec</u>:updates</span><span class="det">label</span></div>
+          </div>
+          <div class="comp-doc"><code>\subsection{title}</code> starts a numbered subsection. Tab inserts it with the title selected.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="spec">
+      <h2>Hover: maths preview and citation</h2>
+      <p class="cap">Hovering maths shows it rendered; hovering a citation key shows the entry. Both have their actions at the bottom.</p>
+      <div class="stage">
+        <div class="code" aria-hidden="true">
+          <div class="ln"><span class="n">3</span><span class="t"><span class="c">\begin</span>{<span class="a">equation</span>}<span class="c">\label</span>{<span class="a">eq:objective</span>}</span></div>
+          <div class="ln cur"><span class="n">4</span><span class="t"><span class="m">  J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\left[\sum_{t=0}^{T} \gamma^t r_t\right]</span></span></div>
+          <div class="ln"><span class="n">5</span><span class="t"><span class="c">\end</span>{<span class="a">equation</span>}</span></div>
+          <div class="ln"><span class="n">6</span><span class="t">as in Equation~<span class="c">\ref</span>{<span class="a">eq:objective</span>}, following~<span class="c">\cite</span>{<span class="a">schulman2017ppo</span>}.</span></div>
+        </div>
+        <div class="pop hov" style="left: 70px; top: 76px">
+          <div class="ttl"><i data-i="SIGMA"></i>Equation (2.1)</div>
+          <div class="math">J(θ) = 𝔼<sub>τ∼π<sub>θ</sub></sub>[ ∑<sub>t=0</sub><sup>T</sup> γ<sup>t</sup> r<sub>t</sub> ]</div>
+        </div>
+        <div class="pop hov cite-card" style="right: 16px; bottom: 16px; width: 300px">
+          <div class="ttl"><i data-i="BOOK_OPEN"></i>schulman2017ppo · refs.bib</div>
+          <b>Proximal Policy Optimization Algorithms</b>
+          <div class="who">Schulman, Wolski, Dhariwal, Radford, Klimov · 2017</div>
+          <div class="src">arXiv:1707.06347</div>
+          <div class="acts"><button class="btn sm ghost">Open entry</button><button class="btn sm ghost"><i data-i="EXTERNAL_LINK"></i>arXiv</button></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="spec">
+      <h2>Notices</h2>
+      <p class="cap">Short notices at the bottom centre, with the action in the notice. Build results stay in the top bar, so a notice appears only when something needs you.</p>
+      <div class="stage">
+        <div class="toasts">
+          <div class="pop toast err"><i data-i="CIRCLE_X"></i><span class="grow"><b>Build failed:</b> 1 error in method.tex</span><button class="btn sm ghost">Show</button><button class="x" aria-label="Dismiss"><i data-i="X"></i></button></div>
+          <div class="pop toast"><i data-i="TRIANGLE_ALERT" class="warn-i"></i><span class="grow">minted needs shell escape to highlight code.</span><button class="btn sm">Turn on</button><button class="x" aria-label="Dismiss"><i data-i="X"></i></button></div>
+          <div class="pop toast ok"><i data-i="CIRCLE_CHECK"></i><span class="grow">Snapshot "Before supervisor meeting" saved</span><button class="btn sm ghost">Undo</button></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+<!-- @include mock.html today=palette-light.png -->
+</body>
+</html>

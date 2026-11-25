@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!-- @include head.html -->
+<title>Settings</title>
+<style>
+.modal { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; }
+.dialog { width: min(920px, 100%); height: min(660px, 100%); display: grid; grid-template-columns: 230px minmax(0, 1fr); background: var(--surface); border-radius: 14px; box-shadow: var(--shadow-pop), 0 0 0 1px var(--border); overflow: hidden; }
+.s-nav { background: var(--surface-2); border-right: 1px solid var(--border); padding: 16px 10px; display: flex; flex-direction: column; gap: 1px; overflow: auto; }
+.s-nav h2 { margin: 0 8px 12px; font: 20px/1.2 "Young Serif", serif; }
+.scope { display: flex; margin: 0 0 14px; }
+.scope button { flex: 1; justify-content: center; padding: 0 8px; }
+.scope-app .scope [data-scope=app], .scope-project .scope [data-scope=project] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-card); }
+.s-nav .row { color: var(--ink-2); }
+.s-nav .group-app, .s-nav .group-project { display: none; flex-direction: column; gap: 1px; }
+.scope-app .group-app, .scope-project .group-project { display: flex; }
+.s-nav .row.on { background: var(--surface); color: var(--ink); font-weight: 500; box-shadow: var(--shadow-card); }
+.s-nav .row.on .ico { color: var(--accent); }
+.s-nav .ver { margin-top: auto; padding: 12px 8px 0; color: var(--faint); font-size: 12px; }
+.s-main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; }
+.s-head { display: flex; align-items: flex-start; gap: 12px; padding: 20px 20px 12px 28px; }
+.s-head h3 { margin: 0; font-size: 17px; font-weight: 600; }
+.s-head p { margin: 3px 0 0; color: var(--muted); }
+.s-head .x { margin-left: auto; width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; color: var(--faint); }
+.s-head .x:hover { background: var(--surface-3); color: var(--ink); }
+.s-body { overflow: auto; padding: 0 28px 20px; }
+.sec { display: none; }
+.sec.on { display: block; }
+.setting { display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 280px); gap: 24px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.setting:last-child { border-bottom: 0; }
+.setting b { display: block; font-weight: 500; }
+.setting small { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; line-height: 1.4; }
+.setting .ctl { display: flex; justify-content: flex-end; }
+.setting .seg button { padding: 0 10px; }
+.setting .seg button svg.i { width: 14px; height: 14px; }
+.setting .select { width: 100%; }
+.setting .field { width: 100%; }
+.sw { position: relative; width: 36px; height: 20px; border-radius: 10px; background: var(--border-strong); flex: none; }
+.sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: left .12s; }
+.sw[aria-checked=true] { background: var(--accent); }
+.sw[aria-checked=true]::after { left: 18px; }
+.callout { display: flex; gap: 10px; padding: 10px 12px; border-radius: 9px; background: var(--warn-soft); color: var(--ink-2); font-size: 12.5px; margin: 0 0 6px; }
+.callout svg.i { color: var(--warn); margin-top: 1px; }
+.s-foot { display: flex; align-items: center; gap: 8px; padding: 12px 20px 14px 28px; border-top: 1px solid var(--border); color: var(--faint); font-size: 12.5px; }
+.s-foot .btn { height: 34px; }
+.s-foot .for-project, .scope-project .s-foot .for-app { display: none; }
+.scope-project .s-foot .for-project { display: inline-flex; }
+.s-foot .grow { flex: 1; }
+@media (max-width: 760px) { .dialog { grid-template-columns: minmax(0, 1fr); } .s-nav { display: none; } .setting { grid-template-columns: minmax(0, 1fr); gap: 8px; } .setting .ctl { justify-content: flex-start; } }
+</style>
+</head>
+<body>
+<!-- @include library-body.html -->
+<div class="scrim"></div>
+<div class="modal">
+  <section class="dialog scope-app" id="dlg" role="dialog" aria-modal="true" aria-labelledby="s-title">
+    <nav class="s-nav" aria-label="Settings sections">
+      <h2>Settings</h2>
+      <div class="seg scope" role="group" aria-label="Settings for">
+        <button data-scope="app">Lemmata</button>
+        <button data-scope="project">rl-thesis</button>
+      </div>
+      <div class="group-app">
+        <button class="row on" data-sec="appearance"><i data-i="SUN" class="ico"></i><span class="name">Appearance</span></button>
+        <button class="row" data-sec="editing"><i data-i="SQUARE_PEN" class="ico"></i><span class="name">Editing</span></button>
+        <button class="row" data-sec="later"><i data-i="SPARKLES" class="ico"></i><span class="name">Language</span></button>
+        <button class="row" data-sec="later"><i data-i="FILES" class="ico"></i><span class="name">Files</span></button>
+        <button class="row" data-sec="later"><i data-i="SIGMA" class="ico"></i><span class="name">TeX</span></button>
+        <button class="row" data-sec="later"><i data-i="DOWNLOAD" class="ico"></i><span class="name">Updates</span></button>
+      </div>
+      <div class="group-project">
+        <button class="row" data-sec="build"><i data-i="REFRESH_CW" class="ico"></i><span class="name">Build</span></button>
+        <button class="row" data-sec="trust"><i data-i="FLAG" class="ico"></i><span class="name">Trust &amp; safety</span></button>
+      </div>
+      <div class="ver">Lemmata 3.3.0</div>
+    </nav>
+
+    <div class="s-main">
+      <header class="s-head">
+        <div><h3 id="s-title">Appearance</h3><p id="s-sub">These apply to every project.</p></div>
+        <a class="x" href="library.html" aria-label="Close"><i data-i="X"></i></a>
+      </header>
+      <div class="s-body">
+        <section class="sec on" data-sec="appearance">
+          <div class="setting"><div><b>Theme</b></div><div class="ctl"><div class="seg" role="group" aria-label="Theme"><button class="on"><i data-i="MONITOR"></i>System</button><button><i data-i="SUN"></i>Light</button><button><i data-i="MOON"></i>Dark</button></div></div></div>
+          <div class="setting"><div><b>Editor font</b><small>Any font installed on this computer.</small></div><div class="ctl"><button class="select"><span class="grow">IBM Plex Mono</span><i data-i="CHEVRON_DOWN"></i></button></div></div>
+          <div class="setting"><div><b>Text size</b></div><div class="ctl"><button class="select"><span class="grow">13 px</span><i data-i="CHEVRON_DOWN"></i></button></div></div>
+          <div class="setting"><div><b>Line height</b></div><div class="ctl"><button class="select"><span class="grow">1.65</span><i data-i="CHEVRON_DOWN"></i></button></div></div>
+          <div class="setting"><div><b>Dark PDF pages</b><small>Inverts the pages while the dark theme is on.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="false" aria-label="Dark PDF pages"></button></div></div>
+          <div class="setting"><div><b>Reduce motion</b><small>No fades or smooth scrolling.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="false" aria-label="Reduce motion"></button></div></div>
+        </section>
+
+        <section class="sec" data-sec="editing">
+          <div class="setting"><div><b>Save</b><small>As I type saves 0.6 s after you stop.</small></div><div class="ctl"><div class="seg" role="group" aria-label="Save"><button class="on">As I type</button><button>With Ctrl S</button></div></div></div>
+          <div class="setting"><div><b>Compile</b></div><div class="ctl"><div class="seg" role="group" aria-label="Compile"><button>As I type</button><button class="on">With Ctrl S</button></div></div></div>
+          <div class="setting"><div><b>Suggestions while typing</b><small>Commands, environments, labels and citations.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Suggestions while typing"></button></div></div>
+          <div class="setting"><div><b>Rename the matching \end</b><small>Editing \begin{…} renames its \end{…}, and the other way round.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Rename the matching end"></button></div></div>
+          <div class="setting"><div><b>Close brackets and $ automatically</b></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Close brackets automatically"></button></div></div>
+          <div class="setting"><div><b>Code folding</b><small>Fold sections and environments from the gutter.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="false" aria-label="Code folding"></button></div></div>
+        </section>
+
+        <section class="sec" data-sec="build">
+          <div class="setting"><div><b>Main document</b><small>The file Recompile builds.</small></div><div class="ctl"><button class="select"><span class="grow mono">main.tex</span><i data-i="CHEVRON_DOWN"></i></button></div></div>
+          <div class="setting"><div><b>Compiler</b><small>pdfLaTeX is fastest. XeLaTeX and LuaLaTeX can use your installed fonts.</small></div><div class="ctl"><button class="select"><span class="grow">pdfLaTeX</span><i data-i="CHEVRON_DOWN"></i></button></div></div>
+          <div class="setting"><div><b>Bibliography</b></div><div class="ctl"><button class="select"><span class="grow">Biber (biblatex)</span><i data-i="CHEVRON_DOWN"></i></button></div></div>
+          <div class="setting"><div><b>Stop a build after</b></div><div class="ctl"><label class="field"><input value="300" aria-label="Seconds"><span class="muted">seconds</span></label></div></div>
+          <div class="setting"><div><b>Build folder</b><small>Relative to the project; must stay inside it.</small></div><div class="ctl"><label class="field"><input class="mono" value=".lemmata/build" aria-label="Build folder"></label></div></div>
+          <div class="setting"><div><b>Build targets</b><small>Name more than one main file, a paper and its slides say, to get a picker next to Recompile.</small></div><div class="ctl"><button class="btn sm ghost"><i data-i="PLUS"></i>Add target</button></div></div>
+          <div class="setting"><div><b>Build only these chapters</b><small>Faster builds while you work on one part. Uses \includeonly.</small></div><div class="ctl"><button class="select"><span class="grow">All chapters</span><i data-i="CHEVRON_DOWN"></i></button></div></div>
+          <div class="setting"><div><b>Spell check language</b></div><div class="ctl"><button class="select"><span class="grow">Use my default</span><i data-i="CHEVRON_DOWN"></i></button></div></div>
+        </section>
+
+        <section class="sec" data-sec="trust">
+          <div class="setting"><div><b>Trust this project</b><small>It may run programs: its latexmkrc and Git hooks. Kept on this computer only.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Trust this project"></button></div></div>
+          <div class="setting"><div><b>Allow shell escape</b><small>Needed by minted and svg.</small></div><div class="ctl"><button class="sw" role="switch" aria-checked="true" aria-label="Allow shell escape"></button></div></div>
+          <p class="callout"><i data-i="TRIANGLE_ALERT"></i><span>With shell escape the document can run any command on your computer. Turn it on only for projects you trust.</span></p>
+        </section>
+
+        <section class="sec" data-sec="later">
+          <p class="note" style="padding:12px 0">Language, Files, TeX and Updates keep today's settings (prefs.rs) in the new layout: one row per setting, label and help text on the left, the control on the right. The snippet editor opens from a "Manage snippets" row under Editing.</p>
+        </section>
+      </div>
+      <footer class="s-foot">
+        <span class="for-app">Changes apply at once.</span>
+        <span class="for-project">Saved in lemmata.toml, so they travel with the project.</span>
+        <span class="grow"></span>
+        <a class="btn ghost for-project" href="library.html">Cancel</a>
+        <a class="btn primary for-project" href="library.html">Save</a>
+        <a class="btn primary for-app" href="library.html">Done</a>
+      </footer>
+    </div>
+  </section>
+</div>
+<!-- @include mock.html today=preferences-light.png -->
+<script>
+// Mockup behaviour only: scope switch, section nav, switches.
+const dlg = document.getElementById('dlg'), title = document.getElementById('s-title'), sub = document.getElementById('s-sub');
+const show = btn => {
+  document.querySelectorAll('.s-nav .row').forEach(r => r.classList.toggle('on', r === btn));
+  document.querySelectorAll('.sec').forEach(s => s.classList.toggle('on', s.dataset.sec === btn.dataset.sec));
+  title.textContent = btn.querySelector('.name').textContent;
+};
+const scope = s => {
+  dlg.className = 'dialog scope-' + s;
+  sub.textContent = s === 'app' ? 'These apply to every project.' : 'Only for rl-thesis.';
+  show(document.querySelector('.group-' + s + ' .row'));
+};
+document.querySelectorAll('[data-scope]').forEach(b => b.onclick = () => scope(b.dataset.scope));
+document.querySelectorAll('.s-nav .row').forEach(b => b.onclick = () => show(b));
+document.querySelectorAll('.sw').forEach(b => b.onclick = () => b.setAttribute('aria-checked', b.getAttribute('aria-checked') !== 'true'));
+document.querySelectorAll('.setting .seg').forEach(g => g.querySelectorAll('button').forEach(b => b.onclick = () => g.querySelectorAll('button').forEach(o => o.classList.toggle('on', o === b))));
+if (location.hash === '#project') scope('project');
+</script>
+</body>
+</html>
