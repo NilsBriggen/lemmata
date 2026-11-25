@@ -115,6 +115,8 @@ pub struct State {
     undo_requested: bool,
     /// "Template “x” saved…", shown for 8 s.
     pub template_note: Option<(String, Instant)>,
+    /// Floating status toast (e.g. bulk Overleaf import), shown for 8 s.
+    pub toast: Option<(String, Instant)>,
     /// Page 1 of each project's PDF, when there is one; None once asked and missing.
     pub thumbs: HashMap<String, Option<egui::TextureHandle>>,
     /// Thumbnails being decoded, and the decoded ones waiting for the next frame.
@@ -123,6 +125,12 @@ pub struct State {
 }
 
 impl State {
+    /// Drops cached thumbnails and clears in-flight markers so fresh previews load next time.
+    pub fn clear_thumbs(&mut self) {
+        self.thumbs.clear();
+        self.pending.clear();
+    }
+
     /// New and imported projects land in the folder being looked at.
     pub fn file(&self, groups: &mut Groups, paths: &[String]) -> bool {
         let View::Group(id) = &self.view else {
@@ -260,7 +268,7 @@ fn shown<'a>(st: &State, c: &'a Ctx) -> Vec<&'a Recent> {
             }
         })
         .collect();
-    if st.sort_by_name {
+    if st.sort_by_name || c.settings.library_sort == "name" {
         list.sort_by(|a, b| natural_cmp(name_of(&a.path), name_of(&b.path)));
     }
     if !term.is_empty() {
@@ -385,7 +393,10 @@ pub fn show(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx) -> Option<Act
     if st.template_note.as_ref().is_some_and(|(_, t)| expired(t)) {
         st.template_note = None;
     }
-    if st.undo.is_some() || st.template_note.is_some() {
+    if st.toast.as_ref().is_some_and(|(_, t)| expired(t)) {
+        st.toast = None;
+    }
+    if st.undo.is_some() || st.template_note.is_some() || st.toast.is_some() {
         ui.ctx().request_repaint_after(Duration::from_millis(500));
     }
     action
@@ -537,35 +548,72 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
         View::Group(id) => c.groups.groups.iter().find(|g| &g.id == id).cloned(),
         View::Root => None,
     };
-    // Header: the breadcrumb on the left, the tools on the right.
-    ui.horizontal(|ui| {
-        let h1 = FontId::new(26.0, theme::font::display());
-        // The tools now come first, so centre them on the title's height as before.
-        let title_h = ui.fonts_mut(|f| {
-            f.layout_no_wrap("Your projects".into(), h1.clone(), Color32::PLACEHOLDER)
-                .size()
-                .y
-        });
-        ui.set_min_height(title_h.max(36.0));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let gap = ui.spacing().item_spacing.x;
-            ui.spacing_mut().item_spacing.x = 8.0;
-            let sort = &mut st.sort_by_name;
-            let mut value = if *sort {
-                "name".to_owned()
-            } else {
-                "opened".to_owned()
-            };
-            ui.allocate_ui(Vec2::new(114.0, 32.0), |ui| {
-                if widgets::select(
-                    ui,
-                    p,
-                    "Sort projects",
-                    &mut value,
-                    &[("opened", "Last opened"), ("name", "Name")],
-                ) {
-                    *sort = value == "name";
+    // Header: single row when wide enough, stacked above a compact tools row when narrow.
+    st.sort_by_name = c.settings.library_sort == "name";
+    let h1 = FontId::new(26.0, theme::font::display());
+    let narrow_header = ui.available_width() < 760.0;
+    let draw_crumb = |ui: &mut Ui, st: &mut State, c: &mut Ctx, action: &mut Option<Action>| {
+        match (&active, searching) {
+            (Some(g), false) => {
+                let (pos, galley, crumb) =
+                    egui::Label::new(egui::RichText::new("Your projects").font(h1.clone()))
+                        .selectable(false)
+                        .sense(Sense::click())
+                        .layout_in_ui(ui);
+                let crumb = crumb.on_hover_cursor(egui::CursorIcon::PointingHand);
+                crumb.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Link, true, "Your projects")
+                });
+                // Also a drop target: dropping a project here takes it out of its folder.
+                let over = crumb.dnd_hover_payload::<Dragged>().is_some();
+                if over {
+                    ui.painter().rect(
+                        crumb.rect.expand(4.0),
+                        theme::R,
+                        p.accent_soft,
+                        Stroke::new(1.5, p.accent),
+                        StrokeKind::Outside,
+                    );
                 }
+                let color = if over || crumb.hovered() {
+                    p.accent
+                } else {
+                    p.muted
+                };
+                ui.painter().galley(pos, galley, color);
+                if let Some(d) = crumb.dnd_release_payload::<Dragged>() {
+                    c.groups.move_project(&d.0, None);
+                    commit(st, action);
+                }
+                if crumb.clicked() {
+                    st.view = View::Root;
+                }
+                icons::show(ui, icons::CHEVRON_RIGHT, 20.0, p.faint);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&g.name).font(h1.clone()).color(p.ink))
+                        .truncate(),
+                );
+            }
+            _ => {
+                ui.label(
+                    egui::RichText::new("Your projects")
+                        .font(h1.clone())
+                        .color(p.ink),
+                );
+            }
+        }
+    };
+    if narrow_header {
+        ui.horizontal(|ui| {
+            draw_crumb(ui, st, c, action);
+        });
+        ui.add_space(10.0);
+        let row_w = ui.available_width();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
+            let search_w = (row_w - 310.0).clamp(140.0, 220.0);
+            ui.allocate_ui(Vec2::new(search_w, 32.0), |ui| {
+                widgets::search_input(ui, p, &mut st.query, "Search projects");
             });
             let grid = c.settings.library_view == "grid";
             if let Some(i) = widgets::segmented(
@@ -582,19 +630,26 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
                 c.settings.library_view = ["list", "grid"][i].into();
                 *action = Some(Action::Settings);
             }
-            ui.allocate_ui(Vec2::new(260.0, 32.0), |ui| {
-                widgets::search_input(ui, p, &mut st.query, "Search projects");
+            let mut value = if c.settings.library_sort == "name" {
+                "name".to_owned()
+            } else {
+                "opened".to_owned()
+            };
+            ui.allocate_ui(Vec2::new(114.0, 32.0), |ui| {
+                if widgets::select(
+                    ui,
+                    p,
+                    "Sort projects",
+                    &mut value,
+                    &[("opened", "Last opened"), ("name", "Name")],
+                ) {
+                    st.sort_by_name = value == "name";
+                    c.settings.library_sort = value;
+                    *action = Some(Action::Settings);
+                }
             });
             match (&active, searching) {
                 (Some(g), false) => {
-                    if Button::new("Delete folder")
-                        .with_icon(icons::TRASH)
-                        .size(Size::Sm)
-                        .show(ui, p)
-                        .clicked()
-                    {
-                        remove_group(st, c, &g.id, action);
-                    }
                     if Button::new("Rename")
                         .with_icon(icons::SQUARE_PEN)
                         .size(Size::Sm)
@@ -602,6 +657,14 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
                         .clicked()
                     {
                         start_edit(st, c, Some(g.id.clone()), None);
+                    }
+                    if Button::new("Delete folder")
+                        .with_icon(icons::TRASH)
+                        .size(Size::Sm)
+                        .show(ui, p)
+                        .clicked()
+                    {
+                        remove_group(st, c, &g.id, action);
                     }
                 }
                 (None, false)
@@ -615,57 +678,93 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
                 }
                 _ => {}
             }
-            // Tools first, so the breadcrumb gets what is left and truncates instead of running under them.
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = gap;
+        });
+    } else {
+        ui.horizontal(|ui| {
+            // The tools now come first, so centre them on the title's height as before.
+            let title_h = ui.fonts_mut(|f| {
+                f.layout_no_wrap("Your projects".into(), h1.clone(), Color32::PLACEHOLDER)
+                    .size()
+                    .y
+            });
+            ui.set_min_height(title_h.max(36.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let gap = ui.spacing().item_spacing.x;
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let mut value = if c.settings.library_sort == "name" {
+                    "name".to_owned()
+                } else {
+                    "opened".to_owned()
+                };
+                ui.allocate_ui(Vec2::new(114.0, 32.0), |ui| {
+                    if widgets::select(
+                        ui,
+                        p,
+                        "Sort projects",
+                        &mut value,
+                        &[("opened", "Last opened"), ("name", "Name")],
+                    ) {
+                        st.sort_by_name = value == "name";
+                        c.settings.library_sort = value;
+                        *action = Some(Action::Settings);
+                    }
+                });
+                let grid = c.settings.library_view == "grid";
+                if let Some(i) = widgets::segmented(
+                    ui,
+                    p,
+                    &[
+                        (Some(icons::LIST), "List"),
+                        (Some(icons::LAYOUT_GRID), "Grid"),
+                    ],
+                    grid as usize,
+                    false,
+                    true,
+                ) {
+                    c.settings.library_view = ["list", "grid"][i].into();
+                    *action = Some(Action::Settings);
+                }
+                ui.allocate_ui(Vec2::new(260.0, 32.0), |ui| {
+                    widgets::search_input(ui, p, &mut st.query, "Search projects");
+                });
                 match (&active, searching) {
                     (Some(g), false) => {
-                        let (pos, galley, crumb) =
-                            egui::Label::new(egui::RichText::new("Your projects").font(h1.clone()))
-                                .selectable(false)
-                                .sense(Sense::click())
-                                .layout_in_ui(ui);
-                        let crumb = crumb.on_hover_cursor(egui::CursorIcon::PointingHand);
-                        crumb.widget_info(|| {
-                            egui::WidgetInfo::labeled(egui::Role::Link, true, "Your projects")
-                        });
-                        // Also a drop target: dropping a project here takes it out of its folder.
-                        let over = crumb.dnd_hover_payload::<Dragged>().is_some();
-                        if over {
-                            ui.painter().rect(
-                                crumb.rect.expand(4.0),
-                                theme::R,
-                                p.accent_soft,
-                                Stroke::new(1.5, p.accent),
-                                StrokeKind::Outside,
-                            );
+                        if Button::new("Delete folder")
+                            .with_icon(icons::TRASH)
+                            .size(Size::Sm)
+                            .show(ui, p)
+                            .clicked()
+                        {
+                            remove_group(st, c, &g.id, action);
                         }
-                        let color = if over || crumb.hovered() {
-                            p.accent
-                        } else {
-                            p.muted
-                        };
-                        ui.painter().galley(pos, galley, color);
-                        if let Some(d) = crumb.dnd_release_payload::<Dragged>() {
-                            c.groups.move_project(&d.0, None);
-                            commit(st, action);
+                        if Button::new("Rename")
+                            .with_icon(icons::SQUARE_PEN)
+                            .size(Size::Sm)
+                            .show(ui, p)
+                            .clicked()
+                        {
+                            start_edit(st, c, Some(g.id.clone()), None);
                         }
-                        if crumb.clicked() {
-                            st.view = View::Root;
-                        }
-                        icons::show(ui, icons::CHEVRON_RIGHT, 20.0, p.faint);
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(&g.name).font(h1).color(p.ink))
-                                .truncate(),
-                        );
                     }
-                    _ => {
-                        ui.label(egui::RichText::new("Your projects").font(h1).color(p.ink));
+                    (None, false)
+                        if Button::new("New folder")
+                            .with_icon(icons::FOLDER_PLUS)
+                            .size(Size::Sm)
+                            .show(ui, p)
+                            .clicked() =>
+                    {
+                        start_edit(st, c, None, None);
                     }
+                    _ => {}
                 }
+                // Tools first, so the breadcrumb gets what is left and truncates instead of running under them.
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    draw_crumb(ui, st, c, action);
+                });
             });
         });
-    });
+    }
     ui.add_space(18.0);
 
     if let Some(err) = c.error {
@@ -686,7 +785,7 @@ fn main_ui(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx, action: &mut O
 
     let folders = folders(st, c);
     let shown: Vec<Recent> = shown(st, c).into_iter().cloned().collect();
-    if c.recents.0.is_empty() {
+    if c.recents.0.is_empty() && folders.is_empty() && active.is_none() {
         empty(ui, p, action);
     } else if folders.is_empty() && shown.is_empty() {
         if searching {
@@ -772,8 +871,15 @@ fn table(
 ) {
     let w = ui.available_width();
     // grid-template-columns: minmax(200px, 2fr) minmax(160px, 2fr) 130px 48px
-    let fr = ((w - 2.0 - 178.0) / 2.0).max(200.0);
-    let cols = [fr.max(200.0), fr.max(160.0), 130.0, 48.0];
+    let cols = if w < 580.0 {
+        let rem = (w - 2.0 - 178.0).max(200.0);
+        let c0 = (rem * 0.54).max(120.0);
+        let c1 = (rem - c0).max(80.0);
+        [c0, c1, 130.0, 48.0]
+    } else {
+        let fr = ((w - 2.0 - 178.0) / 2.0).max(200.0);
+        [fr.max(200.0), fr.max(160.0), 130.0, 48.0]
+    };
     let x = |i: usize| cols[..i].iter().sum::<f32>();
     let rows = 1 + folders.len() + shown.len();
     let height = 34.0 + (rows - 1) as f32 * 53.0 + 2.0;
@@ -921,15 +1027,20 @@ fn table(
             chip.as_deref(),
         );
         let loc = home(folder_of(&rec.path));
+        let loc_w = (cols[1] - 28.0).max(24.0);
         let loc_rect = Rect::from_min_size(
             pos2(rect.left() + x(1) + 14.0, rect.top()),
-            Vec2::new(cols[1] - 28.0, 53.0),
+            Vec2::new(loc_w, 53.0),
         );
-        painter.with_clip_rect(loc_rect).text(
-            pos2(loc_rect.left(), rect.center().y),
-            Align2::LEFT_CENTER,
-            loc,
-            FontId::monospace(12.0),
+        let mut loc_job =
+            egui::text::LayoutJob::simple_singleline(loc, FontId::monospace(12.0), p.muted);
+        loc_job.wrap.max_width = loc_w;
+        loc_job.wrap.max_rows = 1;
+        loc_job.wrap.overflow_character = Some('…');
+        let loc_g = ui.fonts_mut(|f| f.layout_job(loc_job));
+        painter.galley(
+            pos2(loc_rect.left(), rect.center().y - loc_g.size().y / 2.0),
+            loc_g,
             p.muted,
         );
         painter.text(
@@ -1481,6 +1592,48 @@ fn overlays(
     folder_name_dialog(ctx, p, st, c, action);
     move_dialog(ctx, p, st, c, action);
     delete_dialog(ctx, p, st, action);
+    if let Some((note, _)) = st.toast.clone() {
+        let screen = ctx.content_rect();
+        let mut dismiss = false;
+        egui::Area::new(egui::Id::unique("library-toast"))
+            .order(egui::Order::Foreground)
+            .pivot(Align2::CENTER_BOTTOM)
+            .fixed_pos(pos2(screen.center().x, screen.bottom() - 20.0))
+            .show(ctx, |ui| {
+                ui.set_max_width((screen.width() * 0.9).min(560.0));
+                egui::Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0, p.border))
+                    .corner_radius(theme::R_LG)
+                    .shadow(p.shadow)
+                    .inner_margin(egui::Margin {
+                        left: 12,
+                        right: 8,
+                        top: 8,
+                        bottom: 8,
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            icons::show(ui, icons::CIRCLE_CHECK, 16.0, p.ok);
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&note).color(p.ink)).wrap(),
+                            );
+                            if Button::icon(icons::X, "Dismiss")
+                                .size(Size::Sm)
+                                .icon_size(14.0)
+                                .show_icon(ui, p)
+                                .clicked()
+                            {
+                                dismiss = true;
+                            }
+                        });
+                    });
+            });
+        if dismiss {
+            st.toast = None;
+        }
+    }
 }
 
 fn folder_name_dialog(
@@ -1585,25 +1738,32 @@ fn move_dialog(
         &format!("Move {}", name_of(&path)),
         380.0,
         |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            for (id, name) in &groups {
-                let here = *id == current;
-                let icon = if id.is_some() {
-                    icons::FOLDER
-                } else {
-                    icons::FILE_TEXT
-                };
-                let r = list_button(ui, p, icon, name, here);
-                r.widget_info(|| {
-                    egui::WidgetInfo::selected(egui::Role::RadioButton, true, here, name)
+            let max_h = (ctx.content_rect().height() * 0.55).clamp(140.0, 360.0);
+            egui::ScrollArea::vertical()
+                .id_salt("move-folders")
+                .max_height(max_h)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for (id, name) in &groups {
+                        let here = *id == current;
+                        let icon = if id.is_some() {
+                            icons::FOLDER
+                        } else {
+                            icons::FILE_TEXT
+                        };
+                        let r = list_button(ui, p, icon, name, here);
+                        r.widget_info(|| {
+                            egui::WidgetInfo::selected(egui::Role::RadioButton, true, here, name)
+                        });
+                        if r.clicked() {
+                            chosen = Some(id.clone());
+                        }
+                    }
+                    if list_button(ui, p, icons::FOLDER_PLUS, "New folder…", false).clicked() {
+                        new_folder = true;
+                    }
                 });
-                if r.clicked() {
-                    chosen = Some(id.clone());
-                }
-            }
-            if list_button(ui, p, icons::FOLDER_PLUS, "New folder…", false).clicked() {
-                new_folder = true;
-            }
         },
         None,
     );

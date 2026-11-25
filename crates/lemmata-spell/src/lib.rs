@@ -151,8 +151,8 @@ fn sharp_s_variants(word: &str) -> Vec<String> {
         .filter(|&i| word.is_char_boundary(i) && word[i..].starts_with("ss"))
         .collect();
     let mut out = Vec::new();
-    // Cap combinations to keep this cheap; real words have few.
-    let n = positions.len().min(4);
+    // Cap combinations to keep this cheap; real German compounds have at most a handful.
+    let n = positions.len().min(8);
     for mask in 1u32..(1 << n) {
         let mut s = String::with_capacity(word.len());
         let mut last = 0;

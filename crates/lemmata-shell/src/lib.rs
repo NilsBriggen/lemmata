@@ -367,6 +367,9 @@ impl Shell {
         let watcher_sink: Sink = Arc::new(move |event| {
             sink(Event::Project(generation, Box::new(event)));
         });
+        // Clear per-project caches so they do not grow unboundedly across project switches.
+        self.written.lock_safe().clear();
+        self.latin1.lock_safe().clear();
         // Without a watcher the app still works; it just won't notice outside edits.
         *self.watcher.lock_safe() = files::watch(
             watcher_sink,
@@ -454,8 +457,20 @@ impl Shell {
     pub fn set_config(&self, config: Config) -> CmdResult<ProjectInfo> {
         let mut guard = self.project.lock_safe();
         let p = guard.as_mut().ok_or("No project is open.")?;
+        if !lemmata_project::valid_outdir(&config.outdir) {
+            return Err("The build folder must stay inside the project.".into());
+        }
+        if !lemmata_project::valid_outdir(&config.figures_dir) {
+            return Err("The figures folder must stay inside the project.".into());
+        }
         if let Some(main) = &config.main {
-            p.main = PathBuf::from(main);
+            let main_path = PathBuf::from(main);
+            if !lemmata_project::main_inside(&p.root, &main_path) {
+                return Err(format!(
+                    "The main file {main} does not exist inside the project."
+                ));
+            }
+            p.main = main_path;
         }
         p.config = config;
         p.save_config().map_err(err)?;
@@ -515,14 +530,35 @@ impl Shell {
         expected: Option<u32>,
     ) -> CmdResult<()> {
         let abs = root.join(files::safe_rel(&path)?);
+        // Check trust/symlink boundaries BEFORE creating any parent directories so an untrusted
+        // project cannot create folders outside itself through a symlinked directory.
+        let trusted = self
+            .project
+            .lock_safe()
+            .as_ref()
+            .is_some_and(|p| p.trusted && p.root == root);
+        lemmata_env::fs::may_write(root, trusted, &abs)
+            .map_err(|e| format!("Could not save {path}: {e}."))?;
+        // A file that is in Windows-1252 (see `read_text`) stays in it.
+        let disk_text = lemmata_env::fs::read_text(&abs).ok();
+        // Check external edits AND external deletion before touching disk.
+        if let Some(expected) = expected {
+            match &disk_text {
+                Some(disk) if files::content_hash(disk.as_bytes()) != expected => {
+                    return Err(format!("{CONFLICT} {path} was changed by another program."));
+                }
+                None => {
+                    return Err(format!(
+                        "{CONFLICT} {path} was deleted or moved by another program."
+                    ));
+                }
+                _ => {}
+            }
+        }
         // A file in a folder that doesn't exist yet (e.g. .lemmata/comments.json before the first build).
         if let Some(dir) = abs.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        // A file that is in Windows-1252 (see `read_text`) stays in it.
-        let disk_text = lemmata_env::fs::read_text(&abs).ok();
-        // shortcut: remembered by path for this run; a new file made at a latin1 file's old name
-        // would be written latin1 until the app restarts.
         let latin1 = self.latin1.lock_safe().contains(&abs)
             && lemmata_env::fs::read(&abs).is_ok_and(|b| b.is_ascii());
         let bytes = if latin1 {
@@ -533,23 +569,8 @@ impl Shell {
             lemmata_env::fs::encode_like_disk(&abs, &content)
                 .map_err(|e| format!("Could not save {path}: {e}."))?
         };
-        // Beside the file first, so a crash never leaves half of it; through a link (a preamble
-        // shared between projects) to the file it names, out of the project only when trusted.
-        let trusted = self
-            .project
-            .lock_safe()
-            .as_ref()
-            .is_some_and(|p| p.trusted && p.root == root);
-        lemmata_env::fs::may_write(root, trusted, &abs)
-            .map_err(|e| format!("Could not save {path}: {e}."))?;
         let staged = lemmata_env::fs::stage(&abs, &bytes)
             .map_err(|e| format!("Could not save {path}: {e}"))?;
-        // The text as the editor knows it, whatever the file's encoding.
-        if let (Some(expected), Some(disk)) = (expected, &disk_text)
-            && files::content_hash(disk.as_bytes()) != expected
-        {
-            return Err(format!("{CONFLICT} {path} was changed by another program."));
-        }
         let written = staged
             .commit()
             .map_err(|e| format!("Could not save {path}: {e}"))?;
@@ -607,9 +628,11 @@ impl Shell {
             Some(d) => d,
             None => first_or_fresh_detection(self, false),
         };
-        // Tectonic when chosen, or as the fallback on a machine without TeX.
+        // Tectonic when chosen, or as the fallback on a machine without TeX (no latexmk and no
+        // matching TeX engine binary).
+        let has_engine = detection.tool(project.config.engine.binary()).is_some();
         if project.config.engine == lemmata_project::Engine::Tectonic
-            || (detection.tool("latexmk").is_none() && detection.tectonic.is_some())
+            || (detection.tool("latexmk").is_none() && !has_engine && detection.tectonic.is_some())
         {
             let exe = detection.tectonic.as_deref().ok_or(
             "Tectonic is not installed. Install it from the start screen, or choose another compiler in the project settings.",
@@ -624,9 +647,11 @@ impl Shell {
             .await
             .map_err(err);
         }
-        let latexmk = detection
-            .tool("latexmk")
-            .ok_or("latexmk was not found. Install TeX Live first.")?;
+        let latexmk = match detection.tool("latexmk") {
+            Some(p) => p,
+            None if has_engine => Path::new(""),
+            None => return Err("latexmk was not found. Install TeX Live first.".into()),
+        };
 
         self.emit_project(self.current_project(), Event::BuildStarted);
         let opts = BuildOptions {
@@ -639,7 +664,7 @@ impl Shell {
             ),
             perl_dir: detection.tool("perl").and_then(|p| p.parent()),
         };
-        let skip_latexmk = self.latexmk_broken.load(Ordering::Relaxed);
+        let skip_latexmk = self.latexmk_broken.load(Ordering::Relaxed) || !latexmk.is_file();
         let outcome = lemmata_tex::build_with(&project, &opts, rx, skip_latexmk, force)
             .await
             .map_err(err)?;
@@ -857,36 +882,37 @@ impl Shell {
     /// Copies files chosen by the user into a project folder (`folder` is
     /// project-relative; empty for the root). Returns the new relative paths.
     pub fn add_files(&self, paths: Vec<String>, folder: String) -> CmdResult<Vec<String>> {
-        let root = self
-            .project
-            .lock_safe()
-            .as_ref()
-            .map(|p| p.root.clone())
-            .ok_or("No project is open.")?;
-        let rel = Path::new(&folder);
-        if rel.is_absolute()
-            || rel
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
-            return Err("That folder is outside the project.".into());
-        }
-        let dest_dir = root.join(rel);
-        std::fs::create_dir_all(&dest_dir).map_err(err)?;
-        let mut added = Vec::new();
-        for p in paths {
-            let src = PathBuf::from(&p);
+        let p = project(self)?;
+        let rel = if folder.is_empty() {
+            PathBuf::new()
+        } else {
+            files::safe_rel(&folder)?
+        };
+        let dest_dir = p.root.join(&rel);
+        // Check symlink/trust boundaries before creating destination directories or copying.
+        for path_str in &paths {
+            let src = Path::new(path_str);
             let name = src.file_name().ok_or("Not a file.")?;
             let dest = dest_dir.join(name);
+            lemmata_env::fs::may_write(&p.root, p.trusted, &dest)
+                .map_err(|e| format!("Could not add {}: {e}.", name.to_string_lossy()))?;
             if dest.exists() {
                 return Err(format!(
                     "{} already exists in the project.",
                     name.to_string_lossy()
                 ));
             }
-            std::fs::copy(&src, &dest).map_err(|e| format!("Could not copy {p}: {e}"))?;
+        }
+        std::fs::create_dir_all(&dest_dir).map_err(err)?;
+        let mut added = Vec::new();
+        for path_str in paths {
+            let src = PathBuf::from(&path_str);
+            let name = src.file_name().ok_or("Not a file.")?;
+            let dest = dest_dir.join(name);
+            lemmata_env::fs::copy(&src, &dest)
+                .map_err(|e| format!("Could not copy {path_str}: {e}"))?;
             added.push(
-                dest.strip_prefix(&root)
+                dest.strip_prefix(&p.root)
                     .unwrap_or(&dest)
                     .to_string_lossy()
                     .replace('\\', "/"),
@@ -978,7 +1004,7 @@ impl Shell {
     /// \usepackage (or after \documentclass).
     pub fn add_package(&self, package: String) -> CmdResult<()> {
         self.add_package_with(package, |p| {
-            lemmata_env::fs::read_to_string(p.main_abs()).map_err(err)
+            lemmata_env::fs::read_text(p.main_abs()).map_err(err)
         })
     }
 
@@ -995,10 +1021,11 @@ impl Shell {
         }
         let p = project(self)?;
         let text = read(&p)?;
+        let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
         let lines: Vec<&str> = text.lines().collect();
         let begin = lines
             .iter()
-            .position(|l| l.contains("\\begin{document}"))
+            .position(|l| lemmata_project::strip_comment(l).contains("\\begin{document}"))
             .unwrap_or(lines.len());
         let after = lines[..begin]
             .iter()
@@ -1006,14 +1033,14 @@ impl Shell {
             .or_else(|| {
                 lines[..begin]
                     .iter()
-                    .position(|l| l.contains("\\documentclass"))
+                    .position(|l| lemmata_project::strip_comment(l).contains("\\documentclass"))
             })
             .ok_or("The main file has no \\documentclass.")?;
         let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         out.insert(after + 1, format!("\\usepackage{{{package}}}"));
-        let mut joined = out.join("\n");
+        let mut joined = out.join(eol);
         if text.ends_with('\n') {
-            joined.push('\n');
+            joined.push_str(eol);
         }
         self.write_text(
             &p.root,

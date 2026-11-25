@@ -240,9 +240,21 @@ fn parse_edit(out: &str) -> Option<SourceLocation> {
     })
 }
 
-/// TeX records inputs like `/home/x/thesis/./chapters/a.tex`.
+/// TeX records inputs like `/home/x/thesis/./chapters/a.tex` or mixed `/.\` / `\./` on Windows.
 fn normalize(p: &str) -> PathBuf {
-    PathBuf::from(p.replace("/./", "/").replace("\\.\\", "\\"))
+    let mut s = p.to_string();
+    loop {
+        let next = s
+            .replace("/./", "/")
+            .replace("\\.\\", "\\")
+            .replace("/.\\", "/")
+            .replace("\\./", "\\");
+        if next == s {
+            break;
+        }
+        s = next;
+    }
+    PathBuf::from(s)
 }
 
 #[cfg(test)]

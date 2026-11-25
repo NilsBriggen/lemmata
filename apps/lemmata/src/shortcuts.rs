@@ -127,9 +127,33 @@ pub const SHORTCUTS: &[Shortcut] = &[
         "Editing",
     ),
     s(
+        "copy-line-up",
+        "Shift-Alt-ArrowUp",
+        "Duplicate line above",
+        "Editing",
+    ),
+    s(
         "copy-line-down",
         "Shift-Alt-ArrowDown",
         "Duplicate line",
+        "Editing",
+    ),
+    s(
+        "add-cursor-above",
+        "Mod-Alt-ArrowUp",
+        "Add cursor above",
+        "Editing",
+    ),
+    s(
+        "add-cursor-below",
+        "Mod-Alt-ArrowDown",
+        "Add cursor below",
+        "Editing",
+    ),
+    s(
+        "match-bracket",
+        "Mod-Shift-\\",
+        "Jump to matching bracket",
         "Editing",
     ),
     s("delete-line", "Mod-Shift-k", "Delete line", "Editing"),
@@ -190,7 +214,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
     s(
         "mouse-ctrl-click",
         "",
-        "Ctrl+click in the PDF: jump to the source",
+        if MAC {
+            "⌘+click in the PDF: jump to the source"
+        } else {
+            "Ctrl+click in the PDF: jump to the source"
+        },
         "Mouse",
     ),
     s(
@@ -229,7 +257,11 @@ fn chosen_keys() -> &'static Chosen {
 const FIXED: &[&str] = &[
     "move-line-up",
     "move-line-down",
+    "copy-line-up",
     "copy-line-down",
+    "add-cursor-above",
+    "add-cursor-below",
+    "match-bracket",
     "tree-cut",
     "tree-copy",
     "tree-paste",
@@ -298,8 +330,11 @@ pub fn keys_of(id: &str) -> String {
 /// A key press as a spec, for recording a shortcut: "Mod-Shift-p". None for a letter, digit or
 /// sign without Ctrl, ⌘ or Alt, which would stop that key from typing.
 pub fn spec_of(mods: Modifiers, key: Key) -> Option<String> {
-    let typed =
-        key.name().chars().count() == 1 || matches!(key, Key::Space | Key::Enter | Key::Tab);
+    let typed = key.name().chars().count() == 1
+        || matches!(
+            key,
+            Key::Space | Key::Enter | Key::Tab | Key::Backspace | Key::Delete
+        );
     if typed && !(mods.command || mods.mac_cmd || mods.ctrl || mods.alt) {
         return None;
     }
@@ -514,6 +549,16 @@ mod tests {
             "a bare letter would stop typing"
         );
         assert_eq!(press(shift, Key::X), None);
+        assert_eq!(
+            press(Modifiers::NONE, Key::Backspace),
+            None,
+            "bare Backspace cannot be bound"
+        );
+        assert_eq!(
+            press(Modifiers::NONE, Key::Delete),
+            None,
+            "bare Delete cannot be bound"
+        );
 
         // A shortcut no other test presses; set back at the end.
         let mut chosen = std::collections::BTreeMap::new();

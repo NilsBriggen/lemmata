@@ -4,7 +4,9 @@
 use crate::{CmdResult, Shell, err, project};
 use std::path::{Path, PathBuf};
 
-const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "pdf", "eps", "svg"];
+const IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "pdf", "eps", "svg", "tif", "tiff", "bmp",
+];
 
 /// A file name not yet used in `dir`: `name.ext`, `name-2.ext`, ...
 fn unique(dir: &Path, stem: &str, ext: &str) -> PathBuf {
@@ -69,7 +71,7 @@ impl Shell {
             .unwrap_or_default();
         if !IMAGE_EXTS.contains(&ext.as_str()) {
             return Err(format!(
-                "{} isn't an image LaTeX can include (PNG, JPEG, PDF, EPS or SVG).",
+                "{} isn't an image LaTeX can include (PNG, JPEG, PDF, EPS, SVG, TIFF or BMP).",
                 src.display()
             ));
         }
@@ -79,10 +81,10 @@ impl Shell {
             return Ok(rel(&p, &canon));
         }
         let dir = p.root.join(&p.config.figures_dir);
-        std::fs::create_dir_all(&dir).map_err(err)?;
         let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("figure");
         let dest = unique(&dir, &slug(stem), &ext);
         writable(&p, &dest)?;
+        std::fs::create_dir_all(&dir).map_err(err)?;
         lemmata_env::fs::copy(&src, &dest).map_err(|e| format!("Could not copy the image: {e}"))?;
         Ok(rel(&p, &dest))
     }
@@ -94,9 +96,9 @@ impl Shell {
             return Err("Only PNG screenshots can be pasted.".into());
         }
         let dir = p.root.join(&p.config.figures_dir);
-        std::fs::create_dir_all(&dir).map_err(err)?;
         let dest = unique(&dir, "pasted-figure", "png");
         writable(&p, &dest)?;
+        std::fs::create_dir_all(&dir).map_err(err)?;
         std::fs::write(&dest, bytes).map_err(err)?;
         Ok(rel(&p, &dest))
     }
@@ -104,9 +106,10 @@ impl Shell {
     /// Whether the main file loads `package` (directly or via a list).
     pub fn has_package(&self, package: String) -> CmdResult<bool> {
         let p = project(self)?;
-        let text = lemmata_env::fs::read_to_string(p.main_abs()).map_err(err)?;
+        let text = lemmata_env::fs::read_text(p.main_abs()).map_err(err)?;
+        let mut scanner = lemmata_project::CodeScanner::default();
         Ok(text.lines().any(|l| {
-            let code = l.split('%').next().unwrap_or("");
+            let code = scanner.mask_line(l);
             code.contains("\\usepackage")
                 && code
                     .split(['{', '}', ','])

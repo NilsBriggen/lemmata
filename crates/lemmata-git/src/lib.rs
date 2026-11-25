@@ -59,6 +59,9 @@ pub struct Status {
     pub unstaged: Vec<FileChange>,
     pub untracked: Vec<FileChange>,
     pub conflicted: Vec<FileChange>,
+    /// Active multi-step operation ("merge" or "rebase"), when one is paused on conflicts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
 }
 
 impl Status {
@@ -102,7 +105,7 @@ pub fn parse_status(z: &str) -> Status {
                 Some(("branch.head", b)) => s.branch = (b != "(detached)").then(|| b.to_string()),
                 Some(("branch.upstream", u)) => s.upstream = Some(u.to_string()),
                 Some(("branch.ab", ab)) => {
-                    let n = |t: Option<&str>| t.and_then(|t| t[1..].parse().ok()).unwrap_or(0);
+                    let n = |t: Option<&str>| t.and_then(|t| t.get(1..)?.parse().ok()).unwrap_or(0);
                     let mut it = ab.split(' ');
                     (s.ahead, s.behind) = (n(it.next()), n(it.next()));
                 }
@@ -251,6 +254,13 @@ fn exec(git: &Path, dir: Option<&Path>, args: &[&str], timeout: Duration) -> Res
                 }
                 unsafe { libc::kill(-group, libc::SIGKILL) };
             }
+            #[cfg(windows)]
+            {
+                let mut tk = Command::new("taskkill");
+                tk.args(["/T", "/F", "/PID", &child.id().to_string()]);
+                no_window(&mut tk);
+                let _ = tk.status();
+            }
             let _ = child.kill();
             let _ = child.wait();
             let n = timeout.as_secs();
@@ -371,7 +381,10 @@ impl Repo {
 
     fn run(&self, args: &[&str], timeout: Duration) -> Result<Out> {
         let verb = args.iter().find(|a| !a.starts_with('-'));
-        let read = matches!(verb, Some(&("status" | "log" | "for-each-ref" | "remote")));
+        let read = matches!(
+            verb,
+            Some(&("status" | "log" | "for-each-ref" | "remote" | "diff" | "rev-parse"))
+        );
         let mut all: Vec<&str> = Vec::new();
         if read {
             all.extend(self.guard.iter().map(String::as_str));
@@ -413,7 +426,25 @@ impl Repo {
         if !o.ok {
             return msg(tidy(&o.stderr));
         }
-        Ok(parse_status(&o.stdout))
+        let mut status = parse_status(&o.stdout);
+        status.operation = self.in_progress().map(str::to_string);
+        Ok(status)
+    }
+
+    fn git_dir(&self) -> Option<PathBuf> {
+        let out = self.run(&["rev-parse", "--absolute-git-dir"], LOCAL).ok()?;
+        out.ok.then(|| PathBuf::from(out.stdout.trim()))
+    }
+
+    fn in_progress(&self) -> Option<&'static str> {
+        let gd = self.git_dir()?;
+        if gd.join("MERGE_HEAD").exists() {
+            Some("merge")
+        } else if gd.join("rebase-merge").exists() || gd.join("rebase-apply").exists() {
+            Some("rebase")
+        } else {
+            None
+        }
     }
 
     fn paths(&self, verb: &[&str], paths: &[String]) -> Result<()> {
@@ -531,23 +562,41 @@ pub fn fetch(root: &Path) -> Result<String> {
     }
 }
 
+/// How `pull_mode` reconciles diverged history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullMode {
+    FfOnly,
+    Merge,
+    Rebase,
+}
+
 pub fn pull(root: &Path) -> Result<String> {
+    pull_mode(root, PullMode::FfOnly)
+}
+
+pub fn pull_mode(root: &Path, mode: PullMode) -> Result<String> {
     let r = Repo::open(root)?;
-    let o = r.run(&["pull", "--ff-only"], NETWORK)?;
+    let flag = match mode {
+        PullMode::FfOnly => "--ff-only",
+        PullMode::Merge => "--no-rebase",
+        PullMode::Rebase => "--rebase",
+    };
+    let o = r.run(&["pull", flag], NETWORK)?;
     if o.ok {
         return Ok(tidy(&o.stdout));
     }
     let e = &o.stderr;
-    if [
-        "Not possible to fast-forward",
-        "divergent branches",
-        "have diverged",
-    ]
-    .iter()
-    .any(|m| e.contains(m))
+    if mode == PullMode::FfOnly
+        && [
+            "Not possible to fast-forward",
+            "divergent branches",
+            "have diverged",
+        ]
+        .iter()
+        .any(|m| e.contains(m))
     {
         msg(
-            "Your branch and the remote have both changed. Pull with rebase or merge in a terminal.",
+            "Your branch and the remote have both changed. Use Pull (merge) or Pull (rebase) to combine them.",
         )
     } else if e.contains("no tracking information") {
         msg(
@@ -556,6 +605,128 @@ pub fn pull(root: &Path) -> Result<String> {
     } else {
         Err(net_error(e))
     }
+}
+
+/// Aborts an in-progress merge or rebase, putting the working tree back cleanly.
+pub fn abort(root: &Path) -> Result<String> {
+    let r = Repo::open(root)?;
+    match r.in_progress() {
+        Some("merge") => {
+            r.ok(&["merge", "--abort"])?;
+            Ok("Merge aborted.".into())
+        }
+        Some("rebase") => {
+            r.ok(&["rebase", "--abort"])?;
+            Ok("Rebase aborted.".into())
+        }
+        _ => msg("No merge or rebase is in progress."),
+    }
+}
+
+/// Remote-tracking branches (`origin/feature`, excluding `HEAD` pointers).
+pub fn remote_branches(root: &Path) -> Result<Vec<String>> {
+    let out =
+        Repo::open(root)?.ok(&["for-each-ref", "--format=%(refname:short)", "refs/remotes"])?;
+    Ok(out
+        .lines()
+        .filter(|l| !l.ends_with("/HEAD") && l.contains('/'))
+        .map(str::to_string)
+        .collect())
+}
+
+/// Creates a local tracking branch from a remote branch (e.g. `origin/feature`).
+pub fn checkout_remote_branch(root: &Path, remote_branch: &str) -> Result<String> {
+    let r = Repo::open(root)?;
+    if !remote_branches(root)?.iter().any(|b| b == remote_branch) {
+        return msg(format!("There is no remote branch called {remote_branch}."));
+    }
+    if r.status()?.dirty() {
+        return msg(
+            "You have uncommitted changes. Commit or stash them first before switching branches.",
+        );
+    }
+    let local = remote_branch
+        .split_once('/')
+        .map_or(remote_branch, |(_, rest)| rest);
+    if branches(root)?.iter().any(|b| b == local) {
+        r.ok(&["switch", "--no-guess", local])?;
+    } else {
+        r.ok(&["switch", "--track", remote_branch])?;
+    }
+    Ok(local.to_string())
+}
+
+/// Deletes a merged local branch safely (`git branch -d`, never `-D`).
+pub fn delete_branch(root: &Path, name: &str) -> Result<()> {
+    let r = Repo::open(root)?;
+    let name = name.trim();
+    if !branches(root)?.iter().any(|b| b == name) {
+        return msg(format!("There is no branch called {name}."));
+    }
+    if r.status()?.branch.as_deref() == Some(name) {
+        return msg("Switch to another branch before deleting the current one.");
+    }
+    r.ok(&["branch", "-d", name]).map(|_| ())
+}
+
+/// Adds a named remote (e.g. `origin`).
+pub fn add_remote(root: &Path, name: &str, url: &str) -> Result<()> {
+    let r = Repo::open(root)?;
+    let (name, url) = (name.trim(), url.trim());
+    if name.is_empty()
+        || name.starts_with('-')
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+    {
+        return msg("Remote name can only contain letters, digits, -, _ and .");
+    }
+    if url.is_empty() || url.starts_with('-') || url.contains("::") {
+        return msg("Enter a valid remote URL.");
+    }
+    r.ok(&["remote", "add", "--", name, url]).map(|_| ())
+}
+
+/// Lists saved stashes (`stash@{0}: ...`).
+pub fn stash_list(root: &Path) -> Result<Vec<String>> {
+    let out = Repo::open(root)?.ok(&["stash", "list", "--format=%gd: %gs"])?;
+    Ok(out.lines().map(str::to_string).collect())
+}
+
+/// Saves uncommitted changes into a stash entry.
+pub fn stash_push(root: &Path, message: &str) -> Result<String> {
+    let r = Repo::open(root)?;
+    let args: Vec<&str> = if message.trim().is_empty() {
+        vec!["stash", "push", "--include-untracked"]
+    } else {
+        vec!["stash", "push", "--include-untracked", "-m", message.trim()]
+    };
+    let out = r.ok(&args)?;
+    Ok(tidy(&out))
+}
+
+/// Reapplies and removes the most recent stash entry.
+pub fn stash_pop(root: &Path) -> Result<String> {
+    let r = Repo::open(root)?;
+    let out = r.ok(&["stash", "pop"])?;
+    Ok(tidy(&out))
+}
+
+/// Unified diff of unstaged or staged changes, optionally scoped to `path`.
+pub fn diff(root: &Path, path: Option<&str>, staged: bool) -> Result<String> {
+    let r = Repo::open(root)?;
+    let mut args = vec!["diff", "--no-color"];
+    if staged {
+        args.push("--cached");
+    }
+    if let Some(p) = path {
+        args.push("--");
+        args.push(p);
+    } else if !r.prefix.is_empty() {
+        args.push("--");
+        args.push(&r.prefix);
+    }
+    r.ok(&args)
 }
 
 /// The first push of a branch sets its upstream (`-u`).

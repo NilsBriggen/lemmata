@@ -366,9 +366,18 @@ fn warning(file: Option<String>, text: String) -> Diagnostic {
     }
 }
 
-/// A line that begins an error or its context: not the rest of a wrapped or continued line.
+/// A line that begins an error, warning, box report or context: not the rest of a wrapped line.
 fn starts_new_message(line: &str) -> bool {
-    line.starts_with("! ") || CONTEXT_LINE.is_match(line) || FILE_LINE_ERROR.is_match(line)
+    line.is_empty()
+        || line.starts_with("! ")
+        || line.starts_with("LaTeX ")
+        || line.starts_with("Package ")
+        || line.starts_with("Class ")
+        || line.starts_with("Overfull ")
+        || line.starts_with("Underfull ")
+        || line.starts_with("No file ")
+        || CONTEXT_LINE.is_match(line)
+        || FILE_LINE_ERROR.is_match(line)
 }
 
 /// Re-joins lines TeX wrapped at [`WRAP`] characters.
@@ -381,7 +390,7 @@ fn unwrap_lines(log: &str) -> Vec<String> {
         } else {
             out.push(raw.to_string());
         }
-        continuing = raw.len() == WRAP || raw.chars().count() == WRAP;
+        continuing = !raw.is_empty() && (raw.len() == WRAP || raw.chars().count() == WRAP);
     }
     out
 }
@@ -402,35 +411,62 @@ impl FileStack {
             match bytes[i] {
                 b'(' => {
                     let rest = &line[i + 1..];
-                    let mut end = rest
-                        .find(|c: char| c.is_whitespace() || c == '(' || c == ')')
-                        .unwrap_or(rest.len());
-                    // A path with a space (`./chapters/my chapter.tex`): up to the first source
-                    // extension, when the part before the space doesn't end in one itself.
+                    // Strip optional quotes TeX wraps around paths with spaces (`("./my file.tex"`).
+                    let quoted = rest.starts_with('"');
+                    let rest_unq = if quoted { &rest[1..] } else { rest };
+                    let mut end = if quoted {
+                        rest_unq.find('"').unwrap_or(rest_unq.len())
+                    } else {
+                        rest_unq
+                            .find(|c: char| c.is_whitespace() || c == '(' || c == ')')
+                            .unwrap_or(rest_unq.len())
+                    };
+                    // A path with a space (`./chapters/my chapter.tex`, `/home/me/my doc/a.tex`,
+                    // `C:\Users\Me\my doc\a.tex`, or `chapters/my chapter.tex`): up to the first
+                    // source extension, when the part before the space doesn't end in one itself.
                     let has_ext = |n: &str| {
                         Path::new(n).extension().is_some_and(|e| {
-                            ["tex", "sty", "cls", "bbl", "ltx", "def", "cfg", "clo", "fd"]
-                                .contains(&e.to_string_lossy().as_ref())
+                            let low = e.to_string_lossy().to_ascii_lowercase();
+                            [
+                                "tex", "sty", "cls", "bbl", "ltx", "def", "cfg", "clo", "fd",
+                                "aux", "toc",
+                            ]
+                            .contains(&low.as_str())
                         })
                     };
-                    if rest[..end].starts_with("./") && !has_ext(&rest[..end]) {
-                        let upto = rest.find(['(', ')']).unwrap_or(rest.len());
-                        if let Some(n) = [".tex", ".sty", ".cls"]
+                    let looks_like_path_prefix = |s: &str| {
+                        s.starts_with("./")
+                            || s.starts_with(".\\")
+                            || s.starts_with('/')
+                            || s.contains('/')
+                            || s.contains('\\')
+                            || (s.len() >= 2
+                                && s.as_bytes()[0].is_ascii_alphabetic()
+                                && s.as_bytes()[1] == b':')
+                    };
+                    if !quoted
+                        && looks_like_path_prefix(&rest_unq[..end])
+                        && !has_ext(&rest_unq[..end])
+                    {
+                        let upto = rest_unq.find(['(', ')']).unwrap_or(rest_unq.len());
+                        if let Some(n) = [".tex", ".sty", ".cls", ".bbl", ".ltx", ".def", ".cfg"]
                             .iter()
-                            .filter_map(|x| rest[..upto].find(x).map(|at| at + x.len()))
+                            .filter_map(|x| rest_unq[..upto].find(x).map(|at| at + x.len()))
                             .min()
                         {
                             end = n;
                         }
                     }
-                    let name = &rest[..end];
+                    let name = &rest_unq[..end];
                     let is_path = name.contains('.')
-                        && (name.starts_with("./")
-                            || name.starts_with('/')
-                            || name.contains('/')
-                            || name.ends_with(".tex"));
+                        && (looks_like_path_prefix(name)
+                            || name.ends_with(".tex")
+                            || name.ends_with(".TEX"));
                     self.0.push(is_path.then(|| name.to_string()));
-                    i += 1 + end;
+                    i += 1
+                        + usize::from(quoted)
+                        + end
+                        + usize::from(quoted && rest_unq.as_bytes().get(end) == Some(&b'"'));
                 }
                 b')' => {
                     self.0.pop();

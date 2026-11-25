@@ -72,6 +72,8 @@ pub struct Settings {
     pub spell_default: String,
     /// "list" or "grid".
     pub library_view: String,
+    /// "opened" or "name".
+    pub library_sort: String,
     /// "name", "type", "modified" or "size".
     pub tree_sort: String,
     pub tree_folders_first: bool,
@@ -128,6 +130,7 @@ impl Default for Settings {
             pdf_width: 560.0,
             spell_default: "auto".into(),
             library_view: "list".into(),
+            library_sort: "opened".into(),
             tree_sort: "name".into(),
             tree_folders_first: true,
             trash_mode: "project".into(),
@@ -216,7 +219,9 @@ impl Settings {
             k.retain(|_, v| v.is_string());
         }
         // Before 1.0, "compile as I type" and "save as I type" were one switch.
-        if !valid.contains_key("autoCompile") && valid.get("autosaveMs") == Some(&Value::from(0)) {
+        if !valid.contains_key("autoCompile")
+            && valid.get("autosaveMs").and_then(Value::as_f64) == Some(0.0)
+        {
             valid.insert("autoCompile".into(), Value::Bool(false));
         }
         let Value::Object(mut all) = serde_json::to_value(Settings::default()).unwrap() else {
@@ -228,7 +233,8 @@ impl Settings {
         // Before 3.2 only projects allowed shell escape counted as trusted; they still are.
         if let Some(Value::Array(old)) = saved.get("shellEscapeProjects") {
             for root in old.iter().filter_map(Value::as_str) {
-                settings.set_trust(root, Some(true));
+                let key = trust_key(root);
+                settings.set_trust(&key, Some(true));
             }
         }
         crate::shortcuts::choose(&settings.keybindings);

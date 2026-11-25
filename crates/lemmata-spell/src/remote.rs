@@ -344,8 +344,23 @@ pub async fn download(root: &Path, code: &str) -> Result<(), Error> {
     std::fs::write(tmp.join("index.aff"), aff).map_err(io)?;
     std::fs::write(tmp.join("index.dic"), dic).map_err(io)?;
     let dest = root.join(code);
-    let _ = std::fs::remove_dir_all(&dest);
-    std::fs::rename(&tmp, &dest).map_err(io)
+    let backup = root.join(format!(".{code}.old"));
+    let _ = std::fs::remove_dir_all(&backup);
+    let had_old = dest.exists();
+    if had_old {
+        std::fs::rename(&dest, &backup).map_err(io)?;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &dest) {
+        if had_old {
+            let _ = std::fs::rename(&backup, &dest);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(io(e));
+    }
+    if had_old {
+        let _ = std::fs::remove_dir_all(&backup);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

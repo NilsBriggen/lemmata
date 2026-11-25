@@ -31,6 +31,7 @@ impl Workspace {
         for what in self.lsp.expire(std::time::Duration::from_secs(10)) {
             match what {
                 crate::lsp::Pending::Hover { .. } => self.lookups.hover = None,
+                crate::lsp::Pending::CodeActions { .. } => self.lookups.code_actions = None,
                 crate::lsp::Pending::Definition | crate::lsp::Pending::References => self.notice(
                     "texlab didn't answer, so this can't be answered now. \"Go to a label or citation…\" in the command palette finds them by name.",
                     Tone::Info,
@@ -80,31 +81,58 @@ impl Workspace {
             }
             Answer::Hover {
                 path,
+                version,
                 line,
                 col,
                 text,
             } => {
-                self.lookups.hover = Some((path, line, col, text));
+                self.lookups.hover = Some((path, version, line, col, text));
+            }
+            Answer::CodeActions {
+                path,
+                version,
+                line,
+                actions,
+            } => {
+                self.lookups.code_actions = Some((path, version, line, actions));
             }
             // Editors take the new list with the build's (`problems_of`).
-            Answer::Diagnostics(_) => self.build.diag_gen += 1,
+            Answer::Diagnostics(_) => {
+                self.lookups.code_actions = None;
+                self.build.diag_gen += 1;
+            }
             Answer::Locations {
                 references: false,
                 places,
             } => {
-                if let Some((path, line, _)) = places.into_iter().next() {
-                    self.goto(backend, &path, line);
+                if let Some((path, line, utf16_col)) = places.into_iter().next() {
+                    let line_text = match self.editors.get(&path) {
+                        Some(e) if line >= 1 && line <= e.doc.line_count() => {
+                            Some(e.doc.line(line - 1))
+                        }
+                        _ => lemmata_env::fs::read_text(self.info.root.join(&path))
+                            .ok()
+                            .and_then(|t| {
+                                t.split('\n')
+                                    .nth(line.saturating_sub(1))
+                                    .map(|l| l.trim_end_matches('\r').to_owned())
+                            }),
+                    };
+                    let col = line_text
+                        .as_deref()
+                        .map_or(utf16_col, |l| crate::lsp::utf16_to_char(l, utf16_col));
+                    self.goto_col(backend, &path, line, col);
                 }
             }
             Answer::Locations {
                 references: true,
                 places,
             } => {
-                // Each unopened file is read once, not once per hit.
+                // Each unopened file is read once (UTF-8 or Latin-1), not once per hit.
                 let mut disk: HashMap<String, Vec<String>> = HashMap::new();
                 let rows = places
                     .into_iter()
-                    .map(|(path, line, col)| {
+                    .map(|(path, line, utf16_col)| {
                         let text = match self.editors.get(&path) {
                             Some(e) if line >= 1 && line <= e.doc.line_count() => {
                                 e.doc.line(line - 1)
@@ -112,14 +140,19 @@ impl Workspace {
                             _ => disk
                                 .entry(path.clone())
                                 .or_insert_with(|| {
-                                    lemmata_env::fs::read_to_string(self.info.root.join(&path))
-                                        .map(|t| t.lines().map(str::to_owned).collect())
+                                    lemmata_env::fs::read_text(self.info.root.join(&path))
+                                        .map(|t| {
+                                            t.split('\n')
+                                                .map(|l| l.trim_end_matches('\r').to_owned())
+                                                .collect()
+                                        })
                                         .unwrap_or_default()
                                 })
                                 .get(line.saturating_sub(1))
                                 .cloned()
                                 .unwrap_or_default(),
                         };
+                        let col = crate::lsp::utf16_to_char(&text, utf16_col);
                         (path, line, col, text.trim().to_owned())
                     })
                     .collect();

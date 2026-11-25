@@ -33,6 +33,8 @@ pub struct History {
     pub snapshots: Vec<Snapshot>,
     pub error: Option<String>,
     pub on: bool,
+    /// True once `ensure_history` has finished initializing or probing the store.
+    pub ready: bool,
     open: Option<String>,
     compare: Option<String>,
     compared: Vec<Change>,
@@ -45,6 +47,7 @@ pub struct History {
     /// The snapshot has no copy of the open diff's file, so restoring it removes the file.
     restore_removes: bool,
     editing: Option<(String, String)>,
+    editing_focused: bool,
     confirm_all: Option<String>,
     /// "": since the last snapshot marked as reviewed.
     pub(crate) since: String,
@@ -54,6 +57,7 @@ pub struct History {
     pdf: Option<(String, String)>,
     /// The "Save a snapshot" dialog's name, while it's open.
     pub label: Option<String>,
+    label_focused: bool,
     /// When the last snapshot was taken (None: none yet this session, so the first save takes one).
     pub last: Option<Instant>,
     pub edited: bool,
@@ -68,6 +72,7 @@ impl Default for History {
             snapshots: Vec::new(),
             error: None,
             on: true,
+            ready: false,
             open: None,
             compare: None,
             compared: Vec::new(),
@@ -78,6 +83,7 @@ impl Default for History {
             confirm_restore: false,
             restore_removes: false,
             editing: None,
+            editing_focused: false,
             confirm_all: None,
             since: String::new(),
             review: None,
@@ -85,6 +91,7 @@ impl Default for History {
             busy: None,
             pdf: None,
             label: None,
+            label_focused: false,
             last: None,
             edited: false,
             limit: PAGE,
@@ -136,6 +143,21 @@ fn diff_rows(then: &str, now: &str) -> DiffRows {
 }
 
 impl History {
+    pub(super) fn remap(&mut self, from: &str, to: &str) {
+        let moved = |p: &str| super::files::remap(p, from, to);
+        if let Some((_, p, _, _, _)) = &mut self.diff {
+            *p = moved(p);
+        }
+        if let Some((_, p, _, _)) = &mut self.diff_cache {
+            *p = moved(p);
+        }
+        if let Some((_, files)) = &mut self.review {
+            for f in files {
+                f.path = moved(&f.path);
+            }
+        }
+    }
+
     fn diff_rows_cached(&mut self) -> &DiffRows {
         let Some((id, path, other, then, now)) = self.diff.as_ref() else {
             static EMPTY: DiffRows = Vec::new();
@@ -175,10 +197,16 @@ impl Workspace {
             },
             |ws, b, r| match r {
                 Ok(on) => {
+                    ws.history.ready = true;
                     ws.history.on = on;
-                    ws.load_history(b);
+                    if on && ws.history.edited && ws.history.last.is_none() {
+                        ws.take_snapshot(b, "Automatic snapshot".into());
+                    } else {
+                        ws.load_history(b);
+                    }
                 }
                 Err(e) => {
+                    ws.history.ready = true;
                     ws.history.on = false;
                     ws.notice(format!("History is off for this project: {e}"), Tone::Info);
                 }
@@ -238,13 +266,14 @@ impl Workspace {
     /// After a save: the first of a session takes a snapshot, later ones every ten minutes.
     pub fn snapshot_after_save(&mut self, backend: &Backend) {
         self.history.edited = true;
-        if self.history.on && self.history.last.is_none() {
+        if self.history.ready && self.history.on && self.history.last.is_none() {
             self.take_snapshot(backend, "Automatic snapshot".into());
         }
     }
 
     pub fn snapshot_timer(&mut self, backend: &Backend) {
-        if self.history.on
+        if self.history.ready
+            && self.history.on
             && self.history.edited
             && self
                 .history
@@ -258,11 +287,13 @@ impl Workspace {
     /// Ctrl+Shift+S's dialog: "Save a snapshot".
     pub fn snapshot_dialog(&mut self, ctx: &egui::Context, p: &Palette, backend: &Backend) {
         let Some(mut label) = self.history.label.clone() else {
+            self.history.label_focused = false;
             return;
         };
         let mut enter = false;
         let mut save = false;
         let mut cancel = false;
+        let need_focus = !self.history.label_focused;
         let r = widgets::modal_with(
             ctx,
             p,
@@ -273,7 +304,7 @@ impl Workspace {
                 let r = widgets::text_input(ui, p, &mut label, "Snapshot", false);
                 ui.ctx()
                     .accesskit_node_builder(r.id, |n| n.set_label("Snapshot name"));
-                if !r.has_focus() && label.is_empty() {
+                if need_focus {
                     r.request_focus();
                 }
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -293,10 +324,15 @@ impl Workspace {
                 }
             }),
         );
+        if need_focus {
+            self.history.label_focused = true;
+        }
         if r.closed || cancel {
             self.history.label = None;
+            self.history.label_focused = false;
         } else if save || enter {
             self.history.label = None;
+            self.history.label_focused = false;
             let l = label.trim();
             self.take_snapshot(
                 backend,
@@ -315,7 +351,7 @@ impl Workspace {
     fn current_text(&self, path: &str) -> Option<String> {
         match self.editors.get(path) {
             Some(e) => Some(e.doc.text()),
-            None => std::fs::read_to_string(self.info.root.join(path)).ok(),
+            None => lemmata_env::fs::read_text(self.info.root.join(path)).ok(),
         }
     }
 
@@ -486,10 +522,12 @@ impl Workspace {
                     .size(Size::Sm)
                     .enabled(base.is_some() && busy.is_none() && self.trusted)
                     .show(ui, p)
-                    .on_hover_text(if self.trusted {
-                        "Compiles the old and the new version with latexdiff into one PDF with the changes marked."
-                    } else {
+                    .on_hover_text(if !self.trusted {
                         "Needs latexmk, which restricted projects don't run. Trust the project in its settings to use it."
+                    } else if base.is_none() {
+                        "Choose a snapshot first."
+                    } else {
+                        "Compiles the old and the new version with latexdiff into one PDF with the changes marked."
                     })
                     .clicked()
                 {
@@ -506,7 +544,7 @@ impl Workspace {
                     .icon_size(13.0)
                     .kind(Kind::Ghost)
                     .size(Size::Sm)
-                    .enabled(busy.is_none())
+                    .enabled(busy.is_none() && !self.history.snapshots.is_empty())
                     .show(ui, p)
                     .on_hover_text("Takes a snapshot called Reviewed, where the next review starts.")
                     .clicked()
@@ -550,9 +588,13 @@ impl Workspace {
                     let mut c = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(r.min + vec2(14.0, 6.0), vec2(w - 28.0, 24.0))));
                     let t = c.add(egui::TextEdit::singleline(&mut text).desired_width(w - 28.0).font(FontId::proportional(13.0)));
                     c.ctx().accesskit_node_builder(t.id, |n| n.set_label("Snapshot name"));
-                    t.request_focus();
+                    if !self.history.editing_focused {
+                        t.request_focus();
+                        self.history.editing_focused = true;
+                    }
                     if t.lost_focus() {
                         self.history.editing = None;
+                        self.history.editing_focused = false;
                         let (id, l) = (s.id.clone(), text.trim().to_owned());
                         if !l.is_empty() && !c.input(|i| i.key_pressed(egui::Key::Escape)) {
                             Self::job(backend, move |sh| sh.history_relabel(id, l), |ws, b, r| match r {
@@ -590,6 +632,7 @@ impl Workspace {
                         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                         if Button::new("Rename").with_icon(icons::PENCIL).icon_size(13.0).kind(Kind::Ghost).size(Size::Sm).show(ui, p).clicked() {
                             self.history.editing = Some((s.id.clone(), s.label.clone()));
+                            self.history.editing_focused = false;
                         }
                         if self.history.confirm_all.as_deref() == Some(s.id.as_str()) {
                             ui.label(egui::RichText::new("Replace all files? Your current work is saved as a snapshot first.").size(12.0).color(p.ink));
@@ -712,7 +755,17 @@ impl Workspace {
                 if Button::new("Back").with_icon(icons::ARROW_LEFT).icon_size(14.0).kind(Kind::Ghost).size(Size::Sm).show(ui, p).clicked() {
                     back = true;
                 }
-                ui.label(egui::RichText::new(&path).font(FontId::monospace(12.0)).color(p.muted));
+                let path_max = (ui.available_width() - 160.0).max(80.0);
+                ui.add_sized(
+                    vec2(path_max, 22.0),
+                    egui::Label::new(
+                        egui::RichText::new(&path)
+                            .font(FontId::monospace(12.0))
+                            .color(p.muted),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(&path);
                 if self.history.confirm_restore {
                     let ask = if self.history.restore_removes {
                         "This file didn't exist then, so restoring removes it. The current version is kept as a snapshot."
@@ -874,7 +927,7 @@ impl Workspace {
                             .iter()
                             .find(|t| t.0 == path)
                             .map(|t| t.1.clone())
-                            .or_else(|| std::fs::read_to_string(root.join(&path)).ok())
+                            .or_else(|| lemmata_env::fs::read_text(root.join(&path)).ok())
                             .unwrap_or_default();
                         let h = hunks::compute(&old, &now);
                         if !h.is_empty() {
@@ -1276,9 +1329,21 @@ impl Workspace {
             }
             None => {
                 let (p, t, root) = (path.to_owned(), text.to_owned(), self.info.root.clone());
-                self.spawn(backend, move |shell| {
-                    Msg::Done(shell.write_text(&root, p, t, None))
-                });
+                let auto = settings.auto_compile;
+                Self::job(
+                    backend,
+                    move |shell| shell.write_text(&root, p, t, None),
+                    move |ws, b, r| match r {
+                        Ok(()) => {
+                            ws.refresh_analysis(b);
+                            ws.refresh_git_status(b);
+                            if auto {
+                                ws.build_soon(false, false);
+                            }
+                        }
+                        Err(e) => ws.notice(e, Tone::Error),
+                    },
+                );
             }
         }
     }

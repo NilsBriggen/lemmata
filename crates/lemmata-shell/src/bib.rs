@@ -194,16 +194,16 @@ impl Shell {
             .collect();
         let known: std::collections::HashSet<String> = lemmata_bib::entries(&p.root, &others)
             .into_iter()
-            .map(|e| e.key)
+            .map(|e| e.key.to_ascii_lowercase())
             .collect();
         let wanted: Vec<String> = lemmata_bib::cited_keys(&p)
             .into_iter()
-            .filter(|k| !known.contains(k))
+            .filter(|k| !known.contains(&k.to_ascii_lowercase()))
             .collect();
         let (text, missing) = if wanted.is_empty() {
             (String::new(), Vec::new())
         } else {
-            lemmata_bib::zotero::export(&wanted)
+            lemmata_bib::zotero::export_for(&wanted, p.config.bib)
                 .await
                 .map_err(crate::err)?
         };
@@ -279,7 +279,16 @@ fn find_live(text: &str, command: &str) -> Option<usize> {
 fn link_zotero(text: &str) -> CmdResult<String> {
     if let Some(pos) = find_live(text, "\\bibliography{") {
         let close = text[pos..].find('}').ok_or("Unclosed \\bibliography{.")? + pos;
-        Ok(format!("{},zotero{}", &text[..close], &text[close..]))
+        let inner = &text[pos + "\\bibliography{".len()..close];
+        if inner.trim().is_empty() {
+            Ok(format!(
+                "{}zotero{}",
+                &text[..pos + "\\bibliography{".len()],
+                &text[close..]
+            ))
+        } else {
+            Ok(format!("{},zotero{}", &text[..close], &text[close..]))
+        }
     } else if let Some(pos) = find_live(text, "\\addbibresource") {
         let line_end = text[pos..].find('\n').map_or(text.len(), |e| pos + e);
         Ok(format!(

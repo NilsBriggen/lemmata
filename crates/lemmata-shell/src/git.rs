@@ -65,6 +65,14 @@ impl Shell {
         with(self, |r| g::pull(&r)).await
     }
 
+    pub async fn git_pull_mode(&self, mode: g::PullMode) -> CmdResult<String> {
+        with(self, move |r| g::pull_mode(&r, mode)).await
+    }
+
+    pub async fn git_abort(&self) -> CmdResult<String> {
+        with(self, |r| g::abort(&r)).await
+    }
+
     pub async fn git_push(&self) -> CmdResult<String> {
         with(self, |r| g::push(&r)).await
     }
@@ -73,12 +81,44 @@ impl Shell {
         with(self, |r| g::branches(&r)).await
     }
 
+    pub async fn git_remote_branches(&self) -> CmdResult<Vec<String>> {
+        with(self, |r| g::remote_branches(&r)).await
+    }
+
     pub async fn git_switch(&self, name: String) -> CmdResult<()> {
         with(self, move |r| g::switch_branch(&r, &name)).await
     }
 
+    pub async fn git_checkout_remote(&self, name: String) -> CmdResult<String> {
+        with(self, move |r| g::checkout_remote_branch(&r, &name)).await
+    }
+
     pub async fn git_create_branch(&self, name: String) -> CmdResult<()> {
         with(self, move |r| g::create_branch(&r, &name)).await
+    }
+
+    pub async fn git_delete_branch(&self, name: String) -> CmdResult<()> {
+        with(self, move |r| g::delete_branch(&r, &name)).await
+    }
+
+    pub async fn git_add_remote(&self, name: String, url: String) -> CmdResult<()> {
+        with(self, move |r| g::add_remote(&r, &name, &url)).await
+    }
+
+    pub async fn git_stash_list(&self) -> CmdResult<Vec<String>> {
+        with(self, |r| g::stash_list(&r)).await
+    }
+
+    pub async fn git_stash_push(&self, message: String) -> CmdResult<String> {
+        with(self, move |r| g::stash_push(&r, &message)).await
+    }
+
+    pub async fn git_stash_pop(&self) -> CmdResult<String> {
+        with(self, |r| g::stash_pop(&r)).await
+    }
+
+    pub async fn git_diff(&self, path: Option<String>, staged: bool) -> CmdResult<String> {
+        with(self, move |r| g::diff(&r, path.as_deref(), staged)).await
     }
 
     pub async fn git_log(&self) -> CmdResult<Vec<g::Commit>> {

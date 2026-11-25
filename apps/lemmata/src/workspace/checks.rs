@@ -145,9 +145,13 @@ impl Workspace {
                             // Stops at the first failure; a later edit retries, and the paragraphs
                             // that were waiting are asked for again.
                             self.checks.grammar.asked.remove(&text);
-                            self.checks.grammar.error = Some(e);
+                            let first = self.checks.grammar.error.as_deref() != Some(e.as_str());
+                            self.checks.grammar.error = Some(e.clone());
                             for t in self.grammar_queue.drain(..) {
                                 self.checks.grammar.asked.remove(&t);
+                            }
+                            if first {
+                                self.notice(format!("Grammar check failed: {e}"), Tone::Info);
                             }
                         }
                     }

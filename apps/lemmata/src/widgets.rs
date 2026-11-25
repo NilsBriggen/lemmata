@@ -272,6 +272,7 @@ impl<'a> Button<'a> {
                 painter.galley(pos, galley, ink);
             }
             if let Some(g) = pill {
+                let pill_alpha = if self.enabled { 1.0 } else { 0.45 };
                 let r = egui::Rect::from_min_size(
                     egui::pos2(x - 2.0, rect.center().y - 8.5),
                     Vec2::new(g.size().x + 12.0, 17.0),
@@ -279,12 +280,12 @@ impl<'a> Button<'a> {
                 painter.rect_filled(
                     r,
                     CornerRadius::same(9),
-                    Color32::from_rgba_unmultiplied(220, 160, 20, 217),
+                    Color32::from_rgba_unmultiplied(220, 160, 20, (217.0 * pill_alpha) as u8),
                 );
                 painter.galley(
                     r.center() - g.size() / 2.0,
                     g,
-                    Color32::from_rgb(0x1b, 0x1b, 0x1b),
+                    Color32::from_rgb(0x1b, 0x1b, 0x1b).gamma_multiply(pill_alpha),
                 );
                 x = r.right() + 6.0;
             }
@@ -530,6 +531,14 @@ pub fn search_input(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str) -> 
         StrokeKind::Inside,
     );
     ui.allocate_rect(rect, Sense::hover());
+    if !r.has_focus()
+        && ui.input(|i| {
+            i.pointer.primary_clicked()
+                && i.pointer.interact_pos().is_some_and(|pt| rect.contains(pt))
+        })
+    {
+        r.request_focus();
+    }
     r
 }
 
@@ -869,17 +878,26 @@ pub fn text_input(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, mono:
 /// An input on the dark sidebar (`.search .row input`): 28 px, --chrome-3 with a --chrome-border.
 pub fn chrome_input(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str) -> Response {
     let fill_slot = ui.painter().add(egui::Shape::Noop);
-    let r = egui::TextEdit::singleline(text)
-        .hint_text(egui::RichText::new(hint).size(12.5).color(p.chrome_muted))
-        .font(FontId::proportional(12.5))
-        .text_color(p.chrome_ink)
-        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 0)))
-        .align(egui::Align2::LEFT_CENTER)
-        .min_size(Vec2::new(0.0, 28.0))
-        .desired_width(ui.available_width())
-        .show(ui)
-        .response
-        .response;
+    let r = ui
+        .scope(|ui| {
+            let v = ui.visuals_mut();
+            v.weak_text_color = Some(p.chrome_muted);
+            v.override_text_color = Some(p.chrome_ink);
+            v.selection.stroke = Stroke::new(1.0, p.chrome_ink);
+            v.selection.bg_fill = p.accent_on_dark.gamma_multiply(0.35);
+            egui::TextEdit::singleline(text)
+                .hint_text(egui::RichText::new(hint).size(12.5).color(p.chrome_muted))
+                .font(FontId::proportional(12.5))
+                .text_color(p.chrome_ink)
+                .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 0)))
+                .align(egui::Align2::LEFT_CENTER)
+                .min_size(Vec2::new(0.0, 28.0))
+                .desired_width(ui.available_width())
+                .show(ui)
+                .response
+                .response
+        })
+        .inner;
     ui.ctx().accesskit_node_builder(r.id, |n| n.set_label(hint));
     let border = if r.has_focus() {
         p.accent_on_dark
@@ -1084,21 +1102,39 @@ fn modal_full<R>(
             r
         });
     let width = width.min(screen.width() - 48.0);
+    let chrome_id = egui::Id::unique(("modal-chrome-h", title));
+    let body_h_id = egui::Id::unique(("modal-body-h", title));
+    let has_footer = footer.is_some();
+    let chrome_h: f32 = ctx
+        .data(|d| d.get_temp(chrome_id))
+        .unwrap_or(if has_footer { 114.0 } else { 56.0 });
+    let prev_body_h: f32 = ctx.data(|d| d.get_temp(body_h_id)).unwrap_or(0.0);
+    let top_y = screen.top() + screen.height() * 0.11;
+    let max_modal_h = if top {
+        (screen.bottom() - 16.0 - top_y).max(200.0)
+    } else {
+        (screen.height() - 32.0).max(200.0)
+    };
+    let body_max_h = (max_modal_h - chrome_h - 32.0).max(120.0);
+    let needs_scroll = prev_body_h > body_max_h + 1.0;
     let area = egui::Area::new(egui::Id::unique(("modal", title)))
         .kind(egui::UiKind::Modal)
         .order(egui::Order::Foreground)
+        .constrain_to(screen.shrink(8.0))
         .pivot(if top {
             egui::Align2::CENTER_TOP
         } else {
             egui::Align2::CENTER_CENTER
         })
         .fixed_pos(if top {
-            egui::pos2(screen.center().x, screen.top() + screen.height() * 0.11)
+            egui::pos2(screen.center().x, top_y)
         } else {
             screen.center()
         });
     let layer = area.layer();
     ctx.memory_mut(|m| m.set_modal_layer(layer));
+    let mut measured_chrome = 0.0f32;
+    let mut measured_body = 0.0f32;
     let panel = area.show(ctx, |ui| {
         ui.set_width(width);
         egui::Frame::new()
@@ -1110,7 +1146,7 @@ fn modal_full<R>(
                 // Inside the 1 px border; the header, body and footer frames add their own padding.
                 ui.set_width(width - 2.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                egui::Frame::new()
+                let head = egui::Frame::new()
                     .inner_margin(egui::Margin {
                         left: 20,
                         right: 20,
@@ -1150,7 +1186,8 @@ fn modal_full<R>(
                             });
                         });
                     });
-                let inner = egui::Frame::new()
+                measured_chrome += head.response.rect.height();
+                let body_frame = egui::Frame::new()
                     .inner_margin(egui::Margin {
                         left: 20,
                         right: 20,
@@ -1158,10 +1195,30 @@ fn modal_full<R>(
                         bottom: 18,
                     })
                     .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 14.0;
-                        body(ui)
-                    })
-                    .inner;
+                        if needs_scroll {
+                            let out = egui::ScrollArea::vertical()
+                                .id_salt(("modal-body", title))
+                                .max_height(body_max_h)
+                                .min_scrolled_height(body_max_h)
+                                .scroll_bar_visibility(
+                                    egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                                )
+                                .show(ui, |ui| {
+                                    ui.set_width((ui.available_width() - 8.0).max(120.0));
+                                    ui.spacing_mut().item_spacing.y = 14.0;
+                                    body(ui)
+                                });
+                            measured_body = out.content_size.y;
+                            out.inner
+                        } else {
+                            ui.spacing_mut().item_spacing.y = 14.0;
+                            body(ui)
+                        }
+                    });
+                if !needs_scroll {
+                    measured_body = (body_frame.response.rect.height() - 30.0).max(0.0);
+                }
+                let inner = body_frame.inner;
                 if let Some(footer) = footer {
                     let r = egui::Frame::new()
                         .fill(p.surface_2)
@@ -1183,6 +1240,7 @@ fn modal_full<R>(
                                 },
                             );
                         });
+                    measured_chrome += r.response.rect.height();
                     let top = r.response.rect.top();
                     ui.painter()
                         .hline(r.response.rect.x_range(), top, Stroke::new(1.0, p.border));
@@ -1191,6 +1249,16 @@ fn modal_full<R>(
             })
             .inner
     });
+    if (measured_chrome - chrome_h).abs() > 1.0 {
+        ctx.data_mut(|d| d.insert_temp(chrome_id, measured_chrome));
+        ctx.request_repaint();
+    }
+    if (measured_body - prev_body_h).abs() > 1.0 {
+        ctx.data_mut(|d| d.insert_temp(body_h_id, measured_body));
+        if (measured_body > body_max_h + 1.0) != needs_scroll {
+            ctx.request_repaint();
+        }
+    }
     panel
         .response
         .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Dialog, true, title));
@@ -1309,22 +1377,45 @@ pub fn drop_menu(
 ) -> MenuResult {
     let screen = ctx.content_rect();
     let size_id = id.with("size");
+    let content_h: f32 = items
+        .iter()
+        .map(|it| match it {
+            MenuItem::Separator => 11.0,
+            MenuItem::Heading(_) => 22.0,
+            MenuItem::Item { .. } => 32.0,
+        })
+        .sum();
+    let max_menu_h = (screen.height() - 16.0).max(120.0);
+    let scrollable = content_h + 12.0 > max_menu_h;
     let size: Vec2 = ctx
         .data(|d| d.get_temp(size_id))
-        .unwrap_or(Vec2::new(220.0, 200.0));
+        .unwrap_or(Vec2::new(220.0, (content_h + 12.0).min(max_menu_h)));
+    let menu_h = (content_h + 12.0).min(max_menu_h);
     let left = if align_end {
         anchor.right() - size.x
     } else {
         anchor.left()
     };
-    let top = if anchor.bottom() + size.y + 6.0 > screen.bottom() {
-        anchor.top() - size.y - 6.0
-    } else {
+    let avail_below = screen.bottom() - anchor.bottom() - 14.0;
+    let avail_above = anchor.top() - screen.top() - 14.0;
+    let top = if menu_h <= avail_below {
         anchor.bottom() + 6.0
+    } else if menu_h <= avail_above {
+        anchor.top() - menu_h - 6.0
+    } else if avail_below >= avail_above {
+        (anchor.bottom() + 6.0).min((screen.bottom() - menu_h - 8.0).max(screen.top() + 8.0))
+    } else {
+        (anchor.top() - menu_h - 6.0).max(screen.top() + 8.0)
     };
     let pos = egui::pos2(
-        left.clamp(8.0, (screen.right() - size.x - 8.0).max(8.0)),
-        top.max(8.0),
+        left.clamp(
+            screen.left() + 8.0,
+            (screen.right() - size.x - 8.0).max(screen.left() + 8.0),
+        ),
+        top.clamp(
+            screen.top() + 8.0,
+            (screen.bottom() - menu_h - 8.0).max(screen.top() + 8.0),
+        ),
     );
     let mut result = MenuResult::Open;
     let font = FontId::proportional(13.0);
@@ -1342,6 +1433,7 @@ pub fn drop_menu(
     let mut rows: Vec<egui::Id> = Vec::new();
     let area = egui::Area::new(id)
         .order(egui::Order::Foreground)
+        .constrain_to(screen.shrink(4.0))
         .fixed_pos(pos)
         .show(ctx, |ui| {
             egui::Frame::new()
@@ -1382,136 +1474,155 @@ pub fn drop_menu(
                             }
                             _ => 0.0,
                         })
-                        .fold(190.0f32, f32::max);
-                    for (i, it) in items.iter().enumerate() {
-                        match it {
-                            MenuItem::Separator => {
-                                ui.add_space(5.0);
-                                let y = ui.cursor().top();
-                                ui.painter().hline(
-                                    (ui.max_rect().left() + 2.0)
-                                        ..=(ui.max_rect().left() + row_w - 2.0),
-                                    y,
-                                    Stroke::new(1.0, p.border),
-                                );
-                                ui.add_space(6.0);
-                            }
-                            MenuItem::Heading(text) => {
-                                let (rect, _) =
-                                    ui.allocate_exact_size(Vec2::new(row_w, 22.0), Sense::hover());
-                                let mut job = egui::text::LayoutJob::default();
-                                job.append(
-                                    &text.to_uppercase(),
-                                    0.0,
-                                    egui::TextFormat {
-                                        font_id: FontId::new(11.0, theme::font::sans_600()),
-                                        color: p.faint,
-                                        extra_letter_spacing: 0.66,
-                                        ..Default::default()
-                                    },
-                                );
-                                let g = ui.fonts_mut(|f| f.layout_job(job));
-                                ui.painter().galley(
-                                    egui::pos2(
-                                        rect.left() + 10.0,
-                                        rect.bottom() - 3.0 - g.size().y,
-                                    ),
-                                    g,
-                                    p.faint,
-                                );
-                            }
-                            MenuItem::Item {
-                                icon,
-                                label,
-                                hint,
-                                danger,
-                                check,
-                                enabled,
-                            } => {
-                                let sense = if *enabled {
-                                    Sense::click()
-                                } else {
-                                    Sense::hover()
-                                };
-                                let (rect, r) =
-                                    ui.allocate_exact_size(Vec2::new(row_w, 32.0), sense);
-                                r.widget_info(|| match check {
-                                    Some(on) => egui::WidgetInfo::selected(
-                                        egui::Role::MenuItemRadio,
-                                        *enabled,
-                                        *on,
-                                        *label,
-                                    ),
-                                    None => egui::WidgetInfo::labeled(
-                                        egui::Role::MenuItem,
-                                        *enabled,
-                                        *label,
-                                    ),
-                                });
-                                if *enabled {
-                                    rows.push(r.id);
-                                }
-                                if *enabled && (r.hovered() || r.has_focus()) {
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        CornerRadius::same(theme::R_SM),
-                                        p.surface_3,
+                        .fold(190.0f32, f32::max)
+                        .min((screen.width() - 32.0).max(160.0));
+                    let mut draw_items = |ui: &mut Ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for (i, it) in items.iter().enumerate() {
+                            match it {
+                                MenuItem::Separator => {
+                                    ui.add_space(5.0);
+                                    let y = ui.cursor().top();
+                                    ui.painter().hline(
+                                        (ui.max_rect().left() + 2.0)
+                                            ..=(ui.max_rect().left() + row_w - 2.0),
+                                        y,
+                                        Stroke::new(1.0, p.border),
                                     );
+                                    ui.add_space(6.0);
                                 }
-                                let alpha = if *enabled { 1.0 } else { 0.5 };
-                                let (ink, icon_ink) = if *danger {
-                                    (p.error, p.error)
-                                } else {
-                                    (p.ink, p.muted)
-                                };
-                                let (ink, icon_ink) =
-                                    (ink.gamma_multiply(alpha), icon_ink.gamma_multiply(alpha));
-                                let mut x = rect.left() + 10.0;
-                                match (icon, check) {
-                                    (Some(icon), _) => icons::paint(
-                                        ui.painter(),
-                                        egui::Rect::from_min_size(
-                                            egui::pos2(x, rect.center().y - 7.5),
-                                            Vec2::splat(15.0),
+                                MenuItem::Heading(text) => {
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        Vec2::new(row_w, 22.0),
+                                        Sense::hover(),
+                                    );
+                                    let mut job = egui::text::LayoutJob::default();
+                                    job.append(
+                                        &text.to_uppercase(),
+                                        0.0,
+                                        egui::TextFormat {
+                                            font_id: FontId::new(11.0, theme::font::sans_600()),
+                                            color: p.faint,
+                                            extra_letter_spacing: 0.66,
+                                            ..Default::default()
+                                        },
+                                    );
+                                    let g = ui.fonts_mut(|f| f.layout_job(job));
+                                    ui.painter().galley(
+                                        egui::pos2(
+                                            rect.left() + 10.0,
+                                            rect.bottom() - 3.0 - g.size().y,
                                         ),
-                                        icon,
-                                        icon_ink,
-                                    ),
-                                    (None, Some(true)) => icons::paint(
-                                        ui.painter(),
-                                        egui::Rect::from_min_size(
-                                            egui::pos2(x + 1.0, rect.center().y - 7.0),
-                                            Vec2::splat(14.0),
-                                        ),
-                                        icons::CHECK,
-                                        p.accent,
-                                    ),
-                                    _ => {}
-                                }
-                                if has_icons {
-                                    x += lead;
-                                }
-                                ui.painter().text(
-                                    egui::pos2(x, rect.center().y),
-                                    Align2::LEFT_CENTER,
-                                    *label,
-                                    font.clone(),
-                                    ink,
-                                );
-                                if let Some(h) = hint {
-                                    ui.painter().text(
-                                        egui::pos2(rect.right() - 10.0, rect.center().y),
-                                        Align2::RIGHT_CENTER,
-                                        *h,
-                                        FontId::monospace(11.0),
+                                        g,
                                         p.faint,
                                     );
                                 }
-                                if r.clicked() {
-                                    result = MenuResult::Clicked(i);
+                                MenuItem::Item {
+                                    icon,
+                                    label,
+                                    hint,
+                                    danger,
+                                    check,
+                                    enabled,
+                                } => {
+                                    let sense = if *enabled {
+                                        Sense::click()
+                                    } else {
+                                        Sense::hover()
+                                    };
+                                    let (rect, r) =
+                                        ui.allocate_exact_size(Vec2::new(row_w, 32.0), sense);
+                                    r.widget_info(|| match check {
+                                        Some(on) => egui::WidgetInfo::selected(
+                                            egui::Role::MenuItemRadio,
+                                            *enabled,
+                                            *on,
+                                            *label,
+                                        ),
+                                        None => egui::WidgetInfo::labeled(
+                                            egui::Role::MenuItem,
+                                            *enabled,
+                                            *label,
+                                        ),
+                                    });
+                                    if *enabled {
+                                        rows.push(r.id);
+                                    }
+                                    if *enabled && (r.hovered() || r.has_focus()) {
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            CornerRadius::same(theme::R_SM),
+                                            p.surface_3,
+                                        );
+                                    }
+                                    let alpha = if *enabled { 1.0 } else { 0.5 };
+                                    let (ink, icon_ink) = if *danger {
+                                        (p.error, p.error)
+                                    } else {
+                                        (p.ink, p.muted)
+                                    };
+                                    let (ink, icon_ink) =
+                                        (ink.gamma_multiply(alpha), icon_ink.gamma_multiply(alpha));
+                                    let mut x = rect.left() + 10.0;
+                                    match (icon, check) {
+                                        (Some(icon), _) => icons::paint(
+                                            ui.painter(),
+                                            egui::Rect::from_min_size(
+                                                egui::pos2(x, rect.center().y - 7.5),
+                                                Vec2::splat(15.0),
+                                            ),
+                                            icon,
+                                            icon_ink,
+                                        ),
+                                        (None, Some(true)) => icons::paint(
+                                            ui.painter(),
+                                            egui::Rect::from_min_size(
+                                                egui::pos2(x + 1.0, rect.center().y - 7.0),
+                                                Vec2::splat(14.0),
+                                            ),
+                                            icons::CHECK,
+                                            p.accent,
+                                        ),
+                                        _ => {}
+                                    }
+                                    if has_icons {
+                                        x += lead;
+                                    }
+                                    ui.painter().text(
+                                        egui::pos2(x, rect.center().y),
+                                        Align2::LEFT_CENTER,
+                                        *label,
+                                        font.clone(),
+                                        ink,
+                                    );
+                                    if let Some(h) = hint {
+                                        ui.painter().text(
+                                            egui::pos2(rect.right() - 10.0, rect.center().y),
+                                            Align2::RIGHT_CENTER,
+                                            *h,
+                                            FontId::monospace(11.0),
+                                            p.faint,
+                                        );
+                                    }
+                                    if r.clicked() {
+                                        result = MenuResult::Clicked(i);
+                                    }
                                 }
                             }
                         }
+                    };
+                    if scrollable {
+                        let sh = (max_menu_h - 12.0).max(100.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt(id.with("scroll"))
+                            .max_height(sh)
+                            .min_scrolled_height(sh)
+                            .scroll_bar_visibility(
+                                egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                            )
+                            .show(ui, draw_items);
+                    } else {
+                        draw_items(ui);
                     }
                 });
         });
@@ -1529,12 +1640,13 @@ pub fn drop_menu(
         ctx.memory_mut(|m| m.request_focus(r));
     }
     if matches!(result, MenuResult::Open) {
-        let away = ctx.input(|i| {
-            i.pointer.any_pressed()
-                && i.pointer
-                    .interact_pos()
-                    .is_some_and(|p| !area.response.rect.contains(p) && !anchor.contains(p))
-        });
+        let away = !first
+            && ctx.input(|i| {
+                i.pointer.any_pressed()
+                    && i.pointer
+                        .interact_pos()
+                        .is_some_and(|p| !area.response.rect.contains(p) && !anchor.contains(p))
+            });
         // Esc closes the menu and nothing under it.
         let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         if away || esc {
@@ -1890,6 +2002,43 @@ mod tests {
         h.key_press(egui::Key::Escape);
         h.run();
         assert_eq!(depth.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn chrome_input_uses_light_placeholder_on_dark_sidebar_in_light_theme() {
+        let p = theme::LIGHT;
+        let mut text = String::new();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let cap = captured.clone();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([300.0, 80.0])
+            .with_context_setup(move |ctx| {
+                theme::install_fonts(ctx);
+                theme::apply(ctx, &p);
+            })
+            .build_ui(move |ui| {
+                ui.painter().rect_filled(ui.max_rect(), 0, p.chrome_3);
+                let _ = chrome_input(ui, &p, &mut text, "Search the project");
+                // Verify the dark-chrome placeholder color has sufficient luminance contrast
+                // against chrome_3 (#2b3743), unlike Light theme's dark weak_text_color.
+                let lum = |c: Color32| {
+                    0.2126 * (c.r() as f32 / 255.0)
+                        + 0.7152 * (c.g() as f32 / 255.0)
+                        + 0.0722 * (c.b() as f32 / 255.0)
+                };
+                *cap.lock().unwrap() =
+                    Some((lum(p.chrome_muted), lum(p.chrome_3), lum(p.chrome_ink)));
+            });
+        h.run_steps(2);
+        let (muted_lum, bg_lum, ink_lum) = captured.lock().unwrap().unwrap();
+        assert!(
+            muted_lum > bg_lum + 0.25,
+            "chrome_muted placeholder too dark against chrome_3: muted={muted_lum} bg={bg_lum}"
+        );
+        assert!(
+            ink_lum > muted_lum,
+            "chrome_ink must be brighter than placeholder: ink={ink_lum} muted={muted_lum}"
+        );
     }
 
     #[test]

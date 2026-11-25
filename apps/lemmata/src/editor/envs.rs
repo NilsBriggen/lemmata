@@ -167,8 +167,9 @@ pub fn close_environment(d: &mut Doc, indent: Indent) -> bool {
         return false;
     }
     let lead = &m[1];
-    let body = format!("\n{lead}{}", indent.unit());
-    let insert = format!("{body}\n{lead}\\end{{{}}}", &m[2]);
+    let eol = d.eol;
+    let body = format!("{eol}{lead}{}", indent.unit());
+    let insert = format!("{body}{eol}{lead}\\end{{{}}}", &m[2]);
     let at = end + body.chars().count();
     d.apply(
         ChangeSet::new(vec![Change::insert(end, insert)]),

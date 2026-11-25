@@ -112,13 +112,20 @@ pub struct Presentation {
     /// 1-based, as shown.
     pub page: usize,
     start: usize,
-    slide: Region,
-    notes: Option<Region>,
+    /// True when at least one page in the deck has Beamer speaker notes.
+    has_any_notes: bool,
     /// Rendered pages by (page, scale in 1/16 px per point), with when each was last drawn.
     tex: HashMap<(usize, u32), (TextureHandle, u64)>,
     frame: u64,
     asked: HashSet<(usize, u32)>,
     pub presenter: bool,
+    /// Audience screen blacked out (`B` or `.`).
+    pub blackout: bool,
+    /// Slide overview grid (`G`).
+    pub overview: bool,
+    /// Buffered digits for jump-to-slide (`1`–`9`, `Enter`).
+    jump_digits: String,
+    jump_at: Option<Instant>,
     timer: Timer,
     entered: bool,
 }
@@ -140,15 +147,25 @@ impl Presentation {
             error: None,
             page: start.max(1),
             start: start.max(1),
-            slide: Region::Full,
-            notes: None,
+            has_any_notes: false,
             tex: HashMap::new(),
             frame: 0,
             asked: HashSet::new(),
             presenter: false,
+            blackout: false,
+            overview: false,
+            jump_digits: String::new(),
+            jump_at: None,
             timer: Timer::default(),
             entered: false,
         }
+    }
+
+    /// Slide and optional speaker-notes region for 0-based `page`.
+    pub fn page_regions(&self, page: usize) -> (Region, Option<Region>) {
+        self.sizes
+            .get(page)
+            .map_or((Region::Full, None), |s| regions(s.x, s.y))
     }
 
     /// The current slide has an image (for tests).
@@ -179,9 +196,7 @@ impl Presentation {
                     result: Ok((sizes, _)),
                     ..
                 } => {
-                    if let Some(first) = sizes.first() {
-                        (self.slide, self.notes) = regions(first.x, first.y);
-                    }
+                    self.has_any_notes = sizes.iter().any(|s| has_notes_page(s.x, s.y));
                     self.sizes = sizes;
                     self.page = clamp_page(self.start as f64, self.sizes.len());
                 }
@@ -196,11 +211,13 @@ impl Presentation {
                         egui::TextureOptions::LINEAR,
                     );
                     self.tex.insert(key, (t, self.frame));
-                    // Keep the pages around the current one; drop the rest.
-                    let keep = |p: usize, cur: usize| p + 2 >= cur && p <= cur + 2;
-                    let cur = self.page - 1;
-                    self.tex.retain(|k, _| keep(k.0, cur));
-                    self.asked.retain(|k| keep(k.0, cur));
+                    if !self.overview {
+                        // Keep the pages around the current one; drop the rest.
+                        let keep = |p: usize, cur: usize| p + 2 >= cur && p <= cur + 2;
+                        let cur = self.page - 1;
+                        self.tex.retain(|k, _| keep(k.0, cur));
+                        self.asked.retain(|k| keep(k.0, cur));
+                    }
                     // The sizes passed through while a window was resized are not kept: a page
                     // is drawn at up to three sizes at once (slide, next, notes).
                     let mut sizes: Vec<_> = self
@@ -265,29 +282,105 @@ impl Presentation {
         }
     }
 
-    /// The keys both windows share. Returns false on Esc.
+    /// The keys both windows share. Returns false on Esc (when no overlay is open).
     fn keys(&mut self, ctx: &egui::Context, presenter: bool) -> bool {
+        if self
+            .jump_at
+            .is_some_and(|t| t.elapsed().as_secs_f32() > 2.0)
+        {
+            self.jump_digits.clear();
+            self.jump_at = None;
+        }
         let mut next = false;
         let mut back = false;
         let mut keep = true;
+        let mut enter = false;
+        let mut digit: Option<char> = None;
+        let mut backspace = false;
+        let mut toggle_blackout = false;
+        let mut toggle_overview = false;
         let total = self.total();
         ctx.input_mut(|i| {
-            for k in [
-                Key::ArrowRight,
-                Key::ArrowDown,
-                Key::PageDown,
-                Key::Space,
-                Key::Enter,
+            // Capture digits for jump-to-slide (`12` + Enter).
+            for (k, ch) in [
+                (Key::Num0, '0'),
+                (Key::Num1, '1'),
+                (Key::Num2, '2'),
+                (Key::Num3, '3'),
+                (Key::Num4, '4'),
+                (Key::Num5, '5'),
+                (Key::Num6, '6'),
+                (Key::Num7, '7'),
+                (Key::Num8, '8'),
+                (Key::Num9, '9'),
             ] {
+                if i.consume_key(egui::Modifiers::NONE, k) {
+                    digit = Some(ch);
+                }
+            }
+            if i.consume_key(egui::Modifiers::NONE, Key::B)
+                || i.consume_key(egui::Modifiers::NONE, Key::Period)
+            {
+                toggle_blackout = true;
+            }
+            if i.consume_key(egui::Modifiers::NONE, Key::G) {
+                toggle_overview = true;
+            }
+            if i.consume_key(egui::Modifiers::NONE, Key::Enter) {
+                enter = true;
+            }
+            if i.consume_key(egui::Modifiers::NONE, Key::Backspace) {
+                backspace = true;
+            }
+            for k in [Key::ArrowRight, Key::ArrowDown, Key::PageDown, Key::Space] {
                 next |= i.consume_key(egui::Modifiers::NONE, k);
             }
-            for k in [Key::ArrowLeft, Key::ArrowUp, Key::PageUp, Key::Backspace] {
+            for k in [Key::ArrowLeft, Key::ArrowUp, Key::PageUp] {
                 back |= i.consume_key(egui::Modifiers::NONE, k);
             }
             if i.consume_key(egui::Modifiers::NONE, Key::Escape) {
-                keep = false;
+                if !self.jump_digits.is_empty() {
+                    self.jump_digits.clear();
+                    self.jump_at = None;
+                } else if self.overview {
+                    self.overview = false;
+                } else if self.blackout {
+                    self.blackout = false;
+                } else {
+                    keep = false;
+                }
             }
         });
+        if let Some(ch) = digit {
+            if self.jump_digits.len() < 4 {
+                self.jump_digits.push(ch);
+            }
+            self.jump_at = Some(Instant::now());
+        } else if enter {
+            if !self.jump_digits.is_empty() {
+                if let Ok(n) = self.jump_digits.parse::<usize>() {
+                    self.go(n as f64);
+                    self.overview = false;
+                }
+                self.jump_digits.clear();
+                self.jump_at = None;
+            } else if !self.overview {
+                next = true;
+            }
+        } else if backspace {
+            if !self.jump_digits.is_empty() {
+                self.jump_digits.pop();
+                self.jump_at = (!self.jump_digits.is_empty()).then(Instant::now);
+            } else {
+                back = true;
+            }
+        }
+        if toggle_blackout {
+            self.blackout = !self.blackout;
+        }
+        if toggle_overview {
+            self.overview = !self.overview;
+        }
         if next {
             self.go(self.page as f64 + 1.0);
         }
@@ -344,7 +437,11 @@ impl Presentation {
                     )
                 });
                 ui.painter().rect_filled(rect, 0, Color32::BLACK);
-                if let Some(e) = &self.error {
+                if self.overview && self.total() > 0 {
+                    self.overview_grid(ui, rect);
+                } else if self.blackout {
+                    // Pure black audience screen; cursor stays hidden until moved.
+                } else if let Some(e) = &self.error {
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -353,36 +450,86 @@ impl Presentation {
                         Color32::from_gray(200),
                     );
                 } else if self.total() > 0 {
-                    let (page, slide) = (self.page - 1, self.slide);
+                    let page = self.page - 1;
+                    let (slide, _) = self.page_regions(page);
                     self.draw(ui, rect, page, slide);
+                }
+                // Jump-to-slide digit buffer pill.
+                if !self.jump_digits.is_empty() {
+                    let text = format!("Go to slide: {}", self.jump_digits);
+                    let g = ui.painter().layout_no_wrap(
+                        text,
+                        FontId::proportional(15.0),
+                        Color32::WHITE,
+                    );
+                    let pill = Rect::from_center_size(
+                        pos2(rect.center().x, rect.bottom() - 48.0),
+                        g.size() + vec2(24.0, 14.0),
+                    );
+                    ui.painter().rect_filled(
+                        pill,
+                        CornerRadius::same(8),
+                        Color32::from_black_alpha(200),
+                    );
+                    ui.painter()
+                        .galley(pill.center() - g.size() / 2.0, g, Color32::WHITE);
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(250));
                 }
                 // The pointer rests (and the cursor hides) while the audience watches.
                 let recent =
                     r.hovered() && ui.input(|i| i.pointer.time_since_last_movement() <= 2.0);
-                // .count, bottom right.
-                if recent {
-                    ui.painter().text(
-                        rect.right_bottom() - vec2(16.0, 12.0),
-                        egui::Align2::RIGHT_BOTTOM,
-                        format!("{} / {} · P: presenter view", self.page, self.total()),
+                // .count, bottom right, with a dark pill backdrop so it's readable on white slides.
+                if recent && !self.overview {
+                    let hint = if self.blackout {
+                        format!(
+                            "{} / {} · Blackout (B to resume) · P: presenter · G: overview",
+                            self.page,
+                            self.total()
+                        )
+                    } else {
+                        format!(
+                            "{} / {} · P: presenter · B: blackout · G: overview",
+                            self.page,
+                            self.total()
+                        )
+                    };
+                    let g = ui.painter().layout_no_wrap(
+                        hint,
                         FontId::proportional(12.0),
-                        Color32::from_rgba_unmultiplied(255, 255, 255, 128),
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 235),
+                    );
+                    let pad = vec2(10.0, 5.0);
+                    let pill = Rect::from_min_size(
+                        rect.right_bottom() - vec2(16.0, 12.0) - g.size() - pad * 2.0,
+                        g.size() + pad * 2.0,
+                    );
+                    ui.painter().rect_filled(
+                        pill,
+                        CornerRadius::same(6),
+                        Color32::from_black_alpha(185),
+                    );
+                    ui.painter().galley(
+                        pill.min + pad,
+                        g,
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 235),
                     );
                     ui.ctx()
                         .request_repaint_after(std::time::Duration::from_millis(2100));
                 }
-                // A click on the left third goes back, anywhere else forward.
-                if r.clicked()
+                // A click on the left third goes back, anywhere else forward (not in overview).
+                if !self.overview
+                    && r.clicked()
                     && let Some(pos) = r.interact_pointer_pos()
                 {
-                    let step = if pos.x > rect.width() / 3.0 {
+                    let step = if (pos.x - rect.left()) > rect.width() / 3.0 {
                         1.0
                     } else {
                         -1.0
                     };
                     self.go(self.page as f64 + step);
                 }
-                if !recent {
+                if !recent && !self.overview {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::None);
                 }
             });
@@ -397,6 +544,94 @@ impl Presentation {
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
         }
         keep
+    }
+
+    /// Scrollable grid of slide thumbnails (`G`) to jump directly to any slide.
+    fn overview_grid(&mut self, ui: &mut Ui, rect: Rect) {
+        let total = self.total();
+        let header = Rect::from_min_size(rect.min, vec2(rect.width(), 48.0));
+        ui.painter().rect_filled(header, 0, BAR);
+        ui.painter().hline(
+            header.x_range(),
+            header.bottom() - 0.5,
+            Stroke::new(1.0, LINE),
+        );
+        ui.painter().text(
+            pos2(header.left() + 20.0, header.center().y),
+            egui::Align2::LEFT_CENTER,
+            format!("Slide overview ({total} slides) — click a slide or press Esc"),
+            FontId::proportional(14.0),
+            INK,
+        );
+        let body = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max).shrink(18.0);
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body));
+        let mut picked = None;
+        egui::ScrollArea::vertical()
+            .id_salt("present-overview")
+            .auto_shrink([false, false])
+            .show(&mut child, |ui| {
+                let w = ui.available_width();
+                let gap = 16.0;
+                let cols = (((w + gap) / 220.0).floor() as usize).clamp(1, 6);
+                let cell_w = ((w - gap * (cols as f32 - 1.0)) / cols as f32).max(120.0);
+                let thumb_h = cell_w * 0.62;
+                let cell_h = thumb_h + 24.0;
+                let rows = total.div_ceil(cols);
+                let (grid_rect, _) =
+                    ui.allocate_exact_size(vec2(w, rows as f32 * (cell_h + gap)), Sense::hover());
+                for i in 0..total {
+                    let (r, c) = (i / cols, i % cols);
+                    let cell = Rect::from_min_size(
+                        grid_rect.min + vec2(c as f32 * (cell_w + gap), r as f32 * (cell_h + gap)),
+                        vec2(cell_w, cell_h),
+                    );
+                    if !ui.is_rect_visible(cell) {
+                        continue;
+                    }
+                    let resp = ui
+                        .interact(cell, ui.scope_id().with(("ov", i)), Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::Button,
+                            true,
+                            format!("Slide {}", i + 1),
+                        )
+                    });
+                    let thumb = Rect::from_min_size(cell.min, vec2(cell_w, thumb_h));
+                    let is_cur = i + 1 == self.page;
+                    let stroke = if is_cur {
+                        Stroke::new(2.5, Color32::from_rgb(0x4b, 0x9c, 0xf5))
+                    } else if resp.hovered() {
+                        Stroke::new(2.0, INK)
+                    } else {
+                        Stroke::new(1.0, LINE)
+                    };
+                    ui.painter().rect_filled(thumb, CornerRadius::same(4), PIT);
+                    let (slide, _) = self.page_regions(i);
+                    self.draw(ui, thumb.shrink(2.0), i, slide);
+                    ui.painter().rect_stroke(
+                        thumb,
+                        CornerRadius::same(4),
+                        stroke,
+                        egui::StrokeKind::Outside,
+                    );
+                    ui.painter().text(
+                        pos2(cell.center().x, thumb.bottom() + 4.0),
+                        egui::Align2::CENTER_TOP,
+                        format!("{}", i + 1),
+                        FontId::proportional(12.0),
+                        if is_cur { INK } else { MUTED },
+                    );
+                    if resp.clicked() {
+                        picked = Some(i + 1);
+                    }
+                }
+            });
+        if let Some(p) = picked {
+            self.go(p as f64);
+            self.overview = false;
+        }
     }
 
     /// The presenter's window. Returns false when the presentation should end.
@@ -445,10 +680,32 @@ impl Presentation {
         bar(ui, head, true);
         bar(ui, foot, false);
         let total = self.total();
-        // header: the slide number, the timer, the clock.
+        // header: the slide number, the timer, the clock (adaptive to avoid narrow overlap).
+        let compact = head.width() < 640.0;
+        let head_inner = head.shrink2(vec2(18.0, 0.0));
+        let clock = chrono::Local::now().format("%H:%M").to_string();
+        let clock_g = ui.painter().layout_no_wrap(
+            clock,
+            FontId::new(if compact { 15.0 } else { 18.0 }, theme::font::mono_500()),
+            MUTED,
+        );
+        ui.painter().galley(
+            pos2(
+                head_inner.right() - clock_g.size().x,
+                head_inner.center().y - clock_g.size().y / 2.0,
+            ),
+            clock_g.clone(),
+            MUTED,
+        );
         let mut h = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(head.shrink2(vec2(18.0, 0.0)))
+                .max_rect(Rect::from_min_max(
+                    head_inner.min,
+                    pos2(
+                        (head_inner.right() - clock_g.size().x - 12.0).max(head_inner.left()),
+                        head_inner.bottom(),
+                    ),
+                ))
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         h.spacing_mut().item_spacing.x = 0.0;
@@ -471,46 +728,57 @@ impl Presentation {
             .size(16.0)
             .color(INK),
         );
-        let mid = Rect::from_center_size(head.center(), vec2(320.0, head.height()));
-        let mut m = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(mid)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        );
-        m.spacing_mut().item_spacing.x = 10.0;
-        let idle = !self.timer.running;
-        m.label(
-            RichText::new(format_elapsed(self.timer.elapsed()))
-                .font(FontId::new(30.0, theme::font::mono_500()))
-                .color(if idle { MUTED } else { INK }),
-        );
-        let label = if self.timer.running {
-            "Pause"
-        } else if self.timer.started.is_some() {
-            "Resume"
-        } else {
-            "Start"
-        };
-        if button(&mut m, label, false)
-            .on_hover_text("Start or pause the timer (T)")
-            .clicked()
-        {
-            self.timer.toggle();
+        let slide_right = h.cursor().left() + 16.0;
+        let clock_left = head_inner.right() - clock_g.size().x - 16.0;
+        if clock_left > slide_right + 140.0 {
+            let mid_w = (clock_left - slide_right).min(360.0);
+            let mid_x = (head.center().x - mid_w / 2.0)
+                .max(slide_right)
+                .min(clock_left - mid_w);
+            let mid = Rect::from_min_size(pos2(mid_x, head.top()), vec2(mid_w, head.height()));
+            let mut m = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(mid)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            m.spacing_mut().item_spacing.x = if compact { 6.0 } else { 10.0 };
+            let idle = !self.timer.running;
+            m.label(
+                RichText::new(format_elapsed(self.timer.elapsed()))
+                    .font(FontId::new(
+                        if compact { 20.0 } else { 28.0 },
+                        theme::font::mono_500(),
+                    ))
+                    .color(if idle { MUTED } else { INK }),
+            );
+            let label = if self.timer.running {
+                "Pause"
+            } else if self.timer.started.is_some() {
+                "Resume"
+            } else {
+                "Start"
+            };
+            if button(&mut m, label, false)
+                .on_hover_text("Start or pause the timer (T)")
+                .clicked()
+            {
+                self.timer.toggle();
+            }
+            if button(&mut m, "Reset", false)
+                .on_hover_text("Reset the timer (R)")
+                .clicked()
+            {
+                self.timer.reset();
+            }
+            if self.blackout {
+                m.label(
+                    RichText::new("BLACKOUT")
+                        .size(11.0)
+                        .strong()
+                        .color(Color32::from_rgb(0xf2, 0x8b, 0x82)),
+                );
+            }
         }
-        if button(&mut m, "Reset", false)
-            .on_hover_text("Reset the timer (R)")
-            .clicked()
-        {
-            self.timer.reset();
-        }
-        let clock = chrono::Local::now().format("%H:%M").to_string();
-        ui.painter().text(
-            pos2(head.right() - 18.0, head.center().y),
-            egui::Align2::RIGHT_CENTER,
-            clock,
-            FontId::new(18.0, theme::font::mono_500()),
-            MUTED,
-        );
 
         // main: the current slide, then next and notes.
         let main = Rect::from_min_max(
@@ -531,8 +799,13 @@ impl Presentation {
             let side = Rect::from_min_max(pos2(cur.right() + 14.0, main.top()), main.max);
             let boxed = |ui: &Ui, r: Rect| ui.painter().rect_filled(r, CornerRadius::same(6), PIT);
             boxed(ui, cur);
+            let (cur_slide, cur_notes) = if total > 0 {
+                self.page_regions(self.page - 1)
+            } else {
+                (Region::Full, None)
+            };
             if total > 0 {
-                self.draw(ui, cur.shrink(1.0), self.page - 1, self.slide);
+                self.draw(ui, cur.shrink(1.0), self.page - 1, cur_slide);
             }
             let label_h = 22.0;
             let rest = side.height() - 2.0 * label_h - 3.0 * 6.0;
@@ -559,8 +832,8 @@ impl Presentation {
             );
             boxed(ui, next);
             if self.page < total {
-                let slide = self.slide;
-                self.draw(ui, next.shrink(1.0), self.page, slide);
+                let (next_slide, _) = self.page_regions(self.page);
+                self.draw(ui, next.shrink(1.0), self.page, next_slide);
             } else if total > 0 {
                 ui.painter().text(
                     next.center(),
@@ -576,9 +849,20 @@ impl Presentation {
                 side.max,
             );
             boxed(ui, notes);
-            match self.notes {
+            match cur_notes {
                 Some(region) if total > 0 => {
                     self.draw(ui, notes.shrink(1.0), self.page - 1, region)
+                }
+                _ if self.has_any_notes => {
+                    let mut c = ui.new_child(egui::UiBuilder::new().max_rect(notes.shrink(14.0)));
+                    c.add(
+                        egui::Label::new(
+                            RichText::new("No speaker notes on this slide.")
+                                .size(13.0)
+                                .color(MUTED),
+                        )
+                        .wrap(),
+                    );
                 }
                 _ => {
                     let mut c = ui.new_child(egui::UiBuilder::new().max_rect(notes.shrink(14.0)));
@@ -596,28 +880,53 @@ impl Presentation {
             }
         }
 
-        // footer: back, next, the keys, end.
+        // footer: back, next, blackout, overview, the keys, end.
         let mut f = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(foot.shrink2(vec2(18.0, 0.0)))
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        f.spacing_mut().item_spacing.x = 18.0;
+        f.spacing_mut().item_spacing.x = 10.0;
         if button(&mut f, "◀ Back", self.page <= 1).clicked() {
             self.go(self.page as f64 - 1.0);
         }
         if button(&mut f, "Next ▶", self.page >= total).clicked() {
             self.go(self.page as f64 + 1.0);
         }
+        if button(
+            &mut f,
+            if self.blackout {
+                "Resume screen"
+            } else {
+                "Blackout"
+            },
+            false,
+        )
+        .on_hover_text("Toggle black audience screen (B or .)")
+        .clicked()
+        {
+            self.blackout = !self.blackout;
+        }
+        if button(&mut f, "Overview", total == 0)
+            .on_hover_text("Toggle slide overview grid (G)")
+            .clicked()
+        {
+            self.overview = !self.overview;
+        }
+        let wide_hints = foot.width() >= 960.0;
         f.with_layout(egui::Layout::right_to_left(egui::Align::Center), |f| {
             if end_button(f).clicked() {
                 keep = false;
             }
-            f.label(
-                RichText::new("← → space: change slide · T: timer · R: reset · Esc: end")
-                    .size(12.5)
+            if wide_hints {
+                f.label(
+                    RichText::new(
+                        "← → space: slide · B: blackout · G: overview · T: timer · Esc: end",
+                    )
+                    .size(12.0)
                     .color(MUTED),
-            );
+                );
+            }
         });
         keep
     }
@@ -677,15 +986,20 @@ fn end_button(ui: &mut Ui) -> egui::Response {
         .layout_no_wrap(text.to_owned(), FontId::proportional(14.0), INK);
     let (rect, r) = ui.allocate_exact_size(vec2(g.size().x + 24.0, 30.0), Sense::click());
     r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, text));
+    let fill = if r.hovered() {
+        Color32::from_rgb(0x82, 0x39, 0x39)
+    } else {
+        Color32::from_rgb(0x6d, 0x2f, 0x2f)
+    };
     ui.painter().rect(
         rect,
         CornerRadius::same(6),
-        Color32::from_rgb(0x6d, 0x2f, 0x2f),
+        fill,
         Stroke::new(1.0, Color32::from_rgb(0x8a, 0x3d, 0x3d)),
         egui::StrokeKind::Inside,
     );
     ui.painter().galley(rect.center() - g.size() / 2.0, g, INK);
-    r
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 #[cfg(test)]

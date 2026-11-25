@@ -20,6 +20,7 @@ pub enum Action {
     ChooseParent,
     Submit,
     DeleteTemplate(String),
+    RetryOnline,
 }
 
 /// Writes a field row: the text input stretches, the Choose… button sits at its end.
@@ -253,6 +254,11 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
     let mut body_action = None;
     let can = st.can_create();
     let busy = st.busy;
+    let chosen_name = st
+        .templates
+        .iter()
+        .find(|t| t.id == st.chosen)
+        .map(|t| t.name.clone());
     let r = widgets::modal_with(
         ctx,
         p,
@@ -264,12 +270,16 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 8.0;
                 match st.shown.clone() {
-                    None => gallery_categories(ui, p, st),
+                    None => gallery_categories(ui, p, st, &mut body_action),
                     Some(c) => gallery_templates(ui, p, st, &c, &mut body_action),
                 }
             });
             widgets::field(ui, p, "Folder name", |ui| {
-                let r = widgets::text_input(ui, p, &mut st.name, "master-thesis", false);
+                let r = ui
+                    .add_enabled_ui(!busy, |ui| {
+                        widgets::text_input(ui, p, &mut st.name, "master-thesis", false)
+                    })
+                    .inner;
                 if !st.focused {
                     r.request_focus();
                     st.focused = true;
@@ -277,11 +287,12 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
                 if r.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     && st.can_create()
+                    && !busy
                 {
                     body_action = Some(Action::Submit);
                 }
             });
-            location(ui, p, "Location", &mut st.parent, true, &mut body_action);
+            location(ui, p, "Location", &mut st.parent, !busy, &mut body_action);
             error_line(ui, p, &st.error);
         },
         Some(&mut |ui: &mut Ui| {
@@ -296,6 +307,15 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
             if Button::new("Cancel").enabled(!busy).show(ui, p).clicked() {
                 action = Some(Action::Close);
             }
+            if let Some(name) = &chosen_name {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Template: {name}"))
+                            .size(12.5)
+                            .color(p.muted),
+                    );
+                });
+            }
         }),
     );
     if r.closed {
@@ -304,7 +324,7 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
     action.or(body_action)
 }
 
-fn gallery_categories(ui: &mut Ui, p: &Palette, st: &mut NewProject) {
+fn gallery_categories(ui: &mut Ui, p: &Palette, st: &mut NewProject, action: &mut Option<Action>) {
     let cats = st.categories();
     // grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px
     let w = ui.available_width() - 4.0;
@@ -395,14 +415,35 @@ fn gallery_categories(ui: &mut Ui, p: &Palette, st: &mut NewProject) {
                 .color(p.muted),
         );
     } else if let Some(e) = &st.online_error {
-        ui.label(
-            egui::RichText::new(
-                "More templates are online, but they couldn't be loaded right now.",
+        let err_tip = e.clone();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(
+                egui::RichText::new(
+                    "More templates are online, but they couldn't be loaded right now.",
+                )
+                .size(12.0)
+                .color(p.muted),
             )
-            .size(12.0)
-            .color(p.muted),
-        )
-        .on_hover_text(e);
+            .on_hover_text(&err_tip);
+            let retry = ui
+                .add(
+                    egui::Label::new(
+                        egui::RichText::new("Retry")
+                            .size(12.0)
+                            .color(p.accent)
+                            .underline(),
+                    )
+                    .sense(Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            retry.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Retry"));
+            if retry.clicked() {
+                st.online_loading = true;
+                st.online_error = None;
+                *action = Some(Action::RetryOnline);
+            }
+        });
     }
     if let Some(c) = clicked {
         st.show_cat(&c);
@@ -670,8 +711,10 @@ fn gallery_templates(
 
 pub struct Clone {
     pub url: String,
-    /// Typed by the user; while empty, the name follows the URL.
+    /// Typed by the user; while unedited, the name follows the URL.
     pub typed_name: String,
+    /// True once the user has edited the folder name (so clearing it does not snap back).
+    pub name_edited: bool,
     pub parent: String,
     pub busy: bool,
     pub error: Option<String>,
@@ -695,6 +738,7 @@ impl Clone {
         Self {
             url,
             typed_name: String::new(),
+            name_edited: false,
             parent,
             busy: false,
             error: None,
@@ -702,7 +746,7 @@ impl Clone {
         }
     }
     pub fn name(&self) -> String {
-        if self.typed_name.is_empty() {
+        if !self.name_edited && self.typed_name.is_empty() {
             repo_name(&self.url)
         } else {
             self.typed_name.clone()
@@ -738,6 +782,9 @@ pub fn clone(ctx: &egui::Context, p: &Palette, st: &mut Clone) -> Option<Action>
                 if !st.focused {
                     r.request_focus();
                     st.focused = true;
+                }
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && can {
+                    body_action = Some(Action::Submit);
                 }
                 ui.add_space(4.0 - 5.0);
                 widgets::Rich::new()
@@ -783,12 +830,15 @@ pub fn clone(ctx: &egui::Context, p: &Palette, st: &mut Clone) -> Option<Action>
             location(ui, p, "Location", &mut st.parent, !busy, &mut body_action);
             widgets::field(ui, p, "Folder name", |ui| {
                 let mut name = st.name();
-                if ui
+                let nr = ui
                     .add_enabled_ui(!busy, |ui| widgets::text_input(ui, p, &mut name, "", false))
-                    .inner
-                    .changed()
-                {
+                    .inner;
+                if nr.changed() {
+                    st.name_edited = true;
                     st.typed_name = name;
+                }
+                if nr.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && can {
+                    body_action = Some(Action::Submit);
                 }
             });
             if busy {
@@ -941,7 +991,14 @@ pub fn import(ctx: &egui::Context, p: &Palette, st: &mut Import) -> Option<Actio
                 }
                 Some(_) => {
                     widgets::field(ui, p, "Folder name", |ui| {
-                        widgets::text_input(ui, p, &mut st.name, "", false)
+                        let nr = ui
+                            .add_enabled_ui(!busy, |ui| {
+                                widgets::text_input(ui, p, &mut st.name, "", false)
+                            })
+                            .inner;
+                        if nr.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && can {
+                            body_action = Some(Action::Submit);
+                        }
                     });
                 }
                 None => {}
@@ -952,7 +1009,7 @@ pub fn import(ctx: &egui::Context, p: &Palette, st: &mut Import) -> Option<Actio
                 } else {
                     "Location"
                 };
-                location(ui, p, label, &mut st.parent, true, &mut body_action);
+                location(ui, p, label, &mut st.parent, !busy, &mut body_action);
             }
             error_line(ui, p, &st.error);
         },
@@ -1061,6 +1118,7 @@ impl SaveTemplate {
 
 pub fn save_template(ctx: &egui::Context, p: &Palette, st: &mut SaveTemplate) -> Option<Action> {
     let mut action = None;
+    let mut body_action = None;
     let busy = st.busy;
     let can = !st.busy && !st.name.trim().is_empty();
     let r = widgets::modal_with(
@@ -1074,23 +1132,39 @@ pub fn save_template(ctx: &egui::Context, p: &Palette, st: &mut SaveTemplate) ->
         |ui| {
             ui.spacing_mut().item_spacing.y = 12.0;
             widgets::field(ui, p, "Name", |ui| {
-                let r = widgets::text_input(ui, p, &mut st.name, "", false);
+                let r = ui
+                    .add_enabled_ui(!busy, |ui| {
+                        widgets::text_input(ui, p, &mut st.name, "", false)
+                    })
+                    .inner;
                 if !st.focused {
                     r.request_focus();
                     st.focused = true;
                 }
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && can {
+                    body_action = Some(Action::Submit);
+                }
             });
             widgets::field(ui, p, "Description (optional)", |ui| {
-                widgets::text_input(
-                    ui,
-                    p,
-                    &mut st.description,
-                    "Exercise sheets with my usual header",
-                    false,
-                )
+                let r = ui
+                    .add_enabled_ui(!busy, |ui| {
+                        widgets::text_input(
+                            ui,
+                            p,
+                            &mut st.description,
+                            "Exercise sheets with my usual header",
+                            false,
+                        )
+                    })
+                    .inner;
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && can {
+                    body_action = Some(Action::Submit);
+                }
             });
             if !st.open {
-                widgets::checkbox(ui, p, &mut st.trash, "Then move the project to the trash");
+                ui.add_enabled_ui(!busy, |ui| {
+                    widgets::checkbox(ui, p, &mut st.trash, "Then move the project to the trash");
+                });
             }
             widgets::paragraph(
                 ui,
@@ -1119,7 +1193,7 @@ pub fn save_template(ctx: &egui::Context, p: &Palette, st: &mut SaveTemplate) ->
     if r.closed {
         action = Some(Action::Close);
     }
-    action
+    action.or(body_action)
 }
 
 #[cfg(test)]
@@ -1321,6 +1395,19 @@ mod tests {
         assert_eq!(repo_name("https://git.overleaf.com/abc123"), "abc123");
         assert_eq!(repo_name(""), "");
         assert!(is_overleaf("https://git:TOKEN@git.overleaf.com/ID"));
+    }
+
+    #[test]
+    fn clone_dialog_keeps_user_cleared_folder_name() {
+        let mut st = Clone::new("/tmp".into(), "https://github.com/you/thesis.git".into());
+        assert_eq!(st.name(), "thesis");
+        st.name_edited = true;
+        st.typed_name.clear();
+        assert_eq!(
+            st.name(),
+            "",
+            "clearing folder name must not snap back to repo_name"
+        );
     }
 
     #[test]

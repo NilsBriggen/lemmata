@@ -37,6 +37,8 @@ pub struct ProjectSearch {
     /// The query and options the results are for: lines left out stay left out while they hold.
     searched: String,
     focus: bool,
+    /// Pending confirmation for destructive project-wide replace: `(occurrences, files)`.
+    pub(super) confirm_replace: Option<(usize, usize)>,
 }
 
 impl ProjectSearch {
@@ -322,7 +324,7 @@ impl Workspace {
         ui: &mut Ui,
         p: &Palette,
         backend: &Backend,
-        settings: &Settings,
+        _settings: &Settings,
     ) {
         if self
             .search
@@ -738,11 +740,85 @@ impl Workspace {
         if close {
             self.search = None;
         }
-        if replace {
-            self.replace_all(backend, settings);
+        if replace && let Some(s) = &mut self.search {
+            let (targets, count) = s.chosen();
+            if !targets.is_empty() && s.due.is_none() && s.got == s.seq {
+                s.confirm_replace = Some((count, targets.len()));
+            }
         }
         if let Some((path, line)) = open {
             self.goto(backend, &path, line as usize);
+        }
+    }
+
+    pub(super) fn search_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Palette,
+        backend: &Backend,
+        settings: &Settings,
+    ) {
+        let Some((count, files)) = self.search.as_ref().and_then(|s| s.confirm_replace) else {
+            return;
+        };
+        let history_on = self.history.on;
+        let title = format!(
+            "Replace {count} occurrence{} in {files} file{}?",
+            if count == 1 { "" } else { "s" },
+            if files == 1 { "" } else { "s" }
+        );
+        let mut confirm = false;
+        let mut cancel = false;
+        let r = widgets::modal_with(
+            ctx,
+            p,
+            &title,
+            None,
+            440.0,
+            |ui| {
+                if history_on {
+                    widgets::paragraph(
+                        ui,
+                        "A snapshot will be saved first, so you can undo these changes from History.",
+                        FontId::proportional(13.0),
+                        p.muted,
+                        1.45,
+                        ui.available_width(),
+                    );
+                } else {
+                    widgets::paragraph(
+                        ui,
+                        "History is off (git is unavailable or history is disabled), so this replacement cannot be undone.",
+                        FontId::proportional(13.0),
+                        p.error,
+                        1.45,
+                        ui.available_width(),
+                    );
+                }
+            },
+            Some(&mut |ui: &mut Ui| {
+                let btn = Button::new("Replace").kind(if history_on {
+                    Kind::Primary
+                } else {
+                    Kind::Danger
+                });
+                if btn.show(ui, p).clicked() {
+                    confirm = true;
+                }
+                if Button::new("Cancel").show(ui, p).clicked() {
+                    cancel = true;
+                }
+            }),
+        );
+        if confirm {
+            if let Some(s) = &mut self.search {
+                s.confirm_replace = None;
+            }
+            self.replace_all(backend, settings);
+        } else if (r.closed || cancel)
+            && let Some(s) = &mut self.search
+        {
+            s.confirm_replace = None;
         }
     }
 }

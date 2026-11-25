@@ -82,35 +82,50 @@ pub fn git_guard(git: &std::path::Path, dir: &std::path::Path) -> Option<Vec<Str
             use std::os::windows::process::CommandExt;
             c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
-        // Exit status 1 is "no such key": no filters.
-        c.output()
-            .ok()
-            .filter(|o| matches!(o.status.code(), Some(0 | 1)))
+        c.output().ok()
     };
-    // Git before 2.26 has no --show-scope: then the repository's own file, and what it includes.
-    let (out, scoped) = match config(&["--show-scope"]) {
-        Some(o) => (o, true),
-        None => (config(&["--local", "--includes"])?, false),
-    };
+    let ok_out =
+        |o: Option<std::process::Output>| o.filter(|o| matches!(o.status.code(), Some(0 | 1)));
     let mut names: Vec<String> = Vec::new();
-    // A name that isn't UTF-8 can't be repeated back to git to turn the filter off.
-    for line in std::str::from_utf8(&out.stdout).ok()?.lines() {
-        let key = match line.split_once('\t') {
-            Some((scope, key)) if scoped => {
-                if scope != "local" && scope != "worktree" {
-                    continue;
-                }
-                key
+    // Git before 2.26 has no --show-scope: then the repository's own file, and what it includes.
+    // On a plain folder (not inside a git repository), `--local` exits 128 because there is no
+    // local repo config at all — no local filters exist, so the default guard flags still apply.
+    let parsed = match ok_out(config(&["--show-scope"])) {
+        Some(o) => Some((o, true)),
+        None => match config(&["--local", "--includes"]) {
+            Some(o) if matches!(o.status.code(), Some(0 | 1)) => Some((o, false)),
+            Some(o)
+                if o.status.code() == Some(128)
+                    && !dir
+                        .ancestors()
+                        .any(|d| d.join(".git").symlink_metadata().is_ok())
+                    && !dir.join("HEAD").is_file() =>
+            {
+                None
             }
-            _ => line,
-        };
-        // filter.<name>.<setting>; the name may itself contain dots.
-        let name = key.strip_prefix("filter.")?.rsplit_once('.')?.0;
-        if name.contains('=') {
-            return None;
-        }
-        if !names.iter().any(|n| n == name) {
-            names.push(name.to_string());
+            _ => return None,
+        },
+    };
+    if let Some((out, scoped)) = parsed {
+        // A name that isn't UTF-8 can't be repeated back to git to turn the filter off.
+        for line in std::str::from_utf8(&out.stdout).ok()?.lines() {
+            let key = match line.split_once('\t') {
+                Some((scope, key)) if scoped => {
+                    if scope != "local" && scope != "worktree" {
+                        continue;
+                    }
+                    key
+                }
+                _ => line,
+            };
+            // filter.<name>.<setting>; the name may itself contain dots.
+            let name = key.strip_prefix("filter.")?.rsplit_once('.')?.0;
+            if name.contains('=') {
+                return None;
+            }
+            if !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
         }
     }
     let mut args = Vec::new();

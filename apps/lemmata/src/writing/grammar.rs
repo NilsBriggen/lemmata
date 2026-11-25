@@ -26,11 +26,6 @@ static BREAK_BEFORE: LazyLock<Regex> = LazyLock::new(|| {
 static BREAK_AFTER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*\\(?:begin|end|part|chapter|(?:sub)*section|(?:sub)*paragraph|title|author|date|maketitle)(?:[^A-Za-z]|$)").unwrap()
 });
-static INLINE_MATH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\$[^$]*\$|\\\(.*?\\\)").unwrap());
-static COMMAND: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\\[A-Za-z]+\*?(?:\[[^\]]*\])*(?:\{[^{}]*\})*").unwrap());
-static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(^|[^\\])%.*$").unwrap());
 
 fn punct(c: char) -> bool {
     ".,;:!?)]”’\"".contains(c)
@@ -39,12 +34,147 @@ fn open(c: char) -> bool {
     "([“‘\"".contains(c)
 }
 
+/// Drops an unescaped `%` comment (respecting `\\` pairs before `%`).
+fn strip_line_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'%' {
+            return &line[..i];
+        }
+        i += 1;
+    }
+    line
+}
+
+/// Replaces inline math (`$...$` without treating `\$` as a delimiter, and `\(...\)`) with spaces.
+fn strip_inline_math(gap: &str) -> (String, bool) {
+    let c: Vec<char> = gap.chars().collect();
+    let mut out = String::with_capacity(gap.len());
+    let mut math = false;
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == '\\' {
+            if c.get(i + 1) == Some(&'(') {
+                let mut j = i + 2;
+                let mut found = None;
+                while j < c.len() {
+                    if c[j] == '\\' && c.get(j + 1) == Some(&')') {
+                        found = Some(j + 2);
+                        break;
+                    }
+                    if c[j] == '\\' {
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
+                if let Some(end) = found {
+                    math = true;
+                    out.push(' ');
+                    i = end;
+                    continue;
+                }
+            }
+            out.push(c[i]);
+            if let Some(&n) = c.get(i + 1) {
+                out.push(n);
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if c[i] == '$' && c.get(i + 1) != Some(&'$') {
+            let mut j = i + 1;
+            let mut found = None;
+            while j < c.len() {
+                if c[j] == '\\' {
+                    j += 2;
+                    continue;
+                }
+                if c[j] == '$' {
+                    found = Some(j + 1);
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(end) = found {
+                math = true;
+                out.push(' ');
+                i = end;
+                continue;
+            }
+        }
+        out.push(c[i]);
+        i += 1;
+    }
+    (out, math)
+}
+
+/// Strips LaTeX commands and their balanced `[...]` / `{...}` arguments (including nested braces).
+fn strip_commands(gap: &str) -> String {
+    let c: Vec<char> = gap.chars().collect();
+    let mut out = String::with_capacity(gap.len());
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == '\\' && c.get(i + 1).is_some_and(|ch| ch.is_ascii_alphabetic()) {
+            i += 1;
+            while i < c.len() && c[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            if c.get(i) == Some(&'*') {
+                i += 1;
+            }
+            while let Some(&delim) = c.get(i) {
+                let close = match delim {
+                    '[' => ']',
+                    '{' => '}',
+                    _ => break,
+                };
+                let mut depth = 0i32;
+                let mut j = i;
+                let mut closed = None;
+                while j < c.len() {
+                    if c[j] == '\\' {
+                        j += 2;
+                        continue;
+                    }
+                    if c[j] == delim {
+                        depth += 1;
+                    } else if c[j] == close {
+                        depth -= 1;
+                        if depth == 0 {
+                            closed = Some(j + 1);
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                if let Some(end) = closed {
+                    i = end;
+                } else {
+                    break;
+                }
+            }
+            out.push(' ');
+            continue;
+        }
+        out.push(c[i]);
+        i += 1;
+    }
+    out
+}
+
 /// What remains of the source between two words: a space, punctuation that followed a command,
 /// X for inline maths, and numbers as they are.
 fn gap_text(gap: &str) -> String {
-    let math = INLINE_MATH.is_match(gap);
-    let g = INLINE_MATH.replace_all(gap, " ");
-    let g = COMMAND.replace_all(&g, " ");
+    let (g, math) = strip_inline_math(gap);
+    let g = strip_commands(&g);
     let g: String = g
         .chars()
         .map(|c| if "{}~".contains(c) { ' ' } else { c })
@@ -126,7 +256,7 @@ pub fn paragraphs(source: &str) -> Vec<Paragraph> {
         });
         push(p, " ", None);
         // Comments are not text: gaps come from the line without one.
-        let code: Vec<char> = COMMENT.replace(line, "$1").chars().collect();
+        let code: Vec<char> = strip_line_comment(line).chars().collect();
         let slice = |a: usize, b: usize| {
             code[a.min(code.len())..b.min(code.len())]
                 .iter()
@@ -403,6 +533,22 @@ mod tests {
         assert_eq!(
             to_source(p, t.find("We has").unwrap(), 6, &chars[..5]),
             None
+        );
+    }
+
+    #[test]
+    fn escaped_dollar_and_nested_braces_keep_prose_intact() {
+        let src = "It costs \\$50 and \\textbf{very \\emph{clear}} text.";
+        let ps = paragraphs(src);
+        assert_eq!(ps.len(), 1);
+        let plain = text(&ps[0]);
+        assert!(
+            plain.contains("50"),
+            "escaped dollar must not swallow text: {plain}"
+        );
+        assert!(
+            plain.contains("very clear") && plain.contains("text."),
+            "nested braces inside \\textbf must preserve prose: {plain}"
         );
     }
 }

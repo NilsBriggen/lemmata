@@ -19,10 +19,16 @@ pub struct Arxiv {
 
 /// Zips the project sources, or with `arxiv` the files of a fresh build.
 /// Returns whether it succeeded.
-pub async fn run(dir: &Path, out: &Path, arxiv: Option<Arxiv>, json: bool) -> anyhow::Result<bool> {
+pub async fn run(
+    dir: &Path,
+    out: &Path,
+    with_pdf: bool,
+    arxiv: Option<Arxiv>,
+    json: bool,
+) -> anyhow::Result<bool> {
     let project = open(dir)?;
     let count = match arxiv {
-        None => export::zip_project(&project, out, false),
+        None => export::zip_project(&project, out, with_pdf),
         Some(a) => {
             // Like the app: build first, since the files used come from that build.
             let outcome = compile(&project).await?;

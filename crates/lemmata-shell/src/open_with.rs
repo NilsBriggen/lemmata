@@ -129,21 +129,52 @@ fn magic_root(file: &Path) -> Option<PathBuf> {
         })
 }
 
-/// Project root for a file: the nearest folder above it with a `lemmata.toml`;
-/// else the folder of the main file a `% !TeX root` comment points to, if that
-/// main lies in a parent folder; else the file's own folder.
-/// shortcut: a file sitting in a folder under a stray lemmata.toml (say in the
-/// home folder) opens that folder; fine until someone reports it.
+/// Whether `dir` is too broad (filesystem root or the user's home folder / an ancestor of it)
+/// to be adopted as a LaTeX project root merely because of a stray `lemmata.toml`.
+fn is_too_broad_root(dir: &Path) -> bool {
+    if dir.parent().is_none() {
+        return true;
+    }
+    if let Some(home) = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+    {
+        let home = normalize(&home);
+        if dir == home || home.starts_with(dir) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Project root for a file: the nearest folder above it with a `lemmata.toml` (ignoring a stray
+/// file in the home folder or filesystem root, and preferring an explicit `% !TeX root` when
+/// nearer); else the folder of the main file a `% !TeX root` comment points to, if that main
+/// lies in a parent folder; else the file's own folder.
 fn project_root_of(file: &Path) -> PathBuf {
     let dir = file.parent().unwrap_or(file);
-    if let Some(d) = dir.ancestors().find(|d| d.join(LEMMATA_TOML).is_file()) {
-        return d.to_path_buf();
-    }
-    magic_root(file)
+    let magic_dir = magic_root(file)
         .filter(|m| m.is_file())
         .and_then(|m| m.parent().map(Path::to_path_buf))
-        .filter(|d| dir.starts_with(d))
-        .unwrap_or_else(|| dir.to_path_buf())
+        .filter(|d| dir.starts_with(d));
+    let toml_dir = dir
+        .ancestors()
+        .take_while(|d| !is_too_broad_root(d))
+        .find(|d| d.join(LEMMATA_TOML).is_file())
+        .map(Path::to_path_buf);
+    match (toml_dir, magic_dir) {
+        (Some(t), Some(m)) => {
+            // Pick whichever is deeper (more specific to this file).
+            if m.components().count() > t.components().count() {
+                m
+            } else {
+                t
+            }
+        }
+        (Some(t), None) => t,
+        (None, Some(m)) => m,
+        (None, None) => dir.to_path_buf(),
+    }
 }
 
 fn target_from_path(path: &Path) -> Option<OpenTarget> {

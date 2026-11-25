@@ -21,7 +21,9 @@ fn insert_figure(
     from + ed.doc.len() + replaced - before
 }
 
-const IMAGE_EXTS: [&str; 8] = ["png", "jpg", "jpeg", "pdf", "svg", "eps", "gif", "webp"];
+const IMAGE_EXTS: [&str; 11] = [
+    "png", "jpg", "jpeg", "pdf", "svg", "eps", "gif", "webp", "tif", "tiff", "bmp",
+];
 
 pub struct FigureDialog {
     path: String,
@@ -239,7 +241,7 @@ impl Workspace {
             let mut list = Vec::new();
             images(&self.info.tree, &mut list);
             let (mut insert, mut cancel, mut browse) = (false, false, false);
-            let can = !f.path.is_empty();
+            let can = !f.path.is_empty() && !f.busy;
             let r = widgets::modal_editing(
                 ctx,
                 p,
@@ -261,7 +263,7 @@ impl Workspace {
                     }
                 }),
             );
-            if insert && !f.path.is_empty() {
+            if insert && can {
                 let text = table::figure_block(&table::FigureOptions {
                     path: &f.path,
                     caption: &f.caption,
@@ -287,6 +289,19 @@ impl Workspace {
         }
         if let Some(t) = &mut self.table {
             let (mut insert, mut cancel) = (false, false);
+            let cols_ok = t
+                .cols_text
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|&n| (1..=20).contains(&n));
+            let rows_ok = t
+                .rows_text
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|&n| (1..=100).contains(&n));
+            let valid = cols_ok.is_some() && rows_ok.is_some();
             let r = widgets::modal_editing(
                 ctx,
                 p,
@@ -297,6 +312,7 @@ impl Workspace {
                 Some(&mut |ui: &mut Ui| {
                     if Button::new("Insert")
                         .kind(Kind::Primary)
+                        .enabled(valid)
                         .show(ui, p)
                         .clicked()
                     {
@@ -307,7 +323,9 @@ impl Workspace {
                     }
                 }),
             );
-            if insert {
+            if insert && let (Some(cols), Some(rows)) = (cols_ok, rows_ok) {
+                t.cols = cols;
+                t.rows = rows;
                 let o = table::TableOptions {
                     rows: t.rows,
                     cols: t.cols,
@@ -469,24 +487,48 @@ fn table_body(ui: &mut Ui, p: &Palette, t: &mut TableDialog) {
     });
     ui.columns(2, |c| {
         widgets::field(&mut c[0], p, "Columns", |ui| {
-            widgets::text_input(ui, p, &mut t.cols_text, "", false);
+            widgets::text_input(ui, p, &mut t.cols_text, "1–20", false);
+            if t.cols_text
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|&n| (1..=20).contains(&n))
+                .is_none()
+            {
+                ui.label(
+                    egui::RichText::new("Enter 1 to 20.")
+                        .size(11.5)
+                        .color(p.error),
+                );
+            }
         });
         widgets::field(&mut c[1], p, "Rows", |ui| {
-            widgets::text_input(ui, p, &mut t.rows_text, "", false);
+            widgets::text_input(ui, p, &mut t.rows_text, "1–100", false);
+            if t.rows_text
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|&n| (1..=100).contains(&n))
+                .is_none()
+            {
+                ui.label(
+                    egui::RichText::new("Enter 1 to 100.")
+                        .size(11.5)
+                        .color(p.error),
+                );
+            }
         });
     });
-    // What is inserted is what the fields show: a number past the limit is written back as it.
-    if let Ok(n) = t.cols_text.trim().parse::<usize>() {
-        t.cols = n.clamp(1, 20);
-        if t.cols != n {
-            t.cols_text = t.cols.to_string();
-        }
+    // Sync grid preview whenever typed values are valid, without mutating the user's text mid-edit.
+    if let Ok(n) = t.cols_text.trim().parse::<usize>()
+        && (1..=20).contains(&n)
+    {
+        t.cols = n;
     }
-    if let Ok(n) = t.rows_text.trim().parse::<usize>() {
-        t.rows = n.clamp(1, 100);
-        if t.rows != n {
-            t.rows_text = t.rows.to_string();
-        }
+    if let Ok(n) = t.rows_text.trim().parse::<usize>()
+        && (1..=100).contains(&n)
+    {
+        t.rows = n;
     }
     widgets::checkbox(ui, p, &mut t.header, "First row is a header");
     widgets::checkbox(ui, p, &mut t.booktabs, "Clean rules (booktabs)");

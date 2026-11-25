@@ -254,16 +254,35 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                     continue;
                 }
                 i += 1 + name.len();
-                if name == "verb" {
-                    // Any character delimits the code, unless no closing one is on the line.
+                if matches!(
+                    name.as_str(),
+                    "verb" | "Verb" | "lstinline" | "mintinline" | "path"
+                ) {
+                    // Optional `*`, optional `[options]`, `\mintinline{lang}`, then either
+                    // `{...}` (except `\verb`) or a matched delimiter (`|...|`).
                     if code[i..].starts_with('*') {
                         i += 1;
                     }
-                    if let Some(d) = code[i..].chars().next() {
-                        let body = i + d.len_utf8();
-                        i = code[body..]
-                            .find(d)
-                            .map_or(b.len(), |p| body + p + d.len_utf8());
+                    let at = skip_ws(code, i);
+                    if name != "verb" && code[at..].starts_with('[') {
+                        i = code[at..].find(']').map_or(b.len(), |p| at + p + 1);
+                    }
+                    if name == "mintinline" {
+                        let at = skip_ws(code, i);
+                        if let Some((_, len)) = braced_at(code, at) {
+                            i = at + len;
+                        }
+                    }
+                    let at = if name == "verb" { i } else { skip_ws(code, i) };
+                    if let Some(d) = code[at..].chars().next() {
+                        if d == '{' && name != "verb" {
+                            i = braced_at(code, at).map_or(b.len(), |(_, len)| at + len);
+                        } else {
+                            let body = at + d.len_utf8();
+                            i = code[body..]
+                                .find(d)
+                                .map_or(b.len(), |p| body + p + d.len_utf8());
+                        }
                     }
                     continue;
                 }
@@ -359,7 +378,9 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                 let mut tex_accent = false;
                 let mut off = 0;
                 while let Some(ch) = code[i + off..].chars().next() {
-                    if ch.is_alphabetic() || (ch == '\'' || ch == '-') && off > 0 {
+                    if ch.is_alphabetic()
+                        || (ch == '\'' || ch == '\u{2019}' || ch == '-') && off > 0
+                    {
                         off += ch.len_utf8();
                     } else if ch == '\\'
                         && off > 0
@@ -377,7 +398,7 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                     i += code[i..].chars().next().map_or(1, char::len_utf8);
                     continue;
                 }
-                let word = code[start..end].trim_end_matches(['\'', '-']);
+                let word = code[start..end].trim_end_matches(['\'', '\u{2019}', '-']);
                 if !word.is_empty() {
                     let foreign = state.foreign.is_some() || start < foreign_until || tex_accent;
                     out.push((start, start + word.len(), foreign));
@@ -438,13 +459,7 @@ fn braced_at(s: &str, i: usize) -> Option<(&str, usize)> {
 }
 
 fn strip_comment(line: &str) -> &str {
-    let b = line.as_bytes();
-    for (i, &c) in b.iter().enumerate() {
-        if c == b'%' && (i == 0 || b[i - 1] != b'\\') {
-            return &line[..i];
-        }
-    }
-    line
+    crate::strip_comment(line)
 }
 
 #[cfg(test)]

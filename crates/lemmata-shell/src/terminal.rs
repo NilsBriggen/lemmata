@@ -24,12 +24,27 @@ const LINUX_TERMINALS: &[(&str, &[&str])] = &[
     ("xterm", &["-e"]),
 ];
 
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_flags_for(term: &str) -> Vec<&'static str> {
+    let base = std::path::Path::new(term)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(term);
+    LINUX_TERMINALS
+        .iter()
+        .find(|(name, _)| *name == base)
+        .map_or_else(|| vec!["-e"], |(_, flags)| flags.to_vec())
+}
+
 pub fn open_with_command(command: &str) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let mut candidates: Vec<(String, Vec<&str>)> = Vec::new();
-        if let Ok(t) = std::env::var("TERMINAL") {
-            candidates.push((t, vec!["-e"]));
+        if let Ok(t) = std::env::var("TERMINAL")
+            && !t.trim().is_empty()
+        {
+            let flags = linux_flags_for(&t);
+            candidates.push((t, flags));
         }
         candidates.extend(
             LINUX_TERMINALS
@@ -71,13 +86,18 @@ pub fn open_with_command(command: &str) -> Result<(), String> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        // `start` opens a new console; `pause` waits for confirmation.
-        let line = format!(
-            "echo Lemmata wants to run: & echo. & echo     {command} & echo. & echo Press any key to run it, or close this window to cancel. & pause >nul & {command} & echo. & pause"
-        );
+        // Pass the command through an environment variable so quotes or shell characters in
+        // `command` cannot break the outer `cmd /k` quoting.
         Command::new("cmd")
-            .raw_arg(format!("/c start \"Lemmata\" cmd /k \"{line}\""))
+            .env("LEMMATA_INSTALL_CMD", command)
+            .args([
+                "/c",
+                "start",
+                "Lemmata",
+                "cmd",
+                "/k",
+                "echo Lemmata wants to run:& echo.& echo     %LEMMATA_INSTALL_CMD%& echo.& echo Press any key to run it, or close this window to cancel.& pause >nul& call %LEMMATA_INSTALL_CMD%& echo.& pause",
+            ])
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("Could not open a terminal: {e}"))

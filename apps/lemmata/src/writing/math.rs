@@ -351,8 +351,15 @@ static MACRO: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\\(?:re)?newcommand\*?\s*\{?(\\[A-Za-z]+)\}?\s*(?:\[(\d)\])?(?:\[[^\]]*\])?\s*|\\DeclareMathOperator(\*?)\s*\{(\\[A-Za-z]+)\}\s*").unwrap()
 });
 
-/// `\newcommand`, `\renewcommand` and `\DeclareMathOperator` from the preamble, as macros.
-pub fn collect_macros(preamble: &str) -> BTreeMap<String, String> {
+/// A preamble macro definition with its declared arity and expansion body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Macro {
+    pub arity: usize,
+    pub body: String,
+}
+
+/// `\newcommand`, `\renewcommand` and `\DeclareMathOperator` from the preamble, with arity.
+pub fn collect_macro_defs(preamble: &str) -> BTreeMap<String, Macro> {
     // A commented-out definition isn't one.
     let preamble = &strip_comments(preamble);
     let mut out = BTreeMap::new();
@@ -360,9 +367,15 @@ pub fn collect_macros(preamble: &str) -> BTreeMap<String, String> {
         if !s[i..].starts_with('{') {
             return None;
         }
-        let mut depth = 0;
+        let mut depth = 0usize;
+        let mut escaped = false;
         for (k, c) in s[i..].char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
             match c {
+                '\\' => escaped = true,
                 '{' => depth += 1,
                 '}' => {
                     depth -= 1;
@@ -383,17 +396,38 @@ pub fn collect_macros(preamble: &str) -> BTreeMap<String, String> {
             continue;
         };
         if let Some(name) = m.get(1) {
-            out.insert(name.as_str().to_owned(), body);
+            let inferred = (1..=9)
+                .rev()
+                .find(|k| body.contains(&format!("#{k}")))
+                .unwrap_or(0);
+            let arity = m
+                .get(2)
+                .and_then(|d| d.as_str().parse::<usize>().ok())
+                .unwrap_or(inferred)
+                .max(inferred);
+            out.insert(name.as_str().to_owned(), Macro { arity, body });
         } else if let Some(name) = m.get(4) {
             let star = m.get(3).is_some_and(|s| !s.as_str().is_empty());
             out.insert(
                 name.as_str().to_owned(),
-                format!("\\operatorname{}{{{body}}}", if star { "*" } else { "" }),
+                Macro {
+                    arity: 0,
+                    body: format!("\\operatorname{}{{{body}}}", if star { "*" } else { "" }),
+                },
             );
         }
         at = next;
     }
     out
+}
+
+/// `\newcommand`, `\renewcommand` and `\DeclareMathOperator` from the preamble, as macro bodies.
+#[cfg(test)]
+pub fn collect_macros(preamble: &str) -> BTreeMap<String, String> {
+    collect_macro_defs(preamble)
+        .into_iter()
+        .map(|(k, v)| (k, v.body))
+        .collect()
 }
 
 #[cfg(test)]
@@ -524,5 +558,19 @@ mod tests {
         assert_eq!(m["\\R"], "\\mathbb{R}");
         assert_eq!(m["\\norm"], "\\left\\lVert #1 \\right\\rVert");
         assert_eq!(m["\\argmax"], "\\operatorname*{arg\\,max}");
+    }
+
+    #[test]
+    fn collects_macros_with_escaped_braces_and_declared_arity() {
+        let m = collect_macros(
+            "\\newcommand{\\set}[1]{\\{ #1 \\}}\n\\newcommand{\\pair}[2]{\\langle #1, #2 \\rangle}",
+        );
+        assert_eq!(m["\\set"], "\\{ #1 \\}");
+        assert_eq!(m["\\pair"], "\\langle #1, #2 \\rangle");
+        let arity = collect_macro_defs(
+            "\\newcommand{\\set}[1]{\\{ #1 \\}}\n\\newcommand{\\pair}[2]{\\langle #1, #2 \\rangle}",
+        );
+        assert_eq!(arity["\\set"].arity, 1);
+        assert_eq!(arity["\\pair"].arity, 2);
     }
 }

@@ -61,9 +61,9 @@ pub struct App {
 pub static AFTER_EXIT: std::sync::Mutex<Option<lemmata_shell::update::AfterExit>> =
     std::sync::Mutex::new(None);
 
-/// Automatic update checks, as often as App.svelte's.
 const LEAVE_PROJECT: &str = "Close the project?";
 
+/// Automatic update checks, every six hours.
 const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 /// Closing the window with unsaved files (App.svelte onCloseRequested).
@@ -338,8 +338,7 @@ impl App {
         if paths.len() == 1 {
             self.open_project(paths[0].clone());
         } else {
-            // shortcut: the Svelte app showed this as a toast; toasts come with the editor's notices (M3).
-            self.library.template_note = Some((
+            self.library.toast = Some((
                 format!("Imported {} projects.", paths.len()),
                 std::time::Instant::now(),
             ));
@@ -479,10 +478,11 @@ impl App {
         let Some(action) = action else { return };
         match (action, d) {
             // The job goes on and its result has nowhere to go once the dialog is gone.
+            // Cloning can still be cancelled while busy: if it finishes, `cloned_after_cancel`
+            // adds it to the library without opening it.
             (
                 dialogs::Action::Close,
                 Dialog::NewProject(dialogs::NewProject { busy: true, .. })
-                | Dialog::Clone(dialogs::Clone { busy: true, .. })
                 | Dialog::Import(dialogs::Import { busy: true, .. })
                 | Dialog::SaveTemplate(dialogs::SaveTemplate { busy: true, .. }),
             ) => {}
@@ -499,6 +499,12 @@ impl App {
             (dialogs::Action::DeleteTemplate(id), _) => {
                 self.backend.spawn(move |shell| {
                     Msg::TemplateDeleted(id.clone(), shell.delete_template(id))
+                });
+            }
+            (dialogs::Action::RetryOnline, _) => {
+                self.backend.spawn_async(|shell| async move {
+                    let refreshed = shell.refresh_templates().await.map(|_| ());
+                    Msg::Templates(shell.list_templates(), Some(refreshed))
                 });
             }
             (dialogs::Action::Submit, Dialog::NewProject(st)) => {
@@ -594,7 +600,11 @@ impl App {
             }
             Msg::Tex(status) => {
                 self.checking = false;
-                if !status.detection.ready && self.onboarding.is_none() {
+                if status.detection.ready {
+                    self.onboarding = None;
+                } else if let Some(o) = &mut self.onboarding {
+                    o.refresh(&status);
+                } else {
                     self.onboarding = Some(onboarding::State::new(&status));
                 }
                 self.tex = Some(status);
@@ -808,7 +818,14 @@ impl App {
             self.check_updates(false);
         }
         let Some(t) = &mut self.update else { return };
-        match update::show(ctx, &self.palette, t) {
+        let bottom_offset = if self.project.as_ref().is_some_and(|w| !w.notices.is_empty())
+            || self.library.toast.is_some()
+        {
+            64.0
+        } else {
+            0.0
+        };
+        match update::show(ctx, &self.palette, t, bottom_offset) {
             None => {}
             Some(update::Out::Later) => self.update = None,
             Some(update::Out::Install) => {
@@ -882,6 +899,10 @@ impl App {
             None => {}
             Some(prefs::Out::Changed) => self.save_settings(ctx),
             Some(prefs::Out::Close) => self.prefs = None,
+            Some(prefs::Out::CloseAndSave) => {
+                self.save_settings(ctx);
+                self.prefs = None;
+            }
             Some(prefs::Out::ChooseTex) => self.backend.pick(Pick::TexFolder),
             Some(prefs::Out::AutoTex) => {
                 self.settings.tex_dir = None;
@@ -994,7 +1015,7 @@ impl App {
         let (files, error) = (files.clone(), error.clone());
         let title = self.leaving.as_ref().map_or(LEAVE_PROJECT, |(t, _)| *t);
         let mut choice = None;
-        widgets::modal(
+        let r = widgets::modal(
             ctx,
             &p,
             title,
@@ -1036,12 +1057,13 @@ impl App {
                 }
             }),
         );
+        if r.closed && choice.is_none() {
+            choice = Some(0);
+        }
         match choice {
             Some(0) => {
-                // Staying: an installed update waits for the next quit's restart, not this one.
-                if let Ok(mut a) = AFTER_EXIT.lock() {
-                    *a = None;
-                }
+                // Staying: any already-staged update stays queued in `AFTER_EXIT` for when the
+                // user does eventually quit.
                 self.quit = Quit::No;
                 self.leaving = None;
             }
@@ -1108,12 +1130,13 @@ impl App {
         self.quit = Quit::No;
         if save {
             self.close_project();
-        } else if let Some(ws) = self.project.take() {
-            // Nothing more is saved; the session is still remembered.
+        } else if let Some(mut ws) = self.project.take() {
+            // Nothing more is saved; running builds and LSP still stop, and the session is kept.
+            ws.stop_build(&self.backend);
             ws.stop_lsp(&self.backend);
             workspace::session::save(&self.dirs, &ws.root, &ws.session());
             // It may have been built since: the library loads the first pages again.
-            self.library.thumbs.clear();
+            self.library.clear_thumbs();
         }
         if let Some((_, then)) = self.leaving.take() {
             then(self);
@@ -1127,7 +1150,7 @@ impl App {
             ws.stop_build(&self.backend);
             ws.stop_lsp(&self.backend);
             workspace::session::save(&self.dirs, &ws.root, &ws.session());
-            self.library.thumbs.clear();
+            self.library.clear_thumbs();
         }
     }
 
@@ -1160,9 +1183,9 @@ impl App {
             A::Example => self.finish_welcome(ctx, true),
             A::Welcome => self.welcome = Some(0),
             A::Reveal(path) => {
-                // shortcut: opens the project folder itself; Tauri's reveal selected it in its parent.
-                if let Err(e) = open::that_detached(&path) {
-                    self.open_error = Some(format!("Couldn't open the folder {path}: {e}"));
+                if let Err(e) = reveal_in_file_manager(std::path::Path::new(&path)) {
+                    self.open_error =
+                        Some(format!("Couldn't show {path} in the file manager: {e}"));
                 }
             }
             A::Trash(path) => {
@@ -1193,6 +1216,75 @@ impl App {
             A::Preferences => self.open_prefs(),
         }
     }
+}
+
+/// Selects `path` in its parent folder in the system file manager when possible, falling back
+/// to opening the folder itself.
+pub(crate) fn reveal_in_file_manager(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut arg = std::ffi::OsString::from("/select,");
+        arg.push(path);
+        if std::process::Command::new("explorer")
+            .arg(arg)
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Ok(abs) =
+            std::fs::canonicalize(path).or_else(|_| Ok::<_, std::io::Error>(path.to_path_buf()))
+        {
+            let mut uri = String::from("file://");
+            for b in abs.as_os_str().as_encoded_bytes() {
+                if b.is_ascii_alphanumeric() || matches!(*b, b'/' | b'-' | b'_' | b'.' | b'~') {
+                    uri.push(*b as char);
+                } else {
+                    uri.push_str(&format!("%{:02X}", b));
+                }
+            }
+            let mut cmd = std::process::Command::new("dbus-send");
+            lemmata_env::host(&mut cmd)
+                .args([
+                    "--session",
+                    "--dest=org.freedesktop.FileManager1",
+                    "--type=method_call",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    &format!("array:string:{uri}"),
+                    "string:",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if let Ok(st) = cmd.status()
+                && st.success()
+            {
+                return Ok(());
+            }
+        }
+    }
+    let dir = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+    open::that_detached(dir)
 }
 
 /// The palette the theme setting asks for, given the system's scheme.
@@ -1238,6 +1330,7 @@ impl eframe::App for App {
             theme::apply(&ctx, &palette);
         }
         self.screen(ui);
+        self.show_update(&ctx);
         self.show_dialog(&ctx);
         self.show_prefs(&ctx);
         if !self.whats_new.is_empty()
@@ -1262,7 +1355,6 @@ impl eframe::App for App {
                 }
             }
         }
-        self.show_update(&ctx);
         self.closing(&ctx);
     }
 
@@ -1324,11 +1416,18 @@ impl App {
             match action {
                 Some(onboarding::Action::Recheck(dir)) => self.recheck(dir),
                 Some(onboarding::Action::ChooseFolder) => self.backend.pick(Pick::TexFolder),
-                Some(onboarding::Action::Skip) => self.without_tex = true,
+                Some(onboarding::Action::Skip) => {
+                    self.without_tex = true;
+                    self.welcome = None;
+                }
                 Some(onboarding::Action::UseTectonic) => {
                     st.installing = true;
                     self.backend
                         .spawn(|shell| Msg::Tectonic(shell.tectonic_install().map(|_| ())));
+                }
+                Some(onboarding::Action::OpenUrl(url)) => {
+                    self.backend
+                        .spawn(move |shell| Msg::Done(shell.open_url(url)));
                 }
                 Some(onboarding::Action::OpenTerminal { platform, full }) => {
                     self.backend.spawn(move |shell| {
@@ -1349,6 +1448,13 @@ impl App {
             ws.tex_ready = ready;
             ws.tex_known = self.tex.is_some();
             ws.tex_outdated = self.tex.as_ref().is_some_and(|t| t.detection.outdated);
+            ws.tectonic_installed = lemmata_tex::tectonic::installed_path().is_some()
+                || self.tex.as_ref().is_some_and(|t| {
+                    t.detection
+                        .tools
+                        .iter()
+                        .any(|tool| tool.name == "tectonic" && tool.path.is_some())
+                });
             if became_ready && !ws.pdf_current {
                 ws.build_soon(false, false);
             }
@@ -1666,12 +1772,14 @@ pub(crate) mod tests {
             return;
         };
         h.get_all_by_label("New project").next().unwrap().click();
-        // The collection's templates can reorder the categories; wait until they're in.
+        // The collection's templates can reorder the categories; wait until they're in,
+        // and let the newly opened modal settle its centred Area size before clicking by position.
         wait_for(&mut h, "the categories", |h| {
             h.query_by_label("Papers").is_some()
                 && h.query_by_label_contains("Getting more templates")
                     .is_none()
         });
+        h.run_steps(2);
         h.get_by_label("Papers").click();
         wait_for(&mut h, "the Article template", |h| {
             h.query_by_label("Article").is_some()
@@ -2748,6 +2856,15 @@ pub(crate) mod tests {
         });
         snap(&mut h, "search-light");
         h.get_by_label("Replace all").click();
+        h.run_steps(2);
+        // Project-wide replace asks for confirmation before touching disk.
+        assert!(
+            std::fs::read_to_string(project.join("chapters/method.tex"))
+                .unwrap()
+                .contains("as in Equation~\\ref{eq:objective}"),
+            "files must not change before confirmation"
+        );
+        h.get_by_label("Replace").click();
         wait_for(&mut h, "the replacement", |_| {
             std::fs::read_to_string(project.join("chapters/method.tex"))
                 .unwrap()
@@ -4754,10 +4871,14 @@ pub(crate) mod tests {
         h.run_steps(2);
         std::fs::remove_file(project.join("main.tex")).unwrap();
         wait_for(&mut h, "the conflict dialog", |h| {
-            h.query_by_role_and_label(egui::accesskit::Role::Dialog, "main.tex changed on disk")
-                .is_some()
+            h.query_by_role_and_label(
+                egui::accesskit::Role::Dialog,
+                "main.tex was deleted on disk",
+            )
+            .is_some()
         });
-        h.get_by_label("Keep my version").click();
+        assert!(h.query_by_label("Load the version on disk").is_none());
+        h.get_by_label("Save my version").click();
         wait_for(&mut h, "the file written back", |_| {
             std::fs::read_to_string(project.join("main.tex")).is_ok_and(|t| t.contains("% mine"))
         });
@@ -5333,5 +5454,349 @@ pub(crate) mod tests {
         } else {
             without_tex::<()>();
         }
+    }
+
+    /// Minimal trusted (or restricted) workspace harness that works without needing TeX installed.
+    fn minimal_project(
+        tmp: &std::path::Path,
+        trusted: bool,
+        extra_toml: &str,
+    ) -> (Harness<'static, App>, std::path::PathBuf) {
+        let project = tmp.join("paper");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\n\\section{Intro}\nHello world. Hello again.\n\\end{document}\n",
+        )
+        .unwrap();
+        if !extra_toml.is_empty() {
+            std::fs::write(project.join("lemmata.toml"), extra_toml).unwrap();
+        }
+        let root = canonical_str(&project);
+        let d = dirs(tmp);
+        let mut recents = Recents::default();
+        recents.remember(&root, 1.0);
+        recents.save(&d);
+        let mut settings = Settings {
+            first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
+            ..Settings::default()
+        };
+        settings.set_trust(&root, Some(trusted));
+        settings.save(&d);
+        let mut h = app(tmp);
+        wait_for(&mut h, "the project", |h| {
+            h.state()
+                .project
+                .as_ref()
+                .is_some_and(|ws| ws.editors.contains_key("main.tex"))
+        });
+        (h, project)
+    }
+
+    #[test]
+    fn library_900x560_header_does_not_overlap_and_folders_show_when_recents_empty() {
+        use egui_kittest::kittest::Queryable;
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(tmp.path());
+        Settings {
+            first_run_done: true,
+            last_seen_version: env!("CARGO_PKG_VERSION").into(),
+            ..Settings::default()
+        }
+        .save(&d);
+        let mut groups = Groups::default();
+        groups.create("Research", None);
+        groups.save(&d);
+        let mut h = app(tmp.path());
+        h.set_size(egui::vec2(900.0, 560.0));
+        h.state_mut().without_tex = true;
+        wait_for(&mut h, "the library", |h| {
+            h.query_by_label("Your projects").is_some()
+        });
+        h.run_steps(2);
+        // Folder is visible even with zero recent projects.
+        assert!(h.query_by_label("Research").is_some());
+        let title_r = h.get_by_label("Your projects").rect();
+        let search_r = h.get_by_label("Search projects").rect();
+        let new_folder_r = h.get_by_label("New folder").rect();
+        assert!(
+            !title_r.intersects(search_r),
+            "title {title_r:?} overlapped search {search_r:?} at 900x560"
+        );
+        assert!(
+            !title_r.intersects(new_folder_r),
+            "title {title_r:?} overlapped New folder {new_folder_r:?} at 900x560"
+        );
+        // Persisted sort preference survives reload.
+        h.state_mut().settings.library_sort = "name".into();
+        h.state_mut().settings.save(&d);
+        assert_eq!(Settings::load(&d).library_sort, "name");
+    }
+
+    #[test]
+    fn tall_modals_and_drop_menu_stay_inside_900x560_viewport() {
+        use egui_kittest::kittest::Queryable;
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut h, _project) = minimal_project(tmp.path(), true, "");
+        h.set_size(egui::vec2(900.0, 560.0));
+        h.run_steps(3);
+        let screen = h.ctx.content_rect();
+
+        // Project settings modal: header Close button and Save footer remain inside 900x560.
+        h.state_mut()
+            .project
+            .as_mut()
+            .unwrap()
+            .open_project_settings();
+        h.run_steps(4);
+        let close_r = h.get_by_label("Close").rect();
+        let save_r = h.get_by_label("Save").rect();
+        assert!(
+            close_r.top() >= screen.top() && save_r.bottom() <= screen.bottom(),
+            "Project settings escaped 900x560: close={close_r:?} save={save_r:?} screen={screen:?}"
+        );
+        h.state_mut().project.as_mut().unwrap().project_settings = None;
+        h.run_steps(2);
+
+        // Preferences modal stays inside 900x560.
+        h.state_mut().open_prefs();
+        h.run_steps(4);
+        let close_r = h.get_by_label("Close").rect();
+        let done_r = h.get_by_label("Done").rect();
+        assert!(
+            close_r.top() >= screen.top() && done_r.bottom() <= screen.bottom(),
+            "Preferences escaped 900x560: close={close_r:?} done={done_r:?} screen={screen:?}"
+        );
+        h.state_mut().prefs = None;
+        h.run_steps(2);
+
+        // Keyboard shortcuts sheet stays inside 900x560.
+        h.state_mut().project.as_mut().unwrap().shortcut_sheet = Some(String::new());
+        h.run_steps(4);
+        let close_r = h.get_by_label("Close").rect();
+        let done_r = h.get_by_label("Done").rect();
+        assert!(
+            close_r.top() >= screen.top() && done_r.bottom() <= screen.bottom(),
+            "Shortcuts escaped 900x560: close={close_r:?} done={done_r:?} screen={screen:?}"
+        );
+        h.state_mut().project.as_mut().unwrap().shortcut_sheet = None;
+        h.run_steps(2);
+
+        // Main menu at 900x560 is clamped to viewport height (scrollable).
+        h.get_by_label("Menu").click();
+        h.run_steps(3);
+        let first_item = h
+            .get_by_role_and_label(egui::accesskit::Role::MenuItem, "All projects")
+            .rect();
+        assert!(
+            first_item.top() >= screen.top() && first_item.bottom() <= screen.bottom(),
+            "Main menu escaped 900x560: {first_item:?} vs {screen:?}"
+        );
+        // Bottom-most item in a 29-item menu stays clipped inside the scrollable menu area
+        // rather than drawing below y = 560.
+        if let Some(last_item) =
+            h.query_by_role_and_label(egui::accesskit::Role::MenuItem, "Command palette")
+        {
+            let r = last_item.rect();
+            assert!(
+                r.top() >= screen.top(),
+                "Menu item above viewport: {r:?} vs {screen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn edit_bar_and_editor_search_stay_visible_at_900x560_and_1400x900() {
+        use egui_kittest::kittest::Queryable;
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut h, _project) = minimal_project(tmp.path(), true, "");
+        for (w, ht) in [(1400.0, 900.0), (900.0, 560.0)] {
+            h.set_size(egui::vec2(w, ht));
+            h.run_steps(3);
+            let editor_r = h.get_by_label("Text of main.tex").rect();
+            let bold_r = h.get_by_label("Bold").rect();
+            let sync_r = h.get_by_label("Go to PDF").rect();
+            assert!(
+                bold_r.left() >= editor_r.left() - 1.0 && sync_r.right() <= editor_r.right() + 1.0,
+                "edit_bar clipped at {w}x{ht}: editor={editor_r:?} bold={bold_r:?} sync={sync_r:?}"
+            );
+        }
+        // Inline Find & Replace bar: Replace row must not be sliced off, and match count renders.
+        h.set_size(egui::vec2(1400.0, 900.0));
+        h.run_steps(2);
+        {
+            let ed = h
+                .state_mut()
+                .project
+                .as_mut()
+                .unwrap()
+                .editors
+                .get_mut("main.tex")
+                .unwrap();
+            ed.search = Some(crate::editor::search::Search::open(
+                ed.search.take(),
+                "Hello",
+                false,
+            ));
+        }
+        h.run_steps(3);
+        let find_r = h.get_by_label("Find").rect();
+        let replace_r = h.get_by_label("Replace").rect();
+        assert!(
+            replace_r.top() >= find_r.bottom(),
+            "Replace row overlaps Find row: find={find_r:?} replace={replace_r:?}"
+        );
+        assert!(
+            replace_r.height() >= 20.0 && replace_r.bottom() <= h.ctx.content_rect().bottom(),
+            "Replace input height was sliced: {replace_r:?}"
+        );
+        assert!(
+            h.query_by_label_contains("2 matches").is_some(),
+            "inline Find bar should show live match count"
+        );
+        h.get_by_label("next").click();
+        h.run_steps(2);
+        assert!(
+            h.query_by_label_contains("1 of 2").is_some(),
+            "stepping Find should show current match index"
+        );
+    }
+
+    #[test]
+    fn restricted_project_blocks_git_panel_and_actions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut h, project) = minimal_project(tmp.path(), false, "");
+        // Even if a .git directory exists in a restricted project, git must never execute.
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        h.run_steps(2);
+        {
+            let app = h.state_mut();
+            let mut settings = app.settings.clone();
+            let ws = app.project.as_mut().unwrap();
+            assert!(!ws.trusted);
+            ws.open_panel(
+                crate::workspace::panels::Panel::Git,
+                &app.backend,
+                &mut settings,
+            );
+            ws.refresh_git_status(&app.backend);
+        }
+        h.run_steps(4);
+        assert!(
+            h.query_by_label_contains("Git is turned off in restricted projects")
+                .is_some(),
+            "restricted Git panel must explain why Git is disabled"
+        );
+        assert!(
+            h.query_by_label("Refresh").is_none(),
+            "restricted Git panel must not expose Refresh"
+        );
+        let ws = h.state().project.as_ref().unwrap();
+        assert!(
+            ws.git.overview.is_none() && ws.git.status.is_empty() && ws.git.busy.is_none(),
+            "restricted project must never invoke git"
+        );
+    }
+
+    #[test]
+    fn build_targets_toolbar_picker_switches_main_and_engine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let toml = r#"
+main = "main.tex"
+engine = "pdflatex"
+
+[[targets]]
+name = "Paper"
+main = "main.tex"
+engine = "pdflatex"
+
+[[targets]]
+name = "Slides"
+main = "slides.tex"
+engine = "xelatex"
+"#;
+        let (mut h, project) = minimal_project(tmp.path(), true, toml);
+        std::fs::write(
+            project.join("slides.tex"),
+            "\\documentclass{beamer}\n\\begin{document}\n\\begin{frame}Hi\\end{frame}\n\\end{document}\n",
+        )
+        .unwrap();
+        h.run_steps(3);
+        h.get_by_label("Paper ▾").click();
+        h.run_steps(2);
+        h.get_by_role_and_label(egui::accesskit::Role::MenuItemRadio, "Slides")
+            .click();
+        h.run_steps(3);
+        let ws = h.state().project.as_ref().unwrap();
+        assert_eq!(ws.info.main, "slides.tex");
+        assert_eq!(ws.info.config.engine, lemmata_project::Engine::Xelatex);
+    }
+
+    #[test]
+    fn notification_center_logs_notices_and_clears_unread_badge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut h, _project) = minimal_project(tmp.path(), true, "");
+        h.state_mut()
+            .project
+            .as_mut()
+            .unwrap()
+            .notice("First test notice", crate::workspace::Tone::Info);
+        h.state_mut()
+            .project
+            .as_mut()
+            .unwrap()
+            .notice("Second test notice", crate::workspace::Tone::Ok);
+        h.run_steps(2);
+        assert_eq!(h.state().project.as_ref().unwrap().unread_notices, 2);
+        h.get_by_label("Notifications").click();
+        h.run_steps(2);
+        assert_eq!(h.state().project.as_ref().unwrap().unread_notices, 0);
+        assert!(h.query_by_label("First test notice").is_some());
+        assert!(
+            h.query_all_by_label("Second test notice").count() >= 1,
+            "Second test notice should be listed in the notification center"
+        );
+        h.get_by_label("Clear").click();
+        h.run_steps(2);
+        assert!(h.state().project.as_ref().unwrap().notice_log.is_empty());
+    }
+
+    #[test]
+    fn toolbar_menu_switches_in_one_click_and_tree_click_takes_focus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut h, _project) = minimal_project(tmp.path(), true, "");
+        h.run_steps(2);
+        // Open Menu::Main, then switch to Menu::Compile in a single click.
+        h.get_by_label("Menu").click();
+        h.run_steps(2);
+        assert!(matches!(
+            h.state().project.as_ref().unwrap().menu,
+            Some(crate::workspace::Menu::Main(_))
+        ));
+        h.get_by_label("Compile options").click();
+        h.run_steps(2);
+        assert!(
+            matches!(
+                h.state().project.as_ref().unwrap().menu,
+                Some(crate::workspace::Menu::Compile(_))
+            ),
+            "Switching toolbar dropdowns must work in one click"
+        );
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+
+        // Focus editor, then click a tree row: F2 must open file-tree Rename, not stay trapped in editor.
+        h.get_by_label("Text of main.tex").click();
+        h.run_steps(2);
+        h.get_by_role_and_label(egui::accesskit::Role::TreeItem, "main.tex")
+            .click();
+        h.run_steps(2);
+        h.key_press(egui::Key::F2);
+        wait_for(&mut h, "tree rename dialog", |h| {
+            h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Rename main.tex")
+                .is_some()
+        });
     }
 }

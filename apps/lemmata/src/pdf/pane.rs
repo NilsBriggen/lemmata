@@ -71,6 +71,8 @@ pub struct Pane {
     page_input: String,
     search_open: bool,
     focus_search: bool,
+    search_focused: bool,
+    pages_in_bar: bool,
     query: String,
     /// When the query last changed; it is searched 180 ms later.
     query_at: Option<f64>,
@@ -89,6 +91,8 @@ impl Pane {
             page_input: String::new(),
             search_open: false,
             focus_search: false,
+            search_focused: false,
+            pages_in_bar: true,
             query: String::new(),
             query_at: None,
             side: None,
@@ -121,10 +125,31 @@ impl Pane {
         let ctx = ui.ctx().clone();
         let has_pdf = self.has_pdf();
 
-        // Ctrl+F while the PDF has focus searches the PDF, not the editor.
-        if self.view_focused(&ctx) && crate::shortcuts::consume(&ctx, "pdf-search") {
+        // Ctrl+F while the PDF (or its search bar) has focus searches the PDF, not the editor.
+        if (self.view_focused(&ctx) || self.search_focused)
+            && crate::shortcuts::consume(&ctx, "pdf-search")
+        {
             out.push(Action::Logs(false));
             self.open_search();
+        }
+        if self.search_open && !b.logs_open && (self.view_focused(&ctx) || self.search_focused) {
+            let f3 = ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::SHIFT, egui::Key::F3) {
+                    Some(-1)
+                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::F3) {
+                    Some(1)
+                } else {
+                    None
+                }
+            });
+            if let Some(dir) = f3 {
+                if self.query_at.take().is_some() {
+                    let q = self.query.clone();
+                    self.view.search(&q, true);
+                } else {
+                    self.view.search_step(dir);
+                }
+            }
         }
 
         // .bar
@@ -165,6 +190,8 @@ impl Pane {
                 p,
             );
             y = r.bottom();
+        } else {
+            self.search_focused = false;
         }
         if let Some(at) = self.query_at
             && ui.input(|i| i.time) - at >= 0.18
@@ -267,7 +294,7 @@ impl Pane {
             }
         } else {
             self.view.show(&mut c, p);
-            if empty_state(&mut c, p, b) {
+            if self.view.error.is_none() && empty_state(&mut c, p, b) {
                 out.push(Action::Logs(true));
             }
         }
@@ -281,7 +308,8 @@ impl Pane {
 
     fn bar(&mut self, ui: &mut Ui, p: &Palette, b: &Build, out: &mut Vec<Action>) {
         let width = ui.max_rect().width() + 16.0;
-        ui.spacing_mut().item_spacing.x = 10.0;
+        let narrow = width <= 660.0;
+        ui.spacing_mut().item_spacing.x = if narrow { 6.0 } else { 10.0 };
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             let errors = b
                 .diagnostics
@@ -299,10 +327,11 @@ impl Pane {
             if b.logs_open || !self.has_pdf() {
                 return;
             }
-            let narrow = width <= 560.0;
             let n = self.view.page_count();
             let cur = self.view.current_page;
-            if width > 420.0 {
+            self.pages_in_bar = width > 340.0;
+            if self.pages_in_bar {
+                let box_w = if width <= 460.0 { 30.0 } else { 38.0 };
                 group(ui, |ui| {
                     if ghost(ui, p, icons::CHEVRON_LEFT, "Previous page", 16.0)
                         .enabled(cur > 1)
@@ -311,7 +340,7 @@ impl Pane {
                     {
                         self.view.goto_page(cur - 1);
                     }
-                    self.page_box(ui, p, cur);
+                    self.page_box(ui, p, cur, box_w);
                     ui.label(
                         egui::RichText::new(format!("/ {n}"))
                             .size(12.0)
@@ -427,8 +456,8 @@ impl Pane {
         self.side = if self.side == Some(s) { None } else { Some(s) };
     }
 
-    /// `.page-input`: 38×24, the current page as its placeholder; Enter goes there.
-    fn page_box(&mut self, ui: &mut Ui, p: &Palette, cur: usize) {
+    /// `.page-input`: 38×24 (30×24 on narrow panes), the current page as its placeholder; Enter goes there.
+    fn page_box(&mut self, ui: &mut Ui, p: &Palette, cur: usize, box_w: f32) {
         let fill = ui.painter().add(egui::Shape::Noop);
         let hint = ui.painter().add(egui::Shape::Noop);
         let r = egui::TextEdit::singleline(&mut self.page_input)
@@ -436,8 +465,8 @@ impl Pane {
             .text_color(p.ink)
             .frame(egui::Frame::NONE)
             .align(egui::Align2::CENTER_CENTER)
-            .min_size(vec2(38.0, 24.0))
-            .desired_width(38.0)
+            .min_size(vec2(box_w, 24.0))
+            .desired_width(box_w)
             .show(ui)
             .response
             .response;
@@ -551,6 +580,7 @@ impl Pane {
                 if std::mem::take(&mut self.focus_search) {
                     r.request_focus();
                 }
+                self.search_focused = r.has_focus();
                 if r.changed() {
                     self.query_at = Some(ui.input(|i| i.time));
                 }
@@ -710,9 +740,10 @@ impl Pane {
         match menu {
             Menu::Zoom(anchor) => {
                 let l = self.view.layout;
+                let fit = self.view.fit;
                 let mut items = vec![
-                    MenuItem::plain("Fit width"),
-                    MenuItem::plain("Fit page"),
+                    MenuItem::check("Fit width", fit == Fit::Width),
+                    MenuItem::check("Fit page", fit == Fit::Page),
                     MenuItem::Separator,
                     MenuItem::check("Single page", l == Layout::Single),
                     MenuItem::check("Two pages", l == Layout::Spread),
@@ -729,7 +760,10 @@ impl Pane {
                     (3.0, "300%"),
                     (4.0, "400%"),
                 ];
-                items.extend(ZOOMS.iter().map(|(_, t)| MenuItem::plain(t)));
+                items.extend(ZOOMS.iter().map(|(z, t)| {
+                    let on = matches!(fit, Fit::Zoom(cur) if (cur - *z).abs() < 0.005);
+                    MenuItem::check(t, on)
+                }));
                 match widgets::drop_menu(ctx, p, id, anchor, false, &items) {
                     MenuResult::Open => {}
                     MenuResult::Closed => self.menu = None,
@@ -754,19 +788,31 @@ impl Pane {
                 }
             }
             Menu::More(anchor) => {
-                // The page buttons drop out of a narrow bar (the page box is skipped at 420 px).
                 let (cur, n) = (self.view.current_page, self.view.page_count());
                 let place = format!("{cur} / {n}");
-                let items = [
+                let mut items = vec![
                     MenuItem::new(icons::ZOOM_IN, "Zoom in"),
                     MenuItem::new(icons::ZOOM_OUT, "Zoom out"),
+                    MenuItem::Separator,
                     MenuItem::check("Document outline", self.side == Some(Side::Outline)),
                     MenuItem::check("Page thumbnails", self.side == Some(Side::Thumbs)),
+                    MenuItem::Separator,
                     MenuItem::new(icons::PRESENTATION, "Present full screen"),
                     MenuItem::new(icons::EXTERNAL_LINK, "Open in external viewer"),
-                    MenuItem::new(icons::CHEVRON_LEFT, "Previous page").hint(&place),
-                    MenuItem::new(icons::CHEVRON_RIGHT, "Next page").hint(&place),
                 ];
+                if !self.pages_in_bar {
+                    items.push(MenuItem::Separator);
+                    items.push(
+                        MenuItem::new(icons::CHEVRON_LEFT, "Previous page")
+                            .hint(&place)
+                            .enabled(cur > 1),
+                    );
+                    items.push(
+                        MenuItem::new(icons::CHEVRON_RIGHT, "Next page")
+                            .hint(&place)
+                            .enabled(cur < n),
+                    );
+                }
                 match widgets::drop_menu(ctx, p, id, anchor, true, &items) {
                     MenuResult::Open => {}
                     MenuResult::Closed => self.menu = None,
@@ -775,12 +821,13 @@ impl Pane {
                         match i {
                             0 => self.view.zoom_by(1.15),
                             1 => self.view.zoom_by(1.0 / 1.15),
-                            2 => self.toggle_side(Side::Outline),
-                            3 => self.toggle_side(Side::Thumbs),
-                            4 => out.push(Action::Present),
-                            5 => out.push(Action::OpenExternally),
-                            6 => self.view.goto_page(cur.saturating_sub(1).max(1)),
-                            _ => self.view.goto_page((cur + 1).min(n)),
+                            3 => self.toggle_side(Side::Outline),
+                            4 => self.toggle_side(Side::Thumbs),
+                            6 => out.push(Action::Present),
+                            7 => out.push(Action::OpenExternally),
+                            9 => self.view.goto_page(cur.saturating_sub(1).max(1)),
+                            10 => self.view.goto_page((cur + 1).min(n)),
+                            _ => {}
                         }
                     }
                 }
@@ -908,7 +955,7 @@ fn outline_nodes(
         let depth = path.len() - 1;
         let open = !closed.contains(path);
         let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
-        let row = row.with_min_x(row.left() + depth as f32 * 4.0);
+        let row = row.with_min_x(row.left() + depth as f32 * 14.0);
         let twist = Rect::from_min_size(row.min, vec2(18.0, 22.0));
         if !n.children.is_empty() {
             let r = ui.interact(
@@ -1069,7 +1116,7 @@ mod tests {
             .with_context_setup(crate::theme::install_fonts)
             .build_ui_state(
                 move |ui, pane: &mut Pane| {
-                    pane.page_box(ui, &p, 3);
+                    pane.page_box(ui, &p, 3, 38.0);
                 },
                 pane,
             );

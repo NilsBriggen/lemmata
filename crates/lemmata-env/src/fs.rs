@@ -133,42 +133,66 @@ pub fn inside_rel(rel: &str) -> Option<PathBuf> {
     plain.then(|| p.to_path_buf())
 }
 
-/// `path` with links resolved, as far as it exists; on Windows without the `\\?\` prefix
-/// `canonicalize` adds.
-fn resolved(path: &Path) -> PathBuf {
-    let Ok(real) = path.canonicalize() else {
-        return path.to_path_buf();
-    };
+/// `path` canonicalized, on Windows without the `\\?\` prefix `canonicalize` adds.
+fn canonical_clean(path: &Path) -> Option<PathBuf> {
+    let real = path.canonicalize().ok()?;
     #[cfg(windows)]
     {
         let s = real.to_string_lossy();
         if let Some(unc) = s.strip_prefix(r"\\?\UNC\") {
-            return PathBuf::from(format!(r"\\{unc}"));
+            return Some(PathBuf::from(format!(r"\\{unc}")));
         }
         if let Some(rest) = s.strip_prefix(r"\\?\")
             && rest.as_bytes().get(1) == Some(&b':')
         {
-            return PathBuf::from(rest);
+            return Some(PathBuf::from(rest));
         }
     }
-    real
+    Some(real)
+}
+
+/// Resolves `path` through its longest existing ancestor, failing if any existing component is a
+/// dangling symlink or if a missing tail contains non-normal segments (`..`).
+fn resolved_checked(path: &Path) -> Option<PathBuf> {
+    let mut tail = Vec::new();
+    let mut cur = path;
+    loop {
+        if cur.as_os_str().is_empty() {
+            let base = canonical_clean(Path::new("."))?;
+            return Some(tail.into_iter().rev().fold(base, |p, c| p.join(c)));
+        }
+        if cur.symlink_metadata().is_ok() {
+            // An existing file, folder or link: canonicalize resolves links and fails on a
+            // dangling symlink.
+            let base = canonical_clean(cur)?;
+            return Some(tail.into_iter().rev().fold(base, |p, c| p.join(c)));
+        }
+        // `file_name` returns `None` for `..`, `.` and roots, rejecting traversal in missing tails.
+        let name = cur.file_name()?.to_os_string();
+        tail.push(name);
+        cur = cur.parent()?;
+    }
+}
+
+/// `path` with links resolved, as far as it exists; on Windows without the `\\?\` prefix
+/// `canonicalize` adds.
+fn resolved(path: &Path) -> PathBuf {
+    resolved_checked(path).unwrap_or_else(|| path.to_path_buf())
 }
 
 /// Whether `path`, a file of the project in `root`, may be written. A link there is followed by
 /// `stage`; one that leads out of the project only in a project the user trusts, so a project
 /// can't point its `refs.bib` at `~/.bashrc` and have an edit or a sync overwrite it.
 pub fn may_write(root: &Path, trusted: bool, path: &Path) -> std::io::Result<()> {
-    // A file not written yet is resolved through its folder, which may be reached by a link
-    // (macOS's /var is /private/var).
-    // A link that leads nowhere would be written through to wherever it names.
-    let target = match (path.symlink_metadata(), path.parent(), path.file_name()) {
-        (Err(_), Some(dir), Some(name)) => Some(resolved(dir).join(name)),
-        (Ok(m), ..) if m.file_type().is_symlink() => {
-            path.canonicalize().ok().map(|_| resolved(path))
-        }
-        _ => Some(resolved(path)),
-    };
-    if trusted || target.is_some_and(|t| t.starts_with(resolved(root))) {
+    if trusted {
+        return Ok(());
+    }
+    // Resolve both root and target through their longest existing ancestor: handles macOS's
+    // `/var -> /private/var` even for nested missing folders, while rejecting symlinked folders
+    // pointing outside the project and dangling links.
+    if let (Some(root_real), Some(target)) = (resolved_checked(root), resolved_checked(path))
+        && target.starts_with(&root_real)
+    {
         return Ok(());
     }
     let name = path.strip_prefix(root).unwrap_or(path).display();
@@ -408,11 +432,17 @@ mod tests {
         let via = shared.path().join("via");
         std::os::unix::fs::symlink(d.path(), &via).unwrap();
         assert!(may_write(&via, false, &via.join("new.bib")).is_ok());
+        assert!(may_write(&via, false, &via.join("newsub/deep/new.bib")).is_ok());
         assert!(may_write(&via, false, &via.join("inner.bib")).is_ok());
         assert!(may_write(&via, false, &via.join("refs.bib")).is_err());
+        // A symlinked directory pointing out of the project with a nonexistent subdirectory.
+        std::os::unix::fs::symlink(shared.path(), d.path().join("out_dir")).unwrap();
+        assert!(may_write(d.path(), false, &d.path().join("out_dir/sub/file.tex")).is_err());
+        assert!(may_write(d.path(), true, &d.path().join("out_dir/sub/file.tex")).is_ok());
         std::os::unix::fs::symlink(shared.path().join("nowhere"), d.path().join("dangling.png"))
             .unwrap();
         assert!(may_write(d.path(), false, &d.path().join("dangling.png")).is_err());
+        assert!(may_write(d.path(), false, &d.path().join("dangling.png/sub/file.tex")).is_err());
         let written = write_atomic(&link, b"new").unwrap();
         assert_eq!(written, library.canonicalize().unwrap());
         assert!(

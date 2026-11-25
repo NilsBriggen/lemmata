@@ -69,6 +69,19 @@ pub fn parse_keys(cite: &str) -> Vec<String> {
 /// BibLaTeX for the given keys, exported by Better BibTeX. Keys Zotero
 /// doesn't know are returned in the second list.
 pub async fn export(keys: &[String]) -> Result<(String, Vec<String>), Error> {
+    export_for(keys, lemmata_project::Bib::Biber).await
+}
+
+/// Exports the given keys from Zotero using Better BibLaTeX (for `Bib::Biber`) or Better BibTeX
+/// (for `Bib::Bibtex`). Keys Zotero doesn't know are returned in the second list.
+pub async fn export_for(
+    keys: &[String],
+    bib: lemmata_project::Bib,
+) -> Result<(String, Vec<String>), Error> {
+    let translator = match bib {
+        lemmata_project::Bib::Bibtex => "Better BibTeX",
+        lemmata_project::Bib::Biber => "Better BibLaTeX",
+    };
     let c = client(Duration::from_secs(30))?;
     let offline = || Error("Zotero isn't running, or Better BibTeX isn't installed.".into());
     let slow = || Error("Zotero took too long to answer. Try again in a moment.".into());
@@ -83,7 +96,7 @@ pub async fn export(keys: &[String]) -> Result<(String, Vec<String>), Error> {
         async move {
             let body = serde_json::json!({
                 "jsonrpc": "2.0", "method": "item.export", "id": 1,
-                "params": [keys, "Better BibLaTeX"]
+                "params": [keys, translator]
             });
             let res: serde_json::Value = c
                 .post(format!("{BASE}/json-rpc"))

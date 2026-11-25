@@ -66,9 +66,13 @@ pub fn scan_text(file: &str, text: &str) -> Vec<Todo> {
     let note = Regex::new(r"\\todo(?:\[[^\]]*\])?\s*\{").unwrap();
     let mut out = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
+    let mut scanner = lemmata_project::CodeScanner::default();
     for (i, line) in lines.iter().enumerate() {
         let line_no = i + 1;
-        if let Some(c) = percents(line).find_map(|at| comment.captures(&line[at..])) {
+        let (code, comment_at) = scanner.scan_line(line);
+        if let Some(at) = comment_at
+            && let Some(c) = comment.captures(&line[at..])
+        {
             out.push(Todo {
                 file: file.to_string(),
                 line: line_no,
@@ -76,7 +80,7 @@ pub fn scan_text(file: &str, text: &str) -> Vec<Todo> {
                 text: clip(&c[2]),
             });
         }
-        let code = code_part(line);
+        let code = code.as_ref();
         for m in note.find_iter(code) {
             let rest = &code[m.end()..];
             // `\todo{` ending its line: the note goes on the next one.
@@ -99,8 +103,11 @@ fn scan_entries(root: &Path, entries: &[lemmata_project::Entry], out: &mut Vec<T
     for e in entries {
         if e.is_dir {
             scan_entries(root, &e.children, out);
-        } else if Path::new(&e.name).extension().is_some_and(|x| x == "tex")
-            && let Ok(text) = lemmata_env::fs::read_to_string(root.join(&e.path))
+        } else if Path::new(&e.name)
+            .extension()
+            .and_then(|x| x.to_str())
+            .is_some_and(|x| x.eq_ignore_ascii_case("tex"))
+            && let Ok(text) = lemmata_env::fs::read_text(root.join(&e.path))
         {
             out.extend(scan_text(&e.path, &text));
         }

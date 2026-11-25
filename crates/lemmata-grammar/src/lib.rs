@@ -79,18 +79,33 @@ pub fn parse(json: &str) -> Result<Vec<Match>, String> {
         .collect())
 }
 
+/// Converts a UTF-16 code unit offset (as LanguageTool returns) into a UTF-8 byte offset in `text`.
+pub fn utf16_to_byte(text: &str, utf16_offset: usize) -> usize {
+    let mut u16_pos = 0;
+    for (byte_idx, ch) in text.char_indices() {
+        if u16_pos >= utf16_offset {
+            return byte_idx;
+        }
+        u16_pos += ch.len_utf16();
+    }
+    text.len()
+}
+
 /// reqwest is built without a TLS crypto provider; install ring (once) so a
-/// self-hosted https server works without a second crypto stack.
-fn client() -> Result<reqwest::Client, String> {
-    static PROVIDER: std::sync::Once = std::sync::Once::new();
-    PROVIDER.call_once(|| {
-        // Err means another provider is already installed, which is fine.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())
+/// self-hosted https server works without a second crypto stack, and reuse a single client pool.
+fn client() -> Result<&'static reqwest::Client, String> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 fn endpoint(url: &str, path: &str) -> Result<String, String> {

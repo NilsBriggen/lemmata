@@ -99,6 +99,9 @@ enum Cmd {
         /// Write all source files to this zip.
         #[arg(long, value_name = "OUT.ZIP", conflicts_with = "arxiv")]
         zip: Option<PathBuf>,
+        /// With --zip: include the latest compiled PDF alongside the sources.
+        #[arg(long, requires = "zip")]
+        with_pdf: bool,
         /// Build, then write the files the build used, plus the compiled
         /// bibliography, to this zip, with comments removed.
         #[arg(long, value_name = "OUT.ZIP", required_unless_present = "zip")]
@@ -125,8 +128,87 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Remove cached build output files (.aux, .log, .bbl, ...).
+    Clean {
+        /// Project folder.
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// Print as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Format a .tex file (or the project's main file) using tex-fmt or latexindent.
+    Format {
+        /// Project folder.
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// Specific .tex file relative to the project folder (default: main file).
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Number of spaces per indent level (1..=8), or "tab".
+        #[arg(long, default_value = "2")]
+        indent: String,
+        /// Check formatting without modifying files (exits 1 if changes are needed).
+        #[arg(long)]
+        check: bool,
+    },
+    /// Manage project snapshots (list, create, or restore).
+    History {
+        /// Project folder.
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// Print as JSON.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        action: HistoryCmd,
+    },
+    /// Inspect Git status, log, or branches for a trusted project.
+    Git {
+        /// Project folder.
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// Print as JSON.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        action: GitCmd,
+    },
     /// Check the TeX installation.
     Doctor,
+}
+
+#[derive(Subcommand)]
+enum HistoryCmd {
+    /// List recorded snapshots.
+    List {
+        /// Maximum number of snapshots to show.
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+    },
+    /// Record a new snapshot of the project.
+    Snapshot {
+        /// Label for the snapshot.
+        #[arg(default_value = "Snapshot")]
+        label: String,
+    },
+    /// Restore a single file or the entire project from a snapshot.
+    Restore {
+        /// Snapshot commit id.
+        id: String,
+        /// Optional relative file path to restore (restores entire project when omitted).
+        file: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum GitCmd {
+    /// Show repository branch and working-tree status.
+    Status,
+    /// Show recent commits.
+    Log,
+    /// List local branches.
+    Branches,
 }
 
 /// Where the desktop app keeps the Tectonic it downloads: its data folder (Tauri's
@@ -170,24 +252,34 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Export {
             dir,
             zip,
+            with_pdf,
             arxiv,
             flatten,
             keep_comments,
             anyway,
             json,
         } => match (zip, arxiv) {
-            (Some(zip), _) => export::run(&dir, &zip, None, json).await?,
+            (Some(zip), _) => export::run(&dir, &zip, with_pdf, None, json).await?,
             (None, Some(out)) => {
                 let a = export::Arxiv {
                     strip: !keep_comments,
                     flatten,
                     anyway,
                 };
-                export::run(&dir, &out, Some(a), json).await?
+                export::run(&dir, &out, false, Some(a), json).await?
             }
             (None, None) => unreachable!("clap requires --zip or --arxiv"),
         },
         Cmd::Outline { dir, json } => return outline(&dir, json),
+        Cmd::Clean { dir, json } => return clean(&dir, json),
+        Cmd::Format {
+            dir,
+            file,
+            indent,
+            check,
+        } => format_cmd(&dir, file.as_deref(), &indent, check)?,
+        Cmd::History { dir, json, action } => return history_cmd(&dir, json, action),
+        Cmd::Git { dir, json, action } => return git_cmd(&dir, json, action),
     };
     if !ok {
         std::process::exit(1);
@@ -276,7 +368,7 @@ async fn watch(dir: PathBuf, json: bool) -> anyhow::Result<()> {
 
     let project = Project::open(&dir).with_context(|| format!("opening {}", dir.display()))?;
     let root = project.root.clone();
-    let outdir = project.config.outdir.clone();
+    let mut outdir = project.config.outdir.clone();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut debouncer = new_debouncer(Duration::from_millis(400), move |res| {
         let _ = tx.send(res);
@@ -301,6 +393,15 @@ async fn watch(dir: PathBuf, json: bool) -> anyhow::Result<()> {
                 continue;
             }
         };
+        // Reload `outdir` when `lemmata.toml` changes so edits to `outdir` take effect live.
+        if events.iter().any(|e| {
+            e.path
+                .file_name()
+                .is_some_and(|n| n == lemmata_project::CONFIG_FILE)
+        }) && let Ok(updated) = Project::open(&dir)
+        {
+            outdir = updated.config.outdir;
+        }
         // Reading a file during a build also raises an event, so only files
         // modified since the last build started count. Hidden files, our own
         // output and our temp files don't count either.
@@ -310,6 +411,9 @@ async fn watch(dir: PathBuf, json: bool) -> anyhow::Result<()> {
         if relevant {
             eprintln!("\nChange detected, rebuilding…");
             last_build = std::time::SystemTime::now();
+            if let Ok(updated) = Project::open(&dir) {
+                outdir = updated.config.outdir;
+            }
             if let Err(e) = build(&dir, json).await {
                 eprintln!("{e:#}");
             }
@@ -349,8 +453,9 @@ async fn compile(project: &Project) -> anyhow::Result<Outcome> {
     project.trusted = TRUST.load(std::sync::atomic::Ordering::Relaxed);
     let project = &project;
     let det = lemmata_tex::detect(&[]);
+    let has_engine = det.tool(project.config.engine.binary()).is_some();
     if project.config.engine == lemmata_project::Engine::Tectonic
-        || (det.tool("latexmk").is_none() && det.tectonic.is_some())
+        || (det.tool("latexmk").is_none() && !has_engine && det.tectonic.is_some())
     {
         let Some(exe) = det.tectonic.as_deref() else {
             bail!(
@@ -360,8 +465,10 @@ async fn compile(project: &Project) -> anyhow::Result<Outcome> {
         let (_cancel, rx) = tokio::sync::oneshot::channel();
         return Ok(lemmata_tex::tectonic::build(project, exe, rx, false, &|_| {}).await?);
     }
-    let Some(latexmk) = det.tool("latexmk") else {
-        bail!("latexmk not found. Run `lemmata doctor` for install instructions.");
+    let latexmk = match det.tool("latexmk") {
+        Some(p) => p,
+        None if has_engine => Path::new(""),
+        None => bail!("latexmk not found. Run `lemmata doctor` for install instructions."),
     };
     let (_cancel, rx) = tokio::sync::oneshot::channel();
     let opts = BuildOptions {
@@ -371,7 +478,7 @@ async fn compile(project: &Project) -> anyhow::Result<Outcome> {
         miktex: matches!(det.distribution, lemmata_tex::Distribution::Miktex { .. }),
         perl_dir: det.tool("perl").and_then(|p| p.parent()),
     };
-    Ok(lemmata_tex::build(project, &opts, rx).await?)
+    Ok(lemmata_tex::build_with(project, &opts, rx, !latexmk.is_file(), false).await?)
 }
 
 /// `s` without control characters other than line breaks and tabs: text from a document or a
@@ -451,6 +558,230 @@ fn outline(dir: &Path, json: bool) -> anyhow::Result<()> {
 
 fn open(dir: &Path) -> anyhow::Result<Project> {
     Project::open(dir).with_context(|| format!("opening {}", dir.display()))
+}
+
+fn clean(dir: &Path, json: bool) -> anyhow::Result<()> {
+    let project = open(dir)?;
+    let removed = lemmata_tex::clean(&project)?;
+    if json {
+        println!("{}", serde_json::json!({ "removed": removed }));
+    } else {
+        println!("Removed {removed} cached file(s).");
+    }
+    Ok(())
+}
+
+fn format_cmd(
+    dir: &Path,
+    file: Option<&Path>,
+    indent: &str,
+    check_only: bool,
+) -> anyhow::Result<bool> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let project = open(dir)?;
+    let target = match file {
+        Some(f) => {
+            let rel = f.to_string_lossy().replace('\\', "/");
+            let safe = lemmata_env::fs::inside_rel(&rel)
+                .with_context(|| format!("{} isn't inside the project", f.display()))?;
+            project.root.join(safe)
+        }
+        None => project.main_abs(),
+    };
+    let text = lemmata_env::fs::read_text(&target)
+        .with_context(|| format!("reading {}", target.display()))?;
+    let unit = if indent.eq_ignore_ascii_case("tab") {
+        "\t".to_string()
+    } else {
+        let n: usize = indent
+            .parse()
+            .ok()
+            .filter(|&n| (1..=8).contains(&n))
+            .ok_or_else(|| anyhow::anyhow!("--indent must be 1..=8 or \"tab\""))?;
+        " ".repeat(n)
+    };
+    let det = lemmata_tex::detect(&[]);
+    let find = |name: &str| {
+        let exe = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+        det.bin_dir
+            .as_deref()
+            .map(|d| d.join(&exe))
+            .filter(|p| p.is_file())
+            .or_else(|| {
+                std::env::var_os("PATH").and_then(|paths| {
+                    std::env::split_paths(&paths)
+                        .map(|d| d.join(&exe))
+                        .find(|p| p.is_file())
+                })
+            })
+    };
+    let mut cmd = if unit != "\t"
+        && let Some(bin) = find("tex-fmt")
+    {
+        let mut c = Command::new(bin);
+        c.args(["--stdin", "--tabsize", &unit.len().to_string()]);
+        c
+    } else if let Some(bin) = find("latexindent") {
+        let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        let y = if unit == "\t" {
+            "\"\\t\"".to_string()
+        } else {
+            format!("'{unit}'")
+        };
+        let mut c = Command::new(bin);
+        c.args(["-g", null, &format!("-y=defaultIndent: {y}"), "-"]);
+        c
+    } else {
+        bail!("Formatting needs tex-fmt or latexindent.");
+    };
+    lemmata_env::host(&mut cmd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().context("starting formatter")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let formatted = String::from_utf8_lossy(&out.stdout).into_owned();
+    if formatted == text {
+        return Ok(true);
+    }
+    if check_only {
+        println!("{} would be reformatted", target.display());
+        return Ok(false);
+    }
+    let bytes = lemmata_env::fs::encode_like_disk(&target, &formatted)?;
+    lemmata_env::fs::write_atomic(&target, &bytes)?;
+    println!("Formatted {}", target.display());
+    Ok(true)
+}
+
+fn history_cmd(dir: &Path, json: bool, action: HistoryCmd) -> anyhow::Result<()> {
+    let project = open(dir)?;
+    let trusted = TRUST.load(std::sync::atomic::Ordering::Relaxed);
+    let h = match lemmata_history::History::open(&project.root, trusted) {
+        Ok(h) => h,
+        Err(lemmata_history::Error::NotARepo(_))
+            if matches!(action, HistoryCmd::Snapshot { .. }) =>
+        {
+            lemmata_history::History::init(&project.root)?
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let _ = h.exclude_folder(&project.config.outdir);
+    match action {
+        HistoryCmd::List { limit } => {
+            let list = h.list(limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else {
+                for s in &list {
+                    println!(
+                        "{}  {}  ({} file(s))",
+                        &s.id[..s.id.len().min(8)],
+                        plain(&s.label),
+                        s.changes.len()
+                    );
+                }
+            }
+        }
+        HistoryCmd::Snapshot { label } => {
+            let id = h.snapshot(&label)?;
+            if json {
+                println!("{}", serde_json::json!({ "id": id }));
+            } else if let Some(id) = id {
+                println!("Saved snapshot {}", &id[..id.len().min(8)]);
+            } else {
+                println!("No changes since the last snapshot.");
+            }
+        }
+        HistoryCmd::Restore { id, file } => {
+            if let Some(f) = file {
+                h.restore_file(&id, &f)?;
+                if json {
+                    println!("{}", serde_json::json!({ "restored": f }));
+                } else {
+                    println!("Restored {}", plain(&f));
+                }
+            } else {
+                let n = h.restore_all(&id)?;
+                if json {
+                    println!("{}", serde_json::json!({ "restored_files": n }));
+                } else {
+                    println!("Restored {n} file(s).");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn git_cmd(dir: &Path, json: bool, action: GitCmd) -> anyhow::Result<()> {
+    let project = open(dir)?;
+    if !TRUST.load(std::sync::atomic::Ordering::Relaxed) {
+        bail!(
+            "Git commands are off for restricted projects (repositories can carry hooks and filters). Pass --trust to run git here."
+        );
+    }
+    match action {
+        GitCmd::Status => {
+            let ov = lemmata_git::overview(&project.root);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&ov)?);
+            } else {
+                match ov {
+                    lemmata_git::Overview::NoGit { message } => bail!("{message}"),
+                    lemmata_git::Overview::NotARepo => println!("Not a git repository."),
+                    lemmata_git::Overview::Repo(s) => {
+                        println!(
+                            "Branch: {}",
+                            s.branch.as_deref().unwrap_or("(detached HEAD)")
+                        );
+                        if let Some(op) = &s.operation {
+                            println!("In progress: {op}");
+                        }
+                        for (label, list) in [
+                            ("Conflicted", &s.conflicted),
+                            ("Staged", &s.staged),
+                            ("Unstaged", &s.unstaged),
+                            ("Untracked", &s.untracked),
+                        ] {
+                            for c in list {
+                                println!("  {:<10} {} {}", label, c.status, plain(&c.path));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        GitCmd::Log => {
+            let commits = lemmata_git::log(&project.root)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&commits)?);
+            } else {
+                for c in &commits {
+                    println!("{}  {}  ({})", c.hash, plain(&c.subject), plain(&c.date));
+                }
+            }
+        }
+        GitCmd::Branches => {
+            let list = lemmata_git::branches(&project.root)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else {
+                for b in &list {
+                    println!("{}", plain(b));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

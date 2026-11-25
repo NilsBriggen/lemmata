@@ -386,11 +386,13 @@ impl History {
         if !trusted {
             return Err(Error::NotARepo(root.to_path_buf()));
         }
-        let out = lemmata_env::host(&mut Command::new(&git))
-            .arg("-C")
+        let mut rev = Command::new(&git);
+        rev.arg("-C")
             .arg(root)
-            .args(["rev-parse", "--absolute-git-dir"])
-            .output()?;
+            .args(&guard)
+            .args(["rev-parse", "--absolute-git-dir"]);
+        no_window(&mut rev);
+        let out = rev.output()?;
         if !out.status.success() {
             return Err(Error::NotARepo(root.to_path_buf()));
         }
@@ -445,17 +447,36 @@ impl History {
 
     /// Keeps `.lemmata/` out of snapshots without editing the user's .gitignore.
     fn exclude_build_folder(&self) -> Result<()> {
+        self.exclude_folder(".lemmata/")
+    }
+
+    /// Keeps a project-relative folder (such as a custom `outdir`) out of snapshots without
+    /// editing the user's `.gitignore`.
+    pub fn exclude_folder(&self, rel: &str) -> Result<()> {
+        let norm = rel
+            .trim()
+            .replace('\\', "/")
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .to_string();
+        if norm.is_empty() || lemmata_env::fs::inside_rel(&norm).is_none() {
+            return Ok(());
+        }
+        let pattern = format!("{norm}/");
         let info = self.git_dir.join("info");
         let exclude = info.join("exclude");
         let current = lemmata_env::fs::read_to_string(&exclude).unwrap_or_default();
-        if !current.lines().any(|l| l.trim() == ".lemmata/") {
+        if !current
+            .lines()
+            .any(|l| matches!(l.trim(), line if line == pattern || line == norm))
+        {
             std::fs::create_dir_all(&info)?;
             let sep = if current.is_empty() || current.ends_with('\n') {
                 ""
             } else {
                 "\n"
             };
-            std::fs::write(&exclude, format!("{current}{sep}.lemmata/\n"))?;
+            std::fs::write(&exclude, format!("{current}{sep}{pattern}\n"))?;
         }
         Ok(())
     }
@@ -594,6 +615,9 @@ impl History {
         match bytes {
             Some(bytes) => {
                 if let Some(dir) = dest.parent() {
+                    // Check `dir` before creating directories so a symlinked folder cannot create
+                    // dirs outside the project. (`dest` itself may be a symlink that we unlink below.)
+                    lemmata_env::fs::may_write(&self.root, false, dir).map_err(|_| outside())?;
                     std::fs::create_dir_all(dir)?;
                     if !inside(dir)? {
                         return Err(outside());

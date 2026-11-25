@@ -1,7 +1,7 @@
 //! Project-wide scans the editor asks for: labels (for `\ref` completion)
 //! and the detailed word count.
 
-use super::{Entry, Project, braced, include_target, skip_optional, strip_comment, tree};
+use super::{CodeScanner, Entry, Project, braced, include_target, skip_optional, tree};
 use crate::prose;
 use regex::Regex;
 use serde::Serialize;
@@ -131,8 +131,12 @@ pub(crate) fn labels_with(
                     .map(std::borrow::Cow::Owned)
             });
         let Some(text) = text else { continue };
-        // Comments removed, newlines kept, so offsets map to the original lines.
-        let lines: Vec<&str> = text.lines().map(strip_comment).collect();
+        // Comments and verbatim spans removed while keeping newlines, so offsets map to the original lines.
+        let mut scanner = CodeScanner::default();
+        let lines: Vec<String> = text
+            .lines()
+            .map(|l| scanner.mask_line(l).into_owned())
+            .collect();
         let code = lines.join("\n");
         let mut starts = Vec::with_capacity(lines.len());
         let mut at = 0;
@@ -289,8 +293,10 @@ impl Counter {
             file: name,
             words: 0,
         });
+        let mut scanner = CodeScanner::default();
         for raw in text.lines() {
-            let code = strip_comment(raw);
+            let masked = scanner.mask_line(raw);
+            let code = masked.as_ref();
             if !in_body {
                 in_body = code.contains("\\begin{document}");
                 continue;
@@ -299,7 +305,7 @@ impl Counter {
             words += n;
             self.out.total_words += n;
             self.stats(code);
-            if let Some(child) = includes(code) {
+            for child in includes(code) {
                 self.out.files[index].words = words;
                 let mut child = PathBuf::from(child.trim());
                 if child.extension().is_none() {
@@ -376,8 +382,9 @@ impl Counter {
     }
 }
 
-/// The file included on this line, if any.
-fn includes(code: &str) -> Option<String> {
+/// Every file included on this line.
+fn includes(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
     let mut rest = code;
     while let Some(pos) = rest.find('\\') {
         rest = &rest[pos + 1..];
@@ -387,10 +394,10 @@ fn includes(code: &str) -> Option<String> {
             .collect();
         let after = rest[name.len()..].trim_start_matches('*');
         if let Some(t) = include_target(&name, after) {
-            return Some(t);
+            out.push(t);
         }
     }
-    None
+    out
 }
 
 #[cfg(test)]

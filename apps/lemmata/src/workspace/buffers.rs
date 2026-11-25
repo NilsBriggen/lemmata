@@ -207,6 +207,7 @@ impl Buffers {
             .collect();
         self.dirty = self.dirty.iter().map(|p| moved(p)).collect();
         self.conflicts = self.conflicts.iter().map(|p| moved(p)).collect();
+        self.failed = self.failed.iter().map(|p| moved(p)).collect();
     }
 }
 

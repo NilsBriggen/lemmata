@@ -2,10 +2,11 @@
 //! words were already checked, so each is asked about once. Checking itself runs in lemmata-spell
 //! behind the shell; it is fast enough to ask from the UI thread for the lines on screen.
 
+use eframe::egui;
 use lemmata_shell::Shell;
 use regex::Regex;
-use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// Language codes and their names, bundled first, then downloaded on demand.
 pub const LANGUAGES: &[(&str, &str)] = &[
@@ -146,6 +147,8 @@ pub fn checkable(w: &str) -> bool {
     w.chars().count() > 1 && w != w.to_uppercase() && !w.chars().skip(1).any(char::is_uppercase)
 }
 
+type BatchResult = (u64, Vec<(String, bool)>);
+
 /// The checker's state as the editors see it.
 #[derive(Default)]
 pub struct Spell {
@@ -153,8 +156,16 @@ pub struct Spell {
     pub lang: Option<String>,
     /// Bumped whenever verdicts may have changed (another language, a word added).
     pub generation: u64,
+    /// Monotonic generation for discarding late background check batches after a language change.
+    batch_gen: u64,
     /// true = correct, for the current language.
     known: HashMap<String, bool>,
+    /// Words queued for background checking this frame.
+    queued: Vec<String>,
+    /// Words currently in flight on a background check thread.
+    in_flight: HashSet<String>,
+    /// Completed background batch verdicts waiting to be merged into `known`.
+    done: Arc<Mutex<Vec<BatchResult>>>,
     pub shell: Option<Arc<Shell>>,
 }
 
@@ -162,10 +173,69 @@ impl Spell {
     pub fn set_loaded(&mut self, lang: Option<String>) {
         self.lang = lang;
         self.known.clear();
+        self.queued.clear();
+        self.in_flight.clear();
+        self.batch_gen += 1;
         self.generation += 1;
     }
 
-    /// Whether `word` is misspelled, asking the checker about words not seen before.
+    /// Merges any finished background spell-check batches into the cache.
+    pub fn poll(&mut self) {
+        let finished: Vec<BatchResult> = {
+            let mut lock = self.done.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *lock)
+        };
+        let mut changed = false;
+        for (generation, verdicts) in finished {
+            if generation != self.batch_gen {
+                continue;
+            }
+            if self.known.len() > 50_000 {
+                self.known.clear();
+            }
+            for (word, ok) in verdicts {
+                self.in_flight.remove(&word);
+                self.known.entry(word).or_insert(ok);
+                changed = true;
+            }
+        }
+        if changed {
+            self.generation += 1;
+        }
+    }
+
+    /// Dispatches any newly discovered words for asynchronous spell-checking off the UI thread.
+    pub fn flush(&mut self, ctx: &egui::Context) {
+        self.poll();
+        if self.queued.is_empty() || self.lang.is_none() {
+            self.queued.clear();
+            return;
+        }
+        let Some(shell) = self.shell.clone() else {
+            self.queued.clear();
+            return;
+        };
+        let batch = std::mem::take(&mut self.queued);
+        let generation = self.batch_gen;
+        let done = self.done.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let bad: HashSet<String> = shell.spell_check(batch.clone()).into_iter().collect();
+            let verdicts: Vec<(String, bool)> = batch
+                .into_iter()
+                .map(|w| {
+                    let ok = !bad.contains(&w);
+                    (w, ok)
+                })
+                .collect();
+            done.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((generation, verdicts));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Whether `word` is known to be misspelled; unseen words are queued asynchronously.
     pub fn bad(&mut self, word: &str) -> bool {
         if self.lang.is_none() || !checkable(word) {
             return false;
@@ -173,20 +243,16 @@ impl Spell {
         if let Some(ok) = self.known.get(word) {
             return !ok;
         }
-        let Some(shell) = &self.shell else {
-            return false;
-        };
-        let bad = !shell.spell_check(vec![word.to_owned()]).is_empty();
-        if self.known.len() > 50_000 {
-            self.known.clear();
+        if self.shell.is_some() && self.in_flight.insert(word.to_owned()) {
+            self.queued.push(word.to_owned());
         }
-        self.known.insert(word.to_owned(), !bad);
-        bad
+        false
     }
 
     /// Accepts a word (the app keeps it in lemmata.toml too).
     pub fn add(&mut self, word: &str) {
         self.known.insert(word.to_owned(), true);
+        self.in_flight.remove(word);
         if let Some(s) = &self.shell {
             s.spell_add(word.to_owned());
         }

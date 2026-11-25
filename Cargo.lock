@@ -2634,6 +2634,8 @@ dependencies = [
  "clap",
  "lemmata-bib",
  "lemmata-env",
+ "lemmata-git",
+ "lemmata-history",
  "lemmata-log",
  "lemmata-project",
  "lemmata-tex",

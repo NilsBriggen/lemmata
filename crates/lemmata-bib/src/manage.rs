@@ -35,12 +35,18 @@ pub fn scan(src: &str) -> Vec<Span> {
 }
 
 /// Every `@kind{…}` block of a .bib text, `@string` and the like included.
-/// Shortcut: braces inside quoted values must balance, as BibTeX itself needs.
+/// Skips `%` comments outside entries and tracks `"..."` quoted strings inside entry bodies.
 fn blocks(src: &str) -> Vec<Span> {
     let b = src.as_bytes();
     let mut out = Vec::new();
     let (mut i, mut line, mut counted) = (0, 1, 0);
     while i < b.len() {
+        if b[i] == b'%' {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
         if b[i] != b'@' {
             i += 1;
             continue;
@@ -65,15 +71,16 @@ fn blocks(src: &str) -> Vec<Span> {
             }
         };
         let body = j + 1;
-        // Braces nest; a backslash escapes the next byte.
-        let (mut depth, mut k) = (0usize, body);
+        // Braces nest; a backslash escapes the next byte; quotes at brace depth 0 hide `close`.
+        let (mut depth, mut in_quote, mut k) = (0usize, false, body);
         while k < b.len() {
             match b[k] {
                 b'\\' => k += 1,
+                b'"' if depth == 0 => in_quote = !in_quote,
                 b'{' => depth += 1,
-                b'}' if close == b'}' && depth == 0 => break,
+                b'}' if close == b'}' && depth == 0 && !in_quote => break,
                 b'}' => depth = depth.saturating_sub(1),
-                c if c == close && depth == 0 => break,
+                c if c == close && depth == 0 && !in_quote => break,
                 _ => {}
             }
             k += 1;
@@ -360,15 +367,9 @@ pub fn rename_entry(src: &str, key: &str, line: usize, new_key: &str) -> Result<
     ))
 }
 
-/// A free key based on `base`: `base`, then `basea`, `baseb`, …
+/// A free key based on `base`: `base`, then `basea`, `baseb`, …, then `base26`, `base27`, …
 pub fn free_key(base: &str, taken: &[String]) -> String {
-    let mut key = base.to_string();
-    let mut n = 0u8;
-    while taken.iter().any(|k| k.eq_ignore_ascii_case(&key)) && n < 26 {
-        key = format!("{base}{}", (b'a' + n) as char);
-        n += 1;
-    }
-    key
+    crate::unique_key(base.to_string(), taken)
 }
 
 /// A crash mid-write must not leave a half-written file, and a .bib that is a link (a library

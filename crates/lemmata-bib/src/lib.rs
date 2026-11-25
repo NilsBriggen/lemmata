@@ -27,6 +27,15 @@ pub struct Entry {
     pub file: String,
 }
 
+/// Live LaTeX code with comments and verbatim blocks/commands masked out.
+fn live_tex(text: &str) -> String {
+    let mut scanner = lemmata_project::CodeScanner::default();
+    text.lines()
+        .map(|l| scanner.mask_line(l).into_owned())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 static BIB_COMMAND: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\\(?:addbibresource(?:\[[^\]]*\])?|bibliography)\{([^}]*)\}").unwrap()
 });
@@ -58,7 +67,7 @@ pub fn bib_files_with_sources(
         let Some(text) = sources.get(Path::new(&rel)) else {
             continue;
         };
-        for c in BIB_COMMAND.captures_iter(&lemmata_project::export::strip_comments(text)) {
+        for c in BIB_COMMAND.captures_iter(&live_tex(text)) {
             for name in c[1].split(',').map(str::trim).filter(|n| !n.is_empty()) {
                 let mut p = PathBuf::from(name);
                 if p.extension().is_none() {
@@ -106,8 +115,8 @@ static CITE: LazyLock<Regex> = LazyLock::new(|| {
 static MORE_KEYS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(?:\[[^\]]*\]\s*){0,2}\{([^{}]*)\}").unwrap());
 
-/// Every citation key the project's .tex files use, in first-use order. Shortcut: comment-looking
-/// text inside a verbatim block counts as a comment.
+/// Every citation key the project's .tex files use, in first-use order. Comments and verbatim
+/// blocks/commands are ignored.
 pub fn cited_keys(project: &lemmata_project::Project) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     let mut add = |group: &str| {
@@ -129,7 +138,7 @@ pub fn cited_keys(project: &lemmata_project::Project) -> Vec<String> {
         let Ok(text) = lemmata_env::fs::read_text(project.root.join(&rel)) else {
             continue;
         };
-        let code = lemmata_project::export::strip_comments(&text);
+        let code = live_tex(&text);
         for c in CITE.captures_iter(&code) {
             let name = &c[1];
             if matches!(
@@ -160,8 +169,21 @@ pub fn cited_keys(project: &lemmata_project::Project) -> Vec<String> {
 pub fn parse_bib(src: &str) -> Result<Bibliography, String> {
     const MAX_DEPTH: usize = 64;
     let (mut depth, mut deepest) = (0usize, 0usize);
-    for b in src.bytes() {
-        match b {
+    let b = src.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if depth == 0 => {
+                // Skip `%` comment lines outside entries.
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'\\' => {
+                // Skip escaped braces (`\{`, `\}`) and `\\`.
+                i += 2;
+                continue;
+            }
             b'{' => {
                 depth += 1;
                 deepest = deepest.max(depth);
@@ -169,6 +191,7 @@ pub fn parse_bib(src: &str) -> Result<Bibliography, String> {
             b'}' => depth = depth.saturating_sub(1),
             _ => {}
         }
+        i += 1;
     }
     if deepest > MAX_DEPTH {
         return Err(format!("braces are nested more than {MAX_DEPTH} deep"));
@@ -444,13 +467,14 @@ pub fn prepare_entry(bibtex: &str, existing: &[String]) -> Result<(String, Strin
         .unwrap_or("")
         .to_lowercase();
     let surname: String = surname.chars().filter(|c| c.is_alphanumeric()).collect();
-    let year = {
+    let year: String = {
         let y = field("year");
-        if y.is_empty() {
+        let raw = if y.is_empty() {
             field("date").chars().take(4).collect()
         } else {
             y
-        }
+        };
+        raw.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
     };
     const SKIP: &[&str] = &[
         "a", "an", "the", "on", "of", "for", "and", "in", "to", "with", "towards", "toward",

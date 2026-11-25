@@ -136,7 +136,9 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("next-problem", "Next problem", "next-problem"),
     ("prev-problem", "Previous problem", "prev-problem"),
     ("next-todo", "Next TODO", "next-todo"),
+    ("prev-todo", "Previous TODO", "prev-todo"),
     ("next-comment", "Next review comment", "next-comment"),
+    ("prev-comment", "Previous review comment", "prev-comment"),
     ("definition", "Go to definition", "definition"),
     ("references", "Find references", "references"),
     ("bold", "Bold", "bold"),
@@ -166,7 +168,9 @@ const EDITOR: &[&str] = &[
     "next-problem",
     "prev-problem",
     "next-todo",
+    "prev-todo",
     "next-comment",
+    "prev-comment",
     "definition",
     "references",
     "bold",
@@ -319,7 +323,7 @@ impl Palette {
                             r.rect.bottom(),
                             Stroke::new(1.0, p.border),
                         );
-                        let max_h = screen.height() * 0.52;
+                        let max_h = (screen.height() - 180.0).clamp(140.0, screen.height() * 0.52);
                         let results: Vec<Item> = self.results().into_iter().cloned().collect();
                         let w = ui.available_width();
                         ui.allocate_ui(vec2(w, max_h + 12.0), |ui| {
@@ -328,6 +332,9 @@ impl Palette {
                                 .show(ui, |ui| {
                                     egui::ScrollArea::vertical()
                                         .max_height(max_h)
+                                        .scroll_bar_visibility(
+                                            egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                                        )
                                         .auto_shrink([false, true])
                                         .show(ui, |ui| {
                                             ui.spacing_mut().item_spacing.y = 0.0;
@@ -438,25 +445,32 @@ impl Workspace {
         let items = match kind {
             Kind::Commands => {
                 let show_pdf = settings.layout != "editor" && !self.focus_mode;
+                let has_pdf = self.pane.view.shown_bytes().is_some();
                 // The editor's commands do nothing without an open file: not offered then.
                 let has_file = self
                     .active
                     .as_ref()
                     .is_some_and(|a| self.editors.contains_key(a));
+                let is_tex = self.active.as_deref().is_some_and(|a| {
+                    self.editors.contains_key(a) && a.to_ascii_lowercase().ends_with(".tex")
+                });
                 COMMANDS
                     .iter()
                     .filter(|c| {
                         has_file
-                            || !(EDITOR.contains(&c.0) || matches!(c.0, "reindent" | "close-tab"))
+                            || !(EDITOR.contains(&c.0)
+                                || matches!(c.0, "reindent" | "close-tab" | "format"))
                     })
-                    // Only while the PDF pane is there: presenting needs its loaded document.
-                    .filter(|c| c.0 != "present" || show_pdf)
+                    .filter(|c| c.0 != "format" || is_tex)
+                    // PDF commands need a built PDF (and presenting needs the PDF pane visible).
+                    .filter(|c| c.0 != "present" || (show_pdf && has_pdf))
+                    .filter(|c| !matches!(c.0, "sync" | "export-pdf" | "open-external") || has_pdf)
                     .map(|(id, _, key)| Item {
                         label: label(id, self.focus_mode).to_owned(),
-                        detail: match *id {
-                            "reindent" => "the selection, or the whole file".to_owned(),
-                            _ if key.is_empty() => String::new(),
-                            _ => display(keys_of(key)),
+                        detail: if key.is_empty() {
+                            String::new()
+                        } else {
+                            display(keys_of(key))
                         },
                         cmd: Cmd::Command(id),
                     })
@@ -673,8 +687,9 @@ impl Workspace {
             "present" => self.present(ctx),
             "open-external" => self.spawn(backend, |s| Msg::Done(s.open_pdf_externally())),
             "save-template" => {
-                self.save_all_quietly(backend, settings);
-                return Some(Action::SaveTemplate(self.root.clone()));
+                self.after_saving(backend, settings, |ws, _| {
+                    ws.pending_save_template = true;
+                });
             }
             "export-zip" => self.export(backend, settings, Save::Zip),
             "export-arxiv" => self.export(backend, settings, Save::Arxiv { flatten: false }),

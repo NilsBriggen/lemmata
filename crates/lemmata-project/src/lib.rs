@@ -398,7 +398,7 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 }
 
 /// Is `main` (relative to `root`) an existing file inside the project?
-fn main_inside(root: &Path, main: &Path) -> bool {
+pub fn main_inside(root: &Path, main: &Path) -> bool {
     main.is_relative()
         && !main
             .components()
@@ -693,7 +693,10 @@ pub fn source_snapshot_with(
         for entry in entries {
             if entry.is_dir {
                 collect(root, &entry.children, read, sources);
-            } else if entry.path.ends_with(".tex")
+            } else if Path::new(&entry.path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("tex") || e.eq_ignore_ascii_case("sty"))
                 && let Ok(text) = read(&root.join(&entry.path))
             {
                 sources.insert(PathBuf::from(&entry.path), text);
@@ -724,39 +727,141 @@ pub fn analyze_with_sources(project: &Project, entries: &[Entry], sources: &Sour
     }
 }
 
-/// The text the maths previews read macros from: the files the main file's preamble `\input`s,
-/// then the preamble itself, so its own definitions win. shortcut: one level of `\input`, and
-/// no .sty files (the snapshot holds .tex only).
+/// The preamble portion of `text` before the first uncommented `\begin{document}` (or `""` if none).
+fn preamble_slice(text: &str) -> &str {
+    let mut offset = 0;
+    let mut scanner = CodeScanner::default();
+    for raw in text.split_inclusive('\n') {
+        let line = raw.trim_end_matches(['\r', '\n']);
+        let code = scanner.mask_line(line);
+        if let Some(pos) = code.find("\\begin{document}") {
+            return &text[..offset + pos];
+        }
+        offset += raw.len();
+    }
+    ""
+}
+
+/// The text the maths previews read macros from: files the main file's preamble `\input`s
+/// (recursively) and local `.sty` packages loaded via `\usepackage`, then the preamble itself,
+/// so the main file's own definitions win.
 fn macro_text(project: &Project, sources: &Sources) -> String {
     let Some(main) = sources.get(&project.main) else {
         return String::new();
     };
-    let preamble = main.split("\\begin{document}").next().unwrap_or("");
+    let preamble = preamble_slice(main);
+    let main_dir = project
+        .main
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
     let mut out = String::new();
-    for line in preamble.lines() {
-        let mut rest = strip_comment(line);
-        while let Some(pos) = rest.find('\\') {
-            rest = &rest[pos + 1..];
-            let name: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_alphabetic())
-                .collect();
-            let after = rest[name.len()..].trim_start_matches('*');
-            if let Some(target) = include_target(&name, after) {
-                let mut child: PathBuf = Path::new(target.trim())
-                    .components()
-                    .filter(|c| !matches!(c, std::path::Component::CurDir))
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(project.main.clone());
+
+    fn collect_from(
+        text: &str,
+        base: &Path,
+        main_dir: &Path,
+        sources: &Sources,
+        seen: &mut std::collections::HashSet<PathBuf>,
+        out: &mut String,
+        depth: usize,
+    ) {
+        if depth > 8 {
+            return;
+        }
+        let mut scanner = CodeScanner::default();
+        for line in text.lines() {
+            let masked = scanner.mask_line(line);
+            let mut rest = masked.as_ref();
+            while let Some(pos) = rest.find('\\') {
+                rest = &rest[pos + 1..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphabetic())
                     .collect();
-                if child.extension().is_none() {
-                    child.set_extension("tex");
+                let after = rest[name.len()..].trim_start_matches('*');
+                if name == "usepackage" || name == "RequirePackage" {
+                    if let Some(pkgs) = braced(skip_optional(after)) {
+                        for pkg in pkgs.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                            let mut cand = PathBuf::from(pkg);
+                            if cand.extension().is_none() {
+                                cand.set_extension("sty");
+                            }
+                            let resolved = [main_dir.join(&cand), cand]
+                                .into_iter()
+                                .map(|p| {
+                                    p.components()
+                                        .filter(|c| !matches!(c, std::path::Component::CurDir))
+                                        .collect::<PathBuf>()
+                                })
+                                .find(|p| sources.contains_key(p));
+                            if let Some(child) = resolved
+                                && seen.insert(child.clone())
+                                && let Some(body) = sources.get(&child)
+                            {
+                                let next_base =
+                                    child.parent().map(Path::to_path_buf).unwrap_or_default();
+                                collect_from(
+                                    body,
+                                    &next_base,
+                                    main_dir,
+                                    sources,
+                                    seen,
+                                    out,
+                                    depth + 1,
+                                );
+                                out.push_str(body);
+                                out.push('\n');
+                            }
+                        }
+                    }
+                    continue;
                 }
-                if let Some(text) = sources.get(&child) {
-                    out.push_str(text);
-                    out.push('\n');
+                if let Some(target) = include_target(&name, after) {
+                    let target = target.trim();
+                    let raw = Path::new(target);
+                    let with_tex = |p: PathBuf| {
+                        let mut p = p;
+                        if p.extension().is_none() {
+                            p.set_extension("tex");
+                        }
+                        p
+                    };
+                    let bases: Vec<&Path> = if name == "subimport" {
+                        vec![base, main_dir, Path::new("")]
+                    } else {
+                        vec![main_dir, Path::new(""), base]
+                    };
+                    let resolved = bases
+                        .into_iter()
+                        .map(|b| {
+                            with_tex(
+                                b.join(raw)
+                                    .components()
+                                    .filter(|c| !matches!(c, std::path::Component::CurDir))
+                                    .collect(),
+                            )
+                        })
+                        .find(|p| sources.contains_key(p));
+                    if let Some(child) = resolved
+                        && seen.insert(child.clone())
+                        && let Some(body) = sources.get(&child)
+                    {
+                        let next_base = child.parent().map(Path::to_path_buf).unwrap_or_default();
+                        collect_from(body, &next_base, main_dir, sources, seen, out, depth + 1);
+                        out.push_str(body);
+                        out.push('\n');
+                    }
                 }
             }
         }
     }
+
+    collect_from(
+        preamble, &main_dir, &main_dir, sources, &mut seen, &mut out, 0,
+    );
     out.push_str(preamble);
     out
 }
@@ -838,18 +943,20 @@ impl Walk<'_> {
         let Some(text) = text else { return };
         let file = rel.to_string_lossy().replace('\\', "/");
         let mut in_body = !is_main || !text.contains("\\begin{document}");
+        let mut scanner = CodeScanner::default();
         for (i, raw) in text.lines().enumerate() {
+            let masked = scanner.mask_line(raw);
             if !in_body {
-                in_body = strip_comment(raw).contains("\\begin{document}");
+                in_body = masked.contains("\\begin{document}");
                 continue;
             }
-            self.line(root, &file, i, raw, depth);
+            self.line(root, &file, i, raw, masked.as_ref(), depth);
         }
     }
 
-    fn line(&mut self, root: &Path, file: &str, i: usize, raw: &str, depth: usize) {
-        let code = strip_comment(raw);
+    fn line(&mut self, root: &Path, file: &str, i: usize, raw: &str, code: &str, depth: usize) {
         let mut rest = code;
+        let mut counted = false;
         while let Some(pos) = rest.find('\\') {
             rest = &rest[pos + 1..];
             let name: String = rest
@@ -910,24 +1017,29 @@ impl Walk<'_> {
                     .to_string_lossy()
                     .replace(std::path::MAIN_SEPARATOR, "/");
                 if !self.trusted && lemmata_env::fs::inside_rel(&rel).is_none() {
-                    self.count(raw);
-                    return;
+                    continue;
                 }
-                // This line's own text counts before the included file's.
-                self.count(raw);
+                // This line's own text counts before the first included file's.
+                if !counted {
+                    self.count(raw);
+                    counted = true;
+                }
                 self.file(root, &child, depth + 1, false);
-                return;
             }
         }
-        self.count(raw);
+        if !counted {
+            self.count(raw);
+        }
     }
 }
 
 /// The names the main file's text gives to `\include`, as written (what `\includeonly` takes).
 pub fn included_chapters(main: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
+    let mut scanner = CodeScanner::default();
     for raw in main.lines() {
-        let mut rest = strip_comment(raw);
+        let masked = scanner.mask_line(raw);
+        let mut rest = masked.as_ref();
         while let Some(pos) = rest.find('\\') {
             rest = &rest[pos + 1..];
             let name: String = rest.chars().take_while(char::is_ascii_alphabetic).collect();
@@ -964,14 +1076,165 @@ fn include_target(name: &str, after: &str) -> Option<String> {
     }
 }
 
-fn strip_comment(line: &str) -> &str {
+/// Everything on `line` before the first unescaped `%` (`\%` is escaped; `\\%` starts a comment).
+pub fn strip_comment(line: &str) -> &str {
     let bytes = line.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
-        if b == b'%' && (i == 0 || bytes[i - 1] != b'\\') {
+        if b == b'%' && bytes[..i].iter().rev().take_while(|&&c| c == b'\\').count() % 2 == 0 {
             return &line[..i];
         }
     }
     line
+}
+
+/// Environments whose body is not interpreted as normal LaTeX commands.
+const CODE_VERBATIM_ENVS: &[&str] = &[
+    "verbatim",
+    "Verbatim",
+    "lstlisting",
+    "minted",
+    "alltt",
+    "filecontents",
+    "comment",
+];
+
+/// Inline commands whose argument is literal text, not LaTeX commands.
+const CODE_VERBATIM_CMDS: &[&str] = &["verb", "Verb", "lstinline", "path", "mintinline"];
+
+fn scanner_braced_len(r: &str) -> usize {
+    let mut depth = 1;
+    for (n, c) in r.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return n + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    r.len()
+}
+
+/// Tracks multi-line verbatim environments across lines and masks inline verbatim spans and
+/// `%` comments while preserving exact byte offsets for live LaTeX code.
+#[derive(Debug, Default, Clone)]
+pub struct CodeScanner {
+    env: Option<String>,
+}
+
+impl CodeScanner {
+    /// Scans `line`, returning `(masked_code, comment_start)` where `masked_code` has the exact
+    /// byte offsets of live code up to any real `%` comment (verbatim spans replaced with ASCII
+    /// spaces so byte offsets remain valid) and `comment_start` is the byte index of the real `%`
+    /// comment outside verbatim, if any.
+    pub fn scan_line<'a>(&mut self, line: &'a str) -> (std::borrow::Cow<'a, str>, Option<usize>) {
+        let mut masked_ranges: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut i = 0;
+
+        if let Some(env) = self.env.take() {
+            let end = format!("\\end{{{env}}}");
+            match line.find(&end) {
+                Some(k) => {
+                    let next = k + end.len();
+                    masked_ranges.push(0..next);
+                    i = next;
+                }
+                None => {
+                    self.env = Some(env);
+                    return (std::borrow::Cow::Borrowed(""), None);
+                }
+            }
+        }
+
+        let mut comment_at = None;
+        while let Some(c) = line[i..].chars().next() {
+            if c == '%' {
+                comment_at = Some(i);
+                break;
+            }
+            if c != '\\' {
+                i += c.len_utf8();
+                continue;
+            }
+            let after = &line[i + 1..];
+            let rest_start = |rest: &str| line.len() - rest.len();
+            if let Some((cmd, r)) = CODE_VERBATIM_CMDS
+                .iter()
+                .find_map(|c| Some((*c, after.strip_prefix(c)?)))
+                && !r.starts_with(|ch: char| ch.is_ascii_alphabetic())
+            {
+                let mut r = r.strip_prefix('*').unwrap_or(r);
+                if let Some(o) = r.strip_prefix('[') {
+                    r = o.find(']').map_or("", |k| &o[k + 1..]);
+                }
+                if cmd == "mintinline"
+                    && let Some(o) = r.strip_prefix('{')
+                {
+                    r = &o[scanner_braced_len(o)..];
+                }
+                if let Some(d) = r.chars().next() {
+                    let body = &r[d.len_utf8()..];
+                    let end = if d == '{' && cmd != "verb" {
+                        scanner_braced_len(body)
+                    } else {
+                        body.find(d).map_or(body.len(), |k| k + d.len_utf8())
+                    };
+                    let next = rest_start(body) + end;
+                    masked_ranges.push(i..next);
+                    i = next;
+                    continue;
+                }
+            }
+            if let Some(r) = after.strip_prefix("begin{")
+                && let Some(n) = r.find('}')
+                && CODE_VERBATIM_ENVS.contains(&r[..n].trim_end_matches('*'))
+            {
+                let env_name = &r[..n];
+                let end = format!("\\end{{{env_name}}}");
+                let body = &r[n + 1..];
+                match body.find(&end) {
+                    Some(k) => {
+                        let next = rest_start(body) + k + end.len();
+                        masked_ranges.push(i..next);
+                        i = next;
+                    }
+                    None => {
+                        masked_ranges.push(i..line.len());
+                        self.env = Some(env_name.to_string());
+                        break;
+                    }
+                }
+                continue;
+            }
+            // Any other escape (`\%`, `\\`): step over the escaped char so `\\%` sees `%` next.
+            i += 1 + after.chars().next().map_or(0, char::len_utf8);
+        }
+
+        let live = &line[..comment_at.unwrap_or(line.len())];
+        if masked_ranges.is_empty() {
+            return (std::borrow::Cow::Borrowed(live), comment_at);
+        }
+        let mut bytes = live.as_bytes().to_vec();
+        for range in masked_ranges {
+            let start = range.start.min(bytes.len());
+            let end = range.end.min(bytes.len());
+            for b in &mut bytes[start..end] {
+                *b = b' ';
+            }
+        }
+        // Replacing whole UTF-8 spans with ASCII spaces preserves valid UTF-8 and byte indices.
+        let out = String::from_utf8(bytes).unwrap_or_else(|_| " ".repeat(live.len()));
+        (std::borrow::Cow::Owned(out), comment_at)
+    }
+
+    /// Returns the live LaTeX portion of `line` with verbatim spans masked to spaces and comments
+    /// stripped, preserving byte offsets.
+    pub fn mask_line<'a>(&mut self, line: &'a str) -> std::borrow::Cow<'a, str> {
+        self.scan_line(line).0
+    }
 }
 
 fn skip_optional(s: &str) -> &str {

@@ -21,6 +21,8 @@ pub enum Action {
         full: bool,
     },
     UseTectonic,
+    /// Open an external link (installer / instructions URL).
+    OpenUrl(String),
     /// Open the app anyway: projects can be edited, nothing compiles until TeX is found.
     Skip,
 }
@@ -50,11 +52,17 @@ impl State {
             installing: false,
             tectonic_error: None,
             terminal_error: None,
-            tectonic_supported: true,
+            tectonic_supported: lemmata_tex::tectonic::release().is_some(),
             // This computer's download, rounded: about 10 MB on Linux, 22 MB elsewhere.
             tectonic_mb: lemmata_tex::tectonic::release()
                 .map_or(20, |r| r.size.div_ceil(1_000_000)),
         }
+    }
+
+    pub fn refresh(&mut self, _status: &TexStatus) {
+        self.tectonic_supported = lemmata_tex::tectonic::release().is_some();
+        self.tectonic_mb =
+            lemmata_tex::tectonic::release().map_or(20, |r| r.size.div_ceil(1_000_000));
     }
 }
 
@@ -202,15 +210,30 @@ fn body(
         note(ui, p, n);
     }
     if let Some(link) = &inst.link {
-        Rich::new()
-            .add(
-                "Installer and instructions: ",
-                FontId::proportional(13.0),
-                p.muted,
-            )
-            .add(link, FontId::monospace(13.0), p.muted)
-            .wrap(ui.available_width())
-            .show(ui);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label(
+                egui::RichText::new("Installer and instructions: ")
+                    .font(FontId::proportional(13.0))
+                    .color(p.muted),
+            );
+            let r = ui
+                .add(
+                    egui::Label::new(
+                        egui::RichText::new(link)
+                            .font(FontId::monospace(13.0))
+                            .color(p.accent)
+                            .underline(),
+                    )
+                    .sense(Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Open in browser");
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, link));
+            if r.clicked() {
+                *action = Some(Action::OpenUrl(link.clone()));
+            }
+        });
     }
     note(
         ui,
@@ -559,63 +582,79 @@ fn footer(ui: &mut Ui, p: &Palette, checking: bool, can_skip: bool, action: &mut
     ui.painter()
         .hline(ui.max_rect().x_range(), y, Stroke::new(1.0, p.border));
     ui.add_space(16.0);
-    ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), 38.0),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.label(egui::RichText::new("Installed somewhere else? ").color(p.muted));
-            let link = ui.add(
-                egui::Label::new(
-                    egui::RichText::new("Choose the TeX bin folder")
-                        .color(p.accent)
-                        .underline(),
-                )
-                .sense(Sense::click()),
-            );
-            link.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::Role::Button, true, "Choose the TeX bin folder")
-            });
-            if link
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
+    let draw_choose = |ui: &mut Ui, action: &mut Option<Action>| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.label(egui::RichText::new("Installed somewhere else? ").color(p.muted));
+        let link = ui.add(
+            egui::Label::new(
+                egui::RichText::new("Choose the TeX bin folder")
+                    .color(p.accent)
+                    .underline(),
+            )
+            .sense(Sense::click()),
+        );
+        link.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::Button, true, "Choose the TeX bin folder")
+        });
+        if link
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
+            *action = Some(Action::ChooseFolder);
+        }
+    };
+    let draw_buttons = |ui: &mut Ui, action: &mut Option<Action>| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let label = if checking {
+            "Checking…"
+        } else {
+            "Check again"
+        };
+        let angle = if checking {
+            ui.input(|i| i.time) as f32 * std::f32::consts::TAU / 0.9
+        } else {
+            0.0
+        };
+        if Button::new(label)
+            .with_icon(icons::REFRESH_CW)
+            .icon_angle(angle)
+            .kind(Kind::Primary)
+            .size(Size::Lg)
+            .enabled(!checking)
+            .show(ui, p)
+            .clicked()
+        {
+            *action = Some(Action::Recheck(None));
+        }
+        if can_skip
+            && Button::new("Continue without compiling")
+                .size(Size::Lg)
+                .show(ui, p)
                 .clicked()
-            {
-                *action = Some(Action::ChooseFolder);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                let label = if checking {
-                    "Checking…"
-                } else {
-                    "Check again"
-                };
-                let angle = if checking {
-                    ui.input(|i| i.time) as f32 * std::f32::consts::TAU / 0.9
-                } else {
-                    0.0
-                };
-                if Button::new(label)
-                    .with_icon(icons::REFRESH_CW)
-                    .icon_angle(angle)
-                    .kind(Kind::Primary)
-                    .size(Size::Lg)
-                    .enabled(!checking)
-                    .show(ui, p)
-                    .clicked()
-                {
-                    *action = Some(Action::Recheck(None));
-                }
-                if can_skip
-                    && Button::new("Continue without compiling")
-                        .size(Size::Lg)
-                        .show(ui, p)
-                        .clicked()
-                {
-                    *action = Some(Action::Skip);
-                }
-            });
-        },
-    );
+        {
+            *action = Some(Action::Skip);
+        }
+    };
+    if can_skip && ui.available_width() < 700.0 {
+        ui.horizontal_wrapped(|ui| draw_choose(ui, action));
+        ui.add_space(10.0);
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_width(), 38.0),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| draw_buttons(ui, action),
+        );
+    } else {
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_width(), 38.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                draw_choose(ui, action);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    draw_buttons(ui, action);
+                });
+            },
+        );
+    }
 }
 
 #[cfg(test)]

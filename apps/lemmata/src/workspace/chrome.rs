@@ -138,7 +138,11 @@ pub fn toolbar(
         action = Some(Action::Library);
     }
     l.label(egui::RichText::new("/").color(p.chrome_muted));
-    l.add(
+    let has_targets = !ws.info.config.targets.is_empty();
+    let target_reserve = if has_targets { 118.0 } else { 0.0 };
+    let name_max = (l.available_width() - target_reserve).max(40.0);
+    l.add_sized(
+        vec2(name_max.min(200.0), 24.0),
         egui::Label::new(
             egui::RichText::new(&ws.info.name)
                 .font(FontId::new(13.0, theme::font::sans_500()))
@@ -146,6 +150,29 @@ pub fn toolbar(
         )
         .truncate(),
     );
+    if has_targets {
+        let active_target = ws
+            .info
+            .config
+            .targets
+            .iter()
+            .find(|t| t.main == ws.info.main && t.engine.is_none_or(|e| e == ws.info.config.engine))
+            .map(|t| t.name.as_str())
+            .unwrap_or_else(|| tree::base_name(&ws.info.main));
+        let tbtn = Button::new(&format!("{active_target} ▾"))
+            .kind(Kind::Chrome)
+            .size(Size::Sm)
+            .on(matches!(ws.menu, Some(Menu::Targets(_))))
+            .show(&mut l, p)
+            .on_hover_text("Switch build target");
+        if tbtn.clicked() {
+            ws.menu = if matches!(ws.menu, Some(Menu::Targets(_))) {
+                None
+            } else {
+                Some(Menu::Targets(tbtn.rect))
+            };
+        }
+    }
 
     // Right, from the right edge: the compile button, settings, Git, History, Comments.
     let right = Rect::from_min_max(pos2(center.right() + 12.0, inner.top()), inner.max);
@@ -226,14 +253,13 @@ pub fn toolbar(
     let open_comments = ws.comments.threads.iter().filter(|t| !t.resolved).count();
     let git_changes = ws.git.status.len();
     let compact = rect.width() < 1400.0;
+    let git_tip = if ws.trusted {
+        "Commit, pull and push with git"
+    } else {
+        "Git (disabled in restricted projects)"
+    };
     for (icon, label, panel, count, tip) in [
-        (
-            icons::GIT_BRANCH,
-            "Git",
-            Panel::Git,
-            git_changes,
-            "Commit, pull and push with git",
-        ),
+        (icons::GIT_BRANCH, "Git", Panel::Git, git_changes, git_tip),
         (
             icons::HISTORY,
             "History",
@@ -382,6 +408,11 @@ pub fn sidebar(
             if r.clicked() {
                 ws.sel.selected.clear();
                 ws.sel.focused = true;
+                ui.ctx().memory_mut(|m| {
+                    if let Some(f) = m.focused() {
+                        m.surrender_focus(f);
+                    }
+                });
             }
             if r.secondary_clicked()
                 && let Some(at) = r.interact_pointer_pos()
@@ -593,33 +624,42 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
                 Color32::from_rgb(0xd9, 0xb5, 0x6a),
             );
             x += 15.0 + 6.0;
-            painter.text(
-                pos2(x, rect.center().y),
-                Align2::LEFT_CENTER,
-                &e.name,
-                FontId::proportional(13.0),
-                ink,
-            );
-            if ws
+            let has_git_dot = ws
                 .git
                 .status
                 .iter()
-                .any(|(path, _)| path.starts_with(&format!("{}/", e.path)))
-            {
-                ui.painter().circle_filled(
+                .any(|(path, _)| path.starts_with(&format!("{}/", e.path)));
+            let count_g = (!open_dir).then(|| {
+                painter.layout_no_wrap(
+                    count.to_string(),
+                    FontId::proportional(11.0),
+                    p.chrome_muted,
+                )
+            });
+            let right_reserve = if has_git_dot { 22.0 } else { 10.0 }
+                + count_g.as_ref().map_or(0.0, |g| g.size().x + 18.0);
+            let max_name_w = (rect.right() - right_reserve - x).max(20.0);
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                e.name.clone(),
+                FontId::proportional(13.0),
+                ink,
+            );
+            job.wrap.max_width = max_name_w;
+            job.wrap.max_rows = 1;
+            job.wrap.overflow_character = Some('…');
+            let ng = ui.fonts_mut(|f| f.layout_job(job));
+            let name_w = ng.size().x.min(max_name_w);
+            let painter = ui.painter();
+            painter.galley(pos2(x, rect.center().y - ng.size().y / 2.0), ng, ink);
+            if has_git_dot {
+                painter.circle_filled(
                     pos2(rect.right() - 13.0, rect.center().y),
                     3.0,
                     Color32::from_rgb(0xe5, 0xb5, 0x67),
                 );
             }
-            if !open_dir {
+            if let Some(g) = count_g {
                 // .count: how many files the folded folder holds.
-                let n = count.to_string();
-                let g = painter.layout_no_wrap(n, FontId::proportional(11.0), p.chrome_muted);
-                let name_w = painter
-                    .layout_no_wrap(e.name.clone(), FontId::proportional(13.0), ink)
-                    .size()
-                    .x;
                 let b = Rect::from_min_size(
                     pos2(x + name_w + 6.0, rect.center().y - 8.0),
                     vec2(g.size().x + 12.0, 16.0),
@@ -640,12 +680,26 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
                 color,
             );
             x += 15.0 + 6.0;
-            let name = painter.layout_no_wrap(e.name.clone(), FontId::proportional(13.0), ink);
-            let name_w = name.size().x;
+            let git_entry = ws.git.status.iter().find(|(path, _)| *path == e.path);
+            let is_main = e.path == ws.info.main;
+            let right_reserve = 10.0
+                + if is_main { 48.0 } else { 0.0 }
+                + if git_entry.is_some() { 18.0 } else { 0.0 };
+            let max_name_w = (rect.right() - right_reserve - x).max(20.0);
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                e.name.clone(),
+                FontId::proportional(13.0),
+                ink,
+            );
+            job.wrap.max_width = max_name_w;
+            job.wrap.max_rows = 1;
+            job.wrap.overflow_character = Some('…');
+            let name = ui.fonts_mut(|f| f.layout_job(job));
+            let painter = ui.painter();
             painter.galley(pos2(x, rect.center().y - name.size().y / 2.0), name, ink);
             // The file's git status letter, and a dot on folders holding changes.
             let mut git_note = String::new();
-            if let Some((_, st)) = ws.git.status.iter().find(|(path, _)| *path == e.path) {
+            if let Some((_, st)) = git_entry {
                 let (c, title) = match st.as_str() {
                     "M" => (
                         Color32::from_rgb(0xe5, 0xb5, 0x67),
@@ -666,7 +720,7 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
                     ),
                     _ => (Color32::from_rgb(0xe5, 0x8c, 0x8c), "Merge conflict"),
                 };
-                let right = if e.path == ws.info.main {
+                let right = if is_main {
                     rect.right() - 60.0
                 } else {
                     rect.right() - 10.0
@@ -682,7 +736,7 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
                 );
                 git_note = format!("\n{title}");
             }
-            if e.path == ws.info.main {
+            if is_main {
                 // The MAIN badge.
                 let mut job = egui::text::LayoutJob::default();
                 job.append(
@@ -703,7 +757,7 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
                     ),
                     vec2(g.size().x + 8.0, 14.0),
                 );
-                let _ = name_w;
+                let painter = ui.painter();
                 painter.rect_stroke(
                     b,
                     CornerRadius::same(3),
@@ -747,6 +801,11 @@ fn tree_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, settings: &Settings, 
     if let Some((path, mods)) = click {
         let paths: Vec<String> = rows.iter().map(|(e, ..)| e.path.clone()).collect();
         ws.tree_click(&path, &paths, mods);
+        ui.ctx().memory_mut(|m| {
+            if let Some(f) = m.focused() {
+                m.surrender_focus(f);
+            }
+        });
         // With Ctrl or Shift a click only selects.
         if mods.command || mods.shift {
             open = None;
@@ -954,7 +1013,7 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
         } else {
             p.chrome_muted
         };
-        let n = totals[i].to_string();
+        let n = format!("{}w", totals[i]);
         let ng = ui.painter().layout_no_wrap(
             n,
             FontId::monospace(10.5),
@@ -968,7 +1027,7 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
         );
         let mut job =
             egui::text::LayoutJob::simple_singleline(title, FontId::proportional(12.5), ink);
-        job.wrap.max_width = nx - entry.left() - 4.0 - 8.0;
+        job.wrap.max_width = (nx - entry.left() - 4.0 - 8.0).max(16.0);
         job.wrap.max_rows = 1;
         job.wrap.overflow_character = Some('…');
         let tg = ui.fonts_mut(|f| f.layout_job(job));
@@ -977,7 +1036,7 @@ fn outline_rows(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend)
             tg,
             ink,
         );
-        let er = er.on_hover_text(format!("{}:{}", h.file, h.line));
+        let er = er.on_hover_text(format!("{}:{} · {} words", h.file, h.line, totals[i]));
         if er.clicked() {
             jump = Some((h.file.clone(), h.line as usize));
         }
@@ -1235,6 +1294,15 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> (bool, bool, bo
         Stroke::new(1.0, p.border),
     );
     let disabled = !ws.active.as_deref().is_some_and(tree::is_tex);
+    let has_editor = ws
+        .active
+        .as_deref()
+        .is_some_and(|a| ws.editors.contains_key(a));
+    let avail_w = rect.width() - 20.0;
+    // Compact mode uses icons for Cite/Comment/Go to PDF so nothing clips in Split layout;
+    // overflow mode moves secondary insert/list buttons into a `…` menu at narrow widths (< 470 px).
+    let compact_labels = avail_w < 640.0;
+    let overflow = avail_w < 470.0;
     let mut bar = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect.shrink2(vec2(10.0, 4.0)))
@@ -1249,151 +1317,206 @@ pub fn edit_bar(ui: &mut Ui, p: &Palette, ws: &mut Workspace) -> (bool, bool, bo
             .show_icon(ui, p)
     };
     let sep = |ui: &mut Ui| {
-        ui.add_space(4.0 + 6.0 - 2.0);
+        let pad = if overflow { 3.0 } else { 5.0 };
+        ui.add_space(pad);
         let (r, _) = ui.allocate_exact_size(vec2(1.0, 18.0), Sense::hover());
         ui.painter().rect_filled(r, 0, p.border);
-        ui.add_space(6.0 - 2.0 + 4.0);
+        ui.add_space(pad);
     };
     #[allow(clippy::type_complexity)]
     let mut todo: Option<Box<dyn FnOnce(&mut Workspace)>> = None;
-    let indent = Indent::Spaces(2);
-    // Too narrow for every button: the rest scroll sideways instead of spilling onto the PDF.
-    egui::ScrollArea::horizontal()
-        .id_salt("edit-bar")
-        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-        .show(&mut bar, |c| {
-            if ibtn(c, icons::BOLD, "Bold")
-                .on_hover_text(tip("Bold", "bold"))
-                .clicked()
-            {
-                todo = Some(Box::new(|ws| {
-                    with_editor(ws, |e, _| cmd::toggle_wrap(&mut e.doc, "textbf"))
-                }));
-            }
-            if ibtn(c, icons::ITALIC, "Italic")
-                .on_hover_text(tip("Italic", "italic"))
-                .clicked()
-            {
-                todo = Some(Box::new(|ws| {
-                    with_editor(ws, |e, _| cmd::toggle_wrap(&mut e.doc, "textit"))
-                }));
-            }
-            // `.heading`: the H and a small chevron, 2 px apart.
-            let (hrect, h) = c.allocate_exact_size(
-                vec2(9.0 + 16.0 + 2.0 + 12.0 + 9.0, 26.0),
-                if disabled {
-                    Sense::hover()
+    let c = &mut bar;
+    if ibtn(c, icons::BOLD, "Bold")
+        .on_hover_text(tip("Bold", "bold"))
+        .clicked()
+    {
+        todo = Some(Box::new(|ws| {
+            with_editor(ws, |e, _| cmd::toggle_wrap(&mut e.doc, "textbf"))
+        }));
+    }
+    if ibtn(c, icons::ITALIC, "Italic")
+        .on_hover_text(tip("Italic", "italic"))
+        .clicked()
+    {
+        todo = Some(Box::new(|ws| {
+            with_editor(ws, |e, _| cmd::toggle_wrap(&mut e.doc, "textit"))
+        }));
+    }
+    // `.heading`: the H and a small chevron, 2 px apart.
+    let (hrect, h) = c.allocate_exact_size(
+        vec2(9.0 + 16.0 + 2.0 + 12.0 + 9.0, 26.0),
+        if disabled {
+            Sense::hover()
+        } else {
+            Sense::click()
+        },
+    );
+    h.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, !disabled, "Heading"));
+    if !disabled && h.hovered() {
+        c.painter()
+            .rect_filled(hrect, CornerRadius::same(theme::R), p.surface_3);
+    }
+    let ink = if disabled {
+        p.ink.gamma_multiply(0.5)
+    } else {
+        p.ink
+    };
+    icons::paint(
+        c.painter(),
+        Rect::from_min_size(
+            pos2(hrect.left() + 9.0, hrect.center().y - 8.0),
+            Vec2::splat(16.0),
+        ),
+        icons::HEADING,
+        ink,
+    );
+    icons::paint(
+        c.painter(),
+        Rect::from_min_size(
+            pos2(hrect.left() + 27.0, hrect.center().y - 6.0),
+            Vec2::splat(12.0),
+        ),
+        icons::CHEVRON_DOWN,
+        ink,
+    );
+    if h.on_hover_text("Heading").clicked() {
+        ws.menu = if matches!(ws.menu, Some(Menu::Heading(_))) {
+            None
+        } else {
+            Some(Menu::Heading(hrect))
+        };
+    }
+    sep(c);
+    if ibtn(c, icons::SIGMA, "Inline math ($…$)")
+        .on_hover_text("Inline math ($…$)")
+        .clicked()
+    {
+        todo = Some(Box::new(|ws| {
+            with_editor(ws, |e, _| wrap_with(&mut e.doc, "$", "$"))
+        }));
+    }
+    if ibtn(c, icons::PI, "Symbols")
+        .on_hover_text(tip("Math & LaTeX symbols", "symbols"))
+        .clicked()
+    {
+        todo = Some(Box::new(|ws| ws.symbols = Some(Default::default())));
+    }
+    if !overflow {
+        if ibtn(c, icons::LINK, "Link")
+            .on_hover_text("Insert link (\\href)")
+            .clicked()
+        {
+            todo = Some(Box::new(move |ws| {
+                with_editor(ws, |e, i| e.insert_template("\\href{${https://}}{${}}", i))
+            }));
+        }
+        if ibtn(c, icons::IMAGE, "Figure")
+            .on_hover_text("Insert figure")
+            .clicked()
+        {
+            todo = Some(Box::new(|ws| ws.open_figure()));
+        }
+        if ibtn(c, icons::TABLE, "Table")
+            .on_hover_text("Insert table")
+            .clicked()
+        {
+            todo = Some(Box::new(|ws| ws.open_table()));
+        }
+        let code = ibtn(c, icons::CODE, "Code block");
+        let at = code.rect;
+        if code.on_hover_text("Code block").clicked() {
+            todo = Some(Box::new(move |ws| {
+                ws.menu = if matches!(ws.menu, Some(Menu::Code(_))) {
+                    None
                 } else {
-                    Sense::click()
-                },
-            );
-            h.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, !disabled, "Heading"));
-            if !disabled && h.hovered() {
-                c.painter()
-                    .rect_filled(hrect, CornerRadius::same(theme::R), p.surface_3);
-            }
-            let ink = if disabled {
-                p.ink.gamma_multiply(0.5)
-            } else {
-                p.ink
-            };
-            icons::paint(
-                c.painter(),
-                Rect::from_min_size(
-                    pos2(hrect.left() + 9.0, hrect.center().y - 8.0),
-                    Vec2::splat(16.0),
-                ),
-                icons::HEADING,
-                ink,
-            );
-            icons::paint(
-                c.painter(),
-                Rect::from_min_size(
-                    pos2(hrect.left() + 27.0, hrect.center().y - 6.0),
-                    Vec2::splat(12.0),
-                ),
-                icons::CHEVRON_DOWN,
-                ink,
-            );
-            if h.on_hover_text("Heading").clicked() {
-                ws.menu = Some(Menu::Heading(hrect));
-            }
-            sep(c);
-            if ibtn(c, icons::SIGMA, "Inline maths").clicked() {
-                todo = Some(Box::new(|ws| {
-                    with_editor(ws, |e, _| wrap_with(&mut e.doc, "$", "$"))
-                }));
-            }
-            if ibtn(c, icons::PI, "Symbols")
-                .on_hover_text(tip("Symbols", "symbols"))
-                .clicked()
-            {
-                todo = Some(Box::new(|ws| ws.symbols = Some(Default::default())));
-            }
-            if ibtn(c, icons::LINK, "Link").clicked() {
+                    Some(Menu::Code(at))
+                };
+            }));
+        }
+    }
+    let cite_btn = if compact_labels {
+        Button::icon(icons::BOOK_OPEN_TEXT, "Cite")
+            .size(Size::Sm)
+            .enabled(!disabled)
+            .show_icon(c, p)
+    } else {
+        Button::new("Cite")
+            .with_icon(icons::BOOK_OPEN_TEXT)
+            .kind(Kind::Ghost)
+            .size(Size::Sm)
+            .enabled(!disabled)
+            .show(c, p)
+    };
+    if cite_btn
+        .on_hover_text(tip("Insert a citation", "cite"))
+        .clicked()
+    {
+        cite = true;
+    }
+    if !overflow {
+        sep(c);
+        for (icon, label, env) in [
+            (icons::LIST, "Bulleted list", "itemize"),
+            (icons::LIST_ORDERED, "Numbered list", "enumerate"),
+        ] {
+            if ibtn(c, icon, label).on_hover_text(label).clicked() {
+                let t = format!("\\begin{{{env}}}\n\t\\item ${{}}\n\\end{{{env}}}");
                 todo = Some(Box::new(move |ws| {
-                    with_editor(ws, |e, i| e.insert_template("\\href{${https://}}{${}}", i))
+                    with_editor(ws, |e, i| e.insert_template(&t, i))
                 }));
             }
-            if ibtn(c, icons::IMAGE, "Figure").clicked() {
-                todo = Some(Box::new(|ws| ws.open_figure()));
-            }
-            if ibtn(c, icons::TABLE, "Table").clicked() {
-                todo = Some(Box::new(|ws| ws.open_table()));
-            }
-            let code = ibtn(c, icons::CODE, "Code block");
-            let at = code.rect;
-            if code.on_hover_text("Code block").clicked() {
-                todo = Some(Box::new(move |ws| ws.menu = Some(Menu::Code(at))));
-            }
-            if Button::new("Cite")
-                .with_icon(icons::BOOK_OPEN_TEXT)
-                .kind(Kind::Ghost)
-                .size(Size::Sm)
-                .enabled(!disabled)
-                .show(c, p)
-                .on_hover_text(tip("Insert a citation", "cite"))
-                .clicked()
-            {
-                cite = true;
-            }
-            sep(c);
-            for (icon, label, env) in [
-                (icons::LIST, "Bulleted list", "itemize"),
-                (icons::LIST_ORDERED, "Numbered list", "enumerate"),
-            ] {
-                if ibtn(c, icon, label).clicked() {
-                    let t = format!("\\begin{{{env}}}\n\t\\item ${{}}\n\\end{{{env}}}");
-                    todo = Some(Box::new(move |ws| {
-                        with_editor(ws, |e, i| e.insert_template(&t, i))
-                    }));
-                }
-            }
-            sep(c);
-            if Button::new("Comment")
-                .with_icon(icons::MESSAGE_SQUARE_PLUS)
-                .kind(Kind::Ghost)
-                .size(Size::Sm)
-                .enabled(ws.active.is_some())
-                .show(c, p)
-                .on_hover_text(tip("Add a comment on the selection", "add-comment"))
-                .clicked()
-            {
-                comment = true;
-            }
-            if Button::new("Go to PDF")
-                .with_icon(icons::LOCATE)
-                .kind(Kind::Ghost)
-                .size(Size::Sm)
-                .enabled(!disabled)
-                .show(c, p)
-                .on_hover_text(tip("Go to PDF", "sync"))
-                .clicked()
-            {
-                sync = true;
-            }
-        });
-    let _ = indent;
+        }
+    } else {
+        let more = Button::icon(icons::ELLIPSIS, "More formatting")
+            .size(Size::Sm)
+            .enabled(!disabled)
+            .on(matches!(ws.menu, Some(Menu::EditMore(_))))
+            .show_icon(c, p);
+        let at = more.rect;
+        if more.on_hover_text("More formatting and inserts").clicked() {
+            ws.menu = if matches!(ws.menu, Some(Menu::EditMore(_))) {
+                None
+            } else {
+                Some(Menu::EditMore(at))
+            };
+        }
+    }
+    sep(c);
+    let comment_btn = if compact_labels {
+        Button::icon(icons::MESSAGE_SQUARE_PLUS, "Comment")
+            .size(Size::Sm)
+            .enabled(has_editor)
+            .show_icon(c, p)
+    } else {
+        Button::new("Comment")
+            .with_icon(icons::MESSAGE_SQUARE_PLUS)
+            .kind(Kind::Ghost)
+            .size(Size::Sm)
+            .enabled(has_editor)
+            .show(c, p)
+    };
+    if comment_btn
+        .on_hover_text(tip("Add a comment on the selection", "add-comment"))
+        .clicked()
+    {
+        comment = true;
+    }
+    let sync_btn = if compact_labels {
+        Button::icon(icons::LOCATE, "Go to PDF")
+            .size(Size::Sm)
+            .enabled(!disabled)
+            .show_icon(c, p)
+    } else {
+        Button::new("Go to PDF")
+            .with_icon(icons::LOCATE)
+            .kind(Kind::Ghost)
+            .size(Size::Sm)
+            .enabled(!disabled)
+            .show(c, p)
+    };
+    if sync_btn.on_hover_text(tip("Go to PDF", "sync")).clicked() {
+        sync = true;
+    }
     if let Some(f) = todo {
         f(ws);
     }
@@ -1456,41 +1579,76 @@ pub fn status_bar(
             .max_rect(rect.shrink2(vec2(12.0, 0.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    c.spacing_mut().item_spacing.x = 16.0;
+    let tight = rect.width() < 420.0;
+    let medium = rect.width() < 560.0;
+    c.spacing_mut().item_spacing.x = if tight { 10.0 } else { 16.0 };
     let small = |t: String, color: Color32| egui::RichText::new(t).size(12.0).color(color);
-    let line = if ws.cursor.0.is_empty() {
-        1
-    } else {
-        ws.cursor.1
-    };
-    c.label(small(format!("Line {line}"), p.muted));
-    if ws.selection_words > 0 {
-        c.label(small(format!("{} selected", ws.selection_words), p.muted))
-            .on_hover_text("Words in the selection");
-    }
-    if let Some(a) = ws.active.clone() {
-        let failed = ws.buffers.failed.contains(&a);
-        let text = if failed {
-            "Not saved"
-        } else if ws.buffers.is_dirty(&a) {
-            "Unsaved"
+    let is_editor = ws
+        .active
+        .as_deref()
+        .is_some_and(|a| ws.editors.contains_key(a));
+    if is_editor {
+        let line = if ws.cursor.0.is_empty() {
+            1
         } else {
-            "Saved"
+            ws.cursor.1
         };
-        let rt = if failed {
-            small(text.into(), p.error).font(FontId::new(12.0, theme::font::sans_600()))
-        } else {
-            small(text.into(), p.muted)
-        };
-        c.label(rt);
+        c.label(small(format!("Line {line}"), p.muted));
+        if ws.selection_words > 0 && !tight {
+            c.label(small(format!("{} selected", ws.selection_words), p.muted))
+                .on_hover_text("Words in the selection");
+        }
+        if let Some(a) = ws.active.clone() {
+            let failed = ws.buffers.failed.contains(&a);
+            let text = if failed {
+                "Not saved"
+            } else if ws.buffers.is_dirty(&a) {
+                "Unsaved"
+            } else {
+                "Saved"
+            };
+            let rt = if failed {
+                small(text.into(), p.error).font(FontId::new(12.0, theme::font::sans_600()))
+            } else {
+                small(text.into(), p.muted)
+            };
+            c.label(rt);
+        }
+    } else if let Some(a) = ws.active.as_deref() {
+        c.label(small(tree::base_name(a).to_owned(), p.muted));
     }
     c.with_layout(egui::Layout::right_to_left(egui::Align::Center), |c| {
-        c.spacing_mut().item_spacing.x = 16.0;
-        // shortcut: the notification bell comes with the notices list (M7).
+        c.spacing_mut().item_spacing.x = if tight { 10.0 } else { 14.0 };
+        let bell_pill = (ws.unread_notices > 0).then(|| ws.unread_notices.to_string());
+        let bell = Button::icon(icons::BELL, "Notifications")
+            .kind(Kind::Ghost)
+            .size(Size::Sm)
+            .icon_size(14.0)
+            .on(matches!(ws.menu, Some(Menu::Notices(_))))
+            .pill(bell_pill.as_deref())
+            .show_icon(c, p)
+            .on_hover_text(if ws.notice_log.is_empty() {
+                "Notifications (none yet)"
+            } else {
+                "Notifications"
+            });
+        if bell.clicked() {
+            ws.menu = if matches!(ws.menu, Some(Menu::Notices(_))) {
+                None
+            } else {
+                ws.unread_notices = 0;
+                Some(Menu::Notices(bell.rect))
+            };
+        }
         if let Some(o) = ws.build.outcome.as_ref().filter(|_| !ws.build.building) {
             use lemmata_tex::Status;
             if o.status == Status::Success {
-                let r = c.label(small(format!("Compiled in {:.1} s", o.duration_ms as f64 / 1000.0), p.ok));
+                let text = if tight {
+                    format!("{:.1} s", o.duration_ms as f64 / 1000.0)
+                } else {
+                    format!("Compiled in {:.1} s", o.duration_ms as f64 / 1000.0)
+                };
+                let r = c.label(small(text, p.ok));
                 if let Some(at) = ws.build.finished_at.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()) {
                     r.on_hover_text(format!("Finished at {}", crate::when::time_ms(at.as_millis() as f64)));
                 }
@@ -1512,52 +1670,75 @@ pub fn status_bar(
                 }
             }
         }
-        if status_link(c, engine_name(ws.info.config.engine).into(), p.muted, "Compiler: change it in Project settings", false).clicked() {
+        if !tight
+            && status_link(c, engine_name(ws.info.config.engine).into(), p.muted, "Compiler: change it in Project settings", false).clicked()
+        {
             ws.open_project_settings();
         }
-        if ws.total_words > 0
+        if !tight
+            && ws.total_words > 0
             && status_link(c, format!("{} words", super::sheets::group_digits(ws.total_words)), p.muted, "Words in the document body, without commands, maths or comments. Click for the count per file.", false).clicked()
         {
             ws.open_word_count(backend);
         }
         let lang = ws.spell_language(settings);
-        if lang != "off"
+        if !medium
+            && lang != "off"
             && status_link(c, lang, p.muted, "Spell-check language: change it in Project settings", false).clicked()
         {
             ws.open_project_settings();
         }
-        if ws.info.config.draft
+        if !medium
+            && ws.info.config.draft
             && status_link(c, "Draft mode".into(), p.warn, "Figures are drawn as boxes. Click to build normally again.", false).clicked()
         {
             ws.set_config(backend, settings, |c| c.draft = false);
         }
-        if ws.tex_outdated {
+        if !medium
+            && let Some(err) = ws.checks.grammar.error.clone()
+            && status_link(
+                c,
+                "Grammar error".into(),
+                p.warn,
+                &format!("LanguageTool failed: {err}. Click to retry."),
+                false,
+            )
+            .clicked()
+        {
+            ws.checks.grammar.error = None;
+            ws.checks.grammar.asked.clear();
+            ws.checks.grammar.generation += 1;
+            ws.notice(format!("Retrying grammar check ({err})"), Tone::Info);
+        }
+        if !medium && ws.tex_outdated {
             c.label(small("Old TeX Live".into(), p.warn)).on_hover_text("Some packages may lack newer features");
         }
-        match &ws.lsp.state {
-            crate::lsp::State::Starting => {
-                // .starting: a small spinning ring, then the words.
-                let r = c.label(small("Starting completion".into(), p.muted)).on_hover_text("The language server is starting");
-                let ring = Rect::from_center_size(pos2(r.rect.left() - 10.0, r.rect.center().y), vec2(8.0, 8.0));
-                let t = c.input(|i| i.time) as f32;
-                c.painter().add(egui::Shape::Path(egui::epaint::PathShape::line(
-                    (0..=12).map(|k| {
-                        let a = t * std::f32::consts::TAU / 0.8 + k as f32 * 0.4;
-                        ring.center() + vec2(a.cos(), a.sin()) * 3.5
-                    }).collect(),
-                    Stroke::new(1.5, p.muted),
-                )));
-                c.add_space(8.0);
-                c.ctx().request_repaint_after(theme::ANIMATION_FRAME);
-            }
-            crate::lsp::State::Failed(_)
-                if status_link(c, "No completion".into(), p.muted, "Why is completion off?", false).clicked() =>
-            {
-                {
-                    ws.notice("Completion, hover and go to definition come from texlab, which Lemmata downloads the first time it's needed but couldn't start. Check the internet connection, or install texlab yourself (your package manager, or cargo install texlab), then reopen the project.", Tone::Info);
+        if !medium {
+            match &ws.lsp.state {
+                crate::lsp::State::Starting => {
+                    // .starting: a small spinning ring, then the words.
+                    let r = c.label(small("Starting completion".into(), p.muted)).on_hover_text("The language server is starting");
+                    let ring = Rect::from_center_size(pos2(r.rect.left() - 10.0, r.rect.center().y), vec2(8.0, 8.0));
+                    let t = c.input(|i| i.time) as f32;
+                    c.painter().add(egui::Shape::Path(egui::epaint::PathShape::line(
+                        (0..=12).map(|k| {
+                            let a = t * std::f32::consts::TAU / 0.8 + k as f32 * 0.4;
+                            ring.center() + vec2(a.cos(), a.sin()) * 3.5
+                        }).collect(),
+                        Stroke::new(1.5, p.muted),
+                    )));
+                    c.add_space(8.0);
+                    c.ctx().request_repaint_after(theme::ANIMATION_FRAME);
                 }
+                crate::lsp::State::Failed(_)
+                    if status_link(c, "No completion".into(), p.muted, "Why is completion off?", false).clicked() =>
+                {
+                    {
+                        ws.notice("Completion, hover and go to definition come from texlab, which Lemmata downloads the first time it's needed but couldn't start. Check the internet connection, or install texlab yourself (your package manager, or cargo install texlab), then reopen the project.", Tone::Info);
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     });
     changed
@@ -1604,7 +1785,7 @@ pub fn menus(
     action: &mut Option<Action>,
 ) {
     let Some(menu) = ws.menu.clone() else { return };
-    let id = egui::Id::unique("workspace-menu");
+    let id = egui::Id::unique(("workspace-menu", std::mem::discriminant(&menu)));
     match menu {
         Menu::Main(anchor) => {
             use super::palette::label;
@@ -1643,8 +1824,9 @@ pub fn menus(
             let hints: Vec<String> = MENU
                 .iter()
                 .map(|id| match *id {
-                    "snapshot" | "focus" | "shortcuts" | "palette" => display(keys_of(id)),
-                    "reindent" => "the selection, or the whole file".into(),
+                    "snapshot" | "focus" | "shortcuts" | "palette" | "reindent" => {
+                        display(keys_of(id))
+                    }
                     _ => String::new(),
                 })
                 .collect();
@@ -1685,7 +1867,16 @@ pub fn menus(
                 MenuItem::Heading("Compiler"),
             ];
             for (e, label) in ENGINES {
-                items.push(MenuItem::check(label, cfg.engine == e));
+                if e == Engine::Tectonic && !ws.tectonic_installed && cfg.engine != Engine::Tectonic
+                {
+                    items.push(
+                        MenuItem::check(label, false)
+                            .hint("not installed")
+                            .enabled(false),
+                    );
+                } else {
+                    items.push(MenuItem::check(label, cfg.engine == e));
+                }
             }
             items.extend([
                 MenuItem::Separator,
@@ -1740,6 +1931,194 @@ pub fn menus(
                 }
             }
         }
+        Menu::Targets(anchor) => {
+            let targets = ws.info.config.targets.clone();
+            let hints: Vec<String> = targets
+                .iter()
+                .map(|t| match t.engine {
+                    Some(e) => format!("{} · {}", t.main, engine_name(e)),
+                    None => t.main.clone(),
+                })
+                .collect();
+            let mut items: Vec<MenuItem> = vec![MenuItem::Heading("Build targets")];
+            for (t, h) in targets.iter().zip(&hints) {
+                let on =
+                    t.main == ws.info.main && t.engine.is_none_or(|e| e == ws.info.config.engine);
+                items.push(MenuItem::check(&t.name, on).hint(h));
+            }
+            match widgets::drop_menu(ctx, p, id, anchor, false, &items) {
+                MenuResult::Open => {}
+                MenuResult::Closed => ws.menu = None,
+                MenuResult::Clicked(i) => {
+                    ws.menu = None;
+                    if let Some(target) = targets.get(i.saturating_sub(1)).cloned() {
+                        ws.select_target(backend, settings, target);
+                    }
+                }
+            }
+        }
+        Menu::Notices(anchor) => {
+            let screen = ctx.content_rect();
+            let width = 360.0f32.min(screen.width() - 24.0);
+            let max_h = 340.0f32.min(screen.height() - 80.0);
+            let pos = pos2(
+                (anchor.right() - width).clamp(screen.left() + 8.0, screen.right() - width - 8.0),
+                (anchor.top() - 8.0).max(screen.top() + 8.0),
+            );
+            let seen_id = id.with("notices-seen");
+            let frame = ctx.cumulative_frame_nr();
+            let first = ctx
+                .data(|d| d.get_temp::<u64>(seen_id))
+                .is_none_or(|f| frame > f + 1);
+            ctx.data_mut(|d| d.insert_temp(seen_id, frame));
+            let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+            let mut clear = false;
+            let area = egui::Area::new(egui::Id::unique("notices-drawer"))
+                .order(egui::Order::Foreground)
+                .pivot(egui::Align2::LEFT_BOTTOM)
+                .fixed_pos(pos)
+                .show(ctx, |ui| {
+                    ui.set_width(width);
+                    egui::Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0, p.border))
+                        .corner_radius(theme::R_LG)
+                        .shadow(p.shadow_lg)
+                        .inner_margin(egui::Margin::same(10))
+                        .show(ui, |ui| {
+                            ui.set_width(width - 20.0);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Notifications")
+                                        .font(FontId::new(13.0, theme::font::sans_600()))
+                                        .color(p.ink),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if !ws.notice_log.is_empty()
+                                            && Button::new("Clear")
+                                                .kind(Kind::Ghost)
+                                                .size(Size::Sm)
+                                                .show(ui, p)
+                                                .clicked()
+                                        {
+                                            clear = true;
+                                        }
+                                    },
+                                );
+                            });
+                            ui.add_space(6.0);
+                            if ws.notice_log.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("No notifications yet.")
+                                        .size(12.5)
+                                        .color(p.muted),
+                                );
+                            } else {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("notice-history")
+                                    .max_height(max_h - 48.0)
+                                    .auto_shrink([false, true])
+                                    .show(ui, |ui| {
+                                        ui.spacing_mut().item_spacing.y = 6.0;
+                                        for entry in &ws.notice_log {
+                                            let (icon, color) = match entry.tone {
+                                                Tone::Ok => (icons::CIRCLE_CHECK, p.ok),
+                                                Tone::Error => (icons::CIRCLE_ALERT, p.error),
+                                                Tone::Info => (icons::INFO, p.accent),
+                                            };
+                                            egui::Frame::new()
+                                                .fill(p.surface_2)
+                                                .corner_radius(theme::R)
+                                                .inner_margin(egui::Margin::symmetric(8, 6))
+                                                .show(ui, |ui| {
+                                                    ui.set_width(ui.available_width());
+                                                    ui.horizontal_top(|ui| {
+                                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                                        icons::show(ui, icon, 14.0, color);
+                                                        ui.vertical(|ui| {
+                                                            ui.spacing_mut().item_spacing.y = 2.0;
+                                                            ui.add(
+                                                                egui::Label::new(
+                                                                    egui::RichText::new(
+                                                                        &entry.text,
+                                                                    )
+                                                                    .size(12.5)
+                                                                    .color(p.ink),
+                                                                )
+                                                                .wrap(),
+                                                            );
+                                                            ui.label(
+                                                                egui::RichText::new(
+                                                                    crate::when::time_ms(
+                                                                        entry.time_ms,
+                                                                    ),
+                                                                )
+                                                                .size(11.0)
+                                                                .color(p.muted),
+                                                            );
+                                                        });
+                                                    });
+                                                });
+                                        }
+                                    });
+                            }
+                        });
+                });
+            if clear {
+                ws.notice_log.clear();
+                ws.unread_notices = 0;
+            }
+            if !first
+                && ctx.input(|i| i.pointer.any_pressed())
+                && ctx
+                    .pointer_interact_pos()
+                    .is_some_and(|pt| !area.response.rect.contains(pt) && !anchor.contains(pt))
+            {
+                close = true;
+            }
+            if close {
+                ctx.data_mut(|d| d.remove::<u64>(seen_id));
+                ws.menu = None;
+            }
+        }
+        Menu::EditMore(anchor) => {
+            let items = [
+                MenuItem::new(icons::LINK, "Link (\\href)"),
+                MenuItem::new(icons::IMAGE, "Insert figure…"),
+                MenuItem::new(icons::TABLE, "Insert table…"),
+                MenuItem::new(icons::CODE, "Code block…"),
+                MenuItem::Separator,
+                MenuItem::new(icons::LIST, "Bulleted list"),
+                MenuItem::new(icons::LIST_ORDERED, "Numbered list"),
+            ];
+            match widgets::drop_menu(ctx, p, id, anchor, false, &items) {
+                MenuResult::Open => {}
+                MenuResult::Closed => ws.menu = None,
+                MenuResult::Clicked(i) => {
+                    ws.menu = None;
+                    match i {
+                        0 => with_editor(ws, |e, ind| {
+                            e.insert_template("\\href{${https://}}{${}}", ind)
+                        }),
+                        1 => ws.open_figure(),
+                        2 => ws.open_table(),
+                        3 => ws.menu = Some(Menu::Code(anchor)),
+                        5 => with_editor(ws, |e, ind| {
+                            e.insert_template("\\begin{itemize}\n\t\\item ${}\n\\end{itemize}", ind)
+                        }),
+                        6 => with_editor(ws, |e, ind| {
+                            e.insert_template(
+                                "\\begin{enumerate}\n\t\\item ${}\n\\end{enumerate}",
+                                ind,
+                            )
+                        }),
+                        _ => {}
+                    }
+                }
+            }
+        }
         Menu::Sort(anchor) => {
             let sorts = [
                 ("name", "Name"),
@@ -1755,8 +2134,8 @@ pub fn menus(
                 MenuItem::Separator,
                 MenuItem::check("Folders first", settings.tree_folders_first),
                 MenuItem::Separator,
-                MenuItem::check("Collapse all folders", false),
-                MenuItem::check("Expand all folders", false),
+                MenuItem::plain("Collapse all folders"),
+                MenuItem::plain("Expand all folders"),
             ]);
             match widgets::drop_menu(ctx, p, id, anchor, true, &items) {
                 MenuResult::Open => {}
@@ -1837,7 +2216,12 @@ pub fn menus(
         Menu::Tab(path, anchor) => {
             let pinned = ws.pinned.contains(&path);
             let i = ws.tabs.iter().position(|t| *t == path).unwrap_or(0);
-            let last = i + 1 == ws.tabs.len();
+            let has_unpinned_others = ws.tabs.iter().any(|t| *t != path && !ws.pinned.contains(t));
+            let has_unpinned_right = ws
+                .tabs
+                .get(i + 1..)
+                .is_some_and(|s| s.iter().any(|t| !ws.pinned.contains(t)));
+            let has_unpinned_any = ws.tabs.iter().any(|t| !ws.pinned.contains(t));
             let reopen = ws
                 .closed
                 .first()
@@ -1846,9 +2230,9 @@ pub fn menus(
                 MenuItem::plain(if pinned { "Unpin" } else { "Pin" }),
                 MenuItem::Separator,
                 MenuItem::plain("Close"),
-                MenuItem::plain("Close others").enabled(ws.tabs.len() >= 2),
-                MenuItem::plain("Close to the right").enabled(!last),
-                MenuItem::plain("Close all"),
+                MenuItem::plain("Close others").enabled(has_unpinned_others),
+                MenuItem::plain("Close to the right").enabled(has_unpinned_right),
+                MenuItem::plain("Close all").enabled(has_unpinned_any),
             ];
             if let Some(r) = &reopen {
                 items.push(MenuItem::Separator);

@@ -105,11 +105,25 @@ for deb in "$out"/*.deb; do
   [[ -e $deb ]] || continue
   carries "$deb" "$(dpkg-deb -c "$deb")"
 done
+for rpm in "$out"/*.rpm; do
+  [[ -e $rpm ]] || continue
+  if command -v rpm >/dev/null; then carries "$rpm" "$(rpm -qlp "$rpm")"; else echo "::warning::no rpm: $rpm not inspected"; fi
+done
+for appimage in "$out"/*.AppImage; do
+  [[ -e $appimage ]] || continue
+  tmp=$(mktemp -d)
+  if (cd "$tmp" && chmod +x "$appimage" && "$appimage" --appimage-extract >/dev/null 2>&1); then
+    carries "$appimage" "$(find "$tmp/squashfs-root" -type d | sed 's|$|/|')"
+  else
+    echo "::warning::could not extract $appimage for inspection"
+  fi
+  rm -rf "$tmp"
+done
 for app in "$out"/*.app "$out"/*/*.app; do
   [[ -d $app ]] || continue
   carries "$app" "$(find "$app" -type d | sed 's|$|/|')"
 done
-for exe in "$out"/*-setup.exe; do
+for exe in "$out"/*-setup.exe "$out"/*.msi; do
   [[ -e $exe ]] || continue
   if command -v 7z >/dev/null; then carries "$exe" "$(7z l "$exe")"; else echo "::warning::no 7z: $exe not inspected"; fi
 done

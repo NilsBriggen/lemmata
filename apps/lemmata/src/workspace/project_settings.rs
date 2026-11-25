@@ -64,7 +64,7 @@ impl Workspace {
     pub fn open_project_settings(&mut self) {
         let mut config = self.info.config.clone();
         config.main.get_or_insert_with(|| self.info.main.clone());
-        let chapters = lemmata_env::fs::read_to_string(self.info.root.join(&self.info.main))
+        let chapters = lemmata_env::fs::read_text(self.info.root.join(&self.info.main))
             .map(|t| lemmata_project::included_chapters(&t))
             .unwrap_or_default();
         self.project_settings = Some(ProjectSettings {
@@ -106,7 +106,8 @@ impl Workspace {
             Some("Saved in lemmata.toml in the project folder, so they travel with it."),
             540.0,
             |ui| {
-                let max_h = ui.ctx().content_rect().height() * 0.62;
+                let vh = ui.ctx().content_rect().height();
+                let max_h = (vh - 220.0).clamp(160.0, vh * 0.62);
                 let w = ui.available_width();
                 ui.allocate_ui(vec2(w, max_h), |ui| {
                     egui::ScrollArea::vertical()
@@ -145,11 +146,11 @@ impl Workspace {
         config.timeout_secs =
             timeout_ok(&d.timeout).unwrap_or(lemmata_project::DEFAULT_TIMEOUT_SECS);
         // Turning shell escape on here is the user allowing programs: that trusts the project.
+        // Trust changes are applied only once saves and `set_config` succeed so a failed save
+        // never silently promotes a restricted project.
         let trust = d.trusted || grants_shell_escape_trust(&config, trusted, was_on);
-        if trust != trusted {
-            self.set_trusted(backend, settings, trust);
-            *action = Some(Action::Settings);
-        }
+        let trust_changed = trust != trusted;
+        let _ = action;
         let main_changed = config.main.as_deref() != Some(self.info.main.as_str());
         self.after_saving(backend, settings, move |_, b| {
             Workspace::job(
@@ -168,7 +169,12 @@ impl Workspace {
                             let main = ws.info.main.clone();
                             ws.open_file(b, &main);
                         }
-                        ws.build_soon(false, false);
+                        if trust_changed {
+                            // `Workspace::show` applies `set_trusted` (which also triggers a rebuild).
+                            ws.pending_trust = Some(trust);
+                        } else {
+                            ws.build_soon(false, false);
+                        }
                     }
                     Err(e) => {
                         // The dialog stays open, so the choices aren't lost.

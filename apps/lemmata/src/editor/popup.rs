@@ -144,8 +144,10 @@ pub fn show(
     egui::Area::new(egui::Id::unique("completion"))
         .order(egui::Order::Tooltip)
         .fixed_pos(top_left)
+        .constrain_to(screen.shrink(4.0))
         .show(ctx, |ui| {
-            // Width: the widest of the rows shown, between 250 and 700 px.
+            // Width: the widest of the rows shown, between 250 and 700 px (clamped to viewport).
+            let max_w = (screen.width() - 12.0).clamp(180.0, 700.0);
             let width = c.items[c.top..(c.top + rows).min(c.items.len())]
                 .iter()
                 .map(|(it, _)| {
@@ -164,8 +166,8 @@ pub fn show(
                     };
                     20.0 + size * 1.4 + w + g + d
                 })
-                .fold(250.0f32, f32::max)
-                .min(700.0);
+                .fold(250.0f32.min(max_w), f32::max)
+                .min(max_w);
             let (rect, list) = ui.allocate_exact_size(vec2(width, list_h), Sense::hover());
             list.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::Role::ListBox, true, "Suggestions")
@@ -277,7 +279,8 @@ pub fn show(
                     && (grab.dragged() || grab.clicked())
                 {
                     // The thumb's middle goes where the pointer is.
-                    let t = ((at.y - track.top() - h / 2.0) / (track.height() - h)).clamp(0.0, 1.0);
+                    let span = (track.height() - h).max(1.0);
+                    let t = ((at.y - track.top() - h / 2.0) / span).clamp(0.0, 1.0);
                     c.top = (t * (c.items.len() - rows) as f32).round() as usize;
                 }
                 let y = track.top()
@@ -312,6 +315,7 @@ pub fn show(
         egui::Area::new(egui::Id::unique("completion-info"))
             .order(egui::Order::Tooltip)
             .fixed_pos(at)
+            .constrain_to(screen.shrink(4.0))
             .pivot(if right {
                 Align2::LEFT_TOP
             } else {

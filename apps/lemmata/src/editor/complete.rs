@@ -75,8 +75,8 @@ impl Item {
     }
 }
 
-/// texlab's command names (with their detail) for a file and cursor, and where the name starts.
-pub type ServerItems = (String, usize, usize, Vec<(String, Option<String>)>);
+/// texlab's command items for a file and cursor, and where the name starts.
+pub type ServerItems = (String, usize, usize, Vec<crate::lsp::CompletionItem>);
 
 /// What completion can look up about the project.
 #[derive(Default)]
@@ -91,10 +91,12 @@ pub struct Lookups {
     pub generation: u64,
     /// The project folder, for hover cards that show a file.
     pub root: std::path::PathBuf,
-    /// texlab's command completions: file, cursor, where the name starts, and the names.
+    /// texlab's command completions: file, cursor, where the name starts, and the items.
     pub server: Option<ServerItems>,
-    /// texlab's hover note: file, line, column (0-based chars) and text.
-    pub hover: Option<(String, usize, usize, String)>,
+    /// texlab's hover note: file, doc version, line, column (0-based chars) and text.
+    pub hover: Option<(String, u64, usize, usize, String)>,
+    /// texlab's quick-fix code actions for a hovered problem line: file, doc version, 0-based line, actions.
+    pub code_actions: Option<(String, u64, usize, Vec<crate::lsp::CodeAction>)>,
 }
 
 // ── Vocabulary (data.ts) ───────────────────────────────────────────────────
@@ -1014,7 +1016,7 @@ pub fn wants_server(d: &Doc, pos: usize, explicit: bool) -> bool {
 }
 
 /// texlab's command items, minus those the local list has (its labels come without the backslash).
-pub fn server_items(names: &[(String, Option<String>)], from: usize, pos: usize) -> Vec<Item> {
+pub fn server_items(names: &[crate::lsp::CompletionItem], from: usize, pos: usize) -> Vec<Item> {
     let local: std::collections::HashSet<String> = text_commands(false)
         .into_iter()
         .map(|i| i.label)
@@ -1027,11 +1029,33 @@ pub fn server_items(names: &[(String, Option<String>)], from: usize, pos: usize)
         .collect();
     names
         .iter()
-        .filter(|(n, _)| !local.contains(&format!("\\{n}")))
-        .map(|(n, detail)| {
-            let mut it = Item::new(n.clone(), Kind::Function, Apply::Text(n.clone()));
-            it.display = Some(format!("\\{n}"));
-            it.detail = detail.clone();
+        .filter(|i| !local.contains(&format!("\\{}", i.label.trim_start_matches('\\'))))
+        .map(|i| {
+            let bare = i.label.trim_start_matches('\\').to_owned();
+            let insert = i
+                .insert_text
+                .as_deref()
+                .map(|t| t.trim_start_matches('\\').to_owned())
+                .unwrap_or_else(|| bare.clone());
+            let kind = match i.kind {
+                Some(2..=4) => Kind::Function,
+                Some(5..=8) => Kind::Class,
+                Some(9) => Kind::Namespace,
+                Some(14) => Kind::Keyword,
+                Some(17 | 19) => Kind::File,
+                Some(21) => Kind::Constant,
+                Some(1) => Kind::Text,
+                _ => Kind::Function,
+            };
+            let filter_key = i
+                .filter_text
+                .as_deref()
+                .map(|t| t.trim_start_matches('\\').to_owned())
+                .unwrap_or_else(|| bare.clone());
+            let mut it = Item::new(filter_key, kind, Apply::Text(insert));
+            it.display = Some(format!("\\{bare}"));
+            it.detail = i.detail.clone();
+            it.info = i.documentation.clone();
             it.from = from;
             it.to = pos;
             it
@@ -1212,6 +1236,7 @@ mod tests {
             root: Default::default(),
             server: None,
             hover: None,
+            code_actions: None,
         }
     }
 
@@ -1421,11 +1446,15 @@ mod tests {
 
     #[test]
     fn server_commands_skip_local_ones_and_lists() {
-        let items = server_items(
-            &[("section".into(), None), ("sectionmark".into(), None)],
-            1,
-            4,
-        );
+        let mk = |label: &str| crate::lsp::CompletionItem {
+            label: label.into(),
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            filter_text: None,
+            kind: None,
+        };
+        let items = server_items(&[mk("section"), mk("sectionmark")], 1, 4);
         assert_eq!(
             items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
             ["sectionmark"]

@@ -21,13 +21,15 @@ for dir in "$root"/templates/*/; do
   cp -r "$dir" "$work/$name"
   if "$cli" build "$work/$name" --json >/dev/null 2>&1 && pdf=$(ls "$work/$name"/.lemmata/build/*.pdf 2>/dev/null | head -1) && [ -n "$pdf" ]; then
     pdftoppm -png -f 1 -l 1 -scale-to 420 -singlefile "$pdf" "$dir/preview"
-    echo "ok   $name ($(stat -c %s "$dir/preview.png") bytes)"
+    size=$(wc -c < "$dir/preview.png" | tr -d ' ')
+    echo "ok   $name ($size bytes)"
   else
     echo "skip $name (does not build here)"
   fi
 done
 
 for png in "$root"/templates/*/preview.png; do
-  [ "$(stat -c %s "$png")" -lt 61440 ] || { echo "TOO BIG $png"; failed=1; }
+  size=$(wc -c < "$png" | tr -d ' ')
+  [ "$size" -lt 61440 ] || { echo "TOO BIG $png ($size bytes)"; failed=1; }
 done
 exit $failed

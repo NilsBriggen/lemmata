@@ -100,7 +100,7 @@ fn math_worker() -> &'static std::sync::mpsc::SyncSender<Job> {
 
 #[derive(Default)]
 struct Cache {
-    macros: BTreeMap<String, String>,
+    macros: BTreeMap<String, super::math::Macro>,
     /// The macros as `\def`s put before every formula.
     prelude: String,
     done: HashMap<Key, Result<Math, String>>,
@@ -118,23 +118,19 @@ thread_local! {
     static CACHE: RefCell<Cache> = RefCell::new(Cache::default());
 }
 
-/// The preamble's `\newcommand`s and operators (from `math::collect_macros`); drops the cache when
-/// they changed.
-pub fn set_macros(macros: BTreeMap<String, String>) {
+/// The preamble's `\newcommand`s and operators (from `math::collect_macro_defs`), preserving
+/// declared arity; drops the cache when they changed.
+pub fn set_macro_defs(macros: BTreeMap<String, super::math::Macro>) {
     CACHE.with_borrow_mut(|c| {
         if c.macros == macros {
             return;
         }
         c.prelude = macros
             .iter()
-            .map(|(name, body)| {
-                // `#3` in the body means three parameters.
-                let n = (1..=9)
-                    .rev()
-                    .find(|k| body.contains(&format!("#{k}")))
-                    .unwrap_or(0);
+            .map(|(name, m)| {
+                let n = m.arity.min(9);
                 let params: String = (1..=n).map(|k| format!("#{k}")).collect();
-                format!("\\def{name}{params}{{{body}}}")
+                format!("\\def{name}{params}{{{}}}", m.body)
             })
             .collect();
         c.macros = macros;
@@ -144,6 +140,22 @@ pub fn set_macros(macros: BTreeMap<String, String>) {
         c.bytes = 0;
         c.generation += 1;
     });
+}
+
+/// Convenience wrapper when only macro bodies are supplied (infers arity from `#1..#9`).
+#[cfg(test)]
+pub fn set_macros(macros: BTreeMap<String, String>) {
+    let defs = macros
+        .into_iter()
+        .map(|(name, body)| {
+            let arity = (1..=9)
+                .rev()
+                .find(|k| body.contains(&format!("#{k}")))
+                .unwrap_or(0);
+            (name, super::math::Macro { arity, body })
+        })
+        .collect();
+    set_macro_defs(defs);
 }
 
 /// Lays out `tex`; the error message when it can't be parsed.

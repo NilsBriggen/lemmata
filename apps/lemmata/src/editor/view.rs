@@ -72,6 +72,9 @@ pub enum Severity {
     Info,
 }
 
+/// 1-based line, optional 0-based char column range, severity, and message.
+pub type ProblemItem = (usize, Option<(usize, usize)>, Severity, String);
+
 /// What happened in the editor this frame, for the app.
 #[derive(Default, Debug)]
 pub struct Output {
@@ -99,6 +102,10 @@ pub struct Output {
     pub server_hover: Option<(usize, usize)>,
     /// F12 / Shift-F12 at the cursor: (line, column), and whether it's references.
     pub server_goto: Option<(usize, usize, bool)>,
+    /// Ask texlab for quick fixes on this hovered problem (0-based line, start_col, end_col).
+    pub server_code_actions: Option<(usize, usize, usize)>,
+    /// User clicked a texlab quick fix button.
+    pub apply_code_action: Option<crate::lsp::CodeAction>,
     /// "Add to dictionary" on a misspelled word.
     pub add_word: Option<String>,
     /// Paragraph texts to send to LanguageTool.
@@ -143,6 +150,9 @@ pub struct Editor {
     heights_key: (u64, u32, u32, bool, u32),
     /// Heights by line text, so an edit lays out only the lines it changed.
     height_cache: HashMap<u64, f32>,
+    /// Measured heights for lines corrected during rendering of long (`>1500`-line) files,
+    /// keyed by line index -> (char length, height), so re-measures keep them without O(n) layout.
+    measured_heights: HashMap<usize, (usize, f32)>,
     cache_key: (u32, u32, bool, u32),
     /// The x a run of Up/Down presses aims for.
     goal_x: Option<f32>,
@@ -229,6 +239,7 @@ impl Editor {
             heights: Vec::new(),
             heights_key: (u64::MAX, 0, 0, false, 0),
             height_cache: HashMap::new(),
+            measured_heights: HashMap::new(),
             cache_key: (0, 0, false, 0),
             goal_x: None,
             reveal: false,
@@ -277,11 +288,17 @@ impl Editor {
         self.doc.line_of(self.doc.selection.main().head) + 1
     }
 
+    /// Puts the cursor at `col` (0-based chars) on `line` (1-based) and scrolls it to the middle.
+    pub fn goto_line_col(&mut self, line: usize, col: usize) {
+        let n = line.clamp(1, self.doc.line_count()) - 1;
+        let len = self.doc.line_len(n);
+        self.doc.selection = Selection::cursor(self.doc.line_start(n) + col.min(len));
+        self.center_line = Some(n);
+    }
+
     /// Puts the cursor at the start of `line` (1-based) and scrolls it to the middle.
     pub fn goto_line(&mut self, line: usize) {
-        let n = line.clamp(1, self.doc.line_count()) - 1;
-        self.doc.selection = Selection::cursor(self.doc.line_start(n));
-        self.center_line = Some(n);
+        self.goto_line_col(line, 0);
     }
 
     /// Inserts a template at the selection (a toolbar button, a dialog), as a snippet.
@@ -342,17 +359,26 @@ impl Editor {
         }
     }
 
-    /// Shows a build's problems: each on its whole line (1-based), like Editor.svelte showDiagnostics.
-    pub fn set_problems(&mut self, generation: u64, list: &[(usize, Severity, String)]) {
+    /// Shows build and live LSP problems (1-based line, optional 0-based char column span).
+    pub fn set_problems(&mut self, generation: u64, list: &[ProblemItem]) {
         self.problems_gen = generation;
         let lines = self.doc.line_count();
         self.problems = list
             .iter()
-            .map(|(line, severity, message)| {
+            .map(|(line, cols, severity, message)| {
                 let n = line.clamp(&1, &lines) - 1;
+                let line_start = self.doc.line_start(n);
+                let line_len = self.doc.line_len(n);
+                let (from, to) = match cols {
+                    Some((a, b)) if *b > *a => (
+                        line_start + (*a).min(line_len),
+                        line_start + (*b).min(line_len),
+                    ),
+                    _ => (line_start, line_start + line_len),
+                };
                 Problem {
-                    from: self.doc.line_start(n),
-                    to: self.doc.line_end(n),
+                    from,
+                    to,
                     severity: *severity,
                     message: message.clone(),
                 }
@@ -789,6 +815,7 @@ pub fn show(
     checks: &mut crate::writing::Checks,
 ) -> Output {
     let mut out = Output::default();
+    checks.spell.poll();
     let journal = std::mem::take(&mut ed.doc.journal);
     if !journal.is_empty() {
         // Only folds that moved change which lines are hidden; without any, the heights are
@@ -851,6 +878,19 @@ pub fn show(
         text_w,
     };
     let tab = style.indent.tab_size();
+
+    // Unfold any fold enclosing the main cursor BEFORE measuring heights and computing scroll
+    // offsets, so jumping into a folded section reveals and scrolls accurately on this frame.
+    let head_before = ed.doc.selection.main().head;
+    if ed
+        .folds
+        .0
+        .iter()
+        .any(|f| head_before > f.0 && head_before <= f.1)
+    {
+        ed.folds.reveal(head_before);
+        ed.folds_gen += 1;
+    }
 
     update_heights(ui, ed, &lay);
     let mut tops = Vec::with_capacity(ed.heights.len());
@@ -1030,7 +1070,11 @@ pub fn show(
             Vec::new()
         };
         let lh = style.line_height;
-        let right_edge = screen(text_x + text_w + 6.0, 0.0).x;
+        let right_edge = if style.wrap {
+            screen(text_x + text_w + 6.0, 0.0).x
+        } else {
+            screen(content_w, 0.0).x
+        };
         let fold_on = style.folding;
         let mut fold_clicks: Vec<(Rect, usize)> = Vec::new();
         let mut lint_marks: Vec<(Rect, usize)> = Vec::new();
@@ -1083,15 +1127,20 @@ pub fn show(
             };
             let l = lay.layout(ui, &text, &tokens);
             if (l.height - ed.heights[n]).abs() > 0.5 {
-                // A guessed height was off; it is right from the next frame on.
+                // A guessed height was off; remember it for future re-measures and update next frame.
                 ed.height_cache.insert(hash(&text), l.height);
+                ed.measured_heights
+                    .insert(n, (text.chars().count(), l.height));
                 ed.heights[n] = l.height;
                 ui.ctx().request_repaint();
             }
             let top = tops[n];
             let line_rect = Rect::from_min_size(
                 screen(gutter_w, top),
-                vec2(area.width() - gutter_w, l.height),
+                vec2(
+                    (content_w - gutter_w).max(area.width() - gutter_w),
+                    l.height,
+                ),
             );
             let start = ed.doc.line_start(n);
             let len = text.chars().count();
@@ -1112,10 +1161,18 @@ pub fn show(
                 );
             }
             let span = |a: usize, b: usize, fill: Color32| {
-                let (pa, pb) = (at(a), at(b));
-                if (pa.y - pb.y).abs() < 1.0 {
+                let (pa, ra) = col_pos(&l, a, cw, tab);
+                let (pb, rb) = col_pos(&l, b, cw, tab);
+                for row in ra..=rb {
+                    let y = base.y + row as f32 * lh;
+                    let x0 = if row == ra {
+                        base.x + pa.x
+                    } else {
+                        base.x + l.hang
+                    };
+                    let x1 = if row == rb { base.x + pb.x } else { right_edge };
                     painter.rect_filled(
-                        Rect::from_min_max(pa, pos2(pb.x.max(pa.x + 1.0), pa.y + lh)),
+                        Rect::from_min_max(pos2(x0, y), pos2(x1.max(x0 + 1.0), y + lh)),
                         0,
                         fill,
                     );
@@ -1257,17 +1314,25 @@ pub fn show(
                     .iter()
                     .filter(|u| u.1 > start && u.0 < start + len)
                 {
-                    let (pa, _) = col_pos(&l, a.max(start) - start, cw, tab);
-                    let (pb, _) = col_pos(&l, b.min(start + len) - start, cw, tab);
-                    let y = base.y + lh / 2.0 + style.font.size * 0.62 + 1.0;
-                    let mut x = base.x + pa.x;
-                    while x < base.x + pb.x {
-                        painter.hline(
-                            x..=(x + 1.0).min(base.x + pb.x),
-                            y,
-                            Stroke::new(1.0, p.warn),
-                        );
-                        x += 2.5;
+                    let (pa, ra) = col_pos(&l, a.max(start) - start, cw, tab);
+                    let (pb, rb) = col_pos(&l, b.min(start + len) - start, cw, tab);
+                    for row in ra..=rb {
+                        let y = base.y + row as f32 * lh + lh / 2.0 + style.font.size * 0.62 + 1.0;
+                        let x0 = if row == ra {
+                            base.x + pa.x
+                        } else {
+                            base.x + l.hang
+                        };
+                        let x1 = if row == rb {
+                            base.x + pb.x
+                        } else {
+                            right_edge - 6.0
+                        };
+                        let mut x = x0;
+                        while x < x1 {
+                            painter.hline(x..=(x + 1.0).min(x1), y, Stroke::new(1.0, p.warn));
+                            x += 2.5;
+                        }
                     }
                 }
             }
@@ -1278,9 +1343,21 @@ pub fn show(
                     if checks.spell.bad(&w.text) {
                         let (pa, ra) = col_pos(&l, w.from - start, cw, tab);
                         let (pb, rb) = col_pos(&l, w.to - start, cw, tab);
-                        if ra == rb {
-                            let y = base.y + ra as f32 * lh + lh / 2.0 + style.font.size * 0.62;
-                            wavy(&painter, base.x + pa.x, base.x + pb.x, y, p.error);
+                        for row in ra..=rb {
+                            let y = base.y + row as f32 * lh + lh / 2.0 + style.font.size * 0.62;
+                            let x0 = if row == ra {
+                                base.x + pa.x
+                            } else {
+                                base.x + l.hang
+                            };
+                            let x1 = if row == rb {
+                                base.x + pb.x
+                            } else {
+                                right_edge - 6.0
+                            };
+                            if x1 > x0 {
+                                wavy(&painter, x0, x1, y, p.error);
+                            }
                         }
                         spell_words.push((w.from, w.to, w.text));
                     }
@@ -1411,16 +1488,37 @@ pub fn show(
             geo.layouts.insert(n, l);
         }
 
+        let mut tooltip_shown = ed.spell_menu.is_some();
         // The problems of a line, on hovering its marker.
-        if let Some(pos) = ui.input(|i| i.pointer.hover_pos())
+        if !tooltip_shown
+            && let Some(pos) = ui.input(|i| i.pointer.hover_pos())
             && let Some(&(r, n)) = lint_marks.iter().find(|(r, _)| r.contains(pos))
         {
-            problem_tooltip(
+            let actions = look
+                .code_actions
+                .as_ref()
+                .filter(|ca| ca.0 == ed.path && ca.1 == ed.doc.version && ca.2 == n)
+                .map(|ca| ca.3.as_slice())
+                .unwrap_or(&[]);
+            if ed.tex
+                && actions.is_empty()
+                && look
+                    .code_actions
+                    .as_ref()
+                    .is_none_or(|ca| ca.0 != ed.path || ca.1 != ed.doc.version || ca.2 != n)
+            {
+                out.server_code_actions = Some((n, 0, ed.doc.line_len(n)));
+            }
+            if let Some(act) = problem_tooltip(
                 ui,
                 p,
                 r.right_bottom(),
                 ed.problems.iter().filter(|pr| ed.doc.line_of(pr.from) == n),
-            );
+                actions,
+            ) {
+                out.apply_code_action = Some(act);
+            }
+            tooltip_shown = true;
         }
 
         // The maths under the cursor, previewed above it (writing/math.ts).
@@ -1593,26 +1691,52 @@ pub fn show(
             )
         };
         // Hovering a problem's text shows its message too (after CodeMirror's 300 ms).
-        if response.hovered()
+        if !tooltip_shown
+            && response.hovered()
             && !ed.problems.is_empty()
             && ui.input(|i| i.pointer.time_since_last_movement()) > 0.3
             && let Some(pos) = response.hover_pos()
         {
-            let (at, _, _) = hit(&mut geo, ui, &ed.doc, pos);
+            let (at, line_n, _) = hit(&mut geo, ui, &ed.doc, pos);
             let here: Vec<&Problem> = ed
                 .problems
                 .iter()
                 .filter(|pr| at >= pr.from && at <= pr.to && pr.to > pr.from)
                 .collect();
             if !here.is_empty() {
-                problem_tooltip(ui, p, pos + vec2(0.0, 12.0), here.into_iter());
+                let actions = look
+                    .code_actions
+                    .as_ref()
+                    .filter(|ca| ca.0 == ed.path && ca.1 == ed.doc.version && ca.2 == line_n)
+                    .map(|ca| ca.3.as_slice())
+                    .unwrap_or(&[]);
+                if ed.tex
+                    && look.code_actions.as_ref().is_none_or(|ca| {
+                        ca.0 != ed.path || ca.1 != ed.doc.version || ca.2 != line_n
+                    })
+                {
+                    let line_start = ed.doc.line_start(line_n);
+                    let pr0 = here[0];
+                    let c0 = pr0.from.saturating_sub(line_start);
+                    let c1 = pr0
+                        .to
+                        .saturating_sub(line_start)
+                        .min(ed.doc.line_len(line_n));
+                    out.server_code_actions = Some((line_n, c0, c1));
+                }
+                if let Some(act) =
+                    problem_tooltip(ui, p, pos + vec2(0.0, 12.0), here.into_iter(), actions)
+                {
+                    out.apply_code_action = Some(act);
+                }
+                tooltip_shown = true;
             }
-        } else if response.hovered() && !ed.problems.is_empty() {
+        } else if !tooltip_shown && response.hovered() && !ed.problems.is_empty() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(320));
         }
         // Hover cards (editor/hover.ts): after resting 300 ms on a \ref, \cite, image or input.
-        if ed.tex {
+        if ed.tex && !tooltip_shown {
             let rested = ui.input(|i| i.pointer.time_since_last_movement()) > 0.3;
             let pointer = ui.input(|i| i.pointer.hover_pos());
             let on_card = pointer
@@ -1649,11 +1773,15 @@ pub fn show(
                             .nth(col)
                             .is_some_and(|c| c.is_alphanumeric() || c == '\\');
                         match &look.hover {
-                            Some((path, l, c, text))
-                                if *path == ed.path && *l == n && *c == col =>
+                            Some((path, ver, l, c, text))
+                                if *path == ed.path
+                                    && *ver == ed.doc.version
+                                    && *l == n
+                                    && *c == col =>
                             {
                                 if !text.is_empty() {
                                     problem_tooltip_text(ui, p, pos + vec2(0.0, 14.0), text);
+                                    tooltip_shown = true;
                                 }
                             }
                             _ if on_word => out.server_hover = Some((n, col)),
@@ -1670,9 +1798,11 @@ pub fn show(
             {
                 let pt = col_pos(l, t.from.min(ed.doc.line(n).chars().count()), cw, tab).0;
                 let at = screen(text_x, tops[n]) + pt.to_vec2() + vec2(0.0, lh);
-                let r = egui::Area::new(egui::Id::unique("hover-card"))
+                let ready = super::hover::preview_ready(ui.ctx(), &t, look, &look.root);
+                let r = egui::Area::new(egui::Id::unique(("hover-card", n, t.from, t.to, ready)))
                     .order(egui::Order::Tooltip)
                     .fixed_pos(at)
+                    .constrain_to(ui.ctx().content_rect().shrink(4.0))
                     .show(ui.ctx(), |ui| {
                         egui::Frame::new()
                             .fill(p.surface)
@@ -1702,7 +1832,10 @@ pub fn show(
                 if out.hover_search.is_some() {
                     ed.hover = None;
                 }
+                tooltip_shown = true;
             }
+        } else if tooltip_shown {
+            ed.hover = None;
         }
         // Files dropped from the computer onto a .tex file: figures where they were dropped.
         if ed.tex
@@ -1784,7 +1917,7 @@ pub fn show(
             );
         }
         // Hovering a grammar finding: its message, the fixes, and "Ignore this rule".
-        if ed.spell_menu.is_none()
+        if !tooltip_shown
             && let Some(pos) = response.hover_pos()
             && ui.input(|i| i.pointer.time_since_last_movement()) > 0.3
         {
@@ -1806,13 +1939,16 @@ pub fn show(
                 .0;
                 ed.grammar_tip = Some((g, screen(text_x, tops[n]) + pt.to_vec2()));
             }
+        } else if tooltip_shown {
+            ed.grammar_tip = None;
         }
-        if let Some((g, at)) = ed.grammar_tip.clone() {
+        if !tooltip_shown && let Some((g, at)) = ed.grammar_tip.clone() {
             let mut keep = false;
             let r = egui::Area::new(egui::Id::unique("grammar-tip"))
                 .order(egui::Order::Tooltip)
                 .pivot(egui::Align2::LEFT_BOTTOM)
                 .fixed_pos(at - vec2(0.0, 2.0))
+                .constrain_to(ui.ctx().content_rect().shrink(4.0))
                 .show(ui.ctx(), |ui| {
                     egui::Frame::new()
                         .fill(p.surface)
@@ -1974,9 +2110,9 @@ pub fn show(
         if !ui.input(|i| i.pointer.any_down()) {
             ed.drag = None;
         }
-        visible
+        (visible, origin)
     });
-    let visible = scrolled.inner;
+    let (visible, scroll_origin) = scrolled.inner;
 
     // The keyboard.
     if ui.memory(|m| m.has_focus(id)) {
@@ -2106,16 +2242,43 @@ pub fn show(
                 }
             }
         }
+        let prev_selected = if wanted.is_none() {
+            ed.completion
+                .as_ref()
+                .and_then(|c| c.items.get(c.selected).map(|(it, _)| it.label.clone()))
+        } else {
+            None
+        };
         let items = complete::rank(&ed.doc, found);
+        let selected = prev_selected
+            .as_deref()
+            .and_then(|label| items.iter().position(|(it, _)| it.label == label))
+            .unwrap_or(0);
+        let top = if selected >= 6 {
+            selected.saturating_sub(5)
+        } else {
+            0
+        };
         ed.completion = (!items.is_empty()).then_some(Completion {
             items,
-            selected: 0,
+            selected,
             explicit,
             key,
-            top: 0,
+            top,
             scrolled: 0.0,
             rect: Rect::NOTHING,
         });
+    }
+    if popup_anchor.is_none()
+        && let Some(c) = &ed.completion
+        && let Some((it, _)) = c.items.first()
+    {
+        let n = ed.doc.line_of(it.from.min(ed.doc.len()));
+        if let Some(&line_top) = tops.get(n) {
+            let col = it.from.saturating_sub(ed.doc.line_start(n));
+            let pt = col_pos(geo.line(ui, &ed.doc, n), col, cw, tab).0;
+            popup_anchor = Some(scroll_origin + vec2(text_x, line_top) + pt.to_vec2());
+        }
     }
     if let (Some(anchor), Some(c)) = (popup_anchor, &mut ed.completion) {
         // A small rendered glyph beside each maths item (.cm-math-glyph, KaTeX's 1.21 em).
@@ -2182,6 +2345,7 @@ pub fn show(
         let r = egui::Area::new(egui::Id::unique("spell-menu"))
             .order(egui::Order::Foreground)
             .fixed_pos(menu.at)
+            .constrain_to(ui.ctx().content_rect().shrink(4.0))
             .show(ui.ctx(), |ui| {
                 egui::Frame::new()
                     .fill(p.surface)
@@ -2217,10 +2381,10 @@ pub fn show(
                             });
                             resp.clicked()
                         };
-                        let has_selection = ed.doc.selection.ranges.iter().any(|r| !r.is_empty());
+                        // Cut and Copy are always enabled (matching Ctrl+X/Ctrl+C cutting/copying the current line).
                         for (label, enabled, cmd) in [
-                            ("Cut", has_selection, egui::ViewportCommand::RequestCut),
-                            ("Copy", has_selection, egui::ViewportCommand::RequestCopy),
+                            ("Cut", true, egui::ViewportCommand::RequestCut),
+                            ("Copy", true, egui::ViewportCommand::RequestCopy),
                             ("Paste", true, egui::ViewportCommand::RequestPaste),
                         ] {
                             let color = if enabled { p.ink } else { p.faint };
@@ -2307,8 +2471,11 @@ pub fn show(
     if ed.folds.0.iter().any(|f| head > f.0 && head <= f.1) {
         ed.folds.reveal(head);
         ed.folds_gen += 1;
+        ed.reveal = true;
         ui.ctx().request_repaint();
     }
+
+    checks.spell.flush(ui.ctx());
 
     // What changed this frame.
     if ed.doc.version != ed.reported_version {
@@ -2439,7 +2606,7 @@ fn handle_event(
                             format!("{}{}", unit.repeat(n), &l[n * 2..])
                         })
                         .collect::<Vec<_>>()
-                        .join("\n");
+                        .join(ed.doc.eol);
                     let from = ed.doc.selection.main().from();
                     cmd::insert_text(&mut ed.doc, &table);
                     out.needs_package = Some("booktabs".into());
@@ -2466,6 +2633,7 @@ fn handle_event(
                     .selection
                     .ranges
                     .iter()
+                    .filter(|r| !r.is_empty())
                     .map(|r| ed.doc.slice(r.from(), r.to()))
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -2632,11 +2800,11 @@ fn key_press(
             cmd::toggle_wrap(d, "textit");
             return reveal(ed);
         }
-        if on("heading-down") {
-            return cmd::shift_heading(d, 1);
+        if on("heading-down") && cmd::shift_heading(d, 1) {
+            return reveal(ed);
         }
-        if on("heading-up") {
-            return cmd::shift_heading(d, -1);
+        if on("heading-up") && cmd::shift_heading(d, -1) {
+            return reveal(ed);
         }
         if on("wrap-env") {
             out.wrap_environment = true;
@@ -2867,8 +3035,21 @@ fn key_press(
             reveal(ed)
         }
         Key::Tab if !modk && !m.alt && ed.snippet.is_some() => {
-            // nextSnippetField / prevSnippetField; reaching the last field ends the snippet.
+            // nextSnippetField / prevSnippetField: keep the snippet active on the last field so
+            // Shift-Tab can step back; pressing Tab past the last field ends the snippet cleanly.
             let s = ed.snippet.as_mut().unwrap();
+            if !shift && s.current + 1 >= s.fields.len() {
+                let mut now = s.clone();
+                now.map(&ed.doc.journal);
+                let end = now.fields[s.current]
+                    .first()
+                    .map(|&(_, b)| b)
+                    .unwrap_or_else(|| ed.doc.selection.main().to());
+                ed.snippet = None;
+                ed.doc.selection = Selection::cursor(end.min(ed.doc.len()));
+                ed.doc.break_group();
+                return reveal(ed);
+            }
             let next = if shift {
                 s.current.checked_sub(1)
             } else {
@@ -2876,16 +3057,12 @@ fn key_press(
             };
             if let Some(k) = next.filter(|k| *k < s.fields.len()) {
                 s.current = k;
-                let last = k + 1 == s.fields.len();
                 // Edits earlier in this frame aren't in the fields yet (they are mapped once per
                 // frame): a copy brought up to date picks the field.
                 let mut now = s.clone();
                 now.map(&ed.doc.journal);
                 ed.doc.selection = now.select(k);
                 ed.doc.break_group();
-                if last {
-                    ed.snippet = None;
-                }
             }
             reveal(ed)
         }
@@ -2982,6 +3159,7 @@ fn math_preview(
         .order(egui::Order::Tooltip)
         .pivot(pivot)
         .fixed_pos(pos)
+        .constrain_to(ui.ctx().content_rect().shrink(4.0))
         .interactable(false)
         .show(ui.ctx(), |ui| {
             egui::Frame::new()
@@ -3076,6 +3254,7 @@ fn problem_tooltip_text(ui: &Ui, p: &Palette, at: Pos2, text: &str) {
     egui::Area::new(egui::Id::unique("lsp-hover"))
         .order(egui::Order::Tooltip)
         .fixed_pos(at)
+        .constrain_to(ui.ctx().content_rect().shrink(4.0))
         .interactable(false)
         .show(ui.ctx(), |ui| {
             egui::Frame::new()
@@ -3094,12 +3273,20 @@ fn problem_tooltip_text(ui: &Ui, p: &Palette, at: Pos2, text: &str) {
         });
 }
 
-/// `.cm-tooltip-lint`: each problem with a coloured bar on its left.
-fn problem_tooltip<'a>(ui: &Ui, p: &Palette, at: Pos2, list: impl Iterator<Item = &'a Problem>) {
+/// `.cm-tooltip-lint`: each problem with a coloured bar on its left, plus optional LSP quick fixes.
+fn problem_tooltip<'a>(
+    ui: &Ui,
+    p: &Palette,
+    at: Pos2,
+    list: impl Iterator<Item = &'a Problem>,
+    actions: &[crate::lsp::CodeAction],
+) -> Option<crate::lsp::CodeAction> {
     let list: Vec<&Problem> = list.collect();
+    let mut picked: Option<crate::lsp::CodeAction> = None;
     egui::Area::new(egui::Id::unique("lint-tooltip"))
         .order(egui::Order::Tooltip)
         .fixed_pos(at)
+        .constrain_to(ui.ctx().content_rect().shrink(4.0))
         .show(ui.ctx(), |ui| {
             egui::Frame::new()
                 .fill(p.surface)
@@ -3128,8 +3315,31 @@ fn problem_tooltip<'a>(ui: &Ui, p: &Palette, at: Pos2, list: impl Iterator<Item 
                         };
                         ui.painter().rect_filled(bar, 0, c);
                     }
+                    if !actions.is_empty() {
+                        egui::Frame::NONE
+                            .inner_margin(egui::Margin {
+                                left: 10,
+                                right: 8,
+                                top: 4,
+                                bottom: 6,
+                            })
+                            .show(ui, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    for a in actions {
+                                        if crate::widgets::Button::new(&a.title)
+                                            .size(crate::widgets::Size::Sm)
+                                            .show(ui, p)
+                                            .clicked()
+                                        {
+                                            picked = Some(a.clone());
+                                        }
+                                    }
+                                });
+                            });
+                    }
                 });
         });
+    picked
 }
 
 /// Inserts completion `i` and closes the list (`\begin` opens the list of environments next).
@@ -3224,25 +3434,31 @@ fn move_vertical(ed: &mut Editor, geo: &mut Geo, ui: &Ui, down: bool, extend: bo
     ed.doc.break_group();
 }
 
-/// Home/End: to the start or end of the visual row, then of the line (Home: the indentation first).
+/// Home/End: to the start or end of each cursor's visual row, then of its line (Home: indentation first).
 fn vertical_boundary(ed: &mut Editor, geo: &mut Geo, ui: &Ui, forward: bool, extend: bool) {
-    let main = ed.doc.selection.main();
-    let (n, row, _) = geo.place(ui, &ed.doc, main.head);
-    let rows = geo.rows(ui, &ed.doc, n);
-    let row_start = geo.at(ui, &ed.doc, n, row, -1e6);
-    let row_end = geo.at(ui, &ed.doc, n, row, 1e6);
-    if rows > 1 {
-        let target = if forward { row_end } else { row_start };
-        if target != main.head && !(forward && row + 1 == rows) && !(!forward && row == 0) {
-            cmd::move_ranges(&mut ed.doc, extend, |_, _| target);
-            return;
+    cmd::move_ranges(&mut ed.doc, extend, |d, r| {
+        let (n, row, _) = geo.place(ui, d, r.head);
+        let rows = geo.rows(ui, d, n);
+        if rows > 1 {
+            let target = if forward {
+                geo.at(ui, d, n, row, 1e6)
+            } else {
+                geo.at(ui, d, n, row, -1e6)
+            };
+            if target != r.head && !(forward && row + 1 == rows) && !(!forward && row == 0) {
+                return target;
+            }
         }
-    }
-    if forward {
-        cmd::line_boundary_forward(&mut ed.doc, extend)
-    } else {
-        cmd::line_boundary_backward(&mut ed.doc, extend)
-    }
+        if forward {
+            d.line_end(n)
+        } else {
+            let start = d.line_start(n);
+            let text = d.line(n);
+            let ws = text.chars().take_while(|c| *c == ' ' || *c == '\t').count();
+            let first = start + ws;
+            if r.head == first { start } else { first }
+        }
+    });
 }
 
 /// Mod-Alt-Up/Down: another cursor a row above or below the main one.
@@ -3285,27 +3501,56 @@ fn update_heights(ui: &Ui, ed: &mut Editor, lay: &Lay) {
     );
     if ed.cache_key != key {
         ed.height_cache.clear();
+        ed.measured_heights.clear();
         ed.cache_key = key;
+    }
+    if let Some((from, tail)) = edit {
+        let n = ed.doc.line_count();
+        let old = ed.heights.len();
+        if from + tail <= n.min(old) {
+            let delta = n as isize - old as isize;
+            let mut next = HashMap::with_capacity(ed.measured_heights.len());
+            for (idx, val) in ed.measured_heights.drain() {
+                if idx < from {
+                    next.insert(idx, val);
+                } else if idx >= old - tail {
+                    next.insert((idx as isize + delta) as usize, val);
+                }
+            }
+            ed.measured_heights = next;
+        } else {
+            ed.measured_heights.clear();
+        }
     }
     let hkey = (ed.doc.version, key.0, key.1, key.2, key.3);
     // A long file's wrapped lines are guessed from their length rather than laid out: a resize
-    // would otherwise lay out every one of them. Lines on screen are corrected as they are drawn.
+    // would otherwise lay out every one of them. Lines on screen are corrected as they are drawn
+    // and remembered in `measured_heights` so subsequent re-measures keep them.
     let guess = ed.doc.line_count() > 1500;
-    let measure =
-        |cache: &mut HashMap<u64, f32>, doc: &super::buffer::Doc, i: usize, len: usize| {
-            let w = len as f32 * cw;
-            // Short lines can't wrap: no copy of the text and no layout needed.
-            if !style.wrap || w <= text_w * 0.9 {
-                style.line_height
-            } else if guess {
-                (w / text_w).ceil().max(1.0) * style.line_height
+    let measure = |cache: &mut HashMap<u64, f32>,
+                   measured: &HashMap<usize, (usize, f32)>,
+                   doc: &super::buffer::Doc,
+                   i: usize,
+                   len: usize| {
+        let w = len as f32 * cw;
+        // Short lines can't wrap: no copy of the text and no layout needed.
+        if !style.wrap || w <= text_w * 0.9 {
+            style.line_height
+        } else if guess {
+            if let Some(&(m_len, h)) = measured.get(&i)
+                && m_len == len
+            {
+                h
             } else {
-                let text = doc.line(i);
-                *cache
-                    .entry(hash(&text))
-                    .or_insert_with(|| lay.layout(ui, &text, &[]).height)
+                (w / text_w).ceil().max(1.0) * style.line_height
             }
-        };
+        } else {
+            let text = doc.line(i);
+            *cache
+                .entry(hash(&text))
+                .or_insert_with(|| lay.layout(ui, &text, &[]).height)
+        }
+    };
     // After an edit only the lines between the change and the untouched end are measured again;
     // with folds (which hide lines) the whole pass below runs instead.
     if let Some((from, tail)) = edit
@@ -3318,7 +3563,13 @@ fn update_heights(ui: &Ui, ed: &mut Editor, lay: &Lay) {
             let kept = ed.heights.split_off(old - tail);
             ed.heights.truncate(from);
             for i in from..n - tail {
-                let h = measure(&mut ed.height_cache, &ed.doc, i, ed.doc.line_len(i));
+                let h = measure(
+                    &mut ed.height_cache,
+                    &ed.measured_heights,
+                    &ed.doc,
+                    i,
+                    ed.doc.line_len(i),
+                );
                 ed.heights.push(h);
             }
             ed.heights.extend(kept);
@@ -3337,7 +3588,7 @@ fn update_heights(ui: &Ui, ed: &mut Editor, lay: &Lay) {
             let h = if ed.hidden[i] {
                 0.0
             } else {
-                measure(&mut ed.height_cache, &ed.doc, i, len)
+                measure(&mut ed.height_cache, &ed.measured_heights, &ed.doc, i, len)
             };
             ed.heights.push(h);
         }
@@ -3891,7 +4142,12 @@ mod tests {
             .as_ref()
             .map(|c| c.items[0].0.label.clone());
         assert_eq!(first.as_deref(), Some("\\subsection"));
+        let blink = h.state().last_activity;
+        h.state_mut().last_activity = f64::NEG_INFINITY;
+        h.step();
+        h.run();
         h.snapshot("completion");
+        h.state_mut().last_activity = blink;
         h.key_press(egui::Key::Enter);
         h.run();
         let ed = h.state();
@@ -4032,8 +4288,17 @@ mod tests {
             h.run();
         }
         assert!(h.state().hover.is_some(), "the card shows");
-        // Its first frame only measures it.
-        h.run();
+        // Wait for the background `\input` preview reader to finish before snapshotting.
+        let load_start = std::time::Instant::now();
+        loop {
+            h.run();
+            if h.query_by_label("Loading preview…").is_none()
+                || load_start.elapsed() >= std::time::Duration::from_secs(5)
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         h.run();
         h.snapshot("hover-input");
     }

@@ -57,6 +57,9 @@ impl Selection {
 
     /// Sorts the ranges and merges the ones that touch or overlap, as CodeMirror's EditorSelection.create.
     pub fn normalized(ranges: Vec<Range>, main: usize) -> Self {
+        if ranges.is_empty() {
+            return Self::cursor(0);
+        }
         let main_range = ranges[main.min(ranges.len() - 1)];
         let mut sorted = ranges;
         sorted.sort_by_key(|r| (r.from(), r.to()));
@@ -418,6 +421,7 @@ impl Doc {
             .map(|r| Range::new(changes.map(r.anchor, -1), changes.map(r.head, -1)))
             .collect();
         let sel = Selection::normalized(ranges, self.selection.main);
+        self.note_edit(&changes);
         lsp_record(&self.rope, &mut self.lsp_edits, &changes);
         let inverse = changes.apply(&mut self.rope);
         self.journal.push(changes.clone());
@@ -498,29 +502,50 @@ impl Doc {
     }
 
     /// Replaces the whole text, keeping the history (an outside reload of an open file is one undo step).
-    /// Only the part between the common start and end changes, so cursors and folds outside it stay.
-    // shortcut: one middle change, so marks between two distant changes move to the first;
-    // diff by line if reloads with several far-apart changes matter.
+    /// Diffs by line and trims common prefixes/suffixes within each hunk so cursors and folds
+    /// between distant edits stay in place.
     pub fn replace_all(&mut self, text: &str) {
-        let old: Vec<char> = self.text().chars().collect();
-        let new: Vec<char> = text.chars().collect();
-        let pre = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
-        if pre == old.len() && pre == new.len() {
+        let old_str = self.text();
+        if old_str == text {
             return;
         }
-        let room = old.len().min(new.len()) - pre;
-        let suf = old
-            .iter()
-            .rev()
-            .zip(new.iter().rev())
-            .take(room)
-            .take_while(|(a, b)| a == b)
-            .count();
-        let cs = ChangeSet::new(vec![Change {
-            from: pre,
-            to: old.len() - suf,
-            insert: new[pre..new.len() - suf].iter().collect(),
-        }]);
+        let hunks = crate::panels::hunks::compute(&old_str, text);
+        if hunks.is_empty() {
+            return;
+        }
+        let mut changes = Vec::with_capacity(hunks.len());
+        let mut cur_byte = 0usize;
+        let mut cur_char = 0usize;
+        for h in hunks {
+            cur_char += old_str[cur_byte..h.old_from].chars().count();
+            let old_chars: Vec<char> = h.old_text.chars().collect();
+            let new_chars: Vec<char> = h.new_text.chars().collect();
+            let pre = old_chars
+                .iter()
+                .zip(&new_chars)
+                .take_while(|(a, b)| a == b)
+                .count();
+            let room = old_chars.len().min(new_chars.len()) - pre;
+            let suf = old_chars
+                .iter()
+                .rev()
+                .zip(new_chars.iter().rev())
+                .take(room)
+                .take_while(|(a, b)| a == b)
+                .count();
+            let from = cur_char + pre;
+            let to = cur_char + old_chars.len() - suf;
+            let insert: String = new_chars[pre..new_chars.len() - suf].iter().collect();
+            if from != to || !insert.is_empty() {
+                changes.push(Change { from, to, insert });
+            }
+            cur_char += old_chars.len();
+            cur_byte = h.old_to;
+        }
+        let cs = ChangeSet::new(changes);
+        if cs.is_empty() {
+            return;
+        }
         let ranges = self
             .selection
             .ranges
@@ -779,5 +804,27 @@ mod tests {
         assert_eq!(d.text(), "Grüße!\n");
         assert_eq!(d.line(0), "Grüße!");
         assert_eq!(d.line_end(0), 6);
+    }
+
+    #[test]
+    fn empty_selection_normalizes_and_apply_merged_notes_edit_and_replace_all_keeps_cursor() {
+        // P0-5: empty ranges never panic.
+        let s = Selection::normalized(vec![], 5);
+        assert_eq!(s.ranges, vec![Range::cursor(0)]);
+        assert_eq!(s.main, 0);
+
+        // P1-7: apply_merged marks dirty_from for earlier lines.
+        let mut d = Doc::new("alpha\nbeta\ngamma\n");
+        let _ = d.take_edit();
+        let cs = ChangeSet::new(vec![Change::insert(0, "X")]);
+        d.apply_merged(cs);
+        assert_eq!(d.take_edit().map(|(from, _)| from), Some(0));
+
+        // replace_all uses line diffs so a cursor in an unchanged middle line stays put.
+        let mut d = Doc::new("line 1\nkeep me\nline 3\n");
+        let keep_pos = d.line_start(1) + 4;
+        d.selection = Selection::cursor(keep_pos);
+        d.replace_all("LINE 1\nkeep me\nLINE 3\n");
+        assert_eq!(d.line_of(d.selection.main().head), 1);
     }
 }

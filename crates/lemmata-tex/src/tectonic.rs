@@ -142,6 +142,10 @@ pub fn version(exe: &Path) -> Option<String> {
 
 /// The arguments for compiling a project, run from the project root.
 pub fn tectonic_args(project: &Project) -> Vec<OsString> {
+    tectonic_args_for(project, None)
+}
+
+fn tectonic_args_for(project: &Project, input_override: Option<&Path>) -> Vec<OsString> {
     let c = &project.config;
     let mut args: Vec<OsString> = ["-X", "compile", "--outdir"].map(Into::into).into();
     args.push(c.outdir.clone().into());
@@ -156,8 +160,32 @@ pub fn tectonic_args(project: &Project) -> Vec<OsString> {
     let mut search = OsString::from("search-path=");
     search.push(&project.root);
     args.extend(["-Z".into(), search]);
-    args.push(crate::build::main_arg(&project.main));
+    match input_override {
+        Some(p) => args.push(p.as_os_str().to_owned()),
+        None => args.push(crate::build::main_arg(&project.main)),
+    }
     args
+}
+
+/// When `draft` or `include_only` is active, writes a small wrapper `.tex` file inside `outdir`
+/// that injects `pretex` before `\input{<main>}` so Tectonic honours both settings. Returns the
+/// wrapper path and stem so its outputs can be renamed to match `project.main`.
+fn write_pretex_wrapper(project: &Project) -> Option<(PathBuf, String)> {
+    let pre = crate::build::pretex(project);
+    if pre.is_empty() {
+        return None;
+    }
+    let stem = project
+        .main
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "main".into());
+    let wrapper_stem = format!("__lemmata_pretex_{stem}");
+    let rel = PathBuf::from(&project.config.outdir).join(format!("{wrapper_stem}.tex"));
+    let main = project.main.to_string_lossy().replace('\\', "/");
+    let body = format!("{pre}\n\\input{{{main}}}\n");
+    std::fs::write(project.root.join(&rel), body).ok()?;
+    Some((rel, wrapper_stem))
 }
 
 /// Tectonic's package cache. Empty on first use, when the first build downloads the format and packages.
@@ -227,12 +255,16 @@ pub async fn build(
     if cache_dir().is_none_or(|c| !c.join(FIRST_BUILD_DONE).is_file()) {
         limit = limit.max(Duration::from_secs(15 * 60));
     }
+    let wrapper = write_pretex_wrapper(project);
     let mut cmd = Command::new(exe);
-    cmd.args(tectonic_args(project))
-        .current_dir(&project.root)
-        .stdin(Stdio::null())
-        .stdout(stdout)
-        .stderr(stderr);
+    cmd.args(tectonic_args_for(
+        project,
+        wrapper.as_ref().map(|(p, _)| p.as_path()),
+    ))
+    .current_dir(&project.root)
+    .stdin(Stdio::null())
+    .stdout(stdout)
+    .stderr(stderr);
     let mut cancel = cancel;
     // Tectonic writes its notes straight into the output file, so reading it shows how far it is.
     let watch = async {
@@ -263,6 +295,22 @@ pub async fn build(
         () = watch => unreachable!(),
     }
     .unwrap_or(Status::Failed);
+    if let Some((wrapper_rel, wrapper_stem)) = wrapper {
+        let _ = std::fs::remove_file(project.root.join(&wrapper_rel));
+        let main_stem = project
+            .main
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "main".into());
+        for ext in ["pdf", "log", "synctex.gz", "bbl", "blg"] {
+            let from = outdir.join(format!("{wrapper_stem}.{ext}"));
+            let to = outdir.join(format!("{main_stem}.{ext}"));
+            if from.is_file() {
+                let _ = std::fs::remove_file(&to);
+                let _ = std::fs::rename(&from, &to);
+            }
+        }
+    }
 
     let duration_ms = started.elapsed().as_millis() as u64;
     let outcome = |status, pdf, diagnostics| Outcome {

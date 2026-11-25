@@ -159,6 +159,7 @@ pub enum Action {
 pub struct Review {
     show_resolved: bool,
     text: String,
+    draft_focused: bool,
     replies: std::collections::HashMap<String, String>,
     confirm_delete: Option<String>,
 }
@@ -175,6 +176,7 @@ impl Review {
     /// A new draft starts empty, whatever was typed into the last one.
     pub fn clear_draft(&mut self) {
         self.text.clear();
+        self.draft_focused = false;
     }
 
     pub fn show(
@@ -199,7 +201,11 @@ impl Review {
             widgets::checkbox(ui, p, &mut self.show_resolved, "Show resolved");
         });
         if body.closed {
+            self.confirm_delete = None;
             out.push(Action::Close);
+        }
+        if draft.is_none() {
+            self.draft_focused = false;
         }
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(body.rest));
         let mut shown: Vec<&Thread> = threads
@@ -231,8 +237,9 @@ impl Review {
                     ui.label(egui::RichText::new(format!("{file}:{line}")).font(FontId::monospace(11.5)).color(p.muted));
                     quote(ui, q);
                     let r = widgets::text_area(ui, p, &mut self.text, "Write a comment", 3, true);
-                    if !r.has_focus() && self.text.is_empty() {
+                    if !self.draft_focused {
                         r.request_focus();
+                        self.draft_focused = true;
                     }
                     if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command) {
                         add = true;
@@ -284,23 +291,53 @@ impl Review {
                         .response;
                     let head = ui.interact(head.rect, ui.scope_id().with(("thread", &t.id)), egui::Sense::click()).on_hover_text("Show in the editor");
                     if head.clicked() {
+                        self.confirm_delete = None;
                         out.push(Action::Select(t.clone()));
                     }
                     ui.add(egui::Label::new(egui::RichText::new(&t.body).color(p.ink)).wrap());
-                    ui.label(egui::RichText::new(crate::when::medium_ms(t.created)).size(11.5).color(p.muted));
+                    if t.created > 0.0 {
+                        ui.label(egui::RichText::new(crate::when::medium_ms(t.created)).size(11.5).color(p.muted));
+                    }
                     for r in &t.replies {
                         let fr = egui::Frame::NONE.inner_margin(Margin { left: 20, right: 0, top: 0, bottom: 0 }).show(ui, |ui| {
                             ui.add(egui::Label::new(egui::RichText::new(&r.body).color(p.ink)).wrap());
-                            ui.label(egui::RichText::new(crate::when::medium_ms(r.created)).size(11.5).color(p.muted));
+                            if r.created > 0.0 {
+                                ui.label(egui::RichText::new(crate::when::medium_ms(r.created)).size(11.5).color(p.muted));
+                            }
                         });
                         let b = fr.response.rect;
                         ui.painter().vline(b.left() + 13.0, b.y_range(), Stroke::new(2.0, p.border));
                     }
                     if is_active && !t.resolved {
                         let reply = self.replies.entry(t.id.clone()).or_default();
-                        let r = widgets::text_input(ui, p, reply, "Reply", false);
-                        ui.ctx().accesskit_node_builder(r.id, |n| n.set_label("Reply"));
-                        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !reply.trim().is_empty() {
+                        let mut submit_reply = false;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let bw = 58.0;
+                            let iw = (ui.available_width() - bw - 6.0).max(80.0);
+                            let r = ui
+                                .allocate_ui(vec2(iw, 32.0), |ui| {
+                                    widgets::text_input(ui, p, reply, "Reply", false)
+                                })
+                                .inner;
+                            ui.ctx().accesskit_node_builder(r.id, |n| n.set_label("Reply"));
+                            if r.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                && !reply.trim().is_empty()
+                            {
+                                submit_reply = true;
+                            }
+                            if Button::new("Reply")
+                                .kind(Kind::Primary)
+                                .size(Size::Sm)
+                                .enabled(!reply.trim().is_empty())
+                                .show(ui, p)
+                                .clicked()
+                            {
+                                submit_reply = true;
+                            }
+                        });
+                        if submit_reply {
                             out.push(Action::Reply(t.id.clone(), reply.trim().to_owned()));
                             reply.clear();
                         }
@@ -311,6 +348,9 @@ impl Review {
                             if Button::new("Delete for good").size(Size::Sm).fill(p.error).ink(egui::Color32::WHITE).show(ui, p).clicked() {
                                 self.confirm_delete = None;
                                 out.push(Action::Delete(t.id.clone()));
+                            }
+                            if Button::new("Cancel").size(Size::Sm).show(ui, p).clicked() {
+                                self.confirm_delete = None;
                             }
                         } else if Button::new("Delete").kind(Kind::Ghost).size(Size::Sm).show(ui, p).clicked() {
                             self.confirm_delete = Some(t.id.clone());

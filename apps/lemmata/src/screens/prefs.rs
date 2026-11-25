@@ -20,12 +20,15 @@ pub struct Prefs {
     pub only_snippets: bool,
     pub checking_updates: bool,
     pub update_message: Option<String>,
+    grammar_url_dirty: bool,
 }
 
 pub enum Out {
     /// A setting changed: save it.
     Changed,
     Close,
+    /// Flush pending edits (such as grammar_url) and close.
+    CloseAndSave,
     ChooseTex,
     AutoTex,
     Download(String),
@@ -113,7 +116,8 @@ pub fn show(
         Some("These apply to every project."),
         600.0,
         |ui| {
-            let max_h = ui.ctx().content_rect().height() * 0.62;
+            let vh = ui.ctx().content_rect().height();
+            let max_h = (vh - 220.0).clamp(160.0, vh * 0.62);
             let w = ui.available_width();
             ui.allocate_ui(vec2(w, max_h), |ui| {
                 egui::ScrollArea::vertical()
@@ -144,6 +148,11 @@ pub fn show(
         }),
     );
     if r.closed || done {
+        if st.grammar_url_dirty || matches!(out, Some(Out::Changed)) {
+            s.grammar_url = s.grammar_url.trim().to_owned();
+            st.grammar_url_dirty = false;
+            return Some(Out::CloseAndSave);
+        }
         return Some(Out::Close);
     }
     out
@@ -436,8 +445,12 @@ fn body(
     if s.grammar == "custom" {
         row(ui, p, "Server address", |ui| {
             let r = widgets::text_input(ui, p, &mut s.grammar_url, "", true);
+            if r.changed() {
+                st.grammar_url_dirty = true;
+            }
             if r.lost_focus() {
                 s.grammar_url = s.grammar_url.trim().to_owned();
+                st.grammar_url_dirty = false;
                 changed = true;
             }
         });
@@ -578,9 +591,10 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
     let list = st.snippets.as_mut()?;
     let invalid = |list: &[Snippet], i: usize| {
         let sn = &list[i];
-        !crate::editor::complete::valid_trigger(&sn.trigger)
+        let trimmed = sn.trigger.trim();
+        !crate::editor::complete::valid_trigger(trimmed)
             || sn.body.trim().is_empty()
-            || list.iter().position(|o| o.trigger == sn.trigger) != Some(i)
+            || list.iter().position(|o| o.trigger.trim() == trimmed) != Some(i)
     };
     // A snippet nobody filled in is dropped without a word; the others must be put right to save.
     let blank = |sn: &Snippet| sn.trigger.trim().is_empty() && sn.body.trim().is_empty();
@@ -607,7 +621,7 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
                 ui.label(t("Use "));
                 ui.label(code("${}"));
                 ui.label(t(
-                    " for places the cursor stops at (Tab jumps to the next one), for example ",
+                    " for tab stops (Tab jumps to the next one), for example ",
                 ));
                 ui.label(code("\\begin{theorem}${}\\end{theorem}"));
                 ui.label(t(". Triggers are two or more letters, digits or dashes."));
@@ -615,10 +629,13 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
             if list.is_empty() {
                 ui.label(RichText::new("No snippets yet.").color(p.muted));
             }
-            let max_h = ui.ctx().content_rect().height() * 0.5;
+            let vh = ui.ctx().content_rect().height();
+            let max_h = (vh - 250.0).clamp(140.0, vh * 0.5);
             let w = ui.available_width();
             let mut remove = None;
-            let bad: Vec<bool> = (0..list.len()).map(|i| invalid(list, i)).collect();
+            let bad: Vec<bool> = (0..list.len())
+                .map(|i| !blank(&list[i]) && invalid(list, i))
+                .collect();
             ui.allocate_ui(vec2(w, max_h), |ui| {
                 egui::ScrollArea::vertical()
                     .max_height(max_h)

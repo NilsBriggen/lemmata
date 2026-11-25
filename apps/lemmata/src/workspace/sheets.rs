@@ -106,15 +106,21 @@ impl Workspace {
                 });
                 if let Some((key, mods)) = press {
                     set_recording(ctx, None);
-                    if key != egui::Key::Escape
-                        && let Some(spec) = shortcuts::spec_of(mods, key)
-                    {
-                        match assign(settings, id, &spec) {
-                            Ok(note) => {
-                                *action = Some(super::Action::Settings);
-                                told = note;
+                    if key != egui::Key::Escape {
+                        match shortcuts::spec_of(mods, key) {
+                            Some(spec) => match assign(settings, id, &spec) {
+                                Ok(note) => {
+                                    *action = Some(super::Action::Settings);
+                                    told = note;
+                                }
+                                Err(why) => told = Some(why),
+                            },
+                            None => {
+                                told = Some(
+                                    "Shortcuts need Ctrl, Alt, or a function key so normal typing still works."
+                                        .into(),
+                                );
                             }
-                            Err(why) => told = Some(why),
                         }
                     }
                 }
@@ -272,9 +278,19 @@ fn assign(settings: &mut Settings, id: &str, spec: &str) -> Result<Option<String
     let Some(me) = SHORTCUTS.iter().find(|s| s.id == id) else {
         return Ok(None);
     };
-    if ["Mod-c", "Mod-x", "Mod-v", "Mod-a", "Mod-z"].contains(&spec) {
+    if [
+        "Mod-c",
+        "Mod-x",
+        "Mod-v",
+        "Mod-a",
+        "Mod-z",
+        "Mod-y",
+        "Mod-Shift-z",
+    ]
+    .contains(&spec)
+    {
         return Err(format!(
-            "{spec} is for copy, paste and undo in every text field."
+            "{spec} is for copy, paste, undo and redo in every text field."
         ));
     }
     let clash = |other: &&shortcuts::Shortcut| {
@@ -354,7 +370,8 @@ fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String, settings: &mut S
         acc += l.len() + 2;
         split = i + 1;
     }
-    let max_h = ui.ctx().content_rect().height() * 0.6;
+    let vh = ui.ctx().content_rect().height();
+    let max_h = (vh - 240.0).clamp(160.0, vh * 0.6);
     let w = ui.available_width();
     ui.allocate_ui(vec2(w, max_h), |ui| {
         egui::ScrollArea::vertical()
@@ -427,6 +444,31 @@ fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String, settings: &mut S
                                                             if r.clicked() {
                                                                 set_recording(ui.ctx(), Some(s.id));
                                                             }
+                                                        }
+                                                        if editable
+                                                            && !shortcuts::specs(s).is_empty()
+                                                            && ui
+                                                                .add(
+                                                                    egui::Label::new(
+                                                                        RichText::new("×")
+                                                                            .size(12.0)
+                                                                            .color(p.muted),
+                                                                    )
+                                                                    .sense(egui::Sense::click()),
+                                                                )
+                                                                .on_hover_cursor(
+                                                                    egui::CursorIcon::PointingHand,
+                                                                )
+                                                                .on_hover_text("Clear shortcut")
+                                                                .clicked()
+                                                        {
+                                                            settings
+                                                                .keybindings
+                                                                .insert(s.id.into(), String::new());
+                                                            shortcuts::choose(
+                                                                &settings.keybindings,
+                                                            );
+                                                            changed = true;
                                                         }
                                                         if settings.keybindings.contains_key(s.id)
                                                             && ui

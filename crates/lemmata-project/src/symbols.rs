@@ -2,7 +2,7 @@
 //! they are used, and renaming one everywhere. This works without texlab, so
 //! "go to label" and "rename" are there even when the language server isn't.
 
-use super::{Entry, Project, strip_comment, tree};
+use super::{CodeScanner, Entry, Project, tree};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
@@ -85,6 +85,7 @@ fn names_in(line: &str, group: regex::Match) -> Vec<(String, usize, usize)> {
 /// Every label, reference, citation key and citation in one file's text.
 pub fn scan_text(file: &str, text: &str, is_bib: bool) -> Vec<Occurrence> {
     let mut out = Vec::new();
+    let mut scanner = CodeScanner::default();
     for (i, raw) in text.lines().enumerate() {
         let make = |kind, role, name: String, start: usize, end: usize| Occurrence {
             kind,
@@ -109,7 +110,8 @@ pub fn scan_text(file: &str, text: &str, is_bib: bool) -> Vec<Occurrence> {
             }
             continue;
         }
-        let code = strip_comment(raw);
+        let masked = scanner.mask_line(raw);
+        let code = masked.as_ref();
         for c in LABEL.captures_iter(code) {
             if let Some(g) = c.get(1) {
                 for (n, s, e) in names_in(code, g) {

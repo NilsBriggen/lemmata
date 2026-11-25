@@ -155,12 +155,14 @@ pub enum FileDialog {
         dir: bool,
         folder: String,
         name: String,
+        busy: bool,
     },
     Rename {
         path: String,
         name: String,
         refs: Vec<Reference>,
         update: bool,
+        busy: bool,
     },
     Trash {
         paths: Vec<String>,
@@ -177,6 +179,22 @@ pub enum FileDialog {
         picked: Vec<String>,
     },
     Deleted(Option<Vec<TrashBatch>>),
+}
+
+impl FileDialog {
+    pub(super) fn set_busy(&mut self, v: bool) {
+        match self {
+            FileDialog::New { busy, .. } | FileDialog::Rename { busy, .. } => *busy = v,
+            _ => {}
+        }
+    }
+
+    fn is_busy(&self) -> bool {
+        match self {
+            FileDialog::New { busy, .. } | FileDialog::Rename { busy, .. } => *busy,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -344,16 +362,57 @@ impl Workspace {
         {
             *p = moved(p);
         }
+        self.history.remap(from, to);
+        self.build.remap(from, to);
+        self.pending_line = self
+            .pending_line
+            .drain()
+            .map(|(k, v)| (moved(&k), v))
+            .collect();
+        self.pending_col = self
+            .pending_col
+            .drain()
+            .map(|(k, v)| (moved(&k), v))
+            .collect();
+        self.pending_folds = self
+            .pending_folds
+            .drain()
+            .map(|(k, v)| (moved(&k), v))
+            .collect();
+        self.closing_after_save = self.closing_after_save.drain().map(|k| moved(&k)).collect();
+        self.deleted_conflicts = self.deleted_conflicts.drain().map(|k| moved(&k)).collect();
+        self.conflict_deferred = self.conflict_deferred.drain().map(|k| moved(&k)).collect();
+        if let Some((p, _)) = &mut self.save_error {
+            *p = moved(p);
+        }
+        if let Some(refs) = &mut self.references {
+            for r in refs.iter_mut() {
+                r.0 = moved(&r.0);
+            }
+        }
     }
 
     /// Gone from disk: tabs close without saving, which would bring the file back.
     fn trashed(&mut self, backend: &Backend, paths: &[String]) {
         self.close_gone(backend, paths, false);
-        self.sel.selected.retain(|p| {
-            !paths
+        let gone = |p: &str| {
+            paths
                 .iter()
                 .any(|t| p == t || p.starts_with(&format!("{t}/")))
-        });
+        };
+        self.sel.selected.retain(|p| !gone(p));
+        self.closed.retain(|p| !gone(p));
+        if self.tree_cursor.as_deref().is_some_and(gone) {
+            self.tree_cursor = None;
+        }
+        if self.sel.anchor.as_deref().is_some_and(gone) {
+            self.sel.anchor = None;
+        }
+        self.pending_line.retain(|p, _| !gone(p));
+        self.pending_col.retain(|p, _| !gone(p));
+        self.pending_folds.retain(|p, _| !gone(p));
+        self.deleted_conflicts.retain(|p| !gone(p));
+        self.conflict_deferred.retain(|p| !gone(p));
     }
 
     fn file_failure(&mut self, e: String) {
@@ -368,8 +427,7 @@ impl Workspace {
     }
 
     fn undo_notice(&mut self, text: String) {
-        self.notices
-            .push(Notice::new(text, Tone::Ok).action(NoticeAction::UndoFiles));
+        self.push_notice(Notice::new(text, Tone::Ok).action(NoticeAction::UndoFiles));
     }
 
     pub fn new_item(&mut self, dir: bool, folder: String) {
@@ -379,6 +437,7 @@ impl Workspace {
             dir,
             folder,
             name: String::new(),
+            busy: false,
         });
     }
 
@@ -396,6 +455,7 @@ impl Workspace {
                     path,
                     refs,
                     update,
+                    busy: false,
                 });
             },
         );
@@ -561,13 +621,12 @@ impl Workspace {
         }
     }
 
-    fn run_trash(&mut self, backend: &Backend, paths: Vec<String>, system: bool) {
-        // Their edits were saved before (`trash`, the dialog), except where the save was refused
-        // or failed; a save from now on would bring the files back, so the editors close.
-        self.warn_unsaved_lost(&paths);
-        self.trashed(backend, &paths);
-        // After any save in flight: a late save would bring a deleted file back.
-        self.after_writes.push(Box::new(move |_, backend| {
+    fn run_trash(&mut self, _backend: &Backend, paths: Vec<String>, system: bool) {
+        // Wait for any in-flight save to land before closing the buffers and trashing the files
+        // so edits typed right before deleting are captured in the trash and no late save races.
+        self.after_writes.push(Box::new(move |ws, backend| {
+            ws.warn_unsaved_lost(&paths);
+            ws.trashed(backend, &paths);
             Workspace::job(
                 backend,
                 move |s| {
@@ -745,11 +804,11 @@ impl Workspace {
         // As for any delete or move: edits saved first, and the files changed only once no save
         // is under way, or a late save would bring a file back (or leave a copy at an old name).
         self.save_all_quietly(backend, settings);
-        if let Undo::Trash(paths) = &step {
-            self.warn_unsaved_lost(paths);
-            self.trashed(backend, paths);
-        }
         self.after_writes.push(Box::new(move |ws, backend| {
+            if let Undo::Trash(paths) = &step {
+                ws.warn_unsaved_lost(paths);
+                ws.trashed(backend, paths);
+            }
             ws.undo_step(backend, label, step)
         }));
     }
@@ -1227,12 +1286,7 @@ impl Workspace {
             11 => {
                 if let Some(t) = target {
                     let abs = self.info.root.join(&t.path);
-                    let dir = if t.is_dir {
-                        abs
-                    } else {
-                        abs.parent().map(|d| d.to_path_buf()).unwrap_or(abs)
-                    };
-                    if let Err(e) = open::that_detached(dir) {
+                    if let Err(e) = crate::app::reveal_in_file_manager(&abs) {
                         self.notice(format!("Couldn't open the file manager: {e}"), Tone::Error);
                     }
                 }
@@ -1288,15 +1342,16 @@ impl Workspace {
             _ => "Delete",
         };
         let danger = matches!(dialog, FileDialog::Trash { .. } | FileDialog::Unused { .. });
-        let can_submit = match &dialog {
-            FileDialog::Unused { files, picked } => {
-                files.as_ref().is_some_and(|f| !f.is_empty()) && !picked.is_empty()
-            }
-            FileDialog::New { name, .. } | FileDialog::Rename { name, .. } => {
-                !name.trim().is_empty()
-            }
-            _ => true,
-        };
+        let can_submit = !dialog.is_busy()
+            && match &dialog {
+                FileDialog::Unused { files, picked } => {
+                    files.as_ref().is_some_and(|f| !f.is_empty()) && !picked.is_empty()
+                }
+                FileDialog::New { name, .. } | FileDialog::Rename { name, .. } => {
+                    !name.trim().is_empty()
+                }
+                _ => true,
+            };
         let shows_submit = match &dialog {
             FileDialog::Unused { files, .. } => files.as_ref().is_some_and(|f| !f.is_empty()),
             FileDialog::Deleted(_) => false,
@@ -1328,7 +1383,9 @@ impl Workspace {
                     ui.add(egui::Label::new(RichText::new(t).color(p.muted)).wrap());
                 };
                 match &mut dialog {
-                    FileDialog::New { dir, folder, name } => {
+                    FileDialog::New {
+                        dir, folder, name, ..
+                    } => {
                         let r = widgets::field(ui, p, "Name", |ui| {
                             widgets::text_input(
                                 ui,
@@ -1439,6 +1496,27 @@ impl Workspace {
                                 ui,
                                 "No \\input, \\include, \\includegraphics or bibliography command names these. Check the ones to delete; they can be restored with Undo.",
                             );
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                if Button::new("Select all")
+                                    .kind(Kind::Ghost)
+                                    .size(Size::Sm)
+                                    .enabled(picked.len() < f.len())
+                                    .show(ui, p)
+                                    .clicked()
+                                {
+                                    *picked = f.clone();
+                                }
+                                if Button::new("Select none")
+                                    .kind(Kind::Ghost)
+                                    .size(Size::Sm)
+                                    .enabled(!picked.is_empty())
+                                    .show(ui, p)
+                                    .clicked()
+                                {
+                                    picked.clear();
+                                }
+                            });
                             boxed(ui, p, |ui| {
                                 for file in f.iter() {
                                     let mut on = picked.contains(file);
@@ -1574,6 +1652,10 @@ impl Workspace {
             self.restore_deleted(backend, b);
         }
         if r.closed || cancel {
+            if dialog.is_busy() {
+                self.files.dialog = Some(dialog);
+                return;
+            }
             self.files.error = None;
             return;
         }
@@ -1583,7 +1665,9 @@ impl Workspace {
         }
         self.files.error = None;
         match dialog {
-            FileDialog::New { dir, folder, name } => {
+            FileDialog::New {
+                dir, folder, name, ..
+            } => {
                 let name = name.trim();
                 let path = join_path(
                     &folder,
@@ -1597,6 +1681,7 @@ impl Workspace {
                     dir,
                     folder,
                     name: name.to_owned(),
+                    busy: true,
                 };
                 self.files.dialog = Some(keep);
                 Workspace::job(
@@ -1614,7 +1699,12 @@ impl Workspace {
                                 ws.open_file(b, &path);
                             }
                         }
-                        Err(e) => ws.files.error = Some(e),
+                        Err(e) => {
+                            if let Some(d) = &mut ws.files.dialog {
+                                d.set_busy(false);
+                            }
+                            ws.files.error = Some(e);
+                        }
                     },
                 );
             }
@@ -1623,6 +1713,7 @@ impl Workspace {
                 name,
                 refs,
                 update,
+                ..
             } => {
                 let to = join_path(parent_of(&path), name.trim());
                 let reload: Vec<String> = refs.iter().map(|r| r.file.clone()).collect();
@@ -1631,6 +1722,7 @@ impl Workspace {
                     name,
                     refs,
                     update,
+                    busy: true,
                 });
                 self.after_saving(backend, settings, move |_, b| {
                     Workspace::job(
@@ -1659,7 +1751,12 @@ impl Workspace {
                                 );
                                 ws.refresh_tree(b);
                             }
-                            Err(e) => ws.files.error = Some(e),
+                            Err(e) => {
+                                if let Some(d) = &mut ws.files.dialog {
+                                    d.set_busy(false);
+                                }
+                                ws.files.error = Some(e);
+                            }
                         },
                     );
                 });

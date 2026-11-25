@@ -16,6 +16,8 @@ lemmata-log.workspace = true
 lemmata-env.workspace = true
 lemmata-project.workspace = true
 lemmata-bib.workspace = true
+lemmata-history.workspace = true
+lemmata-git.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 clap = { version = "4", features = ["derive"] }

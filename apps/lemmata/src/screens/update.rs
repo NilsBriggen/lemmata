@@ -18,14 +18,17 @@ pub enum Out {
     Install,
 }
 
-/// `.toasts.right`: bottom right, over everything.
-pub fn show(ctx: &egui::Context, p: &Palette, t: &Toast) -> Option<Out> {
+/// `.toasts.right`: bottom right, offset upward when another bottom toast is visible.
+pub fn show(ctx: &egui::Context, p: &Palette, t: &Toast, bottom_offset: f32) -> Option<Out> {
     let screen = ctx.content_rect();
     let mut out = None;
     egui::Area::new(egui::Id::unique("update-toast"))
         .order(egui::Order::Foreground)
         .pivot(egui::Align2::RIGHT_BOTTOM)
-        .fixed_pos(pos2(screen.right() - 20.0, screen.bottom() - 20.0))
+        .fixed_pos(pos2(
+            screen.right() - 20.0,
+            screen.bottom() - 20.0 - bottom_offset,
+        ))
         .show(ctx, |ui| {
             ui.set_max_width((screen.width() * 0.9).min(520.0));
             egui::Frame::new()

@@ -86,9 +86,30 @@ fn run(mut cmd: Command, out: &Path, err: &Path, timeout: Duration) -> Result<bo
         }
         if started.elapsed() > timeout {
             #[cfg(unix)]
-            let _ = lemmata_env::host(&mut Command::new("kill"))
-                .args(["-KILL", "--", &format!("-{}", child.id())])
-                .status();
+            {
+                let pgid = format!("-{}", child.id());
+                let kill_ok = lemmata_env::host(&mut Command::new("kill"))
+                    .args(["-KILL", "--", &pgid])
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if !kill_ok {
+                    for bin in ["/bin/kill", "/usr/bin/kill"] {
+                        if Path::new(bin).is_file() {
+                            let _ = lemmata_env::host(&mut Command::new(bin))
+                                .args(["-KILL", "--", &pgid])
+                                .status();
+                            break;
+                        }
+                    }
+                }
+            }
+            #[cfg(windows)]
+            {
+                let mut tk = Command::new("taskkill");
+                tk.args(["/T", "/F", "/PID", &child.id().to_string()]);
+                no_window(&mut tk);
+                let _ = tk.status();
+            }
             let _ = child.kill();
             let _ = child.wait();
             return Err(Error::Tool(format!(
@@ -106,7 +127,7 @@ fn last_lines(text: &str) -> String {
 }
 
 fn read(path: &Path) -> String {
-    lemmata_env::fs::read_to_string(path).unwrap_or_default()
+    lemmata_env::fs::read_text(path).unwrap_or_default()
 }
 
 /// Why the diff document didn't compile, in plain words. A missing package says how to install it.
@@ -207,22 +228,57 @@ fn stage(root: &Path, main: &Path, work: &Path) -> Result<(PathBuf, PathBuf)> {
 }
 
 /// Copies the .tex files below `from` to `to`, keeping the folder structure. Folders starting
-/// with a dot (.git, Lemmata's own) are skipped.
+/// with a dot (.git, Lemmata's own) and symlinks are skipped so a link cycle cannot loop or copy
+/// files from outside the project.
 fn copy_tex_files(from: &Path, to: &Path) -> Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
-        let path = entry?.path();
-        let file = path.file_name().unwrap_or_default().to_owned();
+        let entry = entry?;
+        let path = entry.path();
+        let file = entry.file_name();
         if file.to_string_lossy().starts_with('.') {
             continue;
         }
-        if path.is_dir() {
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
             copy_tex_files(&path, &to.join(&file))?;
-        } else if path.extension().is_some_and(|e| e == "tex") {
+        } else if ft.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("tex"))
+        {
             lemmata_env::fs::copy(&path, to.join(&file))?;
         }
     }
     Ok(())
+}
+
+/// Picks the `--encoding` argument for `latexdiff` from the bytes of the two files: UTF-8 unless
+/// either file is non-UTF-8 (Latin-1 / Windows-1252).
+fn diff_encoding(old: &Path, new: &Path) -> &'static str {
+    let mut non_utf8 = false;
+    let mut has_cp1252_high = false;
+    for path in [old, new] {
+        if let Ok(bytes) = lemmata_env::fs::read(path)
+            && std::str::from_utf8(&bytes).is_err()
+        {
+            non_utf8 = true;
+            if bytes.iter().any(|&b| (0x80..=0x9f).contains(&b)) {
+                has_cp1252_high = true;
+            }
+        }
+    }
+    if !non_utf8 {
+        "utf8"
+    } else if has_cp1252_high {
+        "cp1252"
+    } else {
+        "latin1"
+    }
 }
 
 fn diff_and_compile(
@@ -256,9 +312,10 @@ fn diff_and_compile(
     } else {
         (old_main.to_path_buf(), main.to_path_buf())
     };
+    let encoding = diff_encoding(&root.join(&old_main), &root.join(&new_main));
     let mut diff = Command::new(tools.latexdiff);
     diff.current_dir(root)
-        .args(["--flatten", "--encoding=utf8"])
+        .args(["--flatten", &format!("--encoding={encoding}")])
         .arg(old_main)
         .arg(new_main);
     path_env(&mut diff);

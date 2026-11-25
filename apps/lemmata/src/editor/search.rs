@@ -23,6 +23,8 @@ pub struct Search {
     focus_query: bool,
     /// The regular expression doesn't parse.
     invalid: bool,
+    /// The Go-to-line input didn't parse when submitted.
+    goto_invalid: bool,
 }
 
 impl Search {
@@ -40,11 +42,13 @@ impl Search {
             current: None,
             focus_query: true,
             invalid: false,
+            goto_invalid: false,
         });
         if !selected.is_empty() && !selected.contains('\n') {
             s.query = selected.into();
         }
         s.goto = None;
+        s.goto_invalid = false;
         s.focus_query = true;
         s
     }
@@ -53,6 +57,7 @@ impl Search {
     pub fn goto_line(previous: Option<Search>) -> Self {
         let mut s = Self::open(previous, "", false);
         s.goto = Some(String::new());
+        s.goto_invalid = false;
         s
     }
 
@@ -417,21 +422,28 @@ fn cm_check(ui: &mut Ui, p: &Palette, value: &mut bool, label: &str, size: f32) 
 pub fn panel(ui: &mut Ui, p: &Palette, ed: &mut Editor, area: Rect, id: egui::Id) -> f32 {
     let size = 13.0;
     let goto = ed.search.as_ref().is_some_and(|s| s.goto.is_some());
-    let h = if goto { 30.0 } else { 54.0 };
+    let h = if goto { 34.0 } else { 64.0 };
     let rect = Rect::from_min_max(pos2(area.left(), area.bottom() - h), area.max);
     ui.painter().rect_filled(rect, 0, p.surface_2);
     ui.painter()
         .hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
     let mut child = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(rect.shrink2(vec2(6.0, 3.0)))
+            .max_rect(Rect::from_min_max(
+                pos2(rect.left() + 6.0, rect.top() + 5.0),
+                pos2(
+                    (rect.right() - 22.0).max(rect.left() + 20.0),
+                    rect.bottom() - 4.0,
+                ),
+            ))
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     let ui = &mut child;
-    ui.spacing_mut().item_spacing = vec2(0.6 * size * 0.7, 3.0);
+    ui.spacing_mut().item_spacing = vec2(0.6 * size * 0.7, 5.0);
     let lines = ed.doc.line_count();
     let current_line = ed.cursor_line();
     let mut act: Option<&str> = None;
+    let mut panel_focused = false;
     {
         let s = ed.search.as_mut().unwrap();
         if let Some(target) = s.goto.as_mut() {
@@ -442,14 +454,27 @@ pub fn panel(ui: &mut Ui, p: &Palette, ed: &mut Editor, area: Rect, id: egui::Id
                         .color(p.ink),
                 );
                 let r = cm_field(ui, p, target, "", size, 80.0);
+                if r.changed() {
+                    s.goto_invalid = false;
+                }
                 if s.focus_query {
                     r.request_focus();
                     s.focus_query = false;
+                }
+                if r.has_focus() || r.lost_focus() {
+                    panel_focused = true;
                 }
                 if (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                     | cm_button(ui, p, "go", size).clicked()
                 {
                     act = Some("goto");
+                }
+                if s.goto_invalid {
+                    ui.label(
+                        egui::RichText::new("Enter a line number, line:col, +n, -n, or n%")
+                            .size(size * 0.8)
+                            .color(p.error),
+                    );
                 }
             });
         } else {
@@ -459,6 +484,9 @@ pub fn panel(ui: &mut Ui, p: &Palette, ed: &mut Editor, area: Rect, id: egui::Id
                 if s.focus_query {
                     r.request_focus();
                     s.focus_query = false;
+                }
+                if r.has_focus() || r.lost_focus() {
+                    panel_focused = true;
                 }
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     act = Some(if ui.input(|i| i.modifiers.shift) {
@@ -486,10 +514,25 @@ pub fn panel(ui: &mut Ui, p: &Palette, ed: &mut Editor, area: Rect, id: egui::Id
                             .size(size * 0.8)
                             .color(p.error),
                     );
+                } else if !s.query.is_empty() {
+                    let count = if s.matches.is_empty() {
+                        "No matches".to_owned()
+                    } else if let Some(cur) = s.current
+                        && let Some(idx) = s.matches.iter().position(|m| *m == cur)
+                    {
+                        format!("{} of {}", idx + 1, s.matches.len())
+                    } else {
+                        let n = s.matches.len();
+                        format!("{n} match{}", if n == 1 { "" } else { "es" })
+                    };
+                    ui.label(egui::RichText::new(count).size(size * 0.8).color(p.muted));
                 }
             });
             ui.horizontal(|ui| {
                 let r = cm_field(ui, p, &mut s.replace, "Replace", size, 140.0);
+                if r.has_focus() || r.lost_focus() {
+                    panel_focused = true;
+                }
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     act = Some("replace");
                     r.request_focus();
@@ -501,11 +544,25 @@ pub fn panel(ui: &mut Ui, p: &Palette, ed: &mut Editor, area: Rect, id: egui::Id
                     act = Some("replace-all");
                 }
             });
+            // Handle Find/Find-next/Find-prev shortcuts while focus is in the search inputs.
+            if panel_focused && act.is_none() {
+                if crate::shortcuts::consume(ui.ctx(), "find") {
+                    s.focus_query = true;
+                } else if crate::shortcuts::consume(ui.ctx(), "find-next")
+                    || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F3))
+                {
+                    act = Some("next");
+                } else if crate::shortcuts::consume(ui.ctx(), "find-prev")
+                    || ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F3))
+                {
+                    act = Some("prev");
+                }
+            }
         }
     }
     // The close button, top right.
     let close = Rect::from_min_size(
-        pos2(rect.right() - 4.0 - 14.0, rect.top() + 1.0),
+        pos2(rect.right() - 4.0 - 14.0, rect.top() + 3.0),
         vec2(14.0, 16.0),
     );
     let cr = ui.interact(close, id.with("search-close"), Sense::click());
@@ -517,7 +574,9 @@ pub fn panel(ui: &mut Ui, p: &Palette, ed: &mut Editor, area: Rect, id: egui::Id
         FontId::proportional(size * 1.1),
         p.ink,
     );
-    if cr.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    let esc_here = (panel_focused || ui.memory(|m| m.has_focus(id)))
+        && ui.input(|i| i.key_pressed(egui::Key::Escape));
+    if cr.clicked() || esc_here {
         ed.search = None;
         ui.memory_mut(|m| m.request_focus(id));
         return h;
@@ -543,6 +602,9 @@ pub fn panel(ui: &mut Ui, p: &Palette, ed: &mut Editor, area: Rect, id: egui::Id
                 }
                 ed.search = None;
                 ui.memory_mut(|m| m.request_focus(id));
+            } else if let Some(s) = ed.search.as_mut() {
+                s.goto_invalid = true;
+                s.focus_query = true;
             }
         }
         _ => {}

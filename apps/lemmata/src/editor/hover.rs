@@ -113,7 +113,10 @@ pub fn target_at(line: &str, offset: usize) -> Option<Target> {
                 i += ws;
                 break;
             }
-            i = skip_group(text, i + ws, '[', ']')?;
+            let Some(next) = skip_group(text, i + ws, '[', ']') else {
+                break;
+            };
+            i = next;
         }
         if text.get(i) != Some(&'{') {
             continue;
@@ -245,6 +248,53 @@ fn missing(ui: &mut Ui, p: &Palette, text: String, button: &str, search: Search)
         .show(ui, p)
         .clicked()
         .then_some(search)
+}
+
+/// Whether any async preview for `t` has settled (loaded or failed), so the hover card's `Area`
+/// can re-measure once the full preview replaces the `"Loading preview…"` placeholder.
+pub fn preview_ready(
+    ctx: &egui::Context,
+    t: &Target,
+    look: &Lookups,
+    root: &std::path::Path,
+) -> bool {
+    match t.kind {
+        Kind::Input => {
+            let Some(f) = resolve_file(&t.name, &look.files, &["", ".tex"]) else {
+                return true;
+            };
+            !matches!(input_preview(ctx, &root.join(&f)), Preview::Loading)
+        }
+        Kind::Graphic => {
+            let Some(f) = resolve_file(&t.name, &look.files, GRAPHIC_EXTS) else {
+                return true;
+            };
+            if !IMAGE_EXT.is_match(&f) {
+                return true;
+            }
+            !matches!(
+                crate::writing::images::state(ctx, &root.join(&f)),
+                crate::writing::images::State::Loading
+            )
+        }
+        Kind::Ref => {
+            let Some(l) = look.labels.iter().find(|l| l.label == t.name) else {
+                return true;
+            };
+            if FIGURE_ENV.is_match(&l.env)
+                && !l.graphic.is_empty()
+                && let Some(f) = resolve_file(&l.graphic, &look.files, GRAPHIC_EXTS)
+                && IMAGE_EXT.is_match(&f)
+            {
+                return !matches!(
+                    crate::writing::images::state(ctx, &root.join(&f)),
+                    crate::writing::images::State::Loading
+                );
+            }
+            true
+        }
+        Kind::Cite => true,
+    }
 }
 
 /// The card's contents, drawn into the tooltip (`.cm-hover-card`).
@@ -380,44 +430,126 @@ pub fn card(
                 if IMAGE_EXT.is_match(&f) {
                     image(ui, p, &root.join(&f));
                 }
-            } else if let Some(file) = std::fs::metadata(root.join(&f))
-                .is_ok_and(|m| m.is_file())
-                .then(|| std::fs::File::open(root.join(&f)).ok())
-                .flatten()
-            {
-                // A regular file only: opening a named pipe would wait on this thread forever.
-                // Only the start, as the card shows only that: a long chapter isn't read on every frame.
-                // shortcut: still one small read per frame while hovering; cache it if files on slow drives lag.
-                let mut head = Vec::new();
-                let _ = std::io::Read::read_to_end(&mut std::io::Read::take(file, 4096), &mut head);
-                let src = String::from_utf8_lossy(&head);
-                let first: String = src.split('\n').take(8).collect::<Vec<_>>().join("\n");
-                ui.label(
-                    egui::RichText::new(first)
-                        .font(FontId::monospace(11.5))
-                        .color(p.ink),
-                );
+            } else {
+                match input_preview(ui.ctx(), &root.join(&f)) {
+                    Preview::Ready(first) if !first.is_empty() => {
+                        ui.label(
+                            egui::RichText::new(first)
+                                .font(FontId::monospace(11.5))
+                                .color(p.ink),
+                        );
+                    }
+                    Preview::Loading => note(ui, "Loading preview…".into()),
+                    Preview::Ready(_) | Preview::Failed => {}
+                }
             }
         }
     }
     None
 }
 
+enum Preview {
+    Loading,
+    Ready(String),
+    Failed,
+}
+
+enum PreviewSlot {
+    Loading(
+        std::sync::Arc<std::sync::Mutex<Option<Option<String>>>>,
+        Option<std::time::SystemTime>,
+    ),
+    Ready(Option<String>, Option<std::time::SystemTime>),
+}
+
+thread_local! {
+    static INPUT_CACHE: std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, PreviewSlot>> =
+        Default::default();
+}
+
+/// Reads the first 8 lines of an `\input` target off the UI thread (UTF-8 or Latin-1) and caches
+/// the result keyed by modified time.
+fn input_preview(ctx: &egui::Context, path: &std::path::Path) -> Preview {
+    let meta = std::fs::metadata(path).ok();
+    if !meta.as_ref().is_some_and(|m| m.is_file()) {
+        return Preview::Failed;
+    }
+    let stamp = meta.and_then(|m| m.modified().ok());
+    INPUT_CACHE.with_borrow_mut(|cache| {
+        if cache.len() > 64 {
+            cache.retain(|_, s| matches!(s, PreviewSlot::Loading(..)));
+        }
+        if let Some(PreviewSlot::Ready(_, then)) = cache.get(path)
+            && *then != stamp
+        {
+            cache.remove(path);
+        }
+        let slot = cache.entry(path.to_owned()).or_insert_with(|| {
+            let cell = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let (c, p, ctx) = (cell.clone(), path.to_owned(), ctx.clone());
+            std::thread::spawn(move || {
+                // Regular file already checked; read a bounded prefix and decode Latin-1 cleanly.
+                let text = std::fs::File::open(&p).ok().map(|file| {
+                    let mut head = Vec::new();
+                    let _ =
+                        std::io::Read::read_to_end(&mut std::io::Read::take(file, 4096), &mut head);
+                    let src = match std::str::from_utf8(&head) {
+                        Ok(s) => s.to_owned(),
+                        Err(e) if e.error_len().is_none() => {
+                            // Truncated multi-byte UTF-8 sequence at the 4096-byte boundary.
+                            String::from_utf8_lossy(&head[..e.valid_up_to()]).into_owned()
+                        }
+                        Err(_) => head.into_iter().map(|b| b as char).collect(),
+                    };
+                    src.replace("\r\n", "\n")
+                        .split('\n')
+                        .take(8)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                });
+                *c.lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
+                ctx.request_repaint();
+            });
+            PreviewSlot::Loading(cell, stamp)
+        });
+        if let PreviewSlot::Loading(cell, then) = slot {
+            let done = cell.lock().unwrap_or_else(|e| e.into_inner()).take();
+            match done {
+                Some(text) => *slot = PreviewSlot::Ready(text, *then),
+                None => return Preview::Loading,
+            }
+        }
+        match slot {
+            PreviewSlot::Ready(Some(t), _) => Preview::Ready(t.clone()),
+            PreviewSlot::Ready(None, _) => Preview::Failed,
+            PreviewSlot::Loading(..) => Preview::Loading,
+        }
+    })
+}
+
 /// `.cm-hover-img`: at most 240 px, on white, read and decoded off the UI thread.
 fn image(ui: &mut Ui, p: &Palette, path: &std::path::Path) {
-    if let Some(tex) = crate::writing::images::get(ui.ctx(), path) {
-        let size = tex.size_vec2() / ui.ctx().pixels_per_point();
-        let k = (240.0 / size.x).min(240.0 / size.y).min(1.0);
-        ui.add_space(2.0);
-        let r = ui
-            .add(egui::Image::new((tex.id(), size * k)).bg_fill(Color32::WHITE))
-            .rect;
-        ui.painter().rect_stroke(
-            r,
-            4,
-            egui::Stroke::new(1.0, p.border),
-            egui::StrokeKind::Outside,
-        );
+    match crate::writing::images::state(ui.ctx(), path) {
+        crate::writing::images::State::Ready(tex) => {
+            let size = tex.size_vec2() / ui.ctx().pixels_per_point();
+            let k = (240.0 / size.x).min(240.0 / size.y).min(1.0);
+            ui.add_space(2.0);
+            let r = ui
+                .add(egui::Image::new((tex.id(), size * k)).bg_fill(Color32::WHITE))
+                .rect;
+            ui.painter().rect_stroke(
+                r,
+                4,
+                egui::Stroke::new(1.0, p.border),
+                egui::StrokeKind::Outside,
+            );
+        }
+        crate::writing::images::State::Loading => {
+            ui.label(egui::RichText::new("Loading preview…").color(p.muted));
+        }
+        crate::writing::images::State::Failed => {
+            ui.label(egui::RichText::new("Could not load image.").color(p.muted));
+        }
     }
 }
 

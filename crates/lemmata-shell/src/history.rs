@@ -21,16 +21,19 @@ pub enum HistoryStatus {
     },
 }
 
-fn root(state: &Shell) -> CmdResult<PathBuf> {
+fn root_and_outdir(state: &Shell) -> CmdResult<(PathBuf, String)> {
     let guard = state.project.lock_safe();
-    Ok(guard.as_ref().ok_or("No project is open.")?.root.clone())
+    let p = guard.as_ref().ok_or("No project is open.")?;
+    Ok((p.root.clone(), p.config.outdir.clone()))
 }
 
 /// Runs `f` on the project's history, one git operation at a time.
 fn with<T>(state: &Shell, f: impl FnOnce(&History) -> lemmata_history::Result<T>) -> CmdResult<T> {
-    let root = root(state)?;
+    let (root, outdir) = root_and_outdir(state)?;
     let _one_at_a_time = GIT.lock_safe();
-    f(&History::open(&root, state.trusted()).map_err(err)?).map_err(err)
+    let h = History::open(&root, state.trusted()).map_err(err)?;
+    let _ = h.exclude_folder(&outdir);
+    f(&h).map_err(err)
 }
 
 /// Snapshot ids are commit hashes; anything else (an option such as `--help`) is refused.
@@ -44,10 +47,13 @@ fn snapshot_id(id: &str) -> CmdResult<&str> {
 
 impl Shell {
     pub fn history_status(&self) -> CmdResult<HistoryStatus> {
-        let root = root(self)?;
+        let (root, outdir) = root_and_outdir(self)?;
         let _one_at_a_time = GIT.lock_safe();
         Ok(match History::open(&root, self.trusted()) {
-            Ok(_) => HistoryStatus::On,
+            Ok(h) => {
+                let _ = h.exclude_folder(&outdir);
+                HistoryStatus::On
+            }
             Err(Error::NotARepo(_)) => HistoryStatus::NotARepo,
             Err(e @ Error::NoGit) => HistoryStatus::NoGit {
                 message: e.to_string(),
@@ -61,13 +67,14 @@ impl Shell {
         if !self.trusted() {
             return Err(crate::NEEDS_TRUST_GIT.into());
         }
-        Ok(lemmata_history::working_status(&root(self)?))
+        Ok(lemmata_history::working_status(&root_and_outdir(self)?.0))
     }
 
     pub fn history_enable(&self) -> CmdResult<()> {
-        let root = root(self)?;
+        let (root, outdir) = root_and_outdir(self)?;
         let _one_at_a_time = GIT.lock_safe();
         let h = History::init(&root).map_err(err)?;
+        let _ = h.exclude_folder(&outdir);
         h.snapshot("History turned on").map_err(err)?;
         Ok(())
     }

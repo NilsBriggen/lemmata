@@ -86,6 +86,20 @@ struct Hit {
     rects: Vec<Rect>,
 }
 
+/// Lowercases `text` character-by-character while duplicating the originating glyph index for
+/// case-expanding Unicode letters (e.g. `İ` → `i\u{307}`, `ẞ` → `ß`), so `chars.len() == map.len()`.
+fn folded_search_text(text: &str, map: Vec<Option<usize>>) -> (Vec<char>, Vec<Option<usize>>) {
+    let mut chars = Vec::with_capacity(text.len());
+    let mut out_map = Vec::with_capacity(map.len());
+    for (ch, glyph) in text.chars().zip(map) {
+        for lc in ch.to_lowercase() {
+            chars.push(lc);
+            out_map.push(glyph);
+        }
+    }
+    (chars, out_map)
+}
+
 /// Links the app opens outside: web pages and email addresses.
 pub fn is_link_to_open(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:")
@@ -108,6 +122,9 @@ pub struct PdfView {
     /// The frame it was last drawn in.
     #[cfg(test)]
     drawn_at: u64,
+    /// Top-left corner of the scroll viewport in screen coordinates.
+    #[cfg(test)]
+    last_scroll_min: egui::Pos2,
     /// The newest document sent to the engine, and the one whose pages are laid out.
     sent: u64,
     shown: u64,
@@ -140,12 +157,16 @@ pub struct PdfView {
     client: Vec2,
     scroll_x: f32,
     scroll_y: f32,
-    /// The page, point within it in PDF coordinates, and viewport point to keep together after a pinch.
-    pending_zoom: Option<(usize, egui::Pos2, egui::Pos2)>,
-    /// Applied on the next frame: an exact offset, or a smooth scroll to a content rect.
+    /// Document point `(page, local_pt, viewport_pos)` to keep stationary across a `set_fit` change.
+    pending_anchor: Option<(usize, egui::Pos2, egui::Pos2)>,
+    /// Applied on the next frame: an exact offset, or a smooth vertical scroll.
     jump: Option<Jump>,
-    /// A scroll ratio to restore once a PDF is laid out.
-    pending_ratio: Option<f32>,
+    /// Active smooth vertical scroll `(start_time, duration, from_y, to_y)`.
+    smooth_scroll: Option<(f64, f64, f32, f32)>,
+    /// Time of the most recent continuous zoom (`Ctrl+wheel` or pinch), to defer high-res re-renders briefly.
+    last_zoom_at: Option<f64>,
+    /// A scroll ratio `(rx, ry)` to restore once a PDF is laid out.
+    pending_ratio: Option<(f32, f32)>,
     /// A page to keep in view after a layout change, and a SyncTeX box to scroll to once laid out.
     pending_page: Option<usize>,
     pending_box: bool,
@@ -157,6 +178,8 @@ pub struct PdfView {
     searching: bool,
     /// Where a text selection started and ended, each as (page, glyph); it can run over pages.
     selection: Option<((usize, usize), (usize, usize))>,
+    /// Right-click context menu anchor over the PDF.
+    context_menu: Option<egui::Pos2>,
     /// Ctrl+C waits for the text layers of selected pages that weren't loaded yet.
     copy_waiting: bool,
     png_wanted: bool,
@@ -182,6 +205,8 @@ impl PdfView {
             relayout_calls: 0,
             #[cfg(test)]
             drawn_at: 0,
+            #[cfg(test)]
+            last_scroll_min: egui::Pos2::ZERO,
             sent: 0,
             bytes: None,
             shown: 0,
@@ -209,8 +234,10 @@ impl PdfView {
             client: Vec2::ZERO,
             scroll_x: 0.0,
             scroll_y: 0.0,
-            pending_zoom: None,
+            pending_anchor: None,
             jump: None,
+            smooth_scroll: None,
+            last_zoom_at: None,
             pending_ratio: None,
             pending_page: None,
             pending_box: false,
@@ -220,6 +247,7 @@ impl PdfView {
             match_index: 0,
             searching: false,
             selection: None,
+            context_menu: None,
             copy_waiting: false,
             png_wanted: false,
             focused: false,
@@ -382,7 +410,7 @@ impl PdfView {
                     if !self.query.is_empty() {
                         let (text, map) = page_text(&self.deco[&page].0);
                         self.search_text
-                            .insert(page, (text.to_lowercase().chars().collect(), map));
+                            .insert(page, folded_search_text(&text, map));
                         self.find_page(page);
                         if self.decorating.is_empty() {
                             self.searching = false;
@@ -453,7 +481,8 @@ impl PdfView {
             self.content = Vec2::ZERO;
             return;
         }
-        self.percent = (self.scales[0] / PT * 100.0).round() as u32;
+        let cur_idx = self.current_page.saturating_sub(1).min(n - 1);
+        self.percent = (self.scales[cur_idx] / PT * 100.0).round() as u32;
         if !self.two_up() {
             let w = sizes.iter().map(|s| s.x).fold(0.0, f32::max);
             let width = (w + 2.0 * PAD_X).max(self.client.x);
@@ -516,20 +545,72 @@ impl PdfView {
             .or((next < self.rects.len()).then_some(next))
     }
 
+    /// Finds the document page and PDF-point coordinates under `viewport` at scroll `offset`.
+    fn anchor_at(
+        &self,
+        viewport: egui::Pos2,
+        offset: Vec2,
+    ) -> Option<(usize, egui::Pos2, egui::Pos2)> {
+        if self.rects.is_empty() {
+            return None;
+        }
+        let content = viewport + offset;
+        let page = self
+            .rects
+            .iter()
+            .position(|r| r.contains(content))
+            .unwrap_or_else(|| {
+                self.rects
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| {
+                        a.distance_sq_to_pos(content)
+                            .total_cmp(&b.distance_sq_to_pos(content))
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            });
+        let local = ((content - self.rects[page].min) / self.scales[page]).to_pos2();
+        Some((page, local, viewport))
+    }
+
     /// Changes the zoom, keeping the same part of the document in view.
     pub fn set_fit(&mut self, fit: Fit) {
-        let ratio = self.scroll_y / self.content.y.max(1.0);
+        self.smooth_scroll = None;
+        self.last_zoom_at = None;
+        if self.client.x > 0.0
+            && self.client.y > 0.0
+            && let Some(anchor) = self.anchor_at(
+                (self.client * 0.5).to_pos2(),
+                vec2(self.scroll_x, self.scroll_y),
+            )
+        {
+            self.pending_anchor = Some(anchor);
+            self.pending_ratio = None;
+        } else {
+            let ratio = (
+                self.scroll_x / self.content.x.max(1.0),
+                self.scroll_y / self.content.y.max(1.0),
+            );
+            self.pending_ratio = Some(ratio);
+            self.pending_anchor = None;
+        }
         self.fit = match fit {
             Fit::Zoom(z) => Fit::Zoom(z.clamp(0.25, 4.0)),
             f => f,
         };
-        self.pending_ratio = Some(ratio);
     }
 
     pub fn zoom_by(&mut self, factor: f32) {
-        self.set_fit(Fit::Zoom(
-            ((self.percent as f32 / 100.0) * factor * 20.0).round() / 20.0,
-        ));
+        let now = match self.fit {
+            Fit::Zoom(f) => f,
+            _ => self
+                .scales
+                .get(self.current_page.saturating_sub(1))
+                .map(|&s| s / PT)
+                .unwrap_or(self.percent as f32 / 100.0),
+        };
+        self.set_fit(Fit::Zoom((now * factor * 20.0).round() / 20.0));
     }
 
     /// Changes single page / spreads, keeping the current page in view.
@@ -570,7 +651,7 @@ impl PdfView {
             self.fit = f;
         }
         if let Some(s) = v.get("scroll").and_then(|s| s.as_f64()) {
-            self.pending_ratio = Some(s as f32);
+            self.pending_ratio = Some((0.0, s as f32));
         }
     }
 
@@ -836,8 +917,10 @@ impl PdfView {
         if client != self.client {
             // Whatever the step: a slow drag of the splitter is many small ones.
             if matches!(self.fit, Fit::Width | Fit::Page) && self.client.x > 0.0 {
-                self.pending_ratio
-                    .get_or_insert(self.scroll_y / self.content.y.max(1.0));
+                self.pending_ratio.get_or_insert((
+                    self.scroll_x / self.content.x.max(1.0),
+                    self.scroll_y / self.content.y.max(1.0),
+                ));
             }
             self.client = client;
         }
@@ -845,14 +928,17 @@ impl PdfView {
         if let Some(n) = self.pending_page.take()
             && let Some(r) = self.rects.get(n.saturating_sub(1))
         {
-            self.jump = Some(Jump::Offset(vec2(0.0, r.top() - 12.0)));
+            self.smooth_scroll = None;
+            self.jump = Some(Jump::Offset(vec2(0.0, (r.top() - 12.0).max(0.0))));
         }
-        if let Some(ratio) = self.pending_ratio.take() {
-            self.jump = Some(Jump::Offset(vec2(0.0, ratio * self.content.y)));
+        if let Some((rx, ry)) = self.pending_ratio.take() {
+            self.smooth_scroll = None;
+            self.jump = Some(Jump::Offset(vec2(rx * self.content.x, ry * self.content.y)));
         }
-        if let Some((page, local, viewport)) = self.pending_zoom.take()
+        if let Some((page, local, viewport)) = self.pending_anchor.take()
             && let (Some(rect), Some(scale)) = (self.rects.get(page), self.scales.get(page))
         {
+            self.smooth_scroll = None;
             self.jump = Some(Jump::Offset(rect.min + local.to_vec2() * *scale - viewport));
         }
         if std::mem::take(&mut self.pending_box)
@@ -864,54 +950,138 @@ impl PdfView {
             ));
         }
 
+        // Ctrl+wheel and pinch zoom applied on the SAME frame before ScrollArea lays out or
+        // paints, so layout scale and scroll offset never disagree by a frame.
+        let now_time = ui.input(|i| i.time);
+        let scroll_min = ui.available_rect_before_wrap().min;
+        #[cfg(test)]
+        {
+            self.last_scroll_min = scroll_min;
+        }
+        let mut zoomed = false;
+        if ui.is_enabled() && ui.ctx().dragged_id().is_none() && ui.rect_contains_pointer(area) {
+            let z = ui.input(|i| i.zoom_delta());
+            if z.is_finite() && z > 0.0 && (z - 1.0).abs() > 1e-6 {
+                let cur_idx = self
+                    .current_page
+                    .saturating_sub(1)
+                    .min(self.scales.len() - 1);
+                // Unrounded, so Fit::Width/Page don't jump and slow pinches accumulate cleanly.
+                let now = match self.fit {
+                    Fit::Zoom(f) => f,
+                    _ => self.scales[cur_idx] / PT,
+                };
+                let next = (now * z).clamp(0.25, 4.0);
+                if (next - now).abs() > 1e-6 || !matches!(self.fit, Fit::Zoom(_)) {
+                    let at = ui.input(|i| i.pointer.hover_pos()).unwrap_or(area.center());
+                    let viewport = (at - scroll_min).to_pos2();
+                    let base_offset = match self.jump {
+                        Some(Jump::Offset(o)) => o,
+                        _ => vec2(self.scroll_x, self.scroll_y),
+                    };
+                    if let Some((page, local, viewport)) = self.anchor_at(viewport, base_offset) {
+                        self.fit = Fit::Zoom(next);
+                        self.relayout();
+                        let target =
+                            self.rects[page].min + local.to_vec2() * self.scales[page] - viewport;
+                        self.jump = Some(Jump::Offset(target));
+                        self.smooth_scroll = None;
+                        self.last_zoom_at = Some(now_time);
+                        zoomed = true;
+                    }
+                }
+            }
+        }
+
+        // While actively zooming continuously (Ctrl+wheel smoothing or pinch), GPU-scale existing
+        // page textures at full frame rate and wait briefly before firing full hayro re-renders.
+        let zoom_settling = self
+            .last_zoom_at
+            .is_some_and(|t| now_time >= t && now_time - t < 0.08);
+        if !zoom_settling {
+            self.last_zoom_at = None;
+        }
+
         // A new zoom or pane size makes earlier render jobs moot.
         let ppp = ctx.pixels_per_point();
         let first = self.scales[0] * ppp;
-        if (first - self.epoch_scale).abs() > 1e-4 {
+        if !zoom_settling && (first - self.epoch_scale).abs() > 1e-4 {
             self.epoch_scale = first;
             self.engine().epoch.fetch_add(1, Ordering::Relaxed);
             self.asked.retain(|(_, thumb)| *thumb);
         }
         let mut epoch = self.engine().epoch.load(Ordering::Relaxed);
 
-        let scroll = egui::ScrollArea::both()
-            .id_salt(self.id)
-            .auto_shrink([false, false]);
-        let mut exact = None;
-        let mut smooth = None;
+        let mut exact: Option<Vec2> = None;
+        let mut smooth_y: Option<f32> = None;
         match self.jump.take() {
-            Some(Jump::Offset(o)) => exact = Some(o.max(Vec2::ZERO)),
-            Some(Jump::Smooth(y)) => smooth = Some(y),
+            Some(Jump::Offset(o)) => {
+                self.smooth_scroll = None;
+                exact = Some(o.max(Vec2::ZERO));
+            }
+            Some(Jump::Smooth(y)) => {
+                let max_y = (self.content.y - self.client.y).max(0.0);
+                let to_y = y.clamp(0.0, max_y);
+                if crate::theme::reduced_motion() || (to_y - self.scroll_y).abs() < 1.0 {
+                    self.smooth_scroll = None;
+                    exact = Some(vec2(self.scroll_x, to_y));
+                } else {
+                    self.smooth_scroll = Some((now_time, 0.3, self.scroll_y, to_y));
+                }
+            }
             None => {}
+        }
+        if exact.is_none()
+            && let Some((t0, dur, from_y, to_y)) = self.smooth_scroll
+        {
+            let user_scrolled = ui.input(|i| i.smooth_scroll_delta() != Vec2::ZERO)
+                || ui.ctx().dragged_id().is_some();
+            if user_scrolled {
+                self.smooth_scroll = None;
+            } else {
+                let t = if dur > 0.0 {
+                    ((now_time - t0) / dur).clamp(0.0, 1.0) as f32
+                } else {
+                    1.0
+                };
+                let y = egui::lerp(from_y..=to_y, egui::emath::ease_in_ease_out(t));
+                smooth_y = Some(y);
+                if t >= 1.0 {
+                    self.smooth_scroll = None;
+                } else {
+                    ctx.request_repaint();
+                }
+            }
+        }
+
+        let mut scroll = egui::ScrollArea::both()
+            .id_salt(self.id)
+            .auto_shrink([false, false])
+            .animated(false);
+        if let Some(o) = exact {
+            scroll = scroll.scroll_offset(o);
+        } else if let Some(y) = smooth_y {
+            scroll = scroll.vertical_scroll_offset(y);
+        }
+        if zoomed {
+            scroll = scroll.scroll_source(egui::scroll_area::ScrollSource {
+                mouse_wheel: false,
+                ..Default::default()
+            });
+        }
+        let suppress_physics = exact.is_some() || smooth_y.is_some();
+        let saved_kinetic = ui.spacing().scroll.kinetic;
+        if suppress_physics {
+            // Avoid stale-bounds rubber-band springs and residual kinetic velocity fighting an
+            // explicit zoom/jump offset in ScrollArea::begin.
+            ui.spacing_mut().scroll.kinetic.rubber_band = false;
+            ui.spacing_mut().scroll.kinetic.decay_time = 0.0;
         }
         let mut event = None;
         let out = scroll.show_viewport(ui, |ui, viewport| {
             let origin = ui.max_rect().min;
             let (resp_rect, resp) = ui.allocate_exact_size(self.content, Sense::click_and_drag());
             let _ = resp_rect;
-            if let Some(offset) = exact {
-                let r = Rect::from_min_size(
-                    origin + offset + ui.spacing().item_spacing,
-                    viewport.size(),
-                );
-                ui.scroll_to_rect_animation(
-                    r,
-                    Some(egui::Align::TOP),
-                    egui::style::ScrollAnimation::duration(0.0),
-                );
-            }
-            if let Some(y) = smooth {
-                let r = Rect::from_min_size(origin + vec2(viewport.left(), y), viewport.size());
-                ui.scroll_to_rect_animation(
-                    r,
-                    Some(egui::Align::TOP),
-                    egui::style::ScrollAnimation::duration(if crate::theme::reduced_motion() {
-                        0.0
-                    } else {
-                        0.3
-                    }),
-                );
-            }
             let near = viewport.expand2(vec2(0.0, viewport.height() * 0.5));
             let keep = viewport.expand2(vec2(0.0, viewport.height() * 2.0));
             // The pages on screen are asked for first, then the ones half a screen away, and
@@ -948,7 +1118,9 @@ impl PdfView {
                 }
             }
             for &i in on_screen.iter().chain(&around) {
-                self.want(i, self.scales[i] * ppp, false, epoch);
+                if !zoom_settling || !self.tex.contains_key(&i) {
+                    self.want(i, self.scales[i] * ppp, false, epoch);
+                }
             }
             for &i in on_screen.iter().chain(&around) {
                 if !self.deco.contains_key(&i) && self.decorating.insert(i) {
@@ -1003,48 +1175,68 @@ impl PdfView {
             self.overlays(ui, p, origin, &resp, &mut event);
             resp
         });
+        if suppress_physics {
+            ui.spacing_mut().scroll.kinetic = saved_kinetic;
+        }
         let offset = out.state.clamped_offset();
+        if let Some(y) = smooth_y
+            && (offset.y - y).abs() > 1.0
+        {
+            self.smooth_scroll = None;
+        }
         self.scroll_x = offset.x;
         self.scroll_y = offset.y;
         // The page in the middle of the pane.
         let mid = self.scroll_y + self.client.y / 2.0;
         if let Some(i) = self.page_after(mid) {
             self.current_page = i + 1;
+            if let Some(&scale) = self.scales.get(i) {
+                self.percent = (scale / PT * 100.0).round() as u32;
+            }
         }
         let resp = out.inner;
         self.focused = resp.has_focus();
-        // Ctrl+wheel and pinch zoom from where they are.
-        if resp.hovered() || resp.contains_pointer() {
-            let z = ui.input(|i| i.zoom_delta());
-            if z != 1.0 {
-                // Unrounded, so the small steps of a slow pinch add up.
-                let now = match self.fit {
-                    Fit::Zoom(f) => f,
-                    _ => self.percent as f32 / 100.0,
-                };
-                let next = (now * z).clamp(0.25, 4.0);
-                let at = resp.hover_pos().unwrap_or(area.center());
-                let viewport = (at - area.min).to_pos2();
-                let content = viewport + offset;
-                let page = self
-                    .rects
-                    .iter()
-                    .position(|r| r.contains(content))
-                    .unwrap_or_else(|| {
-                        self.rects
-                            .iter()
-                            .enumerate()
-                            .min_by(|(_, a), (_, b)| {
-                                a.center()
-                                    .distance_sq(content)
-                                    .total_cmp(&b.center().distance_sq(content))
-                            })
-                            .map(|(i, _)| i)
-                            .unwrap_or(0)
-                    });
-                let local = ((content - self.rects[page].min) / self.scales[page]).to_pos2();
-                self.pending_zoom = Some((page, local, viewport));
-                self.set_fit(Fit::Zoom(next));
+        if resp.has_focus()
+            && self.selection.is_some()
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.selection = None;
+            self.context_menu = None;
+        }
+        if resp.secondary_clicked()
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            resp.request_focus();
+            self.context_menu = Some(pos);
+        }
+        if let Some(at) = self.context_menu {
+            let has_sel = self.selection.is_some();
+            let items = [
+                crate::widgets::MenuItem::new(crate::icons::COPY, "Copy").enabled(has_sel),
+                crate::widgets::MenuItem::plain("Select all").enabled(!self.pages.is_empty()),
+            ];
+            let anchor = Rect::from_min_size(at, Vec2::ZERO);
+            match crate::widgets::drop_menu(
+                &ctx,
+                p,
+                self.id.with("pdf-context-menu"),
+                anchor,
+                false,
+                &items,
+            ) {
+                crate::widgets::MenuResult::Open => {}
+                crate::widgets::MenuResult::Closed => self.context_menu = None,
+                crate::widgets::MenuResult::Clicked(0) => {
+                    self.context_menu = None;
+                    if has_sel {
+                        self.copy_waiting = true;
+                    }
+                }
+                crate::widgets::MenuResult::Clicked(1) => {
+                    self.context_menu = None;
+                    self.select_all();
+                }
+                crate::widgets::MenuResult::Clicked(_) => self.context_menu = None,
             }
         }
         if resp.has_focus()
@@ -1065,6 +1257,8 @@ impl PdfView {
         }
         if self.highlight.is_some() || !self.asked.is_empty() || !self.decorating.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        } else if self.last_zoom_at.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(85));
         }
         event
     }
@@ -1225,8 +1419,10 @@ impl PdfView {
             }
         }
 
-        // Clicks: a link goes there; a double-click or Ctrl/Cmd-click asks for the source.
-        let sync = resp.double_clicked() || (resp.clicked() && ui.input(|i| i.modifiers.command));
+        // Clicks: a link goes there (even with Ctrl/Cmd held); a double-click or Ctrl/Cmd-click
+        // away from a link asks for the source.
+        let sync = resp.double_clicked()
+            || (resp.clicked() && ui.input(|i| i.modifiers.command) && over_link.is_none());
         if sync {
             self.selection = None;
             if let Some((i, pt)) = resp.interact_pointer_pos().and_then(at) {
@@ -1331,11 +1527,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn unloaded_views_start_no_pdf_workers() {
-        let before = pdf_threads();
         let views: Vec<_> = (0..8)
             .map(|i| PdfView::new(&egui::Context::default(), egui::Id::unique(i)))
             .collect();
-        assert_eq!(pdf_threads(), before);
+        assert!(views.iter().all(|v| v.engine.is_none()));
         drop(views);
     }
 
@@ -1569,9 +1764,10 @@ mod tests {
         view.search("İ", false);
         decorate(&mut view, 1, 1, "İ");
         view.receive(&ctx);
-        assert!(
-            view.hits.is_empty(),
-            "case expansion must not corrupt the glyph map"
+        assert_eq!(
+            view.hits.len(),
+            1,
+            "case-expanding characters still match without corrupting the glyph map"
         );
 
         view.clear_search();
@@ -1737,30 +1933,202 @@ mod tests {
             );
         h.run();
         assert_eq!(h.state().scroll_y, 100.0);
+        let pointer = pos2(150.0, 150.0);
+        let viewport = (pointer - h.state().last_scroll_min).to_pos2();
+        let (_, local, _) = h
+            .state()
+            .anchor_at(viewport, vec2(h.state().scroll_x, h.state().scroll_y))
+            .unwrap();
         h.input_mut()
             .events
-            .push(egui::Event::PointerMoved(pos2(150.0, 150.0)));
+            .push(egui::Event::PointerMoved(pointer));
         h.input_mut().events.push(egui::Event::Zoom(2.0));
+        // Must settle in a single frame with zero lag.
         h.step();
-        let (_, local, viewport) = h.state().pending_zoom.unwrap();
-        h.run_steps(29);
         let expected = h.state().rects[0].min + local.to_vec2() * h.state().scales[0] - viewport;
         assert!(
-            (h.state().scroll_x - expected.x).abs() < 0.01,
-            "scroll {}, {}; expected {expected:?}; fit {:?}, scales {:?}",
+            (h.state().scroll_x - expected.x).abs() < 0.01
+                && (h.state().scroll_y - expected.y).abs() < 0.01,
+            "single-frame zoom in: scroll ({}, {}); expected {expected:?}; fit {:?}, scales {:?}",
             h.state().scroll_x,
             h.state().scroll_y,
             h.state().fit,
             h.state().scales
         );
-        assert!((h.state().scroll_y - expected.y).abs() < 0.01);
         h.input_mut().events.push(egui::Event::Zoom(0.5));
         h.step();
-        let (_, local, viewport) = h.state().pending_zoom.unwrap();
-        h.run_steps(29);
         let expected = h.state().rects[0].min + local.to_vec2() * h.state().scales[0] - viewport;
-        assert!((h.state().scroll_x - expected.x).abs() < 0.01);
-        assert!((h.state().scroll_y - expected.y).abs() < 0.01);
+        assert!(
+            (h.state().scroll_x - expected.x).abs() < 0.01
+                && (h.state().scroll_y - expected.y).abs() < 0.01,
+            "single-frame zoom out: scroll ({}, {}); expected {expected:?}",
+            h.state().scroll_x,
+            h.state().scroll_y
+        );
+    }
+
+    #[test]
+    fn windows_ctrl_wheel_zoom_stays_anchored_on_every_single_frame() {
+        let mut view = PdfView::new(&egui::Context::default(), egui::Id::unique("win-zoom"));
+        view.pages = vec![vec2(600.0, 800.0); 5];
+        view.shown = 1;
+        view.fit = Fit::Width;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([500.0, 400.0])
+            .with_pixels_per_point(1.5)
+            .build_ui_state(
+                |ui, view: &mut PdfView| {
+                    view.show(ui, &crate::theme::LIGHT);
+                },
+                view,
+            );
+        h.run();
+        // Scroll down to page 3 and pre-populate its texture to verify zoom never evicts it.
+        let p2_top = h.state().rects[2].top();
+        let p2_scale = h.state().scales[2] * 1.5;
+        h.state_mut().jump = Some(Jump::Offset(vec2(0.0, p2_top)));
+        let ctx = h.ctx.clone();
+        h.state_mut().tex.insert(
+            2,
+            Tex {
+                handle: ctx.load_texture(
+                    "page-2-test",
+                    egui::ColorImage::filled([4, 4], Color32::WHITE),
+                    egui::TextureOptions::LINEAR,
+                ),
+                scale: p2_scale,
+                dark: false,
+                doc: 1,
+            },
+        );
+        h.step();
+
+        let pointer = pos2(320.0, 180.0);
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(pointer));
+        h.step();
+
+        let viewport = (pointer - h.state().last_scroll_min).to_pos2();
+        let (anchor_page, anchor_local, _) = h
+            .state()
+            .anchor_at(viewport, vec2(h.state().scroll_x, h.state().scroll_y))
+            .unwrap();
+        assert_eq!(anchor_page, 2);
+
+        // Simulate Windows WM_MOUSEWHEEL + MK_CONTROL (LineDelta smoothed across ~20 frames by egui).
+        let mut prev_scale = h.state().scales[anchor_page];
+        for frame in 0..30 {
+            if frame == 0 || frame == 4 || frame == 8 {
+                h.input_mut().events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: vec2(0.0, 1.0),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Unknown,
+                    modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+                });
+            }
+            h.step();
+            let st = h.state();
+            let scale = st.scales[anchor_page];
+            assert!(
+                scale + 1e-5 >= prev_scale,
+                "frame {frame}: scale oscillated backwards ({prev_scale} -> {scale})"
+            );
+            prev_scale = scale;
+            assert!(
+                st.tex.contains_key(&anchor_page),
+                "frame {frame}: current page texture was evicted during zoom"
+            );
+            let screen = st.last_scroll_min.to_vec2()
+                + st.rects[anchor_page].min.to_vec2()
+                + anchor_local.to_vec2() * scale
+                - vec2(st.scroll_x, st.scroll_y);
+            // Once zoomed wide enough to scroll horizontally, x must also stay pinned to pointer.
+            assert!(
+                (screen.y - pointer.y).abs() < 0.05,
+                "frame {frame}: vertical spasm! anchor screen={screen:?} pointer={pointer:?} scroll=({}, {})",
+                st.scroll_x,
+                st.scroll_y
+            );
+            if st.scroll_x > 0.5 {
+                assert!(
+                    (screen.x - pointer.x).abs() < 0.05,
+                    "frame {frame}: horizontal spasm! anchor screen={screen:?} pointer={pointer:?} scroll=({}, {})",
+                    st.scroll_x,
+                    st.scroll_y
+                );
+            }
+        }
+        assert!(prev_scale > 1.0, "zoom should have increased noticeably");
+
+        // Now zoom back out with Windows LineDelta notches and verify zero oscillation.
+        for frame in 0..30 {
+            if frame == 0 || frame == 4 || frame == 8 {
+                h.input_mut().events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: vec2(0.0, -1.0),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Unknown,
+                    modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+                });
+            }
+            h.step();
+            let st = h.state();
+            let scale = st.scales[anchor_page];
+            assert!(
+                scale <= prev_scale + 1e-5,
+                "zoom-out frame {frame}: scale oscillated ({prev_scale} -> {scale})"
+            );
+            prev_scale = scale;
+            let screen = st.last_scroll_min.to_vec2()
+                + st.rects[anchor_page].min.to_vec2()
+                + anchor_local.to_vec2() * scale
+                - vec2(st.scroll_x, st.scroll_y);
+            assert!(
+                (screen.y - pointer.y).abs() < 0.05,
+                "zoom-out frame {frame}: vertical spasm! anchor screen={screen:?} pointer={pointer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn zoom_cancels_active_smooth_scroll_without_fighting() {
+        let mut view = PdfView::new(&egui::Context::default(), egui::Id::unique("smooth-cancel"));
+        view.pages = vec![vec2(600.0, 800.0); 5];
+        view.shown = 1;
+        view.fit = Fit::Zoom(1.0);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([500.0, 400.0])
+            .build_ui_state(
+                |ui, view: &mut PdfView| {
+                    view.show(ui, &crate::theme::LIGHT);
+                },
+                view,
+            );
+        h.run();
+        // Start an animated jump to page 5, advance 2 frames, then zoom.
+        h.state_mut().goto_page(5);
+        h.step();
+        h.step();
+        let pointer = pos2(250.0, 200.0);
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(pointer));
+        h.input_mut().events.push(egui::Event::Zoom(1.5));
+        h.step();
+        let after_zoom = (h.state().scroll_x, h.state().scroll_y);
+        assert!(h.state().smooth_scroll.is_none());
+        // Advancing further frames must NOT drift back toward page 5.
+        for frame in 0..10 {
+            h.step();
+            assert!(
+                (h.state().scroll_y - after_zoom.1).abs() < 0.01,
+                "frame {frame}: smooth scroll fought zoom ({} vs {})",
+                h.state().scroll_y,
+                after_zoom.1
+            );
+        }
     }
 
     /// What clicking a link to `url` in a one-page view emits.

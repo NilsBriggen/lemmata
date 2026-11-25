@@ -20,26 +20,39 @@ fn installed() -> Option<Installed> {
             .output()
             .is_ok_and(|o| !o.stdout.is_empty())
     };
-    let found = (|| {
-        let latexdiff = find_latexdiff(None)?;
-        let latexmk = which::which("latexmk").ok()?;
-        which::which("pdflatex").ok()?;
-        which::which("biber").ok()?;
-        (["ulem.sty", "listings.sty", "color.sty", "biblatex.sty"]
-            .into_iter()
-            .all(has))
-        .then_some(Installed { latexdiff, latexmk })
-    })();
-    if found.is_none() {
+    let mut missing = Vec::new();
+    let latexdiff = find_latexdiff(None);
+    if latexdiff.is_none() {
+        missing.push("latexdiff");
+    }
+    let latexmk = which::which("latexmk").ok();
+    if latexmk.is_none() {
+        missing.push("latexmk");
+    }
+    if which::which("pdflatex").is_err() {
+        missing.push("pdflatex");
+    }
+    if which::which("biber").is_err() {
+        missing.push("biber");
+    }
+    for sty in ["ulem.sty", "listings.sty", "color.sty", "biblatex.sty"] {
+        if !has(sty) {
+            missing.push(sty);
+        }
+    }
+    if !missing.is_empty() {
+        let list = missing.join(", ");
         assert!(
             env::var_os("LEMMATA_REQUIRE_TEX").is_none(),
-            "LEMMATA_REQUIRE_TEX is set, but latexdiff, latexmk, pdflatex, biber, biblatex, ulem, listings or color is missing"
+            "LEMMATA_REQUIRE_TEX is set, but missing: {list}"
         );
-        eprintln!(
-            "skipped: needs latexdiff, latexmk, pdflatex, biber, biblatex, ulem, listings and color"
-        );
+        eprintln!("skipped: missing {list}");
+        return None;
     }
-    found
+    Some(Installed {
+        latexdiff: latexdiff.unwrap(),
+        latexmk: latexmk.unwrap(),
+    })
 }
 
 fn tools(i: &Installed) -> Tools<'_> {

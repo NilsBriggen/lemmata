@@ -121,9 +121,10 @@ fn workers() -> usize {
     std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 3))
 }
 
-/// Document id: its viewer, where answers go, and whether it has loaded. A viewer's loaded
-/// document stays served until the next one loads, so a PDF that fails to parse changes nothing.
-type Routes = Arc<std::sync::Mutex<HashMap<u64, (u64, Sender<Done>, bool)>>>;
+/// Document id: its viewer, where answers go, the viewer's egui context, and whether it has
+/// loaded. A viewer's loaded document stays served until the next one loads, so a PDF that fails
+/// to parse changes nothing.
+type Routes = Arc<std::sync::Mutex<HashMap<u64, (u64, Sender<Done>, egui::Context, bool)>>>;
 
 struct Pool {
     tx: Vec<Sender<Job>>,
@@ -132,17 +133,17 @@ struct Pool {
     next_doc: AtomicU64,
 }
 
-fn pool(ctx: &egui::Context) -> &'static Pool {
+fn pool() -> &'static Pool {
     static POOL: std::sync::OnceLock<&'static Pool> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
         let routes = Routes::default();
         let tx = (0..workers())
             .map(|n| {
                 let (tx, jobs) = channel();
-                let (routes, ctx) = (routes.clone(), ctx.clone());
+                let routes = routes.clone();
                 std::thread::Builder::new()
                     .name(format!("pdf-{n}"))
-                    .spawn(move || run(jobs, routes, ctx, n == 0))
+                    .spawn(move || run(jobs, routes, n == 0))
                     .expect("the PDF thread starts");
                 tx
             })
@@ -159,6 +160,7 @@ fn pool(ctx: &egui::Context) -> &'static Pool {
 pub struct Engine {
     pool: &'static Pool,
     owner: u64,
+    ctx: egui::Context,
     done: Sender<Done>,
     pub rx: Receiver<Done>,
     /// Render jobs with an older epoch are skipped.
@@ -167,11 +169,12 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(ctx: egui::Context) -> Self {
-        let pool = pool(&ctx);
+        let pool = pool();
         let (done, rx) = channel();
         Self {
             pool,
             owner: pool.next_owner.fetch_add(1, Ordering::Relaxed),
+            ctx,
             done,
             rx,
             epoch: Arc::new(AtomicU64::new(0)),
@@ -191,8 +194,11 @@ impl Engine {
         let page = match &job {
             Job::Load { doc, .. } => {
                 let mut routes = self.pool.routes.lock().unwrap_or_else(|e| e.into_inner());
-                routes.retain(|_, (owner, _, loaded)| *owner != self.owner || *loaded);
-                routes.insert(*doc, (self.owner, self.done.clone(), false));
+                routes.retain(|_, (owner, _, _, loaded)| *owner != self.owner || *loaded);
+                routes.insert(
+                    *doc,
+                    (self.owner, self.done.clone(), self.ctx.clone(), false),
+                );
                 drop(routes);
                 for tx in &self.pool.tx {
                     let _ = tx.send(job.clone());
@@ -212,12 +218,12 @@ impl Drop for Engine {
             .routes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|_, (owner, _, _)| *owner != self.owner);
+            .retain(|_, (owner, _, _, _)| *owner != self.owner);
     }
 }
 
 /// One worker. Only the first (`announce`) reports a load, so the view takes it once.
-fn run(jobs: Receiver<Job>, routes: Routes, ctx: egui::Context, announce: bool) {
+fn run(jobs: Receiver<Job>, routes: Routes, announce: bool) {
     let send = |d: Done| {
         let doc = match &d {
             Done::Loaded { doc, .. }
@@ -226,19 +232,21 @@ fn run(jobs: Receiver<Job>, routes: Routes, ctx: egui::Context, announce: bool) 
             | Done::Png { doc, .. } => *doc,
         };
         let mut routes = routes.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = routes.get(&doc).map(|(_, tx, _)| tx.clone());
+        let dest = routes
+            .get(&doc)
+            .map(|(_, tx, ctx, _)| (tx.clone(), ctx.clone()));
         if let Done::Loaded { result, .. } = &d {
             if result.is_err() {
                 routes.remove(&doc);
             } else if let Some(r) = routes.get_mut(&doc) {
-                r.2 = true;
+                r.3 = true;
                 let owner = r.0;
                 // The viewer has moved on to this document: its older ones are done with.
-                routes.retain(|id, (o, _, loaded)| !(*o == owner && *loaded && *id < doc));
+                routes.retain(|id, (o, _, _, loaded)| !(*o == owner && *loaded && *id < doc));
             }
         }
         drop(routes);
-        if let Some(tx) = tx {
+        if let Some((tx, ctx)) = dest {
             let _ = tx.send(d);
             ctx.request_repaint();
         }
@@ -853,7 +861,8 @@ fn glyphs(page: &Page<'_>) -> Vec<Glyph> {
 }
 
 /// Page text with spaces and line breaks inferred from the gaps between glyphs, and for every
-/// char of it the glyph it came from (None for an inferred space).
+/// char of it the glyph it came from (None for an inferred space). Rejoins hyphenated line breaks
+/// (e.g. `algo-\nrithm`) so copying and searching find the full word.
 pub fn page_text(glyphs: &[Glyph]) -> (String, Vec<Option<usize>>) {
     #[cfg(test)]
     PDF_PAGE_TEXT_CALLS.with(|c| c.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
@@ -864,10 +873,20 @@ pub fn page_text(glyphs: &[Glyph]) -> (String, Vec<Option<usize>>) {
         let r = g.rect;
         if let Some(p) = prev {
             let line_h = p.height().max(r.height()).max(1.0);
-            if (r.center().y - p.center().y).abs() > line_h * 0.6
-                || r.left() - p.right() > line_h * 0.12
-            {
-                // pdf.js joins items on a line break with a space too (hasEOL).
+            let line_break = (r.center().y - p.center().y).abs() > line_h * 0.6;
+            if line_break {
+                let next_lower = g.text.chars().next().is_some_and(char::is_lowercase);
+                let ends_hyphen = s.ends_with(['-', '\u{00ad}', '\u{2010}'])
+                    && s.chars().rev().nth(1).is_some_and(char::is_alphabetic);
+                if next_lower && ends_hyphen {
+                    s.pop();
+                    map.pop();
+                } else {
+                    // pdf.js joins items on a line break with a space too (hasEOL).
+                    s.push(' ');
+                    map.push(None);
+                }
+            } else if r.left() - p.right() > line_h * 0.12 {
                 s.push(' ');
                 map.push(None);
             }

@@ -45,7 +45,9 @@ pub struct Todos {
 pub struct Git {
     pub overview: Option<lemmata_git::Overview>,
     pub branches: Vec<String>,
+    pub remote_branches: Vec<String>,
     pub commits: Vec<lemmata_git::Commit>,
+    pub stashes: Vec<String>,
     pub message: String,
     /// The text of a commit under way: back in the box if the commit didn't happen.
     sent: Option<String>,
@@ -53,10 +55,32 @@ pub struct Git {
     pub error: Option<String>,
     pub info: Option<String>,
     pub new_branch: Option<String>,
+    pub add_remote: Option<(String, String)>,
+    pub confirm_delete_branch: Option<String>,
+    pub stash_msg: Option<String>,
+    /// Inline diff viewer for a changed file: `(path, staged, diff_text)`.
+    pub diff_view: Option<(String, bool, String)>,
     /// Files with changes git hasn't committed, for the tree and the toolbar's count.
     pub status: Vec<(String, String)>,
     pub status_pending: bool,
     pub status_dirty: bool,
+}
+
+impl Git {
+    pub fn clear_repo(&mut self) {
+        self.overview = None;
+        self.branches.clear();
+        self.remote_branches.clear();
+        self.commits.clear();
+        self.stashes.clear();
+        self.diff_view = None;
+        self.add_remote = None;
+        self.confirm_delete_branch = None;
+        self.stash_msg = None;
+        self.status.clear();
+        self.status_pending = false;
+        self.status_dirty = false;
+    }
 }
 
 impl Workspace {
@@ -108,7 +132,7 @@ impl Workspace {
         match self.panel {
             Some(Panel::Review) => self.review_panel(ui, p, backend, settings),
             Some(Panel::Todos) => self.todos_panel(ui, p, backend),
-            Some(Panel::Git) => self.git_panel(ui, p, backend),
+            Some(Panel::Git) => self.git_panel(ui, p, backend, settings),
             Some(Panel::History) => self.history_panel(ui, p, backend, settings),
             None => {}
         }
@@ -578,6 +602,11 @@ impl Workspace {
     }
 
     pub fn load_git(&mut self, backend: &Backend) {
+        // A restricted project never runs git in the workspace repository.
+        if !self.trusted {
+            self.git.clear_repo();
+            return;
+        }
         Self::job_async(
             backend,
             |shell| async move {
@@ -585,20 +614,28 @@ impl Workspace {
                 let more = match &o {
                     Ok(lemmata_git::Overview::Repo(_)) => Some((
                         shell.git_branches().await.unwrap_or_default(),
+                        shell.git_remote_branches().await.unwrap_or_default(),
                         shell.git_log().await.unwrap_or_default(),
+                        shell.git_stash_list().await.unwrap_or_default(),
                     )),
                     _ => None,
                 };
                 (o, more)
             },
             |ws, _, (o, more)| {
+                if !ws.trusted {
+                    ws.git.clear_repo();
+                    return;
+                }
                 match o {
                     Ok(o) => ws.git.overview = Some(o),
                     Err(e) => ws.git.error = Some(e),
                 }
-                if let Some((b, c)) = more {
+                if let Some((b, rb, c, st)) = more {
                     ws.git.branches = b;
+                    ws.git.remote_branches = rb;
                     ws.git.commits = c;
+                    ws.git.stashes = st;
                 }
             },
         );
@@ -616,13 +653,17 @@ impl Workspace {
         F: FnOnce(std::sync::Arc<lemmata_shell::Shell>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<Option<String>, String>> + Send + 'static,
     {
-        if self.git.busy.is_some() {
+        if !self.trusted || self.git.busy.is_some() {
             return;
         }
         self.git.error = None;
         self.git.info = None;
         self.git.busy = Some(label);
-        self.after_saving(backend, settings, move |_, b| {
+        self.after_saving(backend, settings, move |ws, b| {
+            if !ws.trusted {
+                ws.git.busy = None;
+                return;
+            }
             Self::job_async(b, f, move |ws, b, r| {
                 ws.git.busy = None;
                 match r {
@@ -669,8 +710,13 @@ impl Workspace {
     }
 
     /// GitPanel.svelte: status, commit, pull and push, branches and recent commits.
-    fn git_panel(&mut self, ui: &mut Ui, p: &Palette, backend: &Backend) {
-        let settings = crate::store::Settings::default();
+    fn git_panel(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        backend: &Backend,
+        settings: &crate::store::Settings,
+    ) {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0, p.surface_2);
         let busy = self.git.busy;
@@ -682,19 +728,21 @@ impl Workspace {
             self.git.message = sent;
         }
         let mut refresh = false;
+        let trusted = self.trusted;
         let b = bar(ui, p, "Git", "Close Git", &mut |ui| {
             if let Some(b) = busy {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(b).size(12.0).color(p.muted));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if Button::icon(icons::REFRESH_CW, "Refresh")
-                    .size(Size::Sm)
-                    .icon_size(14.0)
-                    .enabled(busy.is_none())
-                    .show_icon(ui, p)
-                    .on_hover_text("Refresh")
-                    .clicked()
+                if trusted
+                    && Button::icon(icons::REFRESH_CW, "Refresh")
+                        .size(Size::Sm)
+                        .icon_size(14.0)
+                        .enabled(busy.is_none())
+                        .show_icon(ui, p)
+                        .on_hover_text("Refresh")
+                        .clicked()
                 {
                     refresh = true;
                 }
@@ -703,12 +751,38 @@ impl Workspace {
         if b.closed {
             self.panel = None;
         }
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(b.rest));
+        if !self.trusted {
+            egui::Frame::NONE
+                .inner_margin(Margin::symmetric(14, 14))
+                .show(&mut c, |ui| {
+                    ui.set_max_width(480.0);
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(
+                                "Git is turned off in restricted projects because a repository can run hooks and filters. Trust this project in Project settings to use Git.",
+                            )
+                            .color(p.muted),
+                        )
+                        .wrap(),
+                    );
+                    if Button::new("Project settings")
+                        .kind(Kind::Primary)
+                        .size(Size::Sm)
+                        .show(ui, p)
+                        .clicked()
+                    {
+                        self.open_project_settings();
+                    }
+                });
+            return;
+        }
         if refresh {
-            self.git_act(backend, &settings, "Refreshing…", false, |_| async {
+            self.git_act(backend, settings, "Refreshing…", false, |_| async {
                 Ok(None)
             });
         }
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(b.rest));
         let note = |ui: &mut Ui, t: &str, color: Color32| {
             egui::Frame::NONE
                 .inner_margin(Margin::symmetric(14, 8))
@@ -748,7 +822,7 @@ impl Workspace {
                     {
                         self.git_act(
                             backend,
-                            &settings,
+                            settings,
                             "Setting up git…",
                             true,
                             |shell| async move {
@@ -761,7 +835,9 @@ impl Workspace {
                     }
                 });
             }
-            Some(lemmata_git::Overview::Repo(repo)) => self.git_repo(&mut c, p, backend, &repo),
+            Some(lemmata_git::Overview::Repo(repo)) => {
+                self.git_repo(&mut c, p, backend, settings, &repo)
+            }
         }
     }
 
@@ -770,9 +846,9 @@ impl Workspace {
         ui: &mut Ui,
         p: &Palette,
         backend: &Backend,
+        settings: &crate::store::Settings,
         repo: &lemmata_git::Status,
     ) {
-        let settings = crate::store::Settings::default();
         let busy = self.git.busy.is_some();
         let section = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
             let r = egui::Frame::NONE
@@ -794,9 +870,38 @@ impl Workspace {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
+                // In-progress merge / rebase / cherry-pick banner with Abort button.
+                if let Some(op) = repo.operation.as_deref() {
+                    let mut abort = false;
+                    section(ui, &mut |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+                            ui.label(
+                                egui::RichText::new(format!("A git {op} is in progress."))
+                                    .size(12.5)
+                                    .color(p.warn),
+                            );
+                            if Button::new(&format!("Abort {op}"))
+                                .kind(Kind::Danger)
+                                .size(Size::Sm)
+                                .enabled(!busy)
+                                .show(ui, p)
+                                .clicked()
+                            {
+                                abort = true;
+                            }
+                        });
+                    });
+                    if abort {
+                        self.git_act(backend, settings, "Aborting…", true, |s| async move {
+                            s.git_abort().await.map(Some)
+                        });
+                    }
+                }
                 // The branch, a new branch, and where it stands against its upstream.
                 let mut switch = None;
                 let mut toggle_new = false;
+                let mut toggle_remote = false;
                 section(ui, &mut |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
@@ -813,7 +918,7 @@ impl Workspace {
                         }
                         let o: Vec<(&str, &str)> =
                             opts.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-                        let w = ui.available_width() - 28.0 - 90.0;
+                        let w = (ui.available_width() - 28.0 - 90.0).max(80.0);
                         ui.allocate_ui(vec2(w, 28.0), |ui| {
                             if widgets::select(ui, p, "Branch", &mut cur, &o) && !cur.is_empty() {
                                 switch = Some(cur.clone());
@@ -851,11 +956,23 @@ impl Workspace {
                         ui.label(egui::RichText::new(sync).size(12.0).color(p.muted))
                             .on_hover_text(tip);
                     });
+                    if repo.upstream.is_none() {
+                        ui.add_space(6.0);
+                        if Button::new("Add remote…")
+                            .kind(Kind::Ghost)
+                            .size(Size::Sm)
+                            .enabled(!busy)
+                            .show(ui, p)
+                            .clicked()
+                        {
+                            toggle_remote = true;
+                        }
+                    }
                 });
                 if let Some(name) = switch {
                     self.git_act(
                         backend,
-                        &settings,
+                        settings,
                         "Switching…",
                         true,
                         move |shell| async move { shell.git_switch(name).await.map(|_| None) },
@@ -868,13 +985,75 @@ impl Workspace {
                         Some(String::new())
                     };
                 }
+                if toggle_remote {
+                    self.git.add_remote = if self.git.add_remote.is_some() {
+                        None
+                    } else {
+                        Some(("origin".into(), String::new()))
+                    };
+                }
+                if let Some((mut rname, mut rurl)) = self.git.add_remote.clone() {
+                    let mut submit_remote = false;
+                    let mut cancel_remote = false;
+                    section(ui, &mut |ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        ui.horizontal(|ui| {
+                            let nw = 90.0;
+                            ui.allocate_ui(vec2(nw, 32.0), |ui| {
+                                widgets::text_input(ui, p, &mut rname, "origin", true);
+                            });
+                            let uw = (ui.available_width() - 80.0).max(80.0);
+                            ui.allocate_ui(vec2(uw, 32.0), |ui| {
+                                let r = widgets::text_input(
+                                    ui,
+                                    p,
+                                    &mut rurl,
+                                    "https://github.com/user/repo.git",
+                                    true,
+                                );
+                                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    submit_remote = true;
+                                }
+                                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                    cancel_remote = true;
+                                }
+                            });
+                            if Button::new("Add")
+                                .kind(Kind::Primary)
+                                .size(Size::Sm)
+                                .enabled(
+                                    !busy && !rname.trim().is_empty() && !rurl.trim().is_empty(),
+                                )
+                                .show(ui, p)
+                                .clicked()
+                            {
+                                submit_remote = true;
+                            }
+                        });
+                    });
+                    self.git.add_remote = (!cancel_remote).then_some((rname.clone(), rurl.clone()));
+                    if submit_remote && !rname.trim().is_empty() && !rurl.trim().is_empty() {
+                        self.git.add_remote = None;
+                        self.git_act(
+                            backend,
+                            settings,
+                            "Adding remote…",
+                            false,
+                            move |s| async move {
+                                s.git_add_remote(rname, rurl)
+                                    .await
+                                    .map(|_| Some("Remote added.".into()))
+                            },
+                        );
+                    }
+                }
                 if dirty && self.git.branches.len() > 1 {
                     egui::Frame::NONE
                         .inner_margin(Margin::symmetric(14, 4))
                         .show(ui, |ui| {
                             ui.label(
                                 egui::RichText::new(
-                                    "Commit your changes before switching branches.",
+                                    "Commit or stash your changes before switching branches.",
                                 )
                                 .size(12.0)
                                 .color(p.muted),
@@ -886,7 +1065,7 @@ impl Workspace {
                     let mut cancel = false;
                     section(ui, &mut |ui| {
                         ui.horizontal(|ui| {
-                            let w = ui.available_width() - 80.0;
+                            let w = (ui.available_width() - 80.0).max(80.0);
                             ui.allocate_ui(vec2(w, 32.0), |ui| {
                                 let r =
                                     widgets::text_input(ui, p, &mut name, "New branch name", false);
@@ -916,7 +1095,7 @@ impl Workspace {
                         self.git.new_branch = None;
                         self.git_act(
                             backend,
-                            &settings,
+                            settings,
                             "Creating branch…",
                             true,
                             move |shell| async move {
@@ -925,11 +1104,11 @@ impl Workspace {
                         );
                     }
                 }
-                // Fetch, pull, push.
+                // Fetch, pull (including merge/rebase on divergence), push.
                 let mut act: Option<u8> = None;
                 section(ui, &mut |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                         if Button::new("Fetch")
                             .size(Size::Sm)
                             .enabled(!busy)
@@ -953,6 +1132,24 @@ impl Workspace {
                         {
                             act = Some(1);
                         }
+                        if repo.ahead > 0 && repo.behind > 0 {
+                            if Button::new("Pull (merge)")
+                                .size(Size::Sm)
+                                .enabled(!busy)
+                                .show(ui, p)
+                                .clicked()
+                            {
+                                act = Some(3);
+                            }
+                            if Button::new("Pull (rebase)")
+                                .size(Size::Sm)
+                                .enabled(!busy)
+                                .show(ui, p)
+                                .clicked()
+                            {
+                                act = Some(4);
+                            }
+                        }
                         let push = if repo.ahead > 0 {
                             format!("Push {}", repo.ahead)
                         } else {
@@ -972,22 +1169,31 @@ impl Workspace {
                 });
                 match act {
                     Some(0) => {
-                        self.git_act(backend, &settings, "Fetching…", false, |s| async move {
+                        self.git_act(backend, settings, "Fetching…", false, |s| async move {
                             s.git_fetch().await.map(Some)
                         })
                     }
-                    Some(1) => self.git_act(backend, &settings, "Pulling…", true, |s| async move {
+                    Some(1) => self.git_act(backend, settings, "Pulling…", true, |s| async move {
                         s.git_pull().await.map(Some)
                     }),
-                    Some(2) => {
-                        self.git_act(backend, &settings, "Pushing…", false, |s| async move {
-                            s.git_push().await.map(Some)
-                        })
-                    }
+                    Some(2) => self.git_act(backend, settings, "Pushing…", false, |s| async move {
+                        s.git_push().await.map(Some)
+                    }),
+                    Some(3) => self.git_act(backend, settings, "Merging…", true, |s| async move {
+                        s.git_pull_mode(lemmata_git::PullMode::Merge)
+                            .await
+                            .map(Some)
+                    }),
+                    Some(4) => self.git_act(backend, settings, "Rebasing…", true, |s| async move {
+                        s.git_pull_mode(lemmata_git::PullMode::Rebase)
+                            .await
+                            .map(Some)
+                    }),
                     _ => {}
                 }
-                // The changes, to tick into the commit.
+                // The changes, to tick into the commit (clicking a filename opens an inline diff).
                 let mut toggle: Option<(lemmata_git::FileChange, bool)> = None;
+                let mut open_diff: Option<(String, bool)> = None;
                 let mut stage_all = false;
                 section(ui, &mut |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
@@ -1061,9 +1267,11 @@ impl Workspace {
                             &mut stage_all,
                         );
                         ui.label(
-                            egui::RichText::new("Resolve these in a terminal, then stage them.")
-                                .size(12.0)
-                                .color(p.muted),
+                            egui::RichText::new(
+                                "Resolve the conflict markers in these files, then stage them.",
+                            )
+                            .size(12.0)
+                            .color(p.muted),
                         );
                         for c in &repo.conflicted {
                             ui.horizontal(|ui| {
@@ -1080,10 +1288,10 @@ impl Workspace {
                             });
                         }
                     }
-                    for (title, list, staged) in [
-                        ("Staged", &repo.staged, true),
-                        ("Changes", &repo.unstaged, false),
-                        ("Untracked", &repo.untracked, false),
+                    for (title, list, staged, tracked) in [
+                        ("Staged", &repo.staged, true, true),
+                        ("Changes", &repo.unstaged, false, true),
+                        ("Untracked", &repo.untracked, false, false),
                     ] {
                         if list.is_empty() {
                             continue;
@@ -1104,17 +1312,33 @@ impl Workspace {
                                 );
                                 let tip = match &c.from {
                                     Some(f) => format!("{f} → {}", c.path),
+                                    None if tracked => format!("{} (click to view diff)", c.path),
                                     None => c.path.clone(),
                                 };
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&c.path)
-                                            .font(FontId::monospace(12.0))
-                                            .color(p.ink),
+                                let lbl = ui
+                                    .add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&c.path)
+                                                .font(FontId::monospace(12.0))
+                                                .color(p.ink),
+                                        )
+                                        .truncate()
+                                        .sense(
+                                            if tracked {
+                                                Sense::click()
+                                            } else {
+                                                Sense::hover()
+                                            },
+                                        ),
                                     )
-                                    .truncate(),
-                                )
-                                .on_hover_text(tip);
+                                    .on_hover_text(tip);
+                                if tracked
+                                    && lbl
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .clicked()
+                                {
+                                    open_diff = Some((c.path.clone(), staged));
+                                }
                                 if r.changed() {
                                     toggle = Some((c.clone(), staged));
                                 }
@@ -1122,27 +1346,111 @@ impl Workspace {
                         }
                     }
                 });
+                if let Some((path, staged)) = open_diff {
+                    let p_clone = path.clone();
+                    Self::job_async(
+                        backend,
+                        move |s| async move { s.git_diff(Some(p_clone), staged).await },
+                        move |ws, _, r| match r {
+                            Ok(diff) => ws.git.diff_view = Some((path, staged, diff)),
+                            Err(e) => ws.git.error = Some(e),
+                        },
+                    );
+                }
+                if let Some((dpath, dstaged, dtext)) = self.git.diff_view.clone() {
+                    let mut close_diff = false;
+                    section(ui, &mut |ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!(
+                                        "{} ({})",
+                                        dpath,
+                                        if dstaged { "staged" } else { "unstaged" }
+                                    ))
+                                    .font(FontId::new(12.0, theme::font::mono_500()))
+                                    .color(p.ink),
+                                )
+                                .truncate(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if Button::icon(icons::X, "Close diff")
+                                        .kind(Kind::Ghost)
+                                        .size(Size::Sm)
+                                        .icon_size(13.0)
+                                        .show_icon(ui, p)
+                                        .clicked()
+                                    {
+                                        close_diff = true;
+                                    }
+                                },
+                            );
+                        });
+                        egui::Frame::new()
+                            .fill(p.code_bg)
+                            .stroke(Stroke::new(1.0, p.border))
+                            .corner_radius(crate::theme::R_SM)
+                            .inner_margin(Margin::same(6))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                egui::ScrollArea::both()
+                                    .id_salt("git-diff-view")
+                                    .max_height(220.0)
+                                    .auto_shrink([false, true])
+                                    .show(ui, |ui| {
+                                        if dtext.trim().is_empty() {
+                                            ui.label(
+                                                egui::RichText::new("No text differences.")
+                                                    .size(11.5)
+                                                    .color(p.muted),
+                                            );
+                                        } else {
+                                            for line in dtext.lines().take(500) {
+                                                let col = if line.starts_with('+')
+                                                    && !line.starts_with("+++")
+                                                {
+                                                    p.ok
+                                                } else if line.starts_with('-')
+                                                    && !line.starts_with("---")
+                                                {
+                                                    p.error
+                                                } else if line.starts_with("@@") {
+                                                    p.accent
+                                                } else {
+                                                    p.ink
+                                                };
+                                                ui.label(
+                                                    egui::RichText::new(line)
+                                                        .font(FontId::monospace(11.5))
+                                                        .color(col),
+                                                );
+                                            }
+                                        }
+                                    });
+                            });
+                    });
+                    if close_diff {
+                        self.git.diff_view = None;
+                    }
+                }
                 if stage_all {
-                    self.git_act(backend, &settings, "Staging…", false, |s| async move {
+                    self.git_act(backend, settings, "Staging…", false, |s| async move {
                         s.git_stage_all().await.map(|_| None)
                     });
                 }
                 if let Some((c, staged)) = toggle {
-                    self.git_act(
-                        backend,
-                        &settings,
-                        "Updating…",
-                        false,
-                        move |s| async move {
-                            if staged {
-                                let mut paths = vec![c.path];
-                                paths.extend(c.from);
-                                s.git_unstage(paths).await.map(|_| None)
-                            } else {
-                                s.git_stage(vec![c.path]).await.map(|_| None)
-                            }
-                        },
-                    );
+                    self.git_act(backend, settings, "Updating…", false, move |s| async move {
+                        if staged {
+                            let mut paths = vec![c.path];
+                            paths.extend(c.from);
+                            s.git_unstage(paths).await.map(|_| None)
+                        } else {
+                            s.git_stage(vec![c.path]).await.map(|_| None)
+                        }
+                    });
                 }
                 // The commit box.
                 let mut commit = false;
@@ -1199,13 +1507,251 @@ impl Workspace {
                     self.git.sent = Some(message.clone());
                     self.git_act(
                         backend,
-                        &settings,
+                        settings,
                         "Committing…",
                         true,
                         move |s| async move {
                             s.git_commit(message)
                                 .await
                                 .map(|_| Some("Committed.".into()))
+                        },
+                    );
+                }
+                // Stashes & branch management.
+                let mut stash_push: Option<Option<String>> = None;
+                let mut stash_pop = false;
+                let mut checkout_remote: Option<String> = None;
+                let mut delete_branch: Option<String> = None;
+                if dirty || !self.git.stashes.is_empty() {
+                    section(ui, &mut |ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        egui::CollapsingHeader::new(
+                            egui::RichText::new(format!("STASHES {}", self.git.stashes.len()))
+                                .font(FontId::new(11.0, theme::font::sans_600()))
+                                .color(p.muted),
+                        )
+                        .id_salt("git-stashes")
+                        .default_open(!self.git.stashes.is_empty())
+                        .show(ui, |ui| {
+                            if dirty {
+                                if let Some(mut msg) = self.git.stash_msg.clone() {
+                                    let mut go = false;
+                                    let mut cancel = false;
+                                    ui.horizontal(|ui| {
+                                        let w = (ui.available_width() - 80.0).max(80.0);
+                                        ui.allocate_ui(vec2(w, 28.0), |ui| {
+                                            let r = widgets::text_input(
+                                                ui,
+                                                p,
+                                                &mut msg,
+                                                "Optional message",
+                                                false,
+                                            );
+                                            if r.lost_focus()
+                                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                            {
+                                                go = true;
+                                            }
+                                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                                cancel = true;
+                                            }
+                                        });
+                                        if Button::new("Stash")
+                                            .kind(Kind::Primary)
+                                            .size(Size::Sm)
+                                            .enabled(!busy)
+                                            .show(ui, p)
+                                            .clicked()
+                                        {
+                                            go = true;
+                                        }
+                                    });
+                                    if cancel {
+                                        self.git.stash_msg = None;
+                                    } else if go {
+                                        self.git.stash_msg = None;
+                                        let m = msg.trim();
+                                        stash_push = Some((!m.is_empty()).then(|| m.to_owned()));
+                                    } else {
+                                        self.git.stash_msg = Some(msg);
+                                    }
+                                } else if Button::new("Stash changes")
+                                    .size(Size::Sm)
+                                    .enabled(!busy)
+                                    .show(ui, p)
+                                    .clicked()
+                                {
+                                    self.git.stash_msg = Some(String::new());
+                                }
+                            }
+                            for (i, entry) in self.git.stashes.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(entry)
+                                                .font(FontId::monospace(11.5))
+                                                .color(p.ink),
+                                        )
+                                        .truncate(),
+                                    )
+                                    .on_hover_text(entry);
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if i == 0
+                                                && Button::new("Pop")
+                                                    .kind(Kind::Ghost)
+                                                    .size(Size::Sm)
+                                                    .enabled(!busy)
+                                                    .show(ui, p)
+                                                    .clicked()
+                                            {
+                                                stash_pop = true;
+                                            }
+                                        },
+                                    );
+                                });
+                            }
+                        });
+                    });
+                }
+                let other_local: Vec<String> = self
+                    .git
+                    .branches
+                    .iter()
+                    .filter(|b| repo.branch.as_deref() != Some(b.as_str()))
+                    .cloned()
+                    .collect();
+                if !other_local.is_empty() || !self.git.remote_branches.is_empty() {
+                    section(ui, &mut |ui| {
+                        egui::CollapsingHeader::new(
+                            egui::RichText::new("BRANCHES")
+                                .font(FontId::new(11.0, theme::font::sans_600()))
+                                .color(p.muted),
+                        )
+                        .id_salt("git-branches")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            for b in &other_local {
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(b)
+                                                .font(FontId::monospace(12.0))
+                                                .color(p.ink),
+                                        )
+                                        .truncate(),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if self.git.confirm_delete_branch.as_deref()
+                                                == Some(b.as_str())
+                                            {
+                                                if Button::new("Cancel")
+                                                    .kind(Kind::Ghost)
+                                                    .size(Size::Sm)
+                                                    .show(ui, p)
+                                                    .clicked()
+                                                {
+                                                    self.git.confirm_delete_branch = None;
+                                                }
+                                                if Button::new("Delete")
+                                                    .kind(Kind::Danger)
+                                                    .size(Size::Sm)
+                                                    .enabled(!busy)
+                                                    .show(ui, p)
+                                                    .clicked()
+                                                {
+                                                    self.git.confirm_delete_branch = None;
+                                                    delete_branch = Some(b.clone());
+                                                }
+                                            } else if Button::icon(
+                                                icons::TRASH,
+                                                &format!("Delete branch {b}"),
+                                            )
+                                            .kind(Kind::Ghost)
+                                            .size(Size::Sm)
+                                            .icon_size(13.0)
+                                            .enabled(!busy)
+                                            .show_icon(ui, p)
+                                            .on_hover_text("Delete merged branch")
+                                            .clicked()
+                                            {
+                                                self.git.confirm_delete_branch = Some(b.clone());
+                                            }
+                                        },
+                                    );
+                                });
+                            }
+                            if !self.git.remote_branches.is_empty() {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new("REMOTE")
+                                        .font(FontId::new(10.5, theme::font::sans_600()))
+                                        .color(p.muted),
+                                );
+                                for rb in &self.git.remote_branches {
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(rb)
+                                                    .font(FontId::monospace(12.0))
+                                                    .color(p.muted),
+                                            )
+                                            .truncate(),
+                                        );
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if Button::new("Checkout")
+                                                    .kind(Kind::Ghost)
+                                                    .size(Size::Sm)
+                                                    .enabled(!busy)
+                                                    .show(ui, p)
+                                                    .clicked()
+                                                {
+                                                    checkout_remote = Some(rb.clone());
+                                                }
+                                            },
+                                        );
+                                    });
+                                }
+                            }
+                        });
+                    });
+                }
+                if let Some(msg) = stash_push {
+                    let message = msg.unwrap_or_default();
+                    self.git_act(backend, settings, "Stashing…", true, move |s| async move {
+                        s.git_stash_push(message).await.map(Some)
+                    });
+                }
+                if stash_pop {
+                    self.git_act(backend, settings, "Applying stash…", true, |s| async move {
+                        s.git_stash_pop().await.map(Some)
+                    });
+                }
+                if let Some(rb) = checkout_remote {
+                    self.git_act(
+                        backend,
+                        settings,
+                        "Checking out…",
+                        true,
+                        move |s| async move { s.git_checkout_remote(rb).await.map(|_| None) },
+                    );
+                }
+                if let Some(b) = delete_branch {
+                    self.git_act(
+                        backend,
+                        settings,
+                        "Deleting branch…",
+                        false,
+                        move |s| async move {
+                            s.git_delete_branch(b)
+                                .await
+                                .map(|_| Some("Branch deleted.".into()))
                         },
                     );
                 }

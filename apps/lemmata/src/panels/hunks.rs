@@ -22,8 +22,116 @@ fn pieces(s: &str) -> Vec<&str> {
     s.split_inclusive('\n').collect()
 }
 
+/// Patience-style anchor matching for large diffs whose edit distance exceeds `MAX_D`:
+/// matches lines that appear once in `a` and once in `b` via their longest increasing
+/// subsequence, then diffs each gap between anchors. When no lines match (e.g. CRLF -> LF),
+/// every line stays unmarked so the caller still emits one hunk cleanly.
+fn diff_anchored(a: &[&str], b: &[&str]) -> (Vec<bool>, Vec<bool>) {
+    let mut count_a: std::collections::HashMap<&str, (usize, usize)> = Default::default();
+    for (i, &line) in a.iter().enumerate() {
+        let e = count_a.entry(line).or_insert((0, i));
+        e.0 += 1;
+    }
+    let mut count_b: std::collections::HashMap<&str, (usize, usize)> = Default::default();
+    for (j, &line) in b.iter().enumerate() {
+        let e = count_b.entry(line).or_insert((0, j));
+        e.0 += 1;
+    }
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for (i, &line) in a.iter().enumerate() {
+        if count_a.get(line).is_some_and(|(c, _)| *c == 1)
+            && let Some(&(1, j)) = count_b.get(line)
+        {
+            pairs.push((i, j));
+        }
+    }
+    if pairs.is_empty() {
+        return (vec![false; a.len()], vec![false; b.len()]);
+    }
+    // Longest increasing subsequence on `j` (since `i` is already increasing).
+    let mut tails: Vec<usize> = Vec::new();
+    let mut prev: Vec<Option<usize>> = vec![None; pairs.len()];
+    for (idx, &(_, j)) in pairs.iter().enumerate() {
+        let pos = tails.partition_point(|&t| pairs[t].1 < j);
+        if pos > 0 {
+            prev[idx] = Some(tails[pos - 1]);
+        }
+        if pos == tails.len() {
+            tails.push(idx);
+        } else {
+            tails[pos] = idx;
+        }
+    }
+    let mut anchors: Vec<(usize, usize)> = Vec::with_capacity(tails.len());
+    let mut cur = tails.last().copied();
+    while let Some(idx) = cur {
+        anchors.push(pairs[idx]);
+        cur = prev[idx];
+    }
+    anchors.reverse();
+
+    let (mut keep_a, mut keep_b) = (vec![false; a.len()], vec![false; b.len()]);
+    let (mut ai, mut bi) = (0usize, 0usize);
+    for (ax, bx) in anchors
+        .into_iter()
+        .chain(std::iter::once((a.len(), b.len())))
+    {
+        if ax < a.len() && bx < b.len() {
+            keep_a[ax] = true;
+            keep_b[bx] = true;
+        }
+        if ai < ax && bi < bx {
+            let (ka, kb) = diff_myers(&a[ai..ax], &b[bi..bx], false);
+            for (k, v) in ka.into_iter().enumerate() {
+                keep_a[ai + k] = v;
+            }
+            for (k, v) in kb.into_iter().enumerate() {
+                keep_b[bi + k] = v;
+            }
+        }
+        ai = ax + 1;
+        bi = bx + 1;
+    }
+    (keep_a, keep_b)
+}
+
 /// Myers' shortest edit script: for each piece of `a` and `b`, whether it is kept.
 fn diff(a: &[&str], b: &[&str]) -> (Vec<bool>, Vec<bool>) {
+    // Strip common prefix and suffix first so large unchanged margins never count toward MAX_D.
+    let pre = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let rem_a = a.len() - pre;
+    let rem_b = b.len() - pre;
+    let suf = a[pre..]
+        .iter()
+        .rev()
+        .zip(b[pre..].iter().rev())
+        .take(rem_a.min(rem_b))
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (mut keep_a, mut keep_b) = (vec![false; a.len()], vec![false; b.len()]);
+    for i in 0..pre {
+        keep_a[i] = true;
+        keep_b[i] = true;
+    }
+    for i in 0..suf {
+        keep_a[a.len() - 1 - i] = true;
+        keep_b[b.len() - 1 - i] = true;
+    }
+    let mid_a = &a[pre..a.len() - suf];
+    let mid_b = &b[pre..b.len() - suf];
+    if !mid_a.is_empty() && !mid_b.is_empty() {
+        let (ka, kb) = diff_myers(mid_a, mid_b, true);
+        for (i, v) in ka.into_iter().enumerate() {
+            keep_a[pre + i] = v;
+        }
+        for (i, v) in kb.into_iter().enumerate() {
+            keep_b[pre + i] = v;
+        }
+    }
+    (keep_a, keep_b)
+}
+
+fn diff_myers(a: &[&str], b: &[&str], allow_anchor: bool) -> (Vec<bool>, Vec<bool>) {
     let (n, m) = (a.len() as isize, b.len() as isize);
     let max = (n + m) as usize;
     let off = max as isize;
@@ -31,7 +139,6 @@ fn diff(a: &[&str], b: &[&str]) -> (Vec<bool>, Vec<bool>) {
     // Per step only the diagonals -d..=d, which are all that step reads.
     let mut trace: Vec<Vec<isize>> = Vec::new();
     let mut found = false;
-    // shortcut: diffs needing more than MAX_D edits fall back to one hunk, raise it or go linear-space if users need finer hunks.
     const MAX_D: isize = 2000;
     'outer: for d in 0..=(max as isize).min(MAX_D) {
         trace.push(v[(off - d) as usize..=(off + d) as usize].to_vec());
@@ -57,7 +164,11 @@ fn diff(a: &[&str], b: &[&str]) -> (Vec<bool>, Vec<bool>) {
         }
     }
     if !found {
-        return (vec![false; a.len()], vec![false; b.len()]);
+        return if allow_anchor {
+            diff_anchored(a, b)
+        } else {
+            (vec![false; a.len()], vec![false; b.len()])
+        };
     }
     // Walk back through the trace, marking the diagonals as kept.
     let (mut keep_a, mut keep_b) = (vec![false; a.len()], vec![false; b.len()]);

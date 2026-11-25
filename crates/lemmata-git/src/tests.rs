@@ -321,7 +321,7 @@ fn ahead_behind_push_pull_ff_only() {
     let e = pull(a.path()).unwrap_err().to_string();
     assert!(
         e.starts_with(
-            "Your branch and the remote have both changed. Pull with rebase or merge in a terminal."
+            "Your branch and the remote have both changed. Use Pull (merge) or Pull (rebase) to combine them."
         ),
         "{e}"
     );

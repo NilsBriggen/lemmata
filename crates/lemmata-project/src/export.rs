@@ -417,14 +417,36 @@ fn braced_arg(s: &str, p: usize) -> Option<(&str, usize)> {
     None
 }
 
-/// The part of a subfile that `\subfile` prints: its document body.
+/// The part of a subfile that `\subfile` prints: its document body, ignoring `%` comments.
 fn subfile_body(text: &str) -> &str {
     const BEGIN: &str = "\\begin{document}";
-    let start = text.find(BEGIN).map_or(0, |k| k + BEGIN.len());
-    let end = text[start..]
-        .find("\\end{document}")
-        .map_or(text.len(), |k| start + k);
-    &text[start..end]
+    const END: &str = "\\end{document}";
+    let mut offset = 0;
+    let mut scanner = crate::CodeScanner::default();
+    let mut start = None;
+    let mut end = None;
+    for raw in text.split_inclusive('\n') {
+        let line = raw.trim_end_matches(['\r', '\n']);
+        let code = scanner.mask_line(line);
+        if start.is_none()
+            && let Some(k) = code.find(BEGIN)
+        {
+            start = Some(offset + k + BEGIN.len());
+            if let Some(m) = code[k + BEGIN.len()..].find(END) {
+                end = Some(offset + k + BEGIN.len() + m);
+                break;
+            }
+        } else if start.is_some()
+            && let Some(k) = code.find(END)
+        {
+            end = Some(offset + k);
+            break;
+        }
+        offset += raw.len();
+    }
+    let s = start.unwrap_or(0);
+    let e = end.unwrap_or(text.len());
+    &text[s..e]
 }
 
 struct Flattener<'a> {
@@ -525,8 +547,10 @@ impl Flattener<'_> {
             _ => {}
         }
         // `\import` paths are relative to the main file's folder, `\subimport`
-        // paths to the current one. The file itself is looked up from there.
-        let (new_base, file) = if name == "import" || name == "subimport" {
+        // paths to the current one. Plain `\input`/`\include` check the current
+        // import base first (import.sty's `\input@path`), then `self.top`, then
+        // project root (where TeX runs).
+        let (new_base, found) = if name == "import" || name == "subimport" {
             let top = if name == "import" {
                 self.top.as_path()
             } else {
@@ -535,14 +559,27 @@ impl Flattener<'_> {
             let Some(dir) = resolve(top, args[0].trim()) else {
                 return Ok(None);
             };
-            (dir, args[1])
+            let Some(target) = resolve(&dir, args[1].trim()) else {
+                return Ok(None);
+            };
+            (dir, self.find(&target))
         } else {
-            (base.to_path_buf(), args[0])
+            let file = args[0].trim();
+            let mut bases: Vec<&Path> = Vec::with_capacity(3);
+            bases.push(base);
+            if self.top.as_path() != base {
+                bases.push(self.top.as_path());
+            }
+            if !self.top.as_os_str().is_empty() && base != Path::new("") {
+                bases.push(Path::new(""));
+            }
+            let hit = bases
+                .into_iter()
+                .filter_map(|b| resolve(b, file))
+                .find_map(|target| self.find(&target));
+            (base.to_path_buf(), hit)
         };
-        let Some(target) = resolve(&new_base, file.trim()) else {
-            return Ok(None);
-        };
-        let Some((rel, text)) = self.find(&target) else {
+        let Some((rel, text)) = found else {
             return Ok(None);
         };
         if self.stack.contains(&rel) {
@@ -631,6 +668,167 @@ fn flatten_tex(
     })
 }
 
+/// Statically collects project files used when building from `p.main`, for engines such as
+/// Tectonic that do not write a `.fls` recorder file.
+fn used_files_without_fls(p: &Project) -> BTreeSet<PathBuf> {
+    let mut out = BTreeSet::new();
+    let all: BTreeSet<PathBuf> = project_files(&p.root, &p.config.outdir)
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+    // Always keep project-local TeX style/class/bibliography style files.
+    for rel in &all {
+        if rel.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "cls" | "sty" | "bst" | "bbx" | "cbx" | "cfg" | "def" | "clo"
+            )
+        }) {
+            out.insert(rel.clone());
+        }
+    }
+    let top = p.main.parent().unwrap_or(Path::new("")).to_path_buf();
+    let mut queue = vec![(p.main.clone(), top.clone())];
+    let mut visited = BTreeSet::new();
+    let mut graphics_dirs: Vec<PathBuf> = vec![PathBuf::new()];
+    if !top.as_os_str().is_empty() {
+        graphics_dirs.push(top.clone());
+    }
+    if !p.config.figures_dir.is_empty() {
+        graphics_dirs.push(PathBuf::from(&p.config.figures_dir));
+    }
+
+    let lookup =
+        |all: &BTreeSet<PathBuf>, base: &Path, raw: &str, exts: &[&str]| -> Option<PathBuf> {
+            let target = resolve(base, raw.trim())?;
+            if all.contains(&target) {
+                return Some(target);
+            }
+            if target.extension().is_none() {
+                for ext in exts {
+                    let mut cand = target.clone().into_os_string();
+                    cand.push(".");
+                    cand.push(ext);
+                    let cand = PathBuf::from(cand);
+                    if all.contains(&cand) {
+                        return Some(cand);
+                    }
+                }
+            }
+            None
+        };
+
+    while let Some((rel, base)) = queue.pop() {
+        if !visited.insert(rel.clone()) {
+            continue;
+        }
+        if all.contains(&rel) {
+            out.insert(rel.clone());
+        }
+        let Ok(text) = lemmata_env::fs::read_text(p.root.join(&rel)) else {
+            continue;
+        };
+        let mut scanner = crate::CodeScanner::default();
+        for line in text.lines() {
+            let masked = scanner.mask_line(line);
+            let mut rest = masked.as_ref();
+            while let Some(pos) = rest.find('\\') {
+                rest = &rest[pos + 1..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphabetic())
+                    .collect();
+                let after = rest[name.len()..].trim_start_matches('*');
+                match name.as_str() {
+                    "graphicspath" => {
+                        if let Some((outer, _)) = braced_arg(after, 0) {
+                            let mut p = 0;
+                            while let Some((dir, next)) = braced_arg(outer, p) {
+                                if let Some(d) = resolve(&top, dir.trim())
+                                    && !graphics_dirs.contains(&d)
+                                {
+                                    graphics_dirs.push(d);
+                                }
+                                p = next;
+                            }
+                        }
+                    }
+                    "input" | "include" | "subfile" => {
+                        if let Some((arg, _)) = braced_arg(after, 0)
+                            && let Some(found) = [&base, &top, &PathBuf::new()]
+                                .into_iter()
+                                .find_map(|b| lookup(&all, b, arg, &["tex"]))
+                        {
+                            queue.push((found, base.clone()));
+                        }
+                    }
+                    "import" | "subimport" => {
+                        if let Some((dir_arg, next)) = braced_arg(after, 0)
+                            && let Some((file_arg, _)) = braced_arg(after, next)
+                        {
+                            let origin = if name == "import" { &top } else { &base };
+                            if let Some(dir) = resolve(origin, dir_arg.trim())
+                                && let Some(found) = lookup(&all, &dir, file_arg, &["tex"])
+                            {
+                                queue.push((found, dir));
+                            }
+                        }
+                    }
+                    "includegraphics" | "includepdf" | "includesvg" => {
+                        let s = crate::skip_optional(after);
+                        if let Some((arg, _)) = braced_arg(s, 0) {
+                            let exts: &[&str] = if name == "includesvg" {
+                                &["svg"]
+                            } else if name == "includepdf" {
+                                &["pdf"]
+                            } else {
+                                &["pdf", "png", "jpg", "jpeg", "eps", "svg"]
+                            };
+                            if let Some(found) = graphics_dirs
+                                .iter()
+                                .chain(std::iter::once(&base))
+                                .find_map(|b| lookup(&all, b, arg, exts))
+                            {
+                                out.insert(found);
+                            }
+                        }
+                    }
+                    "bibliography" | "addbibresource" => {
+                        let s = crate::skip_optional(after);
+                        if let Some((arg, _)) = braced_arg(s, 0) {
+                            for item in arg.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                                if let Some(found) = [&base, &top, &PathBuf::new()]
+                                    .into_iter()
+                                    .find_map(|b| lookup(&all, b, item, &["bib"]))
+                                {
+                                    out.insert(found);
+                                }
+                            }
+                        }
+                    }
+                    "lstinputlisting" | "inputminted" => {
+                        let s = crate::skip_optional(after);
+                        let arg = if name == "inputminted" {
+                            braced_arg(s, 0).and_then(|(_, next)| braced_arg(s, next))
+                        } else {
+                            braced_arg(s, 0)
+                        };
+                        if let Some((file_arg, _)) = arg
+                            && let Some(found) = [&base, &top, &PathBuf::new()]
+                                .into_iter()
+                                .find_map(|b| lookup(&all, b, file_arg, &[]))
+                        {
+                            out.insert(found);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Zips the files the last build used, plus the .bbl (arXiv doesn't run
 /// biber), ready to upload to arXiv. With `strip`, `%` comments are removed
 /// from the .tex files. With `flatten`, the main file has its inputs inlined,
@@ -647,12 +845,19 @@ pub fn zip_arxiv(p: &Project, dest: &Path, strip: bool, flatten: bool) -> Result
         .unwrap_or("main")
         .to_string();
     let outdir = p.outdir_abs();
-    let fls =
-        lemmata_env::fs::read_to_string(outdir.join(format!("{stem}.fls"))).map_err(|_| {
-            "Build the project once before exporting, so Lemmata knows which files it uses."
-                .to_string()
-        })?;
-    let files = used_files(&fls, &p.root, p.config.outdir.trim_start_matches("./"));
+    let files = match lemmata_env::fs::read_to_string(outdir.join(format!("{stem}.fls"))) {
+        Ok(fls) => used_files(&fls, &p.root, p.config.outdir.trim_start_matches("./")),
+        Err(_) if p.config.engine == crate::Engine::Tectonic && p.pdf_path().is_file() => {
+            // Tectonic writes no .fls recorder file; trace the project's inputs from main.
+            used_files_without_fls(p)
+        }
+        Err(_) => {
+            return Err(
+                "Build the project once before exporting, so Lemmata knows which files it uses."
+                    .to_string(),
+            );
+        }
+    };
     let bbl = lemmata_env::fs::read(outdir.join(format!("{stem}.bbl"))).ok();
     let flat = if flatten {
         // A file that isn't UTF-8 (latin1) stays out of the merge, with its \input, as it is.

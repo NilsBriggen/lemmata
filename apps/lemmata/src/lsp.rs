@@ -14,6 +14,43 @@ pub enum State {
     Failed(String),
 }
 
+/// A completion candidate from texlab.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletionItem {
+    pub label: String,
+    pub detail: Option<String>,
+    pub documentation: Option<String>,
+    pub insert_text: Option<String>,
+    pub filter_text: Option<String>,
+    pub kind: Option<u64>,
+}
+
+/// A live diagnostic from texlab: 1-based line, optional 0-based UTF-16 column span, severity, message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub line: usize,
+    pub start_col: Option<usize>,
+    pub end_col: Option<usize>,
+    pub severity: Severity,
+    pub message: String,
+}
+
+/// One text replacement from an LSP `CodeAction`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextEdit {
+    pub start: (usize, usize),
+    pub end: (usize, usize),
+    pub new_text: String,
+}
+
+/// A quick fix offered by texlab (`textDocument/codeAction`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeAction {
+    pub title: String,
+    /// Edits grouped by project-relative file path.
+    pub edits: Vec<(String, Vec<TextEdit>)>,
+}
+
 /// What a request was for, so its answer goes to the right place.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pending {
@@ -26,8 +63,14 @@ pub enum Pending {
     },
     Hover {
         path: String,
+        version: u64,
         line: usize,
         col: usize,
+    },
+    CodeActions {
+        path: String,
+        version: u64,
+        line: usize,
     },
     Definition,
     References,
@@ -41,15 +84,22 @@ pub enum Answer {
         path: String,
         head: usize,
         from: usize,
-        items: Vec<(String, Option<String>)>,
+        items: Vec<CompletionItem>,
     },
     Hover {
         path: String,
+        version: u64,
         line: usize,
         col: usize,
         text: String,
     },
-    /// Places in the project: path relative to the root, 1-based line, and 0-based column (chars).
+    CodeActions {
+        path: String,
+        version: u64,
+        line: usize,
+        actions: Vec<CodeAction>,
+    },
+    /// Places in the project: path relative to the root, 1-based line, and 0-based column (UTF-16).
     Locations {
         references: bool,
         places: Vec<(String, usize, usize)>,
@@ -59,7 +109,7 @@ pub enum Answer {
 }
 
 /// How serious texlab finds a problem (LSP's 1 to 3; hints such as "Unused label" are left out).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
     Error,
     Warning,
@@ -77,8 +127,8 @@ pub struct Lsp {
     /// texlab takes changed ranges rather than the whole text (its `textDocumentSync`).
     incremental: bool,
     /// Problems texlab sees as the text is typed, without a build: unclosed braces, undefined
-    /// references and citations, duplicate labels. Per file: 1-based line, severity, message.
-    pub diagnostics: HashMap<String, Vec<(usize, Severity, String)>>,
+    /// references and citations, duplicate labels.
+    pub diagnostics: HashMap<String, Vec<Diagnostic>>,
 }
 
 /// An open document for `Lsp::sync`: path, editor version, its text on demand, and the changes
@@ -134,14 +184,39 @@ pub fn from_uri(root: &str, uri: &str) -> Option<String> {
     }
     let base = format!("{}/", root.replace('\\', "/").trim_end_matches('/'));
     let norm = path.replace('\\', "/");
-    norm.to_lowercase()
-        .starts_with(&base.to_lowercase())
-        .then(|| norm[base.len()..].to_owned())
+    // Only match case-insensitively on Windows/macOS or Windows drive paths, comparing
+    // char-by-char so case-expanding Unicode (e.g. `İ`, `ẞ`) can never panic on byte offsets.
+    let case_insensitive =
+        cfg!(any(windows, target_os = "macos")) || (base.len() >= 2 && base.as_bytes()[1] == b':');
+    if !case_insensitive {
+        return norm.strip_prefix(&base).map(str::to_owned);
+    }
+    let mut norm_iter = norm.char_indices();
+    for bc in base.chars() {
+        let (_, nc) = norm_iter.next()?;
+        if !bc.to_lowercase().eq(nc.to_lowercase()) {
+            return None;
+        }
+    }
+    let rest_start = norm_iter.next().map_or(norm.len(), |(b, _)| b);
+    Some(norm[rest_start..].to_owned())
 }
 
 /// LSP columns count UTF-16 units; the editor counts chars.
 pub fn utf16_col(line: &str, chars: usize) -> usize {
     line.chars().take(chars).map(char::len_utf16).sum()
+}
+
+/// Inverse of `utf16_col`: UTF-16 code units on `line` to a 0-based char column.
+pub fn utf16_to_char(line: &str, utf16: usize) -> usize {
+    let mut units = 0usize;
+    for (i, c) in line.chars().enumerate() {
+        if units >= utf16 {
+            return i;
+        }
+        units += c.len_utf16();
+    }
+    line.chars().count()
 }
 
 fn language(path: &str) -> &'static str {
@@ -152,27 +227,63 @@ fn language(path: &str) -> &'static str {
     }
 }
 
-/// texlab's Markdown as the plain text the hover card shows: no emphasis, code or heading
-/// marks, and no backslash escapes. shortcut: no links or lists, which texlab's hovers don't use.
-fn plain(md: &str) -> String {
+/// texlab's Markdown as plain text for hover cards and completion docs: strips headings,
+/// fences, emphasis, inline links (`[text](url)` -> `text`), list bullets, and table dividers.
+pub fn plain(md: &str) -> String {
     let mut out = String::with_capacity(md.len());
-    for line in md.lines() {
-        let line = line.trim_start_matches('#').trim_start();
-        if line.starts_with("```") {
+    for raw_line in md.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.starts_with("```") {
             continue;
         }
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            match c {
-                '\\' if chars.peek().is_some_and(char::is_ascii_punctuation) => {
-                    out.extend(chars.next())
+        // Skip Markdown pipe-table separator rows like `| --- | :---: |`.
+        if trimmed.contains('-')
+            && trimmed.contains('|')
+            && trimmed
+                .chars()
+                .all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
+        {
+            continue;
+        }
+        let mut line = raw_line.trim_start_matches('#').trim_start();
+        if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            out.push_str("• ");
+            line = rest;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '\\'
+                && let Some(&next) = chars.get(i + 1)
+                && next.is_ascii_punctuation()
+            {
+                out.push(next);
+                i += 2;
+                continue;
+            }
+            // Inline Markdown link: `[label](url)` -> `label`.
+            if c == '['
+                && let Some(close_br) = chars[i + 1..].iter().position(|&ch| ch == ']')
+            {
+                let close_br = i + 1 + close_br;
+                if chars.get(close_br + 1) == Some(&'(')
+                    && let Some(close_pa) = chars[close_br + 2..].iter().position(|&ch| ch == ')')
+                {
+                    let label: String = chars[i + 1..close_br].iter().collect();
+                    out.push_str(&plain(&label));
+                    i = close_br + 2 + close_pa + 1;
+                    continue;
                 }
+            }
+            match c {
                 '*' | '`' => {}
                 '_' if out.ends_with([' ', '_'])
                     || out.is_empty()
-                    || chars.peek() == Some(&'_') => {}
+                    || chars.get(i + 1) == Some(&'_') => {}
                 _ => out.push(c),
             }
+            i += 1;
         }
         out.push('\n');
     }
@@ -243,8 +354,9 @@ impl Lsp {
                 "capabilities": {
                     "textDocument": {
                         "synchronization": { "didSave": false },
-                        "completion": { "completionItem": { "snippetSupport": false } },
+                        "completion": { "completionItem": { "snippetSupport": false, "documentationFormat": ["plaintext", "markdown"] } },
                         "hover": { "contentFormat": ["plaintext", "markdown"] },
+                        "codeAction": { "codeActionLiteralSupport": { "codeActionKind": { "valueSet": ["quickfix"] } } },
                         "definition": {},
                         "references": {},
                     },
@@ -344,7 +456,14 @@ impl Lsp {
         })
     }
 
-    pub fn hover(&mut self, path: &str, line: usize, utf16: usize, col: usize) -> Option<String> {
+    pub fn hover(
+        &mut self,
+        path: &str,
+        version: u64,
+        line: usize,
+        utf16: usize,
+        col: usize,
+    ) -> Option<String> {
         (self.state == State::Ready && self.opened.contains_key(path)).then(|| {
             let p = self.position(path, line, utf16);
             self.request(
@@ -352,8 +471,41 @@ impl Lsp {
                 p,
                 Pending::Hover {
                     path: path.into(),
+                    version,
                     line,
                     col,
+                },
+            )
+        })
+    }
+
+    pub fn code_actions(
+        &mut self,
+        path: &str,
+        version: u64,
+        line: usize,
+        start_utf16: usize,
+        end_utf16: usize,
+    ) -> Option<String> {
+        (self.state == State::Ready && self.opened.contains_key(path)).then(|| {
+            let params = json!({
+                "textDocument": { "uri": to_uri(&self.root, path) },
+                "range": {
+                    "start": { "line": line, "character": start_utf16 },
+                    "end": { "line": line, "character": end_utf16 },
+                },
+                "context": {
+                    "diagnostics": [],
+                    "only": ["quickfix"],
+                }
+            });
+            self.request(
+                "textDocument/codeAction",
+                params,
+                Pending::CodeActions {
+                    path: path.into(),
+                    version,
+                    line,
                 },
             )
         })
@@ -382,7 +534,7 @@ impl Lsp {
         if params["version"].as_i64().is_some_and(|v| v != *version) {
             return None;
         }
-        let list = params["diagnostics"]
+        let mut list = params["diagnostics"]
             .as_array()?
             .iter()
             .filter_map(|d| {
@@ -392,12 +544,34 @@ impl Lsp {
                     3 => Severity::Info,
                     _ => return None,
                 };
-                let line = d["range"]["start"]["line"].as_u64()? as usize + 1;
-                Some((line, severity, d["message"].as_str()?.to_owned()))
+                let start_line = d["range"]["start"]["line"].as_u64()? as usize;
+                let end_line = d["range"]["end"]["line"]
+                    .as_u64()
+                    .map(|v| v as usize)
+                    .unwrap_or(start_line);
+                let start_col = d["range"]["start"]["character"]
+                    .as_u64()
+                    .map(|v| v as usize);
+                let end_col = if end_line == start_line {
+                    d["range"]["end"]["character"].as_u64().map(|v| v as usize)
+                } else {
+                    None
+                };
+                Some(Diagnostic {
+                    line: start_line + 1,
+                    start_col,
+                    end_col,
+                    severity,
+                    message: d["message"].as_str()?.to_owned(),
+                })
             })
             .collect::<Vec<_>>();
-        let mut list = list;
-        list.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
+        list.sort_by(|a, b| {
+            a.line
+                .cmp(&b.line)
+                .then_with(|| a.severity.cmp(&b.severity))
+                .then_with(|| a.message.cmp(&b.message))
+        });
         list.dedup();
         self.diagnostics.insert(path.clone(), list);
         Some(Answer::Diagnostics(path))
@@ -458,7 +632,40 @@ impl Lsp {
                             .filter_map(|i| {
                                 let label = i["label"].as_str()?.to_owned();
                                 let detail = i["detail"].as_str().map(str::to_owned);
-                                Some((label, detail))
+                                let documentation = match &i["documentation"] {
+                                    Value::String(s) if !s.trim().is_empty() => {
+                                        Some(s.trim().to_owned())
+                                    }
+                                    Value::Object(o) => {
+                                        let raw = o
+                                            .get("value")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or_default();
+                                        let doc = if o.get("kind").and_then(Value::as_str)
+                                            == Some("markdown")
+                                        {
+                                            plain(raw)
+                                        } else {
+                                            raw.trim().to_owned()
+                                        };
+                                        (!doc.is_empty()).then_some(doc)
+                                    }
+                                    _ => None,
+                                };
+                                let insert_text = i["textEdit"]["newText"]
+                                    .as_str()
+                                    .or_else(|| i["insertText"].as_str())
+                                    .map(str::to_owned);
+                                let filter_text = i["filterText"].as_str().map(str::to_owned);
+                                let kind = i["kind"].as_u64();
+                                Some(CompletionItem {
+                                    label,
+                                    detail,
+                                    documentation,
+                                    insert_text,
+                                    filter_text,
+                                    kind,
+                                })
                             })
                             .collect()
                     })
@@ -473,7 +680,12 @@ impl Lsp {
                     Vec::new(),
                 )
             }
-            Pending::Hover { path, line, col } => {
+            Pending::Hover {
+                path,
+                version,
+                line,
+                col,
+            } => {
                 let c = &result["contents"];
                 let text = match c {
                     Value::String(s) => s.clone(),
@@ -505,11 +717,78 @@ impl Lsp {
                     } else {
                         Some(Answer::Hover {
                             path,
+                            version,
                             line,
                             col,
                             text,
                         })
                     },
+                    Vec::new(),
+                )
+            }
+            Pending::CodeActions {
+                path,
+                version,
+                line,
+            } => {
+                let parse_edit = |e: &Value| -> Option<TextEdit> {
+                    Some(TextEdit {
+                        start: (
+                            e["range"]["start"]["line"].as_u64()? as usize,
+                            e["range"]["start"]["character"].as_u64()? as usize,
+                        ),
+                        end: (
+                            e["range"]["end"]["line"].as_u64()? as usize,
+                            e["range"]["end"]["character"].as_u64()? as usize,
+                        ),
+                        new_text: e["newText"].as_str()?.to_owned(),
+                    })
+                };
+                let actions = result
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|a| {
+                                let title = a["title"].as_str()?.to_owned();
+                                let mut edits: Vec<(String, Vec<TextEdit>)> = Vec::new();
+                                if let Some(changes) = a["edit"]["changes"].as_object() {
+                                    for (uri, list) in changes {
+                                        let rel = from_uri(&self.root, uri)?;
+                                        let list: Vec<TextEdit> = list
+                                            .as_array()?
+                                            .iter()
+                                            .filter_map(parse_edit)
+                                            .collect();
+                                        if !list.is_empty() {
+                                            edits.push((rel, list));
+                                        }
+                                    }
+                                } else if let Some(docs) = a["edit"]["documentChanges"].as_array() {
+                                    for d in docs {
+                                        let uri = d["textDocument"]["uri"].as_str()?;
+                                        let rel = from_uri(&self.root, uri)?;
+                                        let list: Vec<TextEdit> = d["edits"]
+                                            .as_array()?
+                                            .iter()
+                                            .filter_map(parse_edit)
+                                            .collect();
+                                        if !list.is_empty() {
+                                            edits.push((rel, list));
+                                        }
+                                    }
+                                }
+                                (!edits.is_empty()).then_some(CodeAction { title, edits })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (
+                    Some(Answer::CodeActions {
+                        path,
+                        version,
+                        line,
+                        actions,
+                    }),
                     Vec::new(),
                 )
             }
@@ -671,7 +950,13 @@ mod tests {
         assert_eq!(a, Some(Answer::Diagnostics("main.tex".into())));
         assert_eq!(
             l.diagnostics["main.tex"],
-            [(5, Severity::Error, "Undefined reference".to_string())]
+            [Diagnostic {
+                line: 5,
+                start_col: Some(0),
+                end_col: Some(3),
+                severity: Severity::Error,
+                message: "Undefined reference".to_string(),
+            }]
         );
         // Not open: ignored. Closed: forgotten.
         let other = note.replace("main.tex", "other.tex");
@@ -694,8 +979,8 @@ mod tests {
         assert_eq!(answer, Some(Answer::Diagnostics("main.tex".into())));
         let list = &l.diagnostics["main.tex"];
         assert_eq!(list.len(), 2);
-        assert_eq!(list[0].2, "same");
-        assert_eq!(list[1].2, "other");
+        assert_eq!(list[0].message, "same");
+        assert_eq!(list[1].message, "other");
     }
 
     #[test]
@@ -724,7 +1009,8 @@ mod tests {
             panic!()
         };
         assert_eq!(from, 1);
-        assert_eq!(items[0], ("section".into(), Some("built-in".into())));
+        assert_eq!(items[0].label, "section");
+        assert_eq!(items[0].detail.as_deref(), Some("built-in"));
         l.definition("main.tex", 0, 1).unwrap();
         let (a, _) = l.on_message(r#"{"id":3,"result":[{"uri":"file:///p/refs.bib","range":{"start":{"line":4,"character":2},"end":{"line":4,"character":5}}}]}"#);
         assert_eq!(
@@ -739,5 +1025,21 @@ mod tests {
             r#"{"id":"x","method":"workspace/configuration","params":{"items":[{},{}]}}"#,
         );
         assert!(out[0].contains("[null,null]"));
+    }
+
+    #[test]
+    fn from_uri_handles_case_expanding_unicode_without_panicking() {
+        // P0-5: 'İ' and 'ẞ' expand in byte length when lowercased; must never panic.
+        assert_eq!(
+            from_uri(
+                "/tmp/İ_ẞ_project",
+                "file:///tmp/%C4%B0_%E1%BA%9E_project/main.tex"
+            ),
+            Some("main.tex".into())
+        );
+        assert_eq!(
+            from_uri("/tmp/İ_ẞ_project", "file:///tmp/other/main.tex"),
+            None
+        );
     }
 }

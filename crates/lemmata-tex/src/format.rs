@@ -230,7 +230,7 @@ pub(crate) fn recorded(project: &Project, engine: &Path) -> Option<bool> {
     let mut lines = text.lines();
     let (state, recorded_key) = lines.next()?.split_once(' ')?;
     let inputs: Vec<String> = lines.map(String::from).collect();
-    let main = lemmata_env::fs::read_to_string(project.main_abs()).ok()?;
+    let main = lemmata_env::fs::read_text(project.main_abs()).ok()?;
     (recorded_key == key(project, engine, preamble(&main)?, &inputs)).then_some(state == "ok")
 }
 
@@ -259,12 +259,13 @@ async fn make(
     limit: Duration,
     stop: &watch::Receiver<bool>,
 ) {
-    let Some(pre) = lemmata_env::fs::read_to_string(project.main_abs())
+    let Some(pre) = lemmata_env::fs::read_text(project.main_abs())
         .ok()
         .and_then(|t| preamble(&t).map(String::from))
     else {
         return;
     };
+    let before_sources = sources(project);
     let (dir, stem) = (dir(project), stem(project));
     let tmp = dir.join("tmp");
     let _ = std::fs::remove_dir_all(&tmp);
@@ -296,13 +297,16 @@ async fn make(
     let fls = lemmata_env::fs::read_to_string(tmp.join(format!("{stem}.fls"))).unwrap_or_default();
     let inputs = inputs(&fls, project);
     // Changed while the format was made: it may already be stale, so leave it for the next build.
-    let changed = lemmata_env::fs::read_to_string(project.main_abs())
-        .ok()
-        .is_none_or(|t| preamble(&t) != Some(pre.as_str()))
+    // Project files are checked by before/after snapshot (avoiding false positives from files saved
+    // right before `make` started while still catching coarse-clock edits during `make`); external
+    // inputs fall back to timestamp with `written_since` slack.
+    let changed = sources(project) != before_sources
+        || lemmata_env::fs::read_text(project.main_abs())
+            .ok()
+            .is_none_or(|t| preamble(&t) != Some(pre.as_str()))
         || inputs.iter().any(|i| {
-            std::fs::metadata(project.root.join(i))
-                .and_then(|m| m.modified())
-                .is_ok_and(|t| t > started)
+            let p = Path::new(i);
+            p.is_absolute() && crate::build::written_since(p, started)
         });
     if changed {
         return;

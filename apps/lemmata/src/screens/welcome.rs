@@ -62,11 +62,12 @@ pub fn show(
                     Vec2::new(ui.available_width(), 30.0),
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
-                        if Button::new("Skip")
-                            .kind(Kind::Ghost)
-                            .ink(p.muted)
-                            .show(ui, p)
-                            .clicked()
+                        if *step < 2
+                            && Button::new("Skip")
+                                .kind(Kind::Ghost)
+                                .ink(p.muted)
+                                .show(ui, p)
+                                .clicked()
                         {
                             action = Some(Action::Done);
                         }
@@ -239,10 +240,16 @@ fn step_welcome(ui: &mut Ui, p: &Palette, d: &Detection, step: &mut usize) {
                             .show(ui);
                     });
             }
-            // Two columns of optional tools, indented under the check.
+            // Optional tools, indented under the check (wraps cleanly on narrow windows).
             ui.horizontal(|ui| {
                 ui.add_space(30.0);
-                let col = (ui.available_width() - 16.0) / 2.0;
+                let avail = ui.available_width();
+                let cols = if avail < 420.0 { 1 } else { 2 };
+                let col = if cols == 2 {
+                    (avail - 16.0) / 2.0
+                } else {
+                    avail
+                };
                 egui::Grid::new("extras")
                     .spacing([16.0, 6.0])
                     .min_col_width(col)
@@ -250,7 +257,7 @@ fn step_welcome(ui: &mut Ui, p: &Palette, d: &Detection, step: &mut usize) {
                     .show(ui, |ui| {
                         for (i, (tool, what)) in EXTRAS.iter().enumerate() {
                             let ok = found(d, tool);
-                            ui.horizontal(|ui| {
+                            let draw = |ui: &mut Ui| {
                                 ui.spacing_mut().item_spacing.x = 8.0;
                                 let icon = if ok {
                                     icons::CIRCLE_CHECK
@@ -266,8 +273,13 @@ fn step_welcome(ui: &mut Ui, p: &Palette, d: &Detection, step: &mut usize) {
                                             .color(p.faint),
                                     );
                                 }
-                            });
-                            if i % 2 == 1 {
+                            };
+                            if cols == 1 {
+                                ui.horizontal_wrapped(draw);
+                            } else {
+                                ui.horizontal(draw);
+                            }
+                            if cols == 1 || i % 2 == 1 {
                                 ui.end_row();
                             }
                         }
@@ -360,10 +372,25 @@ fn step_settings(
         let mut options: Vec<(&str, &str)> = vec![("auto", "Match the document's language")];
         options.extend(LANGUAGES.iter().copied());
         options.push(("off", "Off"));
-        let r = ui.allocate_ui(Vec2::new(300.0, 32.0), |ui| {
-            widgets::select(ui, p, "Spell check", &mut s.spell_default, &options)
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            let r = ui.allocate_ui(Vec2::new(300.0, 32.0), |ui| {
+                widgets::select(ui, p, "Spell check", &mut s.spell_default, &options)
+            });
+            changed |= r.inner;
+            if !matches!(
+                s.spell_default.as_str(),
+                "auto" | "off" | "en" | "de" | "fr"
+            ) {
+                ui.label(
+                    egui::RichText::new(
+                        "This dictionary downloads automatically the first time you open a project.",
+                    )
+                    .size(12.0)
+                    .color(p.muted),
+                );
+            }
         });
-        changed |= r.inner;
     });
     if changed {
         *action = Some(Action::Settings);
@@ -413,10 +440,22 @@ fn step_start(ui: &mut Ui, p: &Palette, step: &mut usize, action: &mut Option<Ac
         ),
     ];
     let w = (ui.available_width() - 20.0) / 3.0;
+    let tile_h = tiles
+        .iter()
+        .map(|(_, _, body, _)| {
+            let g = ui.painter().layout(
+                (*body).into(),
+                FontId::proportional(12.5),
+                p.muted,
+                (w - 32.0).max(40.0),
+            );
+            16.0 + 36.0 + 6.0 + 4.0 + 18.0 + 4.0 + g.size().y + 16.0
+        })
+        .fold(0.0f32, f32::max);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         for (icon, title, body, act) in tiles {
-            if start_tile(ui, p, w, icon, title, body).clicked() {
+            if start_tile(ui, p, w, tile_h, icon, title, body).clicked() {
                 *action = Some(act);
             }
         }
@@ -450,7 +489,12 @@ fn step_start(ui: &mut Ui, p: &Palette, step: &mut usize, action: &mut Option<Ac
             egui::WidgetInfo::labeled(egui::Role::Button, true, "Open an example document")
         });
     actions(ui, |ui| {
-        if Button::new("Go to my projects").show(ui, p).clicked() {
+        if Button::new("Go to my projects")
+            .kind(Kind::Primary)
+            .size(Size::Lg)
+            .show(ui, p)
+            .clicked()
+        {
             *action = Some(Action::Done);
         }
         if Button::new("Back").kind(Kind::Ghost).show(ui, p).clicked() {
@@ -464,6 +508,7 @@ fn start_tile(
     ui: &mut Ui,
     p: &Palette,
     width: f32,
+    height: f32,
     icon: icons::Icon,
     title: &str,
     body: &str,
@@ -480,7 +525,6 @@ fn start_tile(
         p.muted,
         width - 32.0,
     );
-    let height = 16.0 + 36.0 + 6.0 + 4.0 + 18.0 + 4.0 + body_galley.size().y + 16.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, title));
     let rect = rect.translate(Vec2::new(0.0, -hovered));

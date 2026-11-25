@@ -64,10 +64,8 @@ pub fn run(dir: &Path, filter: Filter, json: bool) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-/// Keys the .tex files cite but no .bib file defines. Keys of a hand-written
-/// `thebibliography` (`\bibitem`) count as defined.
-/// shortcut: the same rule as the desktop app's "missing" list, plus \bibitem keys;
-/// no check of .bbl files, so a key only defined there is still reported.
+/// Keys the .tex files cite but neither a .bib file, a hand-written
+/// `thebibliography` (`\bibitem`), nor a compiled `.bbl` defines.
 pub fn missing_keys(project: &Project) -> Vec<String> {
     let files = lemmata_bib::bib_files(project);
     let cited = lemmata_bib::cited_keys(project);
@@ -79,13 +77,18 @@ pub fn missing_keys(project: &Project) -> Vec<String> {
         .collect()
 }
 
-/// Keys written as `\bibitem[label]{key}` in the project's .tex files.
+/// Keys written as `\bibitem[label]{key}` in the project's `.tex` files or in compiled `.bbl`
+/// files (including biblatex `\entry{key}{type}{...}` blocks).
 fn bibitem_keys(project: &Project) -> HashSet<String> {
     fn tex(entries: &[Entry], out: &mut Vec<String>) {
         for e in entries {
             if e.is_dir {
                 tex(&e.children, out);
-            } else if e.path.ends_with(".tex") {
+            } else if Path::new(&e.path)
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| x.eq_ignore_ascii_case("tex") || x.eq_ignore_ascii_case("bbl"))
+            {
                 out.push(e.path.clone());
             }
         }
@@ -95,13 +98,30 @@ fn bibitem_keys(project: &Project) -> HashSet<String> {
         &lemmata_project::tree(&project.root, &project.config.outdir),
         &mut files,
     );
+    let mut paths: Vec<std::path::PathBuf> =
+        files.into_iter().map(|f| project.root.join(f)).collect();
+    // Also check the compiled `.bbl` in the build output directory.
+    let stem = project.main.file_stem().unwrap_or_default();
+    let mut bbl_name = stem.to_os_string();
+    bbl_name.push(".bbl");
+    let built_bbl = project.outdir_abs().join(bbl_name);
+    if built_bbl.is_file() {
+        paths.push(built_bbl);
+    }
+
     let mut keys = HashSet::new();
-    for file in files {
-        let Ok(text) = lemmata_env::fs::read_text(project.root.join(&file)) else {
+    for path in paths {
+        let Ok(text) = lemmata_env::fs::read_text(&path) else {
             continue;
         };
+        let is_bbl = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("bbl"));
+        let mut scanner = lemmata_project::CodeScanner::default();
         for line in text.lines() {
-            let code = line.split('%').next().unwrap_or("");
+            let masked = scanner.mask_line(line);
+            let code = masked.as_ref();
             let mut rest = code;
             while let Some(at) = rest.find("\\bibitem") {
                 rest = &rest[at + "\\bibitem".len()..];
@@ -111,6 +131,15 @@ fn bibitem_keys(project: &Project) -> HashSet<String> {
                 }
                 if let Some((key, _)) = after.strip_prefix('{').and_then(|a| a.split_once('}')) {
                     keys.insert(key.trim().to_string());
+                }
+            }
+            if is_bbl {
+                let mut rest = code;
+                while let Some(at) = rest.find("\\entry{") {
+                    rest = &rest[at + "\\entry{".len()..];
+                    if let Some((key, _)) = rest.split_once('}') {
+                        keys.insert(key.trim().to_string());
+                    }
                 }
             }
         }

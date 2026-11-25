@@ -130,15 +130,26 @@ impl NoticeAction {
     }
 }
 
+#[derive(Clone)]
+pub struct NoticeEntry {
+    pub text: String,
+    pub tone: Tone,
+    pub time_ms: f64,
+}
+
 /// Which drop-down is open in the editor screen.
 #[derive(Clone, PartialEq)]
 pub enum Menu {
     Main(Rect),
     Compile(Rect),
+    Targets(Rect),
+    Notices(Rect),
     Sort(Rect),
     Heading(Rect),
     /// The edit bar's code-block languages.
     Code(Rect),
+    /// Overflow actions from the edit bar at narrow editor widths.
+    EditMore(Rect),
     Tab(String, Rect),
     /// The tree's right-click menu: on a row, or on its empty space.
     Tree(Option<String>, Rect),
@@ -184,10 +195,22 @@ pub struct Workspace {
     pub focus_mode: bool,
     pub menu: Option<Menu>,
     pub notices: Vec<Notice>,
+    /// History of recent notices for the status-bar notification center (newest first).
+    pub notice_log: Vec<NoticeEntry>,
+    pub unread_notices: usize,
+    /// Deferred trust update from Project Settings (applied only after `set_config` succeeds).
+    pub(crate) pending_trust: Option<bool>,
+    /// Deferred "Save as template…" action (opened only once all dirty files are saved).
+    pub(crate) pending_save_template: bool,
+    /// Conflicted files that were deleted on disk (offer Save vs Close instead of Reload).
+    pub deleted_conflicts: HashSet<String>,
+    /// Conflicts temporarily dismissed via Escape/X; resurfaced on Save/Close/Retry.
+    pub conflict_deferred: HashSet<String>,
     /// The line the cursor is on, for the status bar and the outline.
     pub cursor: (String, usize),
-    /// Lines the session wants the cursor on, applied when the file opens.
+    /// Lines and optional 0-based char columns the session or LSP wants the cursor on, applied when the file opens.
     pending_line: HashMap<String, usize>,
+    pending_col: HashMap<String, usize>,
     /// Folds the session remembers for files not open yet (first lines, 1-based).
     pending_folds: HashMap<String, Vec<usize>>,
     session_pdf: serde_json::Value,
@@ -202,6 +225,8 @@ pub struct Workspace {
     /// The TeX check has answered (it runs while the last project opens at start).
     pub tex_known: bool,
     pub tex_outdated: bool,
+    /// Whether the Tectonic engine binary is available on this machine.
+    pub tectonic_installed: bool,
     /// Saves that don't start a build (Recompile, exports and settings changes build themselves).
     no_build: HashSet<String>,
     /// Saves the autosave timer started; their build waits a little longer.
@@ -349,8 +374,15 @@ impl Workspace {
             focus_mode: false,
             menu: None,
             notices: Vec::new(),
+            notice_log: Vec::new(),
+            unread_notices: 0,
+            pending_trust: None,
+            pending_save_template: false,
+            deleted_conflicts: HashSet::new(),
+            conflict_deferred: HashSet::new(),
             cursor: (String::new(), 1),
             pending_line: HashMap::new(),
+            pending_col: HashMap::new(),
             pending_folds: HashMap::new(),
             session_pdf: serde_json::Value::Null,
             restoring: None,
@@ -362,6 +394,7 @@ impl Workspace {
             // Until the app's next frame says otherwise: ready means the check has answered.
             tex_known: tex_ready,
             tex_outdated: false,
+            tectonic_installed: lemmata_tex::tectonic::installed_path().is_some(),
             no_build: HashSet::new(),
             auto_writes: HashSet::new(),
             adding_package: None,
@@ -569,7 +602,7 @@ impl Workspace {
         if trusted {
             self.refresh_git_status(backend);
         } else {
-            self.git.status.clear();
+            self.git.clear_repo();
         }
         // A store the project brought (or its own repository) may be used now, or no longer.
         self.ensure_history(backend);
@@ -591,7 +624,7 @@ impl Workspace {
             move |ws, _, minted| {
                 if minted && ws.offered.insert(KEY.into()) {
                     let n = Notice::new(problem, Tone::Info);
-                    ws.notices.push(if problem.contains("Tectonic") {
+                    ws.push_notice(if problem.contains("Tectonic") {
                         n
                     } else {
                         n.action(NoticeAction::ProjectSettings)
@@ -639,9 +672,15 @@ impl Workspace {
         self.lookups.labels = analysis.labels;
         self.lookups.cites = analysis.cites;
         // The maths previews' macros follow the analysis, which runs after a save, not at once.
-        crate::writing::render::set_macros(crate::writing::math::collect_macros(
+        crate::writing::render::set_macro_defs(crate::writing::math::collect_macro_defs(
             &analysis.macro_text,
         ));
+        if !analysis.macro_text.is_empty() {
+            let detected = crate::writing::spell::detect_language(&analysis.macro_text);
+            if detected != "en" || self.detected == "en" {
+                self.detected = detected;
+            }
+        }
         self.pdf_current = analysis.pdf_current;
         fn files(list: &[lemmata_project::Entry], out: &mut Vec<String>) {
             for e in list {
@@ -662,14 +701,58 @@ impl Workspace {
         }
     }
 
-    pub fn notice(&mut self, text: impl Into<String>, tone: Tone) {
-        let text = text.into();
-        if self.notices.iter().any(|n| n.text == text) {
+    pub fn push_notice(&mut self, notice: Notice) {
+        let should_log = self
+            .notice_log
+            .first()
+            .is_none_or(|prev| prev.text != notice.text);
+        if should_log {
+            self.notice_log.insert(
+                0,
+                NoticeEntry {
+                    text: notice.text.clone(),
+                    tone: notice.tone,
+                    time_ms: crate::when::now_ms(),
+                },
+            );
+            self.notice_log.truncate(50);
+            if !matches!(self.menu, Some(Menu::Notices(_))) {
+                self.unread_notices = (self.unread_notices + 1).min(99);
+            }
+        }
+        if self.notices.iter().any(|n| n.text == notice.text) {
             return;
         }
-        self.notices.push(Notice::new(text, tone));
+        self.notices.push(notice);
         if self.notices.len() > 8 {
             self.notices.remove(0);
+        }
+    }
+
+    pub fn notice(&mut self, text: impl Into<String>, tone: Tone) {
+        self.push_notice(Notice::new(text, tone));
+    }
+
+    /// Switches to a configured build target (`main` file and optional compiler override).
+    pub fn select_target(
+        &mut self,
+        backend: &Backend,
+        settings: &Settings,
+        target: lemmata_project::Target,
+    ) {
+        let main = target.main.clone();
+        let engine = target.engine;
+        self.set_config(backend, settings, move |c| {
+            c.main = Some(main);
+            if let Some(e) = engine {
+                c.engine = e;
+                if e == lemmata_project::Engine::Tectonic {
+                    c.bib = lemmata_project::Bib::Bibtex;
+                }
+            }
+        });
+        if tree::is_text_file(&target.main) {
+            self.open_file(backend, &target.main);
         }
     }
 
@@ -718,15 +801,25 @@ impl Workspace {
         self.open_file(backend, path);
     }
 
-    /// Goes to a line of a file, opening it first when needed.
-    pub fn goto(&mut self, backend: &Backend, file: &str, line: usize) {
+    /// Goes to a line and 0-based char column of a file, opening it first when needed.
+    pub fn goto_col(&mut self, backend: &Backend, file: &str, line: usize, col: usize) {
         match self.editors.get_mut(file) {
-            Some(ed) => ed.goto_line(line),
+            Some(ed) => ed.goto_line_col(line, col),
             None => {
                 self.pending_line.insert(file.into(), line);
+                if col > 0 {
+                    self.pending_col.insert(file.into(), col);
+                } else {
+                    self.pending_col.remove(file);
+                }
             }
         }
         self.open_file(backend, file);
+    }
+
+    /// Goes to a line of a file, opening it first when needed.
+    pub fn goto(&mut self, backend: &Backend, file: &str, line: usize) {
+        self.goto_col(backend, file, line, 0);
     }
 
     /// Pinned tabs always come first, in the order they were pinned.
@@ -759,6 +852,7 @@ impl Workspace {
     pub fn close_tab(&mut self, backend: &Backend, path: &str, settings: &Settings) {
         if self.buffers.is_dirty(path) {
             if self.buffers.conflicts.iter().any(|c| c == path) {
+                self.conflict_deferred.remove(path);
                 self.notice(
                     format!(
                         "{path} changed on disk: choose which version to keep before closing it."
@@ -854,6 +948,7 @@ impl Workspace {
         }
         let path = path.clone();
         if self.buffers.conflicts.iter().any(|c| c == &path) {
+            self.conflict_deferred.remove(&path);
             self.save_error = None;
             self.open_error = None;
             self.no_build.remove(&path);
@@ -866,6 +961,7 @@ impl Workspace {
 
     /// Ctrl+S: every unsaved file now.
     pub fn save_all(&mut self, backend: &Backend, settings: &Settings) {
+        self.conflict_deferred.clear();
         for p in self.buffers.unsaved() {
             self.write(backend, &p, settings);
         }
@@ -929,7 +1025,10 @@ impl Workspace {
                     ed.set_folds(&lines);
                 }
                 if let Some(line) = self.pending_line.remove(&path) {
-                    ed.goto_line(line.max(1));
+                    let col = self.pending_col.remove(&path).unwrap_or(0);
+                    ed.goto_line_col(line.max(1), col);
+                } else {
+                    self.pending_col.remove(&path);
                 }
                 self.buffers.loaded(&path, &text);
                 self.editors.insert(path.clone(), ed);
@@ -1021,6 +1120,10 @@ impl Workspace {
                         }
                     }
                     WriteResult::Conflict => {
+                        self.conflict_deferred.remove(&path);
+                        if !self.info.root.join(&path).exists() {
+                            self.deleted_conflicts.insert(path.clone());
+                        }
                         self.save_error = None;
                         self.open_error = None;
                         self.no_build.remove(&path);
@@ -1055,10 +1158,14 @@ impl Workspace {
             }
             Msg::DiskText(path, Err(e)) => {
                 // "Load the version on disk" that can't be read: the editor still has the user's
-                // text, so it is theirs again to keep or to try loading once more.
+                // text, so it is theirs again to keep or (if deleted) discard.
                 if self.reloading.remove(&path) {
                     self.buffers.dirty.insert(path.clone());
                     self.buffers.conflict(&path);
+                    self.conflict_deferred.remove(&path);
+                    if !self.info.root.join(&path).exists() {
+                        self.deleted_conflicts.insert(path.clone());
+                    }
                 }
                 self.notice(
                     format!("{path} changed outside Lemmata but could not be read: {e}"),
@@ -1091,7 +1198,7 @@ impl Workspace {
             }
             Msg::HasPackage(pkg, has) => {
                 if !has {
-                    self.notices.push(
+                    self.push_notice(
                         Notice::new(format!("This needs the {pkg} package, which your document doesn't load yet."), Tone::Info)
                             .action(NoticeAction::AddPackage(pkg)),
                     );
@@ -1152,6 +1259,8 @@ impl Workspace {
             .collect();
         for p in &kept {
             self.buffers.conflict(p);
+            self.deleted_conflicts.insert(p.clone());
+            self.conflict_deferred.remove(p);
         }
         let gone = |p: &str| in_removed(p) && !kept.iter().any(|k| k == p);
         let closing: Vec<String> = self
@@ -1230,6 +1339,10 @@ impl Workspace {
             || self.words.is_some()
             || self.shortcut_sheet.is_some()
             || self.history.label.is_some()
+            || self
+                .search
+                .as_ref()
+                .is_some_and(|s| s.confirm_replace.is_some())
     }
 
     fn shortcuts(
@@ -1255,22 +1368,26 @@ impl Workspace {
         if crate::shortcuts::consume(&ctx, "recompile") {
             self.recompile(backend, settings);
         }
-        if self.active.is_some() && crate::shortcuts::consume(&ctx, "symbols") {
+        let has_editor = self
+            .active
+            .as_deref()
+            .is_some_and(|a| self.editors.contains_key(a));
+        if has_editor && crate::shortcuts::consume(&ctx, "symbols") {
             self.symbols = Some(Default::default());
         }
         if crate::shortcuts::consume(&ctx, "snapshot") {
             self.history.label = Some(String::new());
         }
-        if self.active.is_some()
+        if has_editor
             && crate::shortcuts::consume(&ctx, "add-comment")
             && self.add_comment(backend, settings)
         {
             *action = Some(Action::Settings);
         }
-        if self.active.is_some() && crate::shortcuts::consume(&ctx, "cite") {
+        if has_editor && crate::shortcuts::consume(&ctx, "cite") {
             self.open_cite(backend, None);
         }
-        if self.active.is_some() && crate::shortcuts::consume(&ctx, "rename") {
+        if has_editor && crate::shortcuts::consume(&ctx, "rename") {
             self.open_rename(backend);
         }
         for (id, kind) in [
@@ -1317,6 +1434,13 @@ impl Workspace {
         backend: &Backend,
     ) -> Option<Action> {
         let mut action = None;
+        if let Some(trust) = self.pending_trust.take() {
+            self.set_trusted(backend, settings, trust);
+            action = Some(Action::Settings);
+        }
+        if std::mem::take(&mut self.pending_save_template) {
+            action = Some(Action::SaveTemplate(self.root.clone()));
+        }
         self.indent = Indent::from_setting(&settings.indent);
         self.apply_language(backend, settings);
         if self.lookups.snippets != settings.snippets {
@@ -1501,6 +1625,7 @@ impl Workspace {
         }
 
         self.dialogs(&ctx, p, backend, settings);
+        self.search_dialog(&ctx, p, backend, settings);
         self.bib_dialogs(&ctx, p, backend, settings);
         self.insert_dialogs(&ctx, p, backend);
         self.rename_dialog(&ctx, p, backend, settings);
@@ -1686,8 +1811,8 @@ impl Workspace {
                         }
                     }
                 });
-            if let Some((path, line, _)) = go {
-                self.goto(backend, &path, line);
+            if let Some((path, line, col)) = go {
+                self.goto_col(backend, &path, line, col);
             }
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.references = None;
@@ -1743,7 +1868,13 @@ impl Workspace {
                     out.ignore_rule.clone(),
                     out.grammar_check.clone(),
                 );
-                let lsp_asks = (out.server_complete, out.server_hover, out.server_goto);
+                let lsp_asks = (
+                    out.server_complete,
+                    out.server_hover,
+                    out.server_goto,
+                    out.server_code_actions,
+                    out.apply_code_action,
+                );
                 if out.changed {
                     self.buffers
                         .edit(&path, Instant::now(), Self::autosave_ms(settings));
@@ -1766,7 +1897,7 @@ impl Workspace {
                     self.paste_image(backend, &path, &img);
                 }
                 if let Some((from, table, text)) = pasted_table {
-                    self.notices.push(
+                    self.push_notice(
                         Notice::new("Pasted as a table.", Tone::Info)
                             .action(NoticeAction::PasteAsText(path.clone(), from, table, text)),
                     );
@@ -1813,8 +1944,47 @@ impl Workspace {
                     }
                 }
                 self.pump_grammar(backend);
+                if let Some(action) = lsp_asks.4 {
+                    for (rel, edits) in action.edits {
+                        if let Some(target_ed) = self.editors.get_mut(&rel) {
+                            let mut changes = Vec::new();
+                            for e in edits {
+                                let lines = target_ed.doc.line_count();
+                                let sl = e.start.0.min(lines.saturating_sub(1));
+                                let el = e.end.0.min(lines.saturating_sub(1));
+                                let sc =
+                                    crate::lsp::utf16_to_char(&target_ed.doc.line(sl), e.start.1);
+                                let ec =
+                                    crate::lsp::utf16_to_char(&target_ed.doc.line(el), e.end.1);
+                                let from = target_ed.doc.line_start(sl) + sc;
+                                let to = target_ed.doc.line_start(el) + ec;
+                                changes.push(crate::editor::buffer::Change {
+                                    from,
+                                    to,
+                                    insert: e.new_text,
+                                });
+                            }
+                            let cs = crate::editor::buffer::ChangeSet::new(changes);
+                            if !cs.is_empty() {
+                                let sel = target_ed.doc.selection.clone();
+                                target_ed.doc.apply(
+                                    cs,
+                                    sel,
+                                    crate::editor::buffer::EditKind::Other,
+                                );
+                                self.buffers.edit(
+                                    &rel,
+                                    Instant::now(),
+                                    Self::autosave_ms(settings),
+                                );
+                            }
+                        }
+                    }
+                    self.lookups.code_actions = None;
+                }
                 self.lsp_sync(backend);
                 let ed = &self.editors[&path];
+                let doc_ver = ed.doc.version;
                 let at = |line: usize, col: usize| crate::lsp::utf16_col(&ed.doc.line(line), col);
                 let mut msgs = Vec::new();
                 if let Some((head, from)) = lsp_asks.0 {
@@ -1827,11 +1997,27 @@ impl Workspace {
                         .lookups
                         .hover
                         .as_ref()
-                        .is_none_or(|h| h.0 != path || h.1 != line || h.2 != col)
+                        .is_none_or(|h| h.0 != path || h.1 != doc_ver || h.2 != line || h.3 != col)
                 {
                     let u = at(line, col);
-                    self.lookups.hover = Some((path.clone(), line, col, String::new()));
-                    msgs.extend(self.lsp.hover(&path, line, u, col));
+                    if let Some(msg) = self.lsp.hover(&path, doc_ver, line, u, col) {
+                        self.lookups.hover =
+                            Some((path.clone(), doc_ver, line, col, String::new()));
+                        msgs.push(msg);
+                    }
+                }
+                if let Some((line, c0, c1)) = lsp_asks.3
+                    && self
+                        .lookups
+                        .code_actions
+                        .as_ref()
+                        .is_none_or(|ca| ca.0 != path || ca.1 != doc_ver || ca.2 != line)
+                {
+                    let (u0, u1) = (at(line, c0), at(line, c1));
+                    if let Some(msg) = self.lsp.code_actions(&path, doc_ver, line, u0, u1) {
+                        self.lookups.code_actions = Some((path.clone(), doc_ver, line, Vec::new()));
+                        msgs.push(msg);
+                    }
                 }
                 if let Some((line, col, references)) = lsp_asks.2 {
                     let u = at(line, col);
@@ -1914,18 +2100,35 @@ impl Workspace {
         backend: &Backend,
         settings: &Settings,
     ) {
-        // Another program changed a file with unsaved edits: the user picks a version.
-        if let Some(path) = self.buffers.conflicts.first().cloned() {
-            let mut choice = None;
-            widgets::modal(
+        // Another program changed or deleted a file with unsaved edits: the user picks a version.
+        if let Some(path) = self
+            .buffers
+            .conflicts
+            .iter()
+            .find(|c| !self.conflict_deferred.contains(*c))
+            .cloned()
+        {
+            let deleted = self.deleted_conflicts.contains(&path);
+            let title = if deleted {
+                format!("{path} was deleted on disk")
+            } else {
+                format!("{path} changed on disk")
+            };
+            let body = if deleted {
+                "Another program removed this file while it had unsaved edits in Lemmata. Save your version to recreate it, or close the tab and discard the edits."
+            } else {
+                "Another program changed this file while it had unsaved edits in Lemmata. Nothing is saved until you choose which version to keep."
+            };
+            let mut choice: Option<u8> = None;
+            let r = widgets::modal(
                 ctx,
                 p,
-                &format!("{path} changed on disk"),
+                &title,
                 480.0,
                 |ui| {
                     widgets::paragraph(
                         ui,
-                        "Another program changed this file while it had unsaved edits in Lemmata. Nothing is saved until you choose which version to keep.",
+                        body,
                         FontId::proportional(13.0),
                         p.ink,
                         1.45,
@@ -1933,28 +2136,60 @@ impl Workspace {
                     );
                 },
                 Some(&mut |ui: &mut Ui| {
-                    if Button::new("Keep my version")
-                        .kind(Kind::Primary)
-                        .show(ui, p)
-                        .clicked()
+                    if Button::new(if deleted {
+                        "Save my version"
+                    } else {
+                        "Keep my version"
+                    })
+                    .kind(Kind::Primary)
+                    .show(ui, p)
+                    .clicked()
                     {
-                        choice = Some(true);
+                        choice = Some(1);
                     }
-                    if Button::new("Load the version on disk")
+                    if deleted {
+                        if Button::new("Close tab and discard")
+                            .kind(Kind::Danger)
+                            .show(ui, p)
+                            .clicked()
+                        {
+                            choice = Some(2);
+                        }
+                    } else if Button::new("Load the version on disk")
                         .show(ui, p)
                         .clicked()
                     {
-                        choice = Some(false);
+                        choice = Some(0);
                     }
                 }),
             );
+            if r.closed && choice.is_none() {
+                self.conflict_deferred.insert(path.clone());
+                self.notice(
+                    format!(
+                        "{path} still has an unresolved conflict. Press Save to choose which version to keep."
+                    ),
+                    Tone::Info,
+                );
+                return;
+            }
             match choice {
-                Some(true) => {
+                Some(1) => {
+                    self.deleted_conflicts.remove(&path);
+                    self.conflict_deferred.remove(&path);
                     self.buffers.resolve(&path, true);
                     self.write(backend, &path, settings);
                 }
-                Some(false) => {
+                Some(2) => {
+                    self.deleted_conflicts.remove(&path);
+                    self.conflict_deferred.remove(&path);
+                    self.buffers.resolve(&path, false);
+                    self.drop_tab(backend, &path);
+                }
+                Some(0) => {
                     self.reloading.insert(path.clone());
+                    self.deleted_conflicts.remove(&path);
+                    self.conflict_deferred.remove(&path);
                     self.buffers.resolve(&path, false);
                     // Read again; the editor takes the disk's text as one undo step.
                     self.buffers.dirty.remove(&path);
@@ -1963,7 +2198,7 @@ impl Workspace {
                         Msg::DiskText(pth.clone(), shell.read_text(pth))
                     });
                 }
-                None => {}
+                _ => {}
             }
         }
     }

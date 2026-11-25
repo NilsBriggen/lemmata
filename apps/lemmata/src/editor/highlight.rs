@@ -163,13 +163,40 @@ fn cmd_char(c: char) -> bool {
 fn normal(s: &mut Stream, st: &mut State) -> Option<Token> {
     if s.match_cmd(cmd_char) {
         let name = s.current()[1..].to_owned();
-        // `\verb|$x|`: what's between the delimiters is literal, so it can't open maths.
-        if name == "verb" {
-            if s.peek() == Some('*') {
+        // `\verb|$x|`, `\Verb|$x|`, `\lstinline|$x|`: what's between the delimiters is literal.
+        if matches!(name.as_str(), "verb" | "Verb" | "lstinline") {
+            if name != "lstinline" && s.peek() == Some('*') {
                 s.pos += 1;
             }
+            if name != "verb" && s.peek() == Some('[') {
+                let mut depth = 0i32;
+                while let Some(c) = s.next() {
+                    if c == '[' {
+                        depth += 1;
+                    } else if c == ']' {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                }
+            }
             if let Some(d) = s.next() {
-                while s.next().is_some_and(|c| c != d) {}
+                if name == "lstinline" && d == '{' {
+                    let mut depth = 1i32;
+                    while let Some(c) = s.next() {
+                        if c == '{' {
+                            depth += 1;
+                        } else if c == '}' {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    while s.next().is_some_and(|c| c != d) {}
+                }
             }
             return Some(Token::Atom);
         }
@@ -366,14 +393,117 @@ pub fn line(text: &str, state: &mut State) -> Vec<(usize, usize, Token)> {
     out
 }
 
-/// The verbatim-like environment this line opens and leaves open, outside a comment.
+/// Masks comments and inline verbatim spans (`\verb`, `\Verb`, `\lstinline`, `\mintinline`,
+/// `\path`) on a single line so literal `\begin{verbatim}` text never triggers verbatim mode.
+fn code_without_inline_verbatim(text: &str) -> String {
+    let c: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == '\\' {
+            if c.get(i + 1).is_some_and(|ch| ch.is_ascii_alphabetic()) {
+                let start = i;
+                i += 1;
+                while i < c.len() && c[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                let cmd: String = c[start + 1..i].iter().collect();
+                if matches!(
+                    cmd.as_str(),
+                    "verb" | "Verb" | "lstinline" | "mintinline" | "path"
+                ) {
+                    if matches!(cmd.as_str(), "verb" | "Verb") && c.get(i) == Some(&'*') {
+                        i += 1;
+                    }
+                    if matches!(cmd.as_str(), "Verb" | "lstinline" | "mintinline")
+                        && c.get(i) == Some(&'[')
+                    {
+                        let mut depth = 0i32;
+                        while i < c.len() {
+                            if c[i] == '[' {
+                                depth += 1;
+                            } else if c[i] == ']' {
+                                depth -= 1;
+                                i += 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                continue;
+                            }
+                            i += 1;
+                        }
+                    }
+                    if cmd == "mintinline" && c.get(i) == Some(&'{') {
+                        let mut depth = 0i32;
+                        while i < c.len() {
+                            if c[i] == '{' {
+                                depth += 1;
+                            } else if c[i] == '}' {
+                                depth -= 1;
+                                i += 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                continue;
+                            }
+                            i += 1;
+                        }
+                    }
+                    if let Some(&d) = c.get(i) {
+                        i += 1;
+                        if d == '{' && matches!(cmd.as_str(), "lstinline" | "mintinline" | "path") {
+                            let mut depth = 1i32;
+                            while i < c.len() && depth > 0 {
+                                if c[i] == '{' {
+                                    depth += 1;
+                                } else if c[i] == '}' {
+                                    depth -= 1;
+                                }
+                                i += 1;
+                            }
+                        } else {
+                            while i < c.len() {
+                                let ch = c[i];
+                                i += 1;
+                                if ch == d {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    out.push(' ');
+                    continue;
+                }
+                for &ch in &c[start..i] {
+                    out.push(ch);
+                }
+                continue;
+            }
+            out.push(c[i]);
+            if let Some(&next) = c.get(i + 1) {
+                out.push(next);
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if c[i] == '%' {
+            break;
+        }
+        out.push(c[i]);
+        i += 1;
+    }
+    out
+}
+
+/// The verbatim-like environment this line opens and leaves open, outside comments and inline
+/// verbatim commands.
 fn opens_verbatim(text: &str) -> Option<&'static str> {
-    let comment = super::commands::comment_start(text)
-        .map(|c| text.char_indices().nth(c).map_or(text.len(), |(b, _)| b));
+    let code = code_without_inline_verbatim(text);
     super::commands::VERBATIM.into_iter().find(|name| {
-        text.rfind(&format!("\\begin{{{name}}}")).is_some_and(|i| {
-            comment.is_none_or(|c| i < c) && !text[i..].contains(&format!("\\end{{{name}}}"))
-        })
+        code.rfind(&format!("\\begin{{{name}}}"))
+            .is_some_and(|i| !code[i..].contains(&format!("\\end{{{name}}}")))
     })
 }
 
@@ -592,5 +722,18 @@ mod tests {
         let mut h = Highlighter::default();
         assert_eq!(h.tokens(1, |n| lines[n].into())[0].2, Token::Atom);
         assert_eq!(h.tokens(3, |n| lines[n].into()), vec![]);
+    }
+
+    #[test]
+    fn verb_inline_does_not_open_verbatim_block() {
+        let mut st = State::default();
+        line("Use \\verb|\\begin{verbatim}| here", &mut st);
+        assert_eq!(
+            st,
+            State::default(),
+            "inline \\verb must not start verbatim"
+        );
+        let t = line("\\section{Real}", &mut st);
+        assert!(t.iter().any(|(_, _, tok)| *tok == Token::Tag));
     }
 }

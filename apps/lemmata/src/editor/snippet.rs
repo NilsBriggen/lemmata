@@ -59,7 +59,9 @@ pub fn insert(
         .chars()
         .take_while(|c| *c == ' ' || *c == '\t')
         .collect();
+    let eol = d.eol;
     let text = template
+        .replace("\r\n", "\n")
         .split('\n')
         .enumerate()
         .map(|(i, l)| {
@@ -69,7 +71,7 @@ pub fn insert(
             format!("{ind}{}{body}", indent.unit().repeat(tabs))
         })
         .collect::<Vec<_>>()
-        .join("\n");
+        .join(eol);
     let (out, fields) = parse(&text);
     let fields: Vec<Vec<(usize, usize)>> = fields
         .into_iter()

@@ -202,6 +202,7 @@ pub fn group_right(d: &mut Doc, extend: bool) {
 }
 
 /// Home: to the first non-blank character, or the line start when already there.
+#[cfg(test)]
 pub fn line_boundary_backward(d: &mut Doc, extend: bool) {
     move_ranges(d, extend, |d, r| {
         let line = d.line_of(r.head);
@@ -210,10 +211,6 @@ pub fn line_boundary_backward(d: &mut Doc, extend: bool) {
         let first = start + leading_ws(&text).chars().count();
         if r.head == first { start } else { first }
     });
-}
-
-pub fn line_boundary_forward(d: &mut Doc, extend: bool) {
-    move_ranges(d, extend, |d, r| d.line_end(d.line_of(r.head)));
 }
 
 pub fn doc_start(d: &mut Doc, extend: bool) {
@@ -924,8 +921,10 @@ pub fn wrap_in_environment(d: &mut Doc, name: &str, indent: Indent) {
     let to = d.line_end(last);
     let lead = leading_ws(&d.line(first)).to_owned();
     let unit = indent.unit();
+    let eol = d.eol;
     let body: Vec<String> = d
         .slice(from, to)
+        .replace("\r\n", "\n")
         .split('\n')
         .map(|l| {
             if l.is_empty() {
@@ -936,8 +935,8 @@ pub fn wrap_in_environment(d: &mut Doc, name: &str, indent: Indent) {
         })
         .collect();
     let insert = format!(
-        "{lead}\\begin{{{name}}}\n{}\n{lead}\\end{{{name}}}",
-        body.join("\n")
+        "{lead}\\begin{{{name}}}{eol}{}{eol}{lead}\\end{{{name}}}",
+        body.join(eol)
     );
     let at = from + lead.chars().count() + format!("\\begin{{{name}}}").chars().count();
     d.apply(
@@ -1172,18 +1171,20 @@ pub fn insert_block(
     let line_text = d.line(line);
     let col = r.from() - d.line_start(line);
     let before: String = line_text.chars().take(col).collect();
+    let eol = d.eol;
+    let normalized = template.replace("\r\n", "\n");
     let mut prefix = String::new();
     let mut cur_indent = leading_ws(&line_text).to_owned();
-    if template.contains('\n') && r.is_empty() {
+    if normalized.contains('\n') && r.is_empty() {
         if before.trim().is_empty() {
             cur_indent = before.clone();
         } else {
-            prefix = format!("\n{cur_indent}");
+            prefix = format!("{eol}{cur_indent}");
         }
     }
     let unit = indent.unit();
     // Two spaces per level in generated blocks, and tabs, become the chosen unit.
-    let lines: Vec<String> = template
+    let lines: Vec<String> = normalized
         .split('\n')
         .enumerate()
         .map(|(i, l)| {
@@ -1200,7 +1201,7 @@ pub fn insert_block(
             format!("{ind}{}{body}", unit.repeat(levels))
         })
         .collect();
-    let text = lines.join("\n");
+    let text = lines.join(eol);
     let (out, fields) = if fields {
         super::snippet::parse(&text)
     } else {
@@ -1308,12 +1309,15 @@ fn scan(d: &Doc, from: usize, open: char, close: char, forward: bool) -> Option<
 }
 
 pub fn cursor_matching_bracket(d: &mut Doc, extend: bool) -> bool {
-    let head = d.selection.main().head;
-    let Some((_, m)) = matching_bracket(d, head) else {
-        return false;
-    };
-    move_ranges(d, extend, |_, _| m);
-    true
+    let mut matched = false;
+    move_ranges(d, extend, |d, r| match matching_bracket(d, r.head) {
+        Some((_, m)) => {
+            matched = true;
+            m
+        }
+        None => r.head,
+    });
+    matched
 }
 
 /// insertCitation: the keys go into a `\cite{…}` still open before the cursor, after a comma;

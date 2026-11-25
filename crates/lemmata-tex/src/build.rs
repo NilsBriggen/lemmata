@@ -118,7 +118,7 @@ pub fn latexmk_args(project: &Project, miktex: bool) -> Vec<OsString> {
 }
 
 /// TeX code that runs before the main file: draft mode and the chapters to build (`\includeonly`).
-fn pretex(project: &Project) -> String {
+pub(crate) fn pretex(project: &Project) -> String {
     let c = &project.config;
     let mut pre = String::new();
     if c.draft {
@@ -177,7 +177,10 @@ pub async fn build_with(
     // Build even when no project file changed (an explicit Recompile).
     force: bool,
 ) -> Result<Outcome, Error> {
-    if !opts.latexmk.exists() {
+    let engine = tool(opts, project.config.engine.binary());
+    let has_latexmk = opts.latexmk.is_file();
+    let can_go_direct = engine.is_some();
+    if !has_latexmk && !can_go_direct {
         return Err(Error::NoLatexmk);
     }
     refuse_unsafe(project)?;
@@ -202,12 +205,11 @@ pub async fn build_with(
     let limit = time_limit(project);
     let deadline = started + limit;
     let mut cancel = cancel;
-    let engine = tool(opts, project.config.engine.binary());
-    let can_go_direct = engine.is_some();
     // latexmk runs the project's latexmkrc and builds shell command lines from file names. A
-    // project the user hasn't trusted, or one whose names a shell would act on, gets the engine
-    // run directly instead, with its arguments passed as they are.
-    let no_latexmk = !project.trusted
+    // project the user hasn't trusted, one whose names a shell would act on, or a setup without
+    // latexmk gets the engine run directly instead, with its arguments passed as they are.
+    let no_latexmk = !has_latexmk
+        || !project.trusted
         || lemmata_project::shell_unsafe(&project.main.to_string_lossy())
         || lemmata_project::shell_unsafe(&project.config.outdir);
     if no_latexmk && !can_go_direct {
@@ -832,13 +834,28 @@ fn warm_ok(project: &Project) -> bool {
     if rcs.into_iter().any(|p| p.exists()) {
         return false;
     }
-    // Index and glossary files need makeindex or makeglossaries, which only latexmk runs.
+    // Index and glossary files need makeindex or makeglossaries, which only latexmk runs — also
+    // check the main source in case `\makeindex`/`\makeglossaries` was just added before any
+    // `.idx`/`.glo` has been written.
     let needs_tools = std::fs::read_dir(&outdir).is_ok_and(|d| {
         d.flatten().any(|e| {
             e.path()
                 .extension()
                 .and_then(|x| x.to_str())
                 .is_some_and(|x| ["idx", "glo", "nlo", "acn", "ist", "xdy"].contains(&x))
+        })
+    }) || lemmata_env::fs::read_text(project.main_abs()).is_ok_and(|text| {
+        let mut scanner = lemmata_project::CodeScanner::default();
+        text.lines().any(|line| {
+            let code = scanner.mask_line(line);
+            [
+                "\\makeindex",
+                "\\makeglossaries",
+                "\\makenomenclature",
+                "\\makegloss",
+            ]
+            .iter()
+            .any(|cmd| code.contains(cmd))
         })
     });
     !needs_tools
@@ -1070,6 +1087,9 @@ async fn direct_build(
     for pass in 0..MAX_PASSES {
         let pass_started = SystemTime::now();
         let before = toc_state(project);
+        // Remove the previous pass's log so `MTIME_SLACK` cannot mistake Pass 0's log for a fresh
+        // log from Pass 1 if the engine fails before opening its log file.
+        let _ = std::fs::remove_file(out_file(project, "log"));
         let mut cmd = Command::new(&engine_path);
         cmd.args(pass_args(project, &project.config.outdir, fmt, opts.miktex));
         if let Some(f) = fmt {
@@ -1156,10 +1176,7 @@ fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
         std::fs::read(mirror("bcf")).ok()?.hash(&mut h);
     } else {
         let mut aux = std::fs::read_to_string(mirror("aux")).ok()?;
-        if !aux.contains("\\bibdata") {
-            return None;
-        }
-        // \include sends its \citation lines to the chapter's own .aux, which main.aux names.
+        // \include sends its \citation and \bibdata lines to the chapter's own .aux, which main.aux names.
         let chapters: Vec<String> = aux
             .lines()
             .filter_map(|l| l.strip_prefix("\\@input{")?.strip_suffix('}'))
@@ -1170,6 +1187,9 @@ fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
             .collect();
         aux.push('\n');
         aux.push_str(&chapters.join("\n"));
+        if !aux.contains("\\bibdata") {
+            return None;
+        }
         for line in aux.lines().filter(|l| {
             l.starts_with("\\citation") || l.starts_with("\\bibstyle") || l.starts_with("\\bibdata")
         }) {

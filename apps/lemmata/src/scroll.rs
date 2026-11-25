@@ -29,91 +29,135 @@ pub struct Momentum {
 
 impl Momentum {
     pub fn filter(&mut self, raw: &mut egui::RawInput, ctx: &egui::Context) {
-        let now = raw.time.unwrap_or(self.last);
-        let mut out = Vec::with_capacity(raw.events.len() + 2);
-        if std::mem::take(&mut self.ending) {
-            out.push(wheel(
-                Vec2::ZERO,
-                TouchPhase::End,
-                MouseWheelSource::Trackpad,
-            ));
+        // macOS emits native trackpad momentum events; synthesizing additional momentum doubles coasting.
+        #[cfg(target_os = "macos")]
+        {
+            let _ = (raw, ctx);
+            return;
         }
-        for e in raw.events.drain(..) {
-            match e {
-                Event::MouseWheel {
-                    unit: MouseWheelUnit::Point,
-                    delta,
-                    phase,
-                    source: MouseWheelSource::Unknown | MouseWheelSource::Trackpad,
-                    modifiers,
-                } => match phase {
-                    TouchPhase::Start => {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let now = raw.time.unwrap_or(self.last);
+            let mut out = Vec::with_capacity(raw.events.len() + 2);
+            if std::mem::take(&mut self.ending) {
+                out.push(wheel(
+                    Vec2::ZERO,
+                    TouchPhase::End,
+                    MouseWheelSource::Trackpad,
+                ));
+            }
+            for e in raw.events.drain(..) {
+                match e {
+                    Event::Zoom(_) => {
                         self.stop(&mut out);
                         self.recent.clear();
-                        out.push(Event::MouseWheel {
-                            unit: MouseWheelUnit::Point,
-                            delta,
-                            phase,
-                            source: MouseWheelSource::Trackpad,
-                            modifiers,
-                        });
+                        self.ending = false;
+                        out.push(e);
                     }
-                    TouchPhase::Move => {
-                        let d = delta * SPEED;
-                        self.recent.push((now, d));
-                        out.push(Event::MouseWheel {
-                            unit: MouseWheelUnit::Point,
-                            delta: d,
-                            phase,
-                            source: MouseWheelSource::Trackpad,
-                            modifiers,
-                        });
-                    }
-                    TouchPhase::End | TouchPhase::Cancel => {
-                        self.recent.retain(|(t, _)| now - t <= WINDOW);
-                        let speed =
-                            self.recent.iter().fold(Vec2::ZERO, |a, (_, d)| a + *d) / WINDOW as f32;
+                    Event::MouseWheel { modifiers, .. } if modifiers.command || modifiers.ctrl => {
+                        // Ctrl/Cmd+scroll (including Windows Precision Touchpad pinch, which arrives
+                        // as WM_MOUSEWHEEL + MK_CONTROL without a Key event) zooms rather than scrolls:
+                        // stop any active momentum coast immediately and pass the zoom event through
+                        // untouched so egui's WheelState never mixes Momentum (Modifiers::NONE) with
+                        // zoom events in the same frame.
+                        self.stop(&mut out);
                         self.recent.clear();
-                        // Ctrl+scroll zooms; that doesn't coast.
-                        if phase == TouchPhase::End
-                            && !modifiers.command
-                            && speed.length() > MIN_SPEED
-                        {
-                            self.coast = Some(speed);
-                            self.last = now;
-                            out.push(wheel(
-                                Vec2::ZERO,
-                                TouchPhase::Start,
-                                MouseWheelSource::Momentum,
-                            ));
-                        } else {
-                            self.ending = true;
-                            ctx.request_repaint();
-                        }
+                        self.ending = false;
+                        out.push(e);
                     }
-                },
-                Event::PointerButton { pressed: true, .. } | Event::Key { pressed: true, .. } => {
+                    Event::MouseWheel {
+                        unit: MouseWheelUnit::Line | MouseWheelUnit::Page,
+                        ..
+                    } => {
+                        self.stop(&mut out);
+                        self.recent.clear();
+                        out.push(e);
+                    }
+                    Event::MouseWheel {
+                        source: MouseWheelSource::Momentum,
+                        ..
+                    } => {
+                        // Platform already delivered native momentum; drop any synthetic coast.
+                        self.coast = None;
+                        self.recent.clear();
+                        out.push(e);
+                    }
+                    Event::MouseWheel {
+                        unit: MouseWheelUnit::Point,
+                        delta,
+                        phase,
+                        source: MouseWheelSource::Unknown | MouseWheelSource::Trackpad,
+                        modifiers,
+                    } => match phase {
+                        TouchPhase::Start => {
+                            self.stop(&mut out);
+                            self.recent.clear();
+                            out.push(Event::MouseWheel {
+                                unit: MouseWheelUnit::Point,
+                                delta,
+                                phase,
+                                source: MouseWheelSource::Trackpad,
+                                modifiers,
+                            });
+                        }
+                        TouchPhase::Move => {
+                            let d = delta * SPEED;
+                            self.recent.push((now, d));
+                            out.push(Event::MouseWheel {
+                                unit: MouseWheelUnit::Point,
+                                delta: d,
+                                phase,
+                                source: MouseWheelSource::Trackpad,
+                                modifiers,
+                            });
+                        }
+                        TouchPhase::End | TouchPhase::Cancel => {
+                            self.recent.retain(|(t, _)| now - t <= WINDOW);
+                            let speed = self.recent.iter().fold(Vec2::ZERO, |a, (_, d)| a + *d)
+                                / WINDOW as f32;
+                            self.recent.clear();
+                            // Ctrl+scroll zooms; that doesn't coast.
+                            if phase == TouchPhase::End
+                                && !modifiers.command
+                                && speed.length() > MIN_SPEED
+                            {
+                                self.coast = Some(speed);
+                                self.last = now;
+                                out.push(wheel(
+                                    Vec2::ZERO,
+                                    TouchPhase::Start,
+                                    MouseWheelSource::Momentum,
+                                ));
+                            } else {
+                                self.ending = true;
+                                ctx.request_repaint();
+                            }
+                        }
+                    },
+                    Event::PointerButton { pressed: true, .. }
+                    | Event::Key { pressed: true, .. } => {
+                        self.stop(&mut out);
+                        out.push(e);
+                    }
+                    e => out.push(e),
+                }
+            }
+            if let Some(v) = self.coast {
+                let dt = (now - self.last).clamp(0.0, 0.05) as f32;
+                self.last = now;
+                let v = v * (-dt / DECAY).exp();
+                if v.length() < MIN_SPEED {
                     self.stop(&mut out);
-                    out.push(e);
+                } else {
+                    if dt > 0.0 {
+                        out.push(wheel(v * dt, TouchPhase::Move, MouseWheelSource::Momentum));
+                    }
+                    self.coast = Some(v);
+                    ctx.request_repaint();
                 }
-                e => out.push(e),
             }
+            raw.events = out;
         }
-        if let Some(v) = self.coast {
-            let dt = (now - self.last).clamp(0.0, 0.05) as f32;
-            self.last = now;
-            let v = v * (-dt / DECAY).exp();
-            if v.length() < MIN_SPEED {
-                self.stop(&mut out);
-            } else {
-                if dt > 0.0 {
-                    out.push(wheel(v * dt, TouchPhase::Move, MouseWheelSource::Momentum));
-                }
-                self.coast = Some(v);
-                ctx.request_repaint();
-            }
-        }
-        raw.events = out;
     }
 
     fn stop(&mut self, out: &mut Vec<Event>) {
@@ -241,6 +285,68 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn ctrl_wheel_and_pinch_stop_momentum_coast_without_mutating_zoom() {
+        let (mut m, ctx) = (Momentum::default(), egui::Context::default());
+        // Start a fast trackpad flick so momentum coasting is active.
+        frame(&mut m, &ctx, 0.0, vec![finger(0.0, TouchPhase::Start)]);
+        frame(&mut m, &ctx, 0.016, vec![finger(-20.0, TouchPhase::Move)]);
+        frame(&mut m, &ctx, 0.032, vec![finger(0.0, TouchPhase::End)]);
+        assert!(m.coast.is_some());
+
+        // Windows Precision Touchpad pinch / Ctrl+wheel arrives as LineDelta + CTRL with no Key event.
+        let win_zoom = Event::MouseWheel {
+            unit: MouseWheelUnit::Line,
+            delta: Vec2::new(0.0, 1.0),
+            phase: TouchPhase::Move,
+            source: MouseWheelSource::Unknown,
+            modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+        };
+        let out = frame(&mut m, &ctx, 0.048, vec![win_zoom.clone()]);
+        assert!(
+            m.coast.is_none(),
+            "Ctrl+wheel must stop active momentum coast"
+        );
+        assert!(
+            out.contains(&win_zoom),
+            "Ctrl+wheel event must pass through unmodified: {out:?}"
+        );
+        assert!(
+            !out.iter().any(|e| matches!(
+                e,
+                Event::MouseWheel {
+                    phase: TouchPhase::Move,
+                    source: MouseWheelSource::Momentum,
+                    ..
+                }
+            )),
+            "no synthetic Momentum Move event may follow Ctrl+wheel in the same frame: {out:?}"
+        );
+
+        // Start coasting again and verify Event::Zoom also stops it cleanly.
+        frame(&mut m, &ctx, 1.0, vec![finger(0.0, TouchPhase::Start)]);
+        frame(&mut m, &ctx, 1.016, vec![finger(-20.0, TouchPhase::Move)]);
+        frame(&mut m, &ctx, 1.032, vec![finger(0.0, TouchPhase::End)]);
+        assert!(m.coast.is_some());
+        let out = frame(&mut m, &ctx, 1.048, vec![Event::Zoom(1.1)]);
+        assert!(
+            m.coast.is_none(),
+            "Event::Zoom must stop active momentum coast"
+        );
+        assert!(out.contains(&Event::Zoom(1.1)));
+
+        // Linux Ctrl+trackpad Point scroll must not be multiplied by SPEED or turned into Trackpad.
+        let pt_zoom = Event::MouseWheel {
+            unit: MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, 5.0),
+            phase: TouchPhase::Move,
+            source: MouseWheelSource::Unknown,
+            modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+        };
+        let out = frame(&mut m, &ctx, 1.064, vec![pt_zoom.clone()]);
+        assert_eq!(out, vec![pt_zoom]);
     }
 
     #[test]

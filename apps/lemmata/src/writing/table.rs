@@ -22,16 +22,42 @@ pub fn escape_latex(s: &str) -> String {
 /// A caption as LaTeX: it may hold commands and maths, but a `%`, `&`, `#` or `_` outside maths
 /// (which would comment out the closing brace or fail the build) is escaped.
 fn escape_caption(s: &str) -> String {
-    let (mut out, mut math, mut prev) = (String::with_capacity(s.len()), false, ' ');
+    #[derive(PartialEq)]
+    enum Math {
+        None,
+        Dollar,
+        Paren,
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut math = Math::None;
+    let mut escaped = false;
     for c in s.chars() {
-        if c == '$' && prev != '\\' {
-            math = !math;
+        if escaped {
+            if c == '(' && math == Math::None {
+                math = Math::Paren;
+            } else if c == ')' && math == Math::Paren {
+                math = Math::None;
+            }
+            out.push(c);
+            escaped = false;
+            continue;
         }
-        if "%&#_".contains(c) && prev != '\\' && !(math && c == '_') {
+        if c == '\\' {
+            out.push(c);
+            escaped = true;
+            continue;
+        }
+        if c == '$' {
+            match math {
+                Math::None => math = Math::Dollar,
+                Math::Dollar => math = Math::None,
+                Math::Paren => {}
+            }
+        }
+        if "%&#_".contains(c) && !(math != Math::None && c == '_') {
             out.push('\\');
         }
         out.push(c);
-        prev = c;
     }
     out
 }
@@ -400,5 +426,28 @@ mod tests {
             t.contains("{|l|l|l|}") && t.contains("\\hline") && t.contains("\\caption{Caption}")
         );
         assert_eq!(slug("Hello, World!"), "hello-world");
+    }
+
+    #[test]
+    fn escape_caption_handles_inline_parens_math_and_escaped_backslash_before_dollar() {
+        let fig = figure_block(&FigureOptions {
+            path: "a.png",
+            caption: "Line \\\\$x_1$ and \\(a_b\\) and foo_bar",
+            label: "",
+            width: 80,
+            placement: "h",
+        });
+        assert!(
+            fig.contains("\\\\$x_1$"),
+            "double backslash before $ must start math: {fig}"
+        );
+        assert!(
+            fig.contains("\\(a_b\\)"),
+            "inline \\(...\\) math must not escape _: {fig}"
+        );
+        assert!(
+            fig.contains("foo\\_bar"),
+            "prose underscore must still escape: {fig}"
+        );
     }
 }

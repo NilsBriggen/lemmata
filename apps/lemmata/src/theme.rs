@@ -252,50 +252,113 @@ pub fn install_fonts(ctx: &egui::Context) {
 }
 
 /// An editor font looked up on this computer: its name, its data if found, and the pass that
-/// installed it (the fonts change from the next pass on).
+/// A system font loaded in the background for the editor, cached across frames.
 #[derive(Clone)]
 struct SystemFont {
     name: String,
     data: Option<Arc<FontData>>,
+}
+
+#[derive(Clone)]
+enum FontSlot {
+    Loading,
+    Found(Arc<FontData>),
+    Missing(std::time::Instant),
+}
+
+type FontCache = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, FontSlot>>>;
+
+fn font_cache() -> &'static FontCache {
+    static CACHE: std::sync::OnceLock<FontCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Arc::new(std::sync::Mutex::new(Default::default())))
+}
+
+/// The system font currently installed into `ctx`'s `FontDefinitions`, and the pass it was installed.
+#[derive(Clone, Default)]
+struct InstalledFont {
+    name: Option<String>,
     pass: u64,
 }
 
-fn system_fonts_id() -> egui::Id {
-    egui::Id::unique("system-fonts")
+fn installed_font_id() -> egui::Id {
+    egui::Id::unique("installed-editor-font")
 }
 
 /// The editor's font for the Font setting: Plex Mono ("plex"), the system's monospace ("system"),
 /// or a named font when it is installed, with Plex Mono behind it for missing glyphs.
 pub fn editor_family(ctx: &egui::Context, setting: &str) -> FontFamily {
+    let pass = ctx.cumulative_pass_nr();
+    let installed: InstalledFont = ctx
+        .data(|d| d.get_temp(installed_font_id()))
+        .unwrap_or_default();
     if setting == "plex" || setting.is_empty() {
+        if installed.name.is_some() {
+            ctx.set_fonts(definitions(&[]));
+            ctx.data_mut(|d| {
+                d.insert_temp(installed_font_id(), InstalledFont { name: None, pass });
+            });
+            ctx.request_repaint();
+        }
         return FontFamily::Monospace;
     }
-    let mut list: Vec<SystemFont> = ctx
-        .data(|d| d.get_temp(system_fonts_id()))
-        .unwrap_or_default();
-    let pass = ctx.cumulative_pass_nr();
-    match list.iter().find(|f| f.name == setting) {
-        Some(f) if f.data.is_some() && pass > f.pass => {
-            FontFamily::Name(format!("editor:{setting}").into())
+    let state = {
+        let mut map = font_cache().lock().unwrap_or_else(|e| e.into_inner());
+        match map.get(setting) {
+            Some(FontSlot::Missing(at)) if at.elapsed() >= std::time::Duration::from_secs(30) => {
+                map.insert(setting.to_owned(), FontSlot::Loading);
+                None
+            }
+            Some(slot) => Some(slot.clone()),
+            None => {
+                map.insert(setting.to_owned(), FontSlot::Loading);
+                None
+            }
         }
-        Some(_) => FontFamily::Monospace,
-        None => {
-            let data = find_system_font(setting)
+    };
+    if state.is_none() {
+        let name = setting.to_owned();
+        let ctx_bg = ctx.clone();
+        std::thread::spawn(move || {
+            let found = find_system_font(&name)
                 .and_then(|path| lemmata_env::fs::read(path).ok())
                 .map(|b| Arc::new(FontData::from_owned(b)));
-            let found = data.is_some();
-            list.push(SystemFont {
-                name: setting.to_owned(),
-                data,
-                pass,
-            });
-            if found {
-                ctx.set_fonts(definitions(&list));
-                ctx.request_repaint();
+            let slot = match found {
+                Some(data) => FontSlot::Found(data),
+                None => FontSlot::Missing(std::time::Instant::now()),
+            };
+            if let Ok(mut map) = font_cache().lock() {
+                map.insert(name, slot);
             }
-            ctx.data_mut(|d| d.insert_temp(system_fonts_id(), list));
-            FontFamily::Monospace
+            ctx_bg.request_repaint();
+        });
+        return FontFamily::Monospace;
+    }
+    match state {
+        Some(FontSlot::Found(data)) => {
+            if installed.name.as_deref() == Some(setting) && pass > installed.pass {
+                FontFamily::Name(format!("editor:{setting}").into())
+            } else {
+                if installed.name.as_deref() != Some(setting) {
+                    let only = [SystemFont {
+                        name: setting.to_owned(),
+                        data: Some(data),
+                    }];
+                    ctx.set_fonts(definitions(&only));
+                    ctx.data_mut(|d| {
+                        d.insert_temp(
+                            installed_font_id(),
+                            InstalledFont {
+                                name: Some(setting.to_owned()),
+                                pass,
+                            },
+                        );
+                    });
+                    ctx.request_repaint();
+                }
+                FontFamily::Monospace
+            }
         }
+        _ => FontFamily::Monospace,
     }
 }
 

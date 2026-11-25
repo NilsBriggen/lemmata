@@ -15,6 +15,27 @@ pub struct Release {
 /// Newest first.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "3.3.0",
+        highlights: &[
+            (
+                "Build targets in the toolbar",
+                "Projects with more than one main file (such as a paper and its slides) get a target switcher right in the toolbar, remembering each target's compiler.",
+            ),
+            (
+                "Notification center and richer logs",
+                "Past notices stay in the status bar's notification bell instead of disappearing, and the Raw log tab now scrolls smoothly with search and Copy.",
+            ),
+            (
+                "Stronger Git and presentation tools",
+                "The Git panel adds pull/merge/rebase conflict controls, stash, remote branches, and inline diffs. Presentation mode adds blackout (B), jump-to-slide digits, and a slide overview grid (G).",
+            ),
+            (
+                "Safer editing, smarter completion and responsive layout",
+                "Project-wide replace asks before overwriting files, texlab diagnostics show exact spans and quick fixes, and compact windows clamp menus and dialogs cleanly.",
+            ),
+        ],
+    },
+    Release {
         version: "3.2.0",
         highlights: &[
             (

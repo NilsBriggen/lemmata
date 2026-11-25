@@ -164,8 +164,15 @@ pub fn latexmk_stub(data: &Path) -> std::io::Result<PathBuf> {
     {
         let stub = dir.join("latexmk.exe");
         let exe = std::env::current_exe()?;
-        let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).ok();
-        if size(&stub) != size(&exe) {
+        let same_content = std::fs::metadata(&stub)
+            .ok()
+            .zip(std::fs::metadata(&exe).ok())
+            .is_some_and(|(a, b)| {
+                a.len() == b.len()
+                    && lemmata_tex::tectonic::sha256_hex(&stub).ok()
+                        == lemmata_tex::tectonic::sha256_hex(&exe).ok()
+            });
+        if !same_content {
             let _ = std::fs::remove_file(&stub);
             std::fs::hard_link(&exe, &stub).or_else(|_| std::fs::copy(&exe, &stub).map(|_| ()))?;
         }

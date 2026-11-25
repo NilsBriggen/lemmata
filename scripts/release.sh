@@ -16,11 +16,17 @@ cd "$(dirname "$0")/.."
 if [[ $step == prepare ]]; then
   [[ -z $(git status --porcelain) ]] || { echo "commit or stash your changes first" >&2; exit 1; }
   command -v git-cliff >/dev/null || { echo "install git-cliff (pacman -S git-cliff or cargo install git-cliff)" >&2; exit 1; }
-  sed -i.bak -E "0,/^version = \".*\"/s//version = \"$version\"/" Cargo.toml && rm Cargo.toml.bak
+  python3 -I -c 'import pathlib, re, sys
+p = pathlib.Path("Cargo.toml")
+p.write_text(re.sub(r"(?m)^version = \".*\"", f"version = \"{sys.argv[1]}\"", p.read_text(), count=1))' "$version"
   cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace >/dev/null
   if grep -q "^## $version (unreleased)" CHANGELOG.md; then
     # Written ahead of the release: it only gets today's date.
-    sed -i.bak "s/^## $version (unreleased)/## $version ($(date +%Y-%m-%d))/" CHANGELOG.md && rm CHANGELOG.md.bak
+    python3 -I -c 'import datetime, pathlib, sys
+p = pathlib.Path("CHANGELOG.md")
+v = sys.argv[1]
+today = datetime.date.today().isoformat()
+p.write_text(p.read_text().replace(f"## {v} (unreleased)", f"## {v} ({today})", 1))' "$version"
   else
     # Only the new version's section is added on top, so sections edited by hand stay as they are.
     section=$(git cliff --unreleased --tag "v$version" --strip header)

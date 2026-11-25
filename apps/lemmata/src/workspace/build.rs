@@ -88,14 +88,24 @@ impl BuildState {
             .as_ref()
             .is_some_and(|o| o.status != Status::Success && o.pdf.is_none())
     }
+
+    pub(super) fn remap(&mut self, from: &str, to: &str) {
+        if let Some((f, _, _)) = &mut self.problem {
+            *f = super::files::remap(f, from, to);
+        }
+        if let Some(f) = &mut self.problem_focus {
+            *f = super::files::remap(f, from, to);
+        }
+    }
 }
 
 impl Workspace {
-    /// The last build's problems in `path`, for its editor: line, severity, message with hint.
-    /// texlab's live ones join them on lines the build said nothing about.
-    pub fn problems_of(&self, path: &str) -> Vec<(usize, crate::editor::view::Severity, String)> {
+    /// The last build's problems in `path`, for its editor: 1-based line, optional 0-based char
+    /// column range, severity, and message with hint. texlab's live diagnostics join them unless
+    /// an equal-or-higher-severity build diagnostic already covers the same line or message.
+    pub fn problems_of(&self, path: &str) -> Vec<crate::editor::view::ProblemItem> {
         use crate::editor::view::Severity as S;
-        let mut list: Vec<(usize, S, String)> = self
+        let mut list: Vec<crate::editor::view::ProblemItem> = self
             .build
             .diagnostics
             .iter()
@@ -111,21 +121,128 @@ impl Workspace {
                     Some(h) => format!("{}\n{h}", d.message),
                     None => d.message.clone(),
                 };
-                Some((line, sev, msg))
+                Some((line, None, sev, msg))
             })
             .collect();
-        let built: Vec<usize> = list.iter().map(|d| d.0).collect();
-        for (line, sev, msg) in self.lsp.diagnostics.get(path).into_iter().flatten() {
-            if !built.contains(line) {
-                let sev = match sev {
-                    crate::lsp::Severity::Error => S::Error,
-                    crate::lsp::Severity::Warning => S::Warning,
-                    crate::lsp::Severity::Info => S::Info,
+        let build_len = list.len();
+        let ed_ref = self.editors.get(path);
+        for d in self.lsp.diagnostics.get(path).into_iter().flatten() {
+            let sev = match d.severity {
+                crate::lsp::Severity::Error => S::Error,
+                crate::lsp::Severity::Warning => S::Warning,
+                crate::lsp::Severity::Info => S::Info,
+            };
+            // Never let a build Warning/Info hide a live texlab Error on the same line;
+            // skip only if the build already reported an equal-or-more-severe diagnostic on that line
+            // or the exact same message.
+            let build_worst = list[..build_len]
+                .iter()
+                .filter(|b| b.0 == d.line)
+                .map(|b| b.2 as u8)
+                .min();
+            let masked_by_build = build_worst.is_some_and(|w| w <= sev as u8)
+                || list[..build_len]
+                    .iter()
+                    .any(|b| b.0 == d.line && b.3.starts_with(&d.message));
+            if !masked_by_build {
+                let cols = match (d.start_col, d.end_col) {
+                    (Some(a), Some(b)) if b > a => {
+                        if let Some(ed) = ed_ref
+                            && d.line >= 1
+                            && d.line <= ed.doc.line_count()
+                        {
+                            let line_text = ed.doc.line(d.line - 1);
+                            Some((
+                                crate::lsp::utf16_to_char(&line_text, a),
+                                crate::lsp::utf16_to_char(&line_text, b),
+                            ))
+                        } else {
+                            Some((a, b))
+                        }
+                    }
+                    _ => None,
                 };
-                list.push((*line, sev, msg.clone()));
+                list.push((d.line, cols, sev, d.message.clone()));
             }
         }
         list
+    }
+
+    /// Build diagnostics combined with non-masked live texlab diagnostics for the Problems panel.
+    fn all_panel_diagnostics(&self) -> Vec<Diagnostic> {
+        let mut out = self.build.diagnostics.clone();
+        let mut lsp_paths: Vec<&String> = self.lsp.diagnostics.keys().collect();
+        lsp_paths.sort();
+        for path in lsp_paths {
+            let Some(list) = self.lsp.diagnostics.get(path) else {
+                continue;
+            };
+            for d in list {
+                let sev = match d.severity {
+                    crate::lsp::Severity::Error => Severity::Error,
+                    crate::lsp::Severity::Warning => Severity::Warning,
+                    crate::lsp::Severity::Info => Severity::Info,
+                };
+                let sev_rank = |s: Severity| match s {
+                    Severity::Error => 0u8,
+                    Severity::Warning => 1,
+                    Severity::Info => 2,
+                };
+                let masked = self.build.diagnostics.iter().any(|b| {
+                    b.file.as_deref().map(|f| f.strip_prefix("./").unwrap_or(f))
+                        == Some(path.as_str())
+                        && b.line == Some(d.line as u32)
+                        && (sev_rank(b.severity) <= sev_rank(sev) || b.message == d.message)
+                });
+                if !masked {
+                    let msg = if let (Some(a), Some(b), Some(ed)) =
+                        (d.start_col, d.end_col, self.editors.get(path))
+                        && b > a
+                        && d.line >= 1
+                        && d.line <= ed.doc.line_count()
+                    {
+                        let line_text = ed.doc.line(d.line - 1);
+                        let ca = crate::lsp::utf16_to_char(&line_text, a);
+                        let cb = crate::lsp::utf16_to_char(&line_text, b);
+                        let tok: String = line_text
+                            .chars()
+                            .skip(ca)
+                            .take(cb.saturating_sub(ca))
+                            .collect();
+                        let tok = tok.trim();
+                        if !tok.is_empty() && tok.len() <= 40 && !d.message.contains(tok) {
+                            format!("{} ({tok})", d.message)
+                        } else {
+                            d.message.clone()
+                        }
+                    } else {
+                        d.message.clone()
+                    };
+                    let dup = out.iter().any(|existing| {
+                        existing
+                            .file
+                            .as_deref()
+                            .map(|f| f.strip_prefix("./").unwrap_or(f))
+                            == Some(path.as_str())
+                            && existing.line == Some(d.line as u32)
+                            && existing.severity == sev
+                            && existing.message == msg
+                    });
+                    if !dup {
+                        out.push(Diagnostic {
+                            severity: sev,
+                            kind: Kind::Other,
+                            file: Some(path.clone()),
+                            line: Some(d.line as u32),
+                            message: msg,
+                            hint: Some("Live check (texlab)".into()),
+                            fix: None,
+                        });
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub fn next_build_problem(&mut self, backend: &Backend, direction: i8) {
@@ -237,6 +354,17 @@ impl Workspace {
             if let Some(d) = &mut ws.rename {
                 d.busy = false;
             }
+            if let Some(c) = &mut ws.cite {
+                c.adding = false;
+                c.adding_doi.clear();
+            }
+            if let Some(m) = &mut ws.bib_manager {
+                m.loading = false;
+                m.busy = false;
+            }
+            if let Some(f) = &mut ws.files.dialog {
+                f.set_busy(false);
+            }
             ws.notice(
                 format!(
                     "{} could not be saved, so nothing else was changed.",
@@ -253,7 +381,7 @@ impl Workspace {
             // Still being looked for: the build starts when TeX is found.
             if self.tex_known && !self.build.told_no_tex {
                 self.build.told_no_tex = true;
-                self.notices.push(Notice::new(
+                self.push_notice(Notice::new(
                     "TeX isn't installed yet, so nothing is compiled. Your edits are saved as usual.",
                     Tone::Info,
                 ));
@@ -336,7 +464,7 @@ impl Workspace {
             Tone::Info,
         )
         .action(NoticeAction::BuildExport(what));
-        self.notices.push(if self.pane.has_pdf() {
+        self.push_notice(if self.pane.has_pdf() {
             n.also(NoticeAction::ExportOlder(what))
         } else {
             n
@@ -345,6 +473,16 @@ impl Workspace {
 
     pub fn export(&mut self, backend: &Backend, settings: &Settings, what: Save) {
         if let Save::Arxiv { flatten } = what {
+            if !self.tex_ready {
+                self.notice(
+                    "TeX isn't installed, so the document can't be built for arXiv export.",
+                    Tone::Info,
+                );
+                return;
+            }
+            if self.build.arxiv.is_some() {
+                return;
+            }
             // arXiv compiles the upload itself; a document that fails here fails there too.
             self.after_saving(backend, settings, move |ws, _| {
                 ws.build_soon(false, false);
@@ -398,7 +536,7 @@ impl Workspace {
             let text = cache
                 .1
                 .entry(f.to_owned())
-                .or_insert_with(|| lemmata_env::fs::read_to_string(root.join(f)).ok());
+                .or_insert_with(|| lemmata_env::fs::read_text(root.join(f)).ok());
             text.as_deref().map_or(Vec::new(), |t| {
                 t.split('\n')
                     .skip(from - 1)
@@ -407,8 +545,9 @@ impl Workspace {
                     .collect()
             })
         };
+        let combined_diags = self.all_panel_diagnostics();
         let b = pane::Build {
-            diagnostics: &self.build.diagnostics,
+            diagnostics: &combined_diags,
             building: self.build.building,
             note: self.build.note.as_deref(),
             failed: self.build.failed(),
@@ -561,7 +700,7 @@ impl Workspace {
                             if ok {
                                 backend.save(self.project, Save::Arxiv { flatten }, format!("{}-arxiv.zip", self.info.name));
                             } else {
-                                self.notices.push(Notice::new(
+                                self.push_notice(Notice::new(
                                     "The document doesn't build without errors, so arXiv would likely reject it. Fix the errors in Logs first.",
                                     Tone::Info,
                                 ).action(NoticeAction::ArxivAnyway(flatten)));
@@ -573,7 +712,7 @@ impl Workspace {
                             } else if wrote {
                                 // Built from the latest edits, with errors left: nothing is out of date.
                                 let n = self.build.errors();
-                                self.notices.push(
+                                self.push_notice(
                                     Notice::new(
                                         format!("The PDF has {n} error{}, but it includes your latest edits.", if n == 1 { "" } else { "s" }),
                                         Tone::Info,
@@ -661,7 +800,7 @@ impl Workspace {
                 });
             }
             Msg::Exported(what, name, Ok(n)) => match what {
-                Save::Pdf if self.info.config.draft => self.notices.push(
+                Save::Pdf if self.info.config.draft => self.push_notice(
                     Notice::new(format!("Saved {name}, but it was built in Fast (draft) mode, so figures are empty boxes."), Tone::Info)
                         .action(NoticeAction::DraftOff),
                 ),
@@ -703,7 +842,7 @@ impl Workspace {
                         Tone::Info,
                     );
                     if self.pane.has_pdf() {
-                        self.notices.push(
+                        self.push_notice(
                             Notice::new(
                                 "Export the older PDF without compiling your latest edits?",
                                 Tone::Info,
@@ -797,10 +936,15 @@ impl Workspace {
         if next == self.info.config {
             return;
         }
-        self.info.config = next.clone();
+        self.info.config = next;
         self.config_waiting = true;
         self.build.after_config = true;
-        self.after_saving(backend, settings, move |ws, b| ws.write_config(b, next));
+        // Write the latest `ws.info.config` once saves finish so intervening `update_config`
+        // edits (e.g. adding a dictionary word) are never clobbered by a stale snapshot.
+        self.after_saving(backend, settings, |ws, b| {
+            let latest = ws.info.config.clone();
+            ws.write_config(b, latest);
+        });
     }
 }
 

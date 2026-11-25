@@ -41,8 +41,25 @@ fn shrink(img: ColorImage) -> ColorImage {
     ColorImage::from_rgba_premultiplied([nw as usize, nh as usize], small.as_raw())
 }
 
+/// Decode state for a hover-card image.
+#[derive(Clone)]
+pub enum State {
+    Loading,
+    Ready(TextureHandle),
+    Failed,
+}
+
 /// The image's texture once it is decoded; None while loading or if it can't be read.
+#[cfg(test)]
 pub fn get(ctx: &egui::Context, path: &Path) -> Option<TextureHandle> {
+    match state(ctx, path) {
+        State::Ready(t) => Some(t),
+        State::Loading | State::Failed => None,
+    }
+}
+
+/// The image's current load state so hover cards can distinguish loading from failure.
+pub fn state(ctx: &egui::Context, path: &Path) -> State {
     let stamp: Stamp = std::fs::metadata(path).and_then(|m| m.modified()).ok();
     CACHE.with_borrow_mut(|cache| {
         if cache.len() > 64 {
@@ -82,12 +99,13 @@ pub fn get(ctx: &egui::Context, path: &Path) -> Option<TextureHandle> {
                         then,
                     )
                 }
-                None => return None,
+                None => return State::Loading,
             }
         }
         match slot {
-            Slot::Ready(t, _) => t.clone(),
-            Slot::Loading(..) => None,
+            Slot::Ready(Some(t), _) => State::Ready(t.clone()),
+            Slot::Ready(None, _) => State::Failed,
+            Slot::Loading(..) => State::Loading,
         }
     })
 }

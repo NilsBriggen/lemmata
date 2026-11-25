@@ -243,10 +243,22 @@ fn swap(
 
 #[cfg(windows)]
 fn put_in_place(data: &[u8], version: &str) -> Result<AfterExit, String> {
-    let setup = std::env::temp_dir().join(format!("Lemmata_{version}_setup.exe"));
-    std::fs::write(&setup, data).map_err(|e| e.to_string())?;
-    // shortcut: /P (passive) and /R (start Lemmata after) as Tauri's NSIS template took them;
-    // unchecked against cargo-packager's template on Linux, the Windows CI job only builds.
+    use std::io::Write;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("lemmata-update-{}-{stamp:x}", std::process::id()));
+    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    let setup = dir.join(format!("Lemmata_{version}_setup.exe"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&setup)
+        .map_err(|e| e.to_string())?;
+    file.write_all(data).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    // Verified against cargo-packager's NSIS template: /P enables PassiveMode and /R launches
+    // the updated binary on `.onInstSuccess` when PassiveMode is set.
     Ok((setup, vec!["/P".into(), "/R".into()]))
 }
 

@@ -4,7 +4,7 @@
 use crate::{CmdResult, LockSafe, Shell, err, project};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// Files search and rename-reference updates look into: the text files the editor opens
 /// (`isTextFile` in src/lib/treeModel.ts; files known by name, like Makefile, aren't searched).
@@ -18,14 +18,8 @@ pub const MAX_MATCHES: usize = 2000;
 
 /// A project-relative path that can't escape the project.
 pub(crate) fn safe_rel(rel: &str) -> CmdResult<PathBuf> {
-    let p = PathBuf::from(rel);
-    if rel.is_empty()
-        || p.is_absolute()
-        || p.components().any(|c| !matches!(c, Component::Normal(_)))
-    {
-        return Err(format!("{rel} isn't a path inside the project."));
-    }
-    Ok(p)
+    lemmata_env::fs::inside_rel(rel)
+        .ok_or_else(|| format!("{rel} isn't a path inside the project."))
 }
 
 pub(crate) fn text_files(project: &lemmata_project::Project) -> Vec<String> {
@@ -36,7 +30,7 @@ pub(crate) fn text_files(project: &lemmata_project::Project) -> Vec<String> {
             } else if Path::new(&e.name)
                 .extension()
                 .and_then(|x| x.to_str())
-                .is_some_and(|x| TEXT_EXTS.contains(&x))
+                .is_some_and(|x| TEXT_EXTS.contains(&x.to_ascii_lowercase().as_str()))
             {
                 out.push(e.path.clone());
             }
@@ -221,7 +215,14 @@ impl Shell {
     ) -> CmdResult<usize> {
         let p = project(self)?;
         let re = build_regex(&options)?;
-        replace_across(&p, &re, &replacement, options.regex, targets)
+        replace_across(
+            &p,
+            &re,
+            &replacement,
+            options.regex,
+            targets,
+            Some(&self.written),
+        )
     }
 }
 
@@ -233,6 +234,7 @@ fn replace_across(
     replacement: &str,
     regex_mode: bool,
     targets: Vec<ReplaceTarget>,
+    written: Option<&Written>,
 ) -> CmdResult<usize> {
     // One entry per file, in case the same path is listed twice.
     let mut by_file: std::collections::BTreeMap<String, std::collections::HashSet<u32>> =
@@ -252,28 +254,36 @@ fn replace_across(
             count += n;
         }
     }
-    write_all_atomic(p, &writes)?;
+    write_all_atomic(p, &writes, written)?;
     Ok(count)
 }
 
 /// Writes every file beside itself first and only then puts them in place, so a failure (a full
 /// disk, say) almost always happens before the first real file is touched. A file that is a link
 /// keeps it: the file it names gets the text (see `lemmata_env::fs::may_write`).
-fn write_all_atomic(p: &lemmata_project::Project, writes: &[(PathBuf, String)]) -> CmdResult<()> {
+fn write_all_atomic(
+    p: &lemmata_project::Project,
+    writes: &[(PathBuf, String)],
+    written: Option<&Written>,
+) -> CmdResult<()> {
     let mut staged = Vec::with_capacity(writes.len());
     for (path, text) in writes {
         lemmata_env::fs::may_write(&p.root, p.trusted, path)
             .map_err(|e| format!("Could not save {}: {e}.", path.display()))?;
-        staged.push(
-            lemmata_env::fs::encode_like_disk(path, text)
-                .and_then(|b| lemmata_env::fs::stage(path, &b))
-                .map_err(|e| format!("Could not save {}: {e}", path.display()))?,
-        );
+        let bytes = lemmata_env::fs::encode_like_disk(path, text)
+            .map_err(|e| format!("Could not save {}: {e}", path.display()))?;
+        let s = lemmata_env::fs::stage(path, &bytes)
+            .map_err(|e| format!("Could not save {}: {e}", path.display()))?;
+        staged.push((s, hash_bytes(&bytes)));
     }
-    for s in staged {
+    for (s, hash) in staged {
         let shown = s.target().display().to_string();
-        s.commit()
+        let target = s
+            .commit()
             .map_err(|e| format!("Could not save {shown}: {e}"))?;
+        if let Some(w) = written {
+            w.lock_safe().insert(target, hash);
+        }
     }
     Ok(())
 }
@@ -344,7 +354,7 @@ impl Shell {
                 changed.push(f);
             }
         }
-        write_all_atomic(&p, &writes)?;
+        write_all_atomic(&p, &writes, Some(&self.written))?;
         Ok(changed)
     }
 
@@ -427,7 +437,9 @@ impl Shell {
     pub fn trash_path(&self, path: String) -> CmdResult<()> {
         let p = project(self)?;
         let full = p.root.join(safe_rel(&path)?);
-        trash::delete(&full).map_err(|e| format!("Could not move {path} to the trash: {e}"))
+        trash::delete(&full).map_err(|e| format!("Could not move {path} to the trash: {e}"))?;
+        self.latin1.lock_safe().retain(|k| !k.starts_with(&full));
+        Ok(())
     }
 }
 
@@ -438,17 +450,30 @@ pub struct Reference {
     pub text: String,
 }
 
-/// How `\input`, `\include`, `\includegraphics` etc. would name `rel`.
+/// How `\input`, `\include`, `\includegraphics`, `\bibliography` etc. would name `rel`.
 fn reference_names(rel: &str) -> Vec<String> {
     let mut names = vec![rel.to_string()];
-    if let Some(stem) = rel.strip_suffix(".tex").or_else(|| {
-        // \includegraphics often omits the extension too.
-        Path::new(rel)
-            .extension()
-            .and_then(|e| e.to_str())
-            .filter(|e| ["png", "jpg", "jpeg", "pdf", "eps", "svg"].contains(e))
-            .map(|e| &rel[..rel.len() - e.len() - 1])
-    }) {
+    if let Some(stem) = Path::new(rel)
+        .extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "tex"
+                    | "bib"
+                    | "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "pdf"
+                    | "eps"
+                    | "svg"
+                    | "tif"
+                    | "tiff"
+                    | "bmp"
+            )
+        })
+        .map(|e| &rel[..rel.len() - e.len() - 1])
+    {
         names.push(stem.to_string());
     }
     names
@@ -462,10 +487,64 @@ fn reference_regex(rel: &str) -> Regex {
     // A folder: everything named inside it.
     alts.push(format!("{}/[^}}]+", regex::escape(rel)));
     Regex::new(&format!(
-        r"(\\(?:input|include|subfile|includegraphics|addbibresource|bibliography|lstinputlisting)\*?(?:\[[^\]]*\])?\{{)(\./)?({})(\}})",
+        r"(\\(?:input|include|subfile|includegraphics|includepdf|includesvg|addbibresource|lstinputlisting)\*?(?:\[[^\]]*\])?\{{|\\inputminted\*?(?:\[[^\]]*\])?\{{[^{{}}]*\}}\s*\{{)(\./)?({})(\}})",
         alts.join("|")
     ))
     .unwrap()
+}
+
+fn import_regex() -> Regex {
+    Regex::new(r"(\\(?:import|subimport)\*?\s*\{)([^{}]*)(\}\s*\{)([^{}]*)(\})").unwrap()
+}
+
+fn bib_list_regex() -> Regex {
+    Regex::new(r"(\\bibliography\s*\{)([^{}]*)(\})").unwrap()
+}
+
+fn rewrite_target(item: &str, from: &str, to: &str) -> Option<String> {
+    let (dot, clean) = match item.strip_prefix("./") {
+        Some(rest) => ("./", rest),
+        None => ("", item),
+    };
+    let names = reference_names(from);
+    let replaced = if clean == from {
+        to.to_string()
+    } else if names.iter().skip(1).any(|n| n == clean) {
+        strip_ext(to)
+    } else {
+        let rest = clean.strip_prefix(from).and_then(|r| r.strip_prefix('/'))?;
+        format!("{to}/{rest}")
+    };
+    Some(format!("{dot}{replaced}"))
+}
+
+fn matches_reference_line(line: &str, re: &Regex, from: &str) -> bool {
+    if re.is_match(line) {
+        return true;
+    }
+    let imp = import_regex();
+    for c in imp.captures_iter(line) {
+        let dir = c[2].trim().trim_start_matches("./").trim_end_matches('/');
+        let file = c[4].trim();
+        let joined = if dir.is_empty() {
+            file.to_string()
+        } else {
+            format!("{dir}/{file}")
+        };
+        if rewrite_target(&joined, from, from).is_some() {
+            return true;
+        }
+    }
+    let bib = bib_list_regex();
+    for c in bib.captures_iter(line) {
+        if c[2]
+            .split(',')
+            .any(|part| rewrite_target(part.trim(), from, from).is_some())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 impl Shell {
@@ -479,7 +558,7 @@ impl Shell {
                 continue;
             };
             for (i, line) in text.lines().enumerate() {
-                if re.is_match(line) {
+                if matches_reference_line(line, &re, &path) {
                     out.push(Reference {
                         file: rel.clone(),
                         line: i as u32 + 1,
@@ -494,7 +573,7 @@ impl Shell {
 
 pub fn rewrite_references(text: &str, from: &str, to: &str) -> String {
     let re = reference_regex(from);
-    re.replace_all(text, |c: &regex::Captures| {
+    let step1 = re.replace_all(text, |c: &regex::Captures| {
         // Keep the reader's style: with or without the extension.
         let new = if c[3] == *from {
             to.to_string()
@@ -510,6 +589,60 @@ pub fn rewrite_references(text: &str, from: &str, to: &str) -> String {
             new,
             &c[4]
         )
+    });
+    let imp = import_regex();
+    let step2 = imp.replace_all(&step1, |c: &regex::Captures| {
+        let raw_dir = &c[2];
+        let had_slash = raw_dir.trim_end().ends_with('/');
+        let dir = raw_dir
+            .trim()
+            .trim_start_matches("./")
+            .trim_end_matches('/');
+        let file = c[4].trim();
+        let joined = if dir.is_empty() {
+            file.to_string()
+        } else {
+            format!("{dir}/{file}")
+        };
+        if let Some(updated) = rewrite_target(&joined, from, to) {
+            let (new_dir, new_file) = match updated.rsplit_once('/') {
+                Some((d, f)) => (
+                    if had_slash && !d.is_empty() {
+                        format!("{d}/")
+                    } else {
+                        d.to_string()
+                    },
+                    f.to_string(),
+                ),
+                None => (String::new(), updated),
+            };
+            format!("{}{}{}{}{}", &c[1], new_dir, &c[3], new_file, &c[5])
+        } else {
+            c[0].to_string()
+        }
+    });
+    let bib = bib_list_regex();
+    bib.replace_all(&step2, |c: &regex::Captures| {
+        let mut changed = false;
+        let items: Vec<String> = c[2]
+            .split(',')
+            .map(|part| {
+                let lead = &part[..part.len() - part.trim_start().len()];
+                let trail = &part[part.trim_end().len()..];
+                let core = part.trim();
+                if let Some(updated) = rewrite_target(core, from, to) {
+                    changed = true;
+                    format!("{lead}{updated}{trail}")
+                } else {
+                    part.to_string()
+                }
+            })
+            .collect();
+        if changed {
+            format!("{}{}{}", &c[1], items.join(","), &c[3])
+        } else {
+            c[0].to_string()
+        }
     })
     .into_owned()
 }
@@ -537,6 +670,25 @@ fn rename_one(
     let src = p.root.join(safe_rel(from)?);
     let dst = p.root.join(safe_rel(to)?);
     rename_on_disk(&src, &dst, to)?;
+    // Update tracked latin1 paths for renamed files/folders.
+    {
+        let mut latin1 = state.latin1.lock_safe();
+        let moved: Vec<PathBuf> = latin1
+            .iter()
+            .filter(|k| k.starts_with(&src))
+            .cloned()
+            .collect();
+        for old in moved {
+            latin1.remove(&old);
+            if let Ok(rest) = old.strip_prefix(&src) {
+                latin1.insert(if rest.as_os_str().is_empty() {
+                    dst.clone()
+                } else {
+                    dst.join(rest)
+                });
+            }
+        }
+    }
     // From here the move has happened: nothing below may report it as failed, or the app would
     // keep editing the old path. What can't be updated is left as it was and not counted.
     {
@@ -556,7 +708,7 @@ fn rename_one(
                 continue;
             };
             let new = rewrite_references(&text, from, to);
-            if new != text && write_all_atomic(p, &[(path, new)]).is_ok() {
+            if new != text && write_all_atomic(p, &[(path, new)], Some(&state.written)).is_ok() {
                 updated += 1;
             }
         }
@@ -746,7 +898,14 @@ impl Shell {
     /// Moves files and folders into `.lemmata/trash/<id>/`, keeping their
     /// project-relative paths, so "Undo" can put them back exactly.
     pub fn trash_paths(&self, paths: Vec<String>) -> CmdResult<TrashBatch> {
-        trash_into(&project(self)?.root, &paths)
+        let root = project(self)?.root;
+        let batch = trash_into(&root, &paths)?;
+        let mut latin1 = self.latin1.lock_safe();
+        for p in &batch.paths {
+            let full = root.join(p);
+            latin1.retain(|k| !k.starts_with(&full));
+        }
+        Ok(batch)
     }
 }
 
@@ -1726,7 +1885,17 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         touch(d.path(), "a.tex", "cat\n");
         let targets = vec![target("a.tex", &[1]), target("missing.tex", &[1])];
-        assert!(replace_across(&article(d.path()), &opts("cat"), "dog", false, targets).is_err());
+        assert!(
+            replace_across(
+                &article(d.path()),
+                &opts("cat"),
+                "dog",
+                false,
+                targets,
+                None
+            )
+            .is_err()
+        );
         assert_eq!(
             std::fs::read_to_string(d.path().join("a.tex")).unwrap(),
             "cat\n"
@@ -1739,7 +1908,15 @@ mod tests {
         touch(d.path(), "a.tex", "cat\nbird\ncat\n");
         // Line 2 changed since the search, and line 9 is gone.
         let targets = vec![target("a.tex", &[1, 2, 9])];
-        let n = replace_across(&article(d.path()), &opts("cat"), "dog", false, targets).unwrap();
+        let n = replace_across(
+            &article(d.path()),
+            &opts("cat"),
+            "dog",
+            false,
+            targets,
+            None,
+        )
+        .unwrap();
         assert_eq!(n, 1);
         assert_eq!(
             std::fs::read_to_string(d.path().join("a.tex")).unwrap(),

@@ -73,17 +73,25 @@ fn warnings_by_entry(duplicates: &[Duplicate]) -> HashMap<usize, Vec<(&'static s
     out
 }
 
-/// A key not in `taken` (without case): `key`, `keya`, `keyb`, …
+/// A key not in `taken` (without case): `key`, `keya`, `keyb`, …, `key2`, `key3`, …
 fn free_key(base: &str, taken: &[&str]) -> String {
     let lower: HashSet<String> = taken.iter().map(|k| k.to_lowercase()).collect();
-    let mut key = base.to_owned();
-    for c in b'a'..=b'z' {
-        if !lower.contains(&key.to_lowercase()) {
-            break;
-        }
-        key = format!("{base}{}", c as char);
+    if !lower.contains(&base.to_lowercase()) {
+        return base.to_owned();
     }
-    key
+    for c in b'a'..=b'z' {
+        let key = format!("{base}{}", c as char);
+        if !lower.contains(&key.to_lowercase()) {
+            return key;
+        }
+    }
+    for n in 2usize.. {
+        let key = format!("{base}{n}");
+        if !lower.contains(&key.to_lowercase()) {
+            return key;
+        }
+    }
+    unreachable!()
 }
 
 /// Whether BibTeX would accept the key (`valid_key` in lemmata-bib).
@@ -106,13 +114,13 @@ pub struct CitePicker {
     picked: Vec<String>,
     add_id: String,
     add_file: String,
-    adding: bool,
+    pub(super) adding: bool,
     /// Whether it worked, and what to say.
     add_msg: Option<(bool, String)>,
     online: Option<Vec<Hit>>,
     searching: bool,
     online_error: String,
-    adding_doi: String,
+    pub(super) adding_doi: String,
     zotero: Option<Status>,
     search_id: Option<egui::Id>,
     scroll: bool,
@@ -367,7 +375,7 @@ impl CitePicker {
                                 StrokeKind::Inside,
                             );
                         }
-                        let mut x = bx.right() + 8.0;
+                        let x = bx.right() + 8.0;
                         let y = rect.top() + 7.0;
                         let who = if e.authors.is_empty() {
                             "Unknown author"
@@ -376,42 +384,55 @@ impl CitePicker {
                         };
                         let key_g =
                             pt.layout_no_wrap(e.key.clone(), FontId::monospace(11.0), p.muted);
-                        let key_x = rect.right() - 12.0 - key_g.size().x;
-                        let g = pt.layout(
+                        let key_w = key_g.size().x.min((rect.width() * 0.32).max(60.0));
+                        let key_x = (rect.right() - 12.0 - key_w).max(x + 80.0);
+                        let year_g = (!e.year.is_empty()).then(|| {
+                            pt.layout_no_wrap(e.year.clone(), FontId::proportional(13.0), p.muted)
+                        });
+                        let year_w = year_g.as_ref().map_or(0.0, |yg| yg.size().x + 8.0);
+                        let author_max = (key_x - x - year_w - 10.0).max(40.0);
+                        let mut author_job = egui::text::LayoutJob::simple_singleline(
                             who.to_owned(),
                             FontId::new(13.0, theme::font::sans_600()),
                             p.ink,
-                            key_x - x - 60.0,
                         );
-                        let w = g.size().x;
+                        author_job.wrap.max_width = author_max;
+                        author_job.wrap.max_rows = 1;
+                        author_job.wrap.overflow_character = Some('…');
+                        let g = ui.fonts_mut(|f| f.layout_job(author_job));
+                        let w = g.size().x.min(author_max);
+                        let pt = ui.painter();
                         pt.galley(pos2(x, y), g, p.ink);
-                        x += w + 8.0;
-                        if !e.year.is_empty() {
-                            pt.text(
-                                pos2(x, y),
-                                egui::Align2::LEFT_TOP,
-                                &e.year,
-                                FontId::proportional(13.0),
-                                p.muted,
-                            );
+                        if let Some(yg) = year_g {
+                            let yx = x + w + 8.0;
+                            if yx + yg.size().x <= key_x - 6.0 {
+                                pt.galley(pos2(yx, y), yg, p.muted);
+                            }
                         }
-                        pt.galley(pos2(key_x, y + 3.0), key_g, p.muted);
+                        let key_clip = pt.with_clip_rect(Rect::from_min_max(
+                            pos2(key_x, rect.top()),
+                            pos2(rect.right() - 10.0, rect.bottom()),
+                        ));
+                        key_clip.galley(pos2(key_x, y + 3.0), key_g, p.muted);
                         let title = if e.title.is_empty() {
                             "(no title)"
                         } else {
                             &e.title
                         };
-                        let tg = pt.layout(
+                        let mut title_job = egui::text::LayoutJob::simple_singleline(
                             title.to_owned(),
                             FontId::proportional(12.0),
                             p.muted,
-                            f32::INFINITY,
                         );
-                        let clip = pt.with_clip_rect(Rect::from_min_max(
-                            pos2(rect.left(), rect.top()),
-                            pos2(rect.right() - 12.0, rect.bottom()),
-                        ));
-                        clip.galley(pos2(rect.left() + 12.0, rect.top() + 28.0), tg, p.muted);
+                        title_job.wrap.max_width = (rect.width() - 24.0).max(40.0);
+                        title_job.wrap.max_rows = 1;
+                        title_job.wrap.overflow_character = Some('…');
+                        let tg = ui.fonts_mut(|f| f.layout_job(title_job));
+                        ui.painter().galley(
+                            pos2(rect.left() + 12.0, rect.top() + 28.0),
+                            tg,
+                            p.muted,
+                        );
                         if check.clicked() {
                             self.toggle(&e.key);
                         } else if row.clicked() {
@@ -681,8 +702,8 @@ fn list_frame(ui: &mut Ui, p: &Palette, max_h: f32, add: impl FnOnce(&mut Ui)) {
 
 pub struct BibManager {
     lib: Option<Library>,
-    loading: bool,
-    busy: bool,
+    pub(super) loading: bool,
+    pub(super) busy: bool,
     error: String,
     query: String,
     sort: String,
@@ -1415,7 +1436,7 @@ impl Workspace {
                 Ok(r) => {
                     ws.bib_changed(b, &[lemmata_shell::bib::ZOTERO_BIB.to_owned()]);
                     if !r.linked {
-                        ws.notices.push(
+                        ws.push_notice(
                             Notice::new("Your document doesn't load zotero.bib yet.", Tone::Info)
                                 .action(NoticeAction::LinkZotero),
                         );
@@ -1527,5 +1548,40 @@ mod tests {
         assert!(matches(&haystack(&shown.entry), &terms("wolski dhariwal")));
         assert!(valid_key("smith2020a"));
         assert!(!valid_key("bad key") && !valid_key(""));
+    }
+
+    #[test]
+    fn cite_picker_long_key_and_authors_stay_within_row() {
+        use egui_kittest::kittest::Queryable;
+        let p = theme::LIGHT;
+        let mut picker = CitePicker {
+            entries: vec![Entry {
+                key: "very_long_citation_key_2026_extremely_descriptive_identifier".into(),
+                kind: "article".into(),
+                title: "A Very Long Research Paper Title That Should Ellipsize On One Line Without Overflowing".into(),
+                authors: "Alpha, Alice; Beta, Bob; Gamma, Grace; Delta, David; Epsilon, Eve".into(),
+                names: String::new(),
+                year: "2026".into(),
+                file: "refs.bib".into(),
+            }],
+            files: vec!["refs.bib".into()],
+            ..Default::default()
+        };
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([900.0, 560.0])
+            .with_context_setup(move |ctx| {
+                theme::install_fonts(ctx);
+                theme::apply(ctx, &p);
+            })
+            .build_ui(move |ui| {
+                let _ = picker.show(ui.ctx(), &p);
+            });
+        h.run_steps(3);
+        let screen = h.ctx.content_rect();
+        let close_r = h.get_by_label("Close").rect();
+        assert!(
+            close_r.top() >= screen.top() && close_r.bottom() <= screen.bottom(),
+            "CitePicker escaped 900x560: {close_r:?} vs {screen:?}"
+        );
     }
 }
