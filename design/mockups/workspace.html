@@ -1,0 +1,425 @@
+<!doctype html>
+<!-- Generated: Lucide icons (ISC) inlined from apps/lemmata/src/icons_data.rs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lemmata workspace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Young+Serif&display=swap">
+<style>
+/* Tokens map 1:1 onto theme.rs `Palette`; new ones are marked NEW. */
+:root {
+  --app: #eceef1; --surface: #ffffff; --surface-2: #f6f7f8; --surface-3: #e4e7eb;
+  --border: #dfe3e7; --border-strong: #c9cfd5;
+  --ink: #18212b; --ink-2: #3a4652; --muted: #5a6671; --faint: #616b76;
+  --accent: #2a71a4; --accent-hover: #2d6b9b; --accent-ink: #ffffff; --accent-soft: #e4f0f8;
+  --error: #c4472f; --error-soft: #fbece8; --warn: #8a5f08; --warn-soft: #fbf3e1; --ok: #2a7550; --ok-soft: #e5f3eb;
+  --pdf-ground: #e1e5e9; --atom: #9a5b14;
+  --rail-active: #ffffff;            /* NEW: selected rail/sidebar item */
+  --line-hl: #f4f6f8;                /* NEW: caret line */
+  --code-cmd: #2a71a4; --code-math: #2e7d55; --code-comment: #6b7681;
+  --shadow-card: 0 1px 2px rgba(16,24,32,.06), 0 0 0 1px rgba(16,24,32,.06);  /* NEW */
+  --shadow-pop: 0 8px 24px rgba(16,24,32,.18);
+}
+:root[data-theme="dark"] {
+  --app: #0f1418; --surface: #171d23; --surface-2: #1b2229; --surface-3: #232b33;
+  --border: #2a333c; --border-strong: #38434e;
+  --ink: #e2e8ed; --ink-2: #c3ccd4; --muted: #93a0ac; --faint: #8a95a0;
+  --accent: #4a97cf; --accent-hover: #5aa5db; --accent-ink: #0b1620; --accent-soft: #1b2e3e;
+  --error: #ec7f69; --error-soft: #3a211c; --warn: #e4b55a; --warn-soft: #362c16; --ok: #67c493; --ok-soft: #173126;
+  --pdf-ground: #0b0f13; --atom: #e0a85a;
+  --rail-active: #1e262e; --accent-text: #7cbbe6;
+  --line-hl: #1c232a;
+  --code-cmd: #7cbbe6; --code-math: #67c493; --code-comment: #8a95a0;
+  --shadow-card: 0 1px 2px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.04);
+  --shadow-pop: 0 8px 24px rgba(0,0,0,.6);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --app: #0f1418; --surface: #171d23; --surface-2: #1b2229; --surface-3: #232b33;
+    --border: #2a333c; --border-strong: #38434e;
+    --ink: #e2e8ed; --ink-2: #c3ccd4; --muted: #93a0ac; --faint: #8a95a0;
+    --accent: #4a97cf; --accent-hover: #5aa5db; --accent-ink: #0b1620; --accent-soft: #1b2e3e;
+    --error: #ec7f69; --error-soft: #3a211c; --warn: #e4b55a; --warn-soft: #362c16; --ok: #67c493; --ok-soft: #173126;
+    --pdf-ground: #0b0f13; --atom: #e0a85a;
+    --rail-active: #1e262e; --accent-text: #7cbbe6;
+    --line-hl: #1c232a;
+    --code-cmd: #7cbbe6; --code-math: #67c493; --code-comment: #8a95a0;
+    --shadow-card: 0 1px 2px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.04);
+    --shadow-pop: 0 8px 24px rgba(0,0,0,.6);
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--app); color: var(--ink); font: 13px/1.4 "IBM Plex Sans", system-ui, sans-serif; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+.kbd { font: 500 11px "IBM Plex Mono", monospace; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; background: var(--surface); }
+
+/* ---------- frame ---------- */
+.app { display: grid; grid-template-columns: 52px 232px minmax(0, 1fr); grid-template-rows: 48px minmax(0, 1fr); height: 100vh; min-height: 560px; background: var(--app); color: var(--ink); }
+.app.no-side { grid-template-columns: 52px 0 minmax(0, 1fr); }
+.app.no-side .side { display: none; }
+
+/* ---------- rail ---------- */
+.rail { grid-row: 1 / 3; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 0 10px; }
+.logo { width: 32px; height: 32px; border-radius: 8px; background: var(--ink); color: var(--app); display: grid; place-items: center; font: 19px/1 "Young Serif", serif; margin-bottom: 14px; }
+.rail-btn { position: relative; width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); }
+.rail-btn svg.i { width: 18px; height: 18px; }
+.rail-btn:hover { color: var(--ink); background: var(--surface-3); }
+.rail-btn .badge { position: absolute; top: 3px; right: 2px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font: 600 10px/15px "IBM Plex Sans"; text-align: center; }
+.rail-sep { flex: 1; }
+/* active rail item, driven by the root class */
+.p-files [data-panel=files], .p-outline [data-panel=outline], .p-search [data-panel=search], .p-git [data-panel=git],
+.p-history [data-panel=history], .p-comments [data-panel=comments], .p-todos [data-panel=todos] { color: var(--accent); background: var(--rail-active); box-shadow: var(--shadow-card); }
+
+/* ---------- top bar ---------- */
+.top { grid-column: 2 / 4; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: 0 10px 0 6px; }
+.crumbs { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); white-space: nowrap; }
+.crumbs .proj { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 6px; color: var(--ink); font-weight: 600; }
+.crumbs .proj:hover { background: var(--surface-3); }
+.crumbs .sep { color: var(--border-strong); }
+.crumbs .file { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; }
+.seg { display: flex; padding: 3px; gap: 2px; border-radius: 9px; background: var(--surface-3); }
+.seg button { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 6px; color: var(--muted); font-weight: 500; }
+.seg button:hover { color: var(--ink); }
+.v-editor .seg [data-view=editor], .v-split .seg [data-view=split], .v-pdf .seg [data-view=pdf] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-card); }
+.top-right { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+.cmdk { display: flex; align-items: center; gap: 8px; height: 32px; width: 260px; min-width: 0; padding: 0 6px 0 10px; border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-card); color: var(--faint); }
+.cmdk span.t { flex: 1; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.status { display: flex; align-items: center; gap: 5px; color: var(--ok); font-weight: 500; white-space: nowrap; }
+.split-btn { display: flex; height: 32px; border-radius: 8px; overflow: hidden; background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.split-btn button { display: flex; align-items: center; gap: 7px; padding: 0 12px; }
+.split-btn button:hover { background: var(--accent-hover); }
+.split-btn .more { padding: 0 8px; border-left: 1px solid rgba(255,255,255,.22); }
+
+/* ---------- sidebar ---------- */
+.side { grid-row: 2; grid-column: 2; display: flex; flex-direction: column; min-height: 0; padding: 4px 8px 10px 4px; overflow: hidden; }
+.panel { display: none; flex-direction: column; min-height: 0; }
+.p-files .panel.files, .p-outline .panel.outline, .p-search .panel.later, .p-git .panel.later,
+.p-history .panel.later, .p-comments .panel.later, .p-todos .panel.later { display: flex; }
+.side-head { display: flex; align-items: center; gap: 2px; height: 32px; padding: 0 2px 0 8px; }
+.side-head h2 { flex: 1; margin: 0; font-size: 13px; font-weight: 600; }
+.side-head .act { width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; color: var(--faint); }
+.side-head .act:hover { background: var(--surface-3); color: var(--ink); }
+.tree { list-style: none; margin: 4px 0 0; padding: 0; }
+.row { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 8px; border-radius: 7px; color: var(--ink-2); white-space: nowrap; }
+.row:hover { background: var(--surface-3); }
+.row .chev { width: 14px; height: 14px; color: var(--faint); }
+.row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.row.in1 { padding-left: 29px; }
+.row .ico { color: var(--faint); }
+.row.dir .ico { color: var(--atom); }
+.row.on { background: var(--rail-active); color: var(--ink); font-weight: 500; box-shadow: var(--shadow-card); }
+.row.on .ico { color: var(--accent); }
+.tag { font: 600 10px/16px "IBM Plex Sans"; letter-spacing: .04em; padding: 0 5px; border-radius: 4px; color: var(--accent-text, var(--accent)); background: var(--accent-soft); }
+.dirty { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+.side-foot { margin-top: auto; padding: 10px 8px 0; color: var(--faint); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.outline-row .num { color: var(--faint); font: 12px "IBM Plex Mono", monospace; }
+.outline-row.sub { padding-left: 26px; }
+.later-box { margin: 8px; padding: 14px; border: 1px dashed var(--border-strong); border-radius: 8px; color: var(--muted); }
+
+/* ---------- main: two cards ---------- */
+.main { grid-row: 2; grid-column: 3; display: flex; min-width: 0; min-height: 0; padding: 0 8px 8px 0; }
+.card { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface); border-radius: 10px; box-shadow: var(--shadow-card); overflow: hidden; }
+.editor { flex: 1 1 50%; container-type: inline-size; }
+.pdf { container-type: inline-size; }
+.pdf { flex: 1 1 50%; }
+/* A narrow card moves its less-used tools into the "…" menu. */
+@container (max-width: 720px) { .tb.label.opt span { display: none; } }
+@container (max-width: 600px) { .tb.opt2 { display: none; } }
+@container (max-width: 480px) { .tb.opt { display: none; } }
+@container (max-width: 520px) { .zoom .val { display: none; } }
+.v-editor .pdf, .v-editor .gutter-drag, .v-pdf .editor, .v-pdf .gutter-drag { display: none; }
+.gutter-drag { flex: 0 0 8px; cursor: col-resize; display: grid; place-items: center; }
+.gutter-drag::after { content: ""; width: 3px; height: 32px; border-radius: 2px; background: var(--border-strong); opacity: 0; transition: opacity .12s; }
+.gutter-drag:hover::after { opacity: 1; }
+
+.tabs { display: flex; align-items: flex-end; gap: 2px; height: 40px; padding: 0 8px; border-bottom: 1px solid var(--border); }
+.tab { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 8px 0 10px; margin-bottom: -1px; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; color: var(--muted); white-space: nowrap; }
+.tab:hover { color: var(--ink); }
+.tab.on { color: var(--ink); background: var(--surface); border-color: var(--border); font-weight: 500; }
+.tab.on::after { content: ""; }
+.tab .x { width: 18px; height: 18px; border-radius: 4px; display: grid; place-items: center; color: var(--faint); }
+.tab .x svg.i { width: 13px; height: 13px; }
+.tab .x:hover { background: var(--surface-3); }
+.tabs .fill { flex: 1; }
+.tabs .tab-act { align-self: center; width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; color: var(--faint); }
+.tabs .tab-act:hover { background: var(--surface-3); color: var(--ink); }
+
+.bar { display: flex; align-items: center; gap: 2px; height: 40px; padding: 0 8px; border-bottom: 1px solid var(--border); overflow: hidden; }
+.tb { height: 28px; min-width: 28px; padding: 0 6px; border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 5px; color: var(--ink-2); white-space: nowrap; }
+.tb:hover { background: var(--surface-3); color: var(--ink); }
+.tb.style { padding: 0 6px 0 9px; gap: 6px; font-weight: 500; justify-content: space-between; border: 1px solid var(--border); }
+.tb.style svg.i { width: 14px; height: 14px; color: var(--faint); }
+.vr { width: 1px; height: 18px; background: var(--border); margin: 0 5px; flex: none; }
+.bar .fill { flex: 1; }
+.tb.label { font-weight: 500; }
+
+.code { flex: 1; overflow: auto; padding: 10px 0 24px; font: 13.5px/22px "IBM Plex Mono", monospace; color: var(--ink); }
+.ln { display: flex; padding-right: 16px; }
+.ln.cur { background: var(--line-hl); }
+.ln .n { flex: none; width: 52px; padding-right: 16px; text-align: right; color: var(--faint); user-select: none; opacity: .8; }
+.ln.cur .n { color: var(--ink-2); opacity: 1; }
+.ln .t { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; padding-left: 2ch; text-indent: -2ch; }  /* wrapped lines hang by 2 columns */
+.c { color: var(--code-cmd); } .a { color: var(--atom); } .m { color: var(--code-math); } .k { color: var(--code-comment); font-style: italic; }
+.w-warn { text-decoration: underline wavy var(--warn); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.w-err { text-decoration: underline wavy var(--error); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.caret { display: inline-block; width: 2px; height: 17px; margin: 0 -1px; vertical-align: -3px; background: var(--accent); }
+.foot { display: flex; align-items: center; gap: 14px; height: 30px; padding: 0 12px; border-top: 1px solid var(--border); color: var(--faint); font-size: 12px; white-space: nowrap; overflow: hidden; }
+.foot .fill { flex: 1; }
+.foot .probs { display: flex; align-items: center; gap: 10px; }
+.foot .probs span { display: flex; align-items: center; gap: 4px; }
+.foot .probs svg.i { width: 13px; height: 13px; }
+
+/* ---------- PDF ---------- */
+.chip { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 7px; background: var(--warn-soft); color: var(--warn); font-weight: 600; white-space: nowrap; }
+.chip svg.i { width: 14px; height: 14px; }
+.pager { display: flex; align-items: center; gap: 4px; color: var(--muted); white-space: nowrap; }
+.pager .pg { width: 34px; height: 26px; border: 1px solid var(--border); border-radius: 6px; display: grid; place-items: center; color: var(--ink); background: var(--surface); }
+.zoom { display: flex; align-items: center; gap: 2px; color: var(--ink-2); }
+.zoom .val { min-width: 48px; text-align: center; font-weight: 500; }
+.pdf-body { flex: 1; overflow: auto; background: var(--pdf-ground); padding: 24px; }
+.page { width: min(100%, 520px); aspect-ratio: 1 / 1.414; margin: 0 auto; background: #fff; color: #111; box-shadow: 0 1px 3px rgba(0,0,0,.18); padding: 9% 11%; font: 11px/1.5 "Latin Modern Roman", "CMU Serif", Georgia, serif; position: relative; }
+.page h3 { font-size: 14.5px; margin: 0 0 10px; font-weight: 700; }
+.page h4 { font-size: 12px; margin: 16px 0 8px; font-weight: 700; }
+.page p { margin: 0 0 6px; text-align: justify; }
+.page .eq { display: flex; justify-content: center; position: relative; margin: 10px 0 12px; font-style: italic; }
+.page .eq .no { position: absolute; right: 0; font-style: normal; }
+.page ul { margin: 4px 0; padding-left: 18px; }
+.page .pno { position: absolute; bottom: 5%; left: 0; right: 0; text-align: center; }
+.page .sync { background: rgba(42,113,164,.14); border-radius: 2px; }
+
+/* ---------- mockup controls (not part of the design) ---------- */
+.mock { position: fixed; right: 18px; bottom: 18px; display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 10px; background: #18212b; color: #dbe3ea; box-shadow: 0 8px 24px rgba(0,0,0,.3); font-size: 12px; z-index: 10; }
+.mock .lbl { padding: 0 8px 0 6px; color: #9aa8b6; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; font-size: 10px; }
+.mock button { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 7px; color: #dbe3ea; }
+.mock button:hover { background: rgba(255,255,255,.08); }
+.mock button[aria-pressed=true] { background: rgba(124,187,230,.2); color: #fff; }
+.before { display: none; position: fixed; inset: 0; background: #0f1418; z-index: 5; overflow: auto; }
+.before img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.show-before .before { display: block; }
+
+/* ---------- narrower windows ---------- */
+@media (max-width: 1180px) { .cmdk { width: 36px; padding: 0; justify-content: center; } .cmdk .t, .cmdk .kbd { display: none; } .tb.label span { display: none; } }
+@media (max-width: 1000px) { .app { grid-template-columns: 52px 0 minmax(0, 1fr); } .side { display: none; } .status span { display: none; } }
+@media (max-width: 760px) {
+  .app { grid-template-columns: 0 0 minmax(0, 1fr); } .rail { display: none; } .main { padding-left: 8px; }
+  .top { grid-template-columns: minmax(0, 1fr) auto; padding-left: 8px; } .seg { display: none; } .status, .split-btn .more { display: none; }
+  .pdf, .gutter-drag { display: none; } .editor { display: flex !important; } .bar .tb.opt { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="app p-files v-split" id="app">
+
+  <!-- Rail: switches what the sidebar shows (replaces the top bar's Comments / History / Git buttons) -->
+  <nav class="rail" aria-label="Panels">
+    <div class="logo" aria-hidden="true">L</div>
+    <button class="rail-btn" data-panel="files" aria-label="Files" title="Files  Ctrl Shift E"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 2h-4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8"/><path d="M16.706 2.706A2.4 2.4 0 0 0 15 2v5a1 1 0 0 0 1 1h5a2.4 2.4 0 0 0-.706-1.706z"/><path d="M5 7a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h8a2 2 0 0 0 1.732-1"/></svg></button>
+    <button class="rail-btn" data-panel="outline" aria-label="Outline" title="Outline"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h13"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="M3 10a2 2 0 0 0 2 2h3"/><path d="M3 5v12a2 2 0 0 0 2 2h3"/></svg></button>
+    <button class="rail-btn" data-panel="search" aria-label="Search the project" title="Search  Ctrl Shift F"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.34-4.34"/><path d="M3 11A8 8 0 1 0 19 11A8 8 0 1 0 3 11Z"/></svg></button>
+    <button class="rail-btn" data-panel="git" aria-label="Git, 3 changes" title="Git"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6a9 9 0 0 0-9 9V3"/><path d="M15 6A3 3 0 1 0 21 6A3 3 0 1 0 15 6Z"/><path d="M3 18A3 3 0 1 0 9 18A3 3 0 1 0 3 18Z"/></svg><span class="badge">3</span></button>
+    <button class="rail-btn" data-panel="history" aria-label="History" title="History"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button>
+    <button class="rail-btn" data-panel="comments" aria-label="Comments, 2 open" title="Comments"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg><span class="badge">2</span></button>
+    <button class="rail-btn" data-panel="todos" aria-label="To-dos" title="To-dos"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12A10 10 0 1 0 22 12A10 10 0 1 0 2 12Z"/><path d="m16 9-5.5 5.5L8 12"/></svg></button>
+    <div class="rail-sep"></div>
+    <button class="rail-btn" aria-label="Back to projects" title="All projects"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h5a1 1 0 0 1 1 1v5a1 1 0 0 1 -1 1h-5a1 1 0 0 1 -1 -1v-5a1 1 0 0 1 1 -1Z"/><path d="M15 3h5a1 1 0 0 1 1 1v5a1 1 0 0 1 -1 1h-5a1 1 0 0 1 -1 -1v-5a1 1 0 0 1 1 -1Z"/><path d="M15 14h5a1 1 0 0 1 1 1v5a1 1 0 0 1 -1 1h-5a1 1 0 0 1 -1 -1v-5a1 1 0 0 1 1 -1Z"/><path d="M4 14h5a1 1 0 0 1 1 1v5a1 1 0 0 1 -1 1h-5a1 1 0 0 1 -1 -1v-5a1 1 0 0 1 1 -1Z"/></svg></button>
+    <button class="rail-btn" aria-label="Preferences" title="Preferences  Ctrl ,"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><path d="M9 12A3 3 0 1 0 15 12A3 3 0 1 0 9 12Z"/></svg></button>
+  </nav>
+
+  <!-- Top bar -->
+  <header class="top">
+    <div class="crumbs">
+      <button class="proj">rl-thesis <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+      <span class="sep">/</span>
+      <span class="file">chapters / method.tex</span>
+    </div>
+    <div class="seg" role="group" aria-label="Layout">
+      <button data-view="editor"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>Editor</button>
+      <button data-view="split"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2Z"/><path d="M12 3v18"/></svg>Split</button>
+      <button data-view="pdf"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>PDF</button>
+    </div>
+    <div class="top-right">
+      <button class="cmdk" aria-label="Search or run a command"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.34-4.34"/><path d="M3 11A8 8 0 1 0 19 11A8 8 0 1 0 3 11Z"/></svg><span class="t">Search or run a command</span><span class="kbd">Ctrl K</span></button>
+      <div class="status" title="pdfLaTeX, compiled in 1.1 s"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Compiled 1.1 s</span></div>
+      <div class="split-btn">
+        <button><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>Recompile</button>
+        <button class="more" aria-label="Compile options"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="side">
+    <section class="panel files" aria-label="Files">
+      <div class="side-head">
+        <h2>Files</h2>
+        <button class="act" aria-label="New file"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M9 15h6"/><path d="M12 18v-6"/></svg></button>
+        <button class="act" aria-label="New folder"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></button>
+        <button class="act" aria-label="Upload"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg></button>
+      </div>
+      <ul class="tree">
+        <li class="row dir"><svg class="i chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="i ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg><span class="name">chapters</span></li>
+        <li class="row in1"><svg class="i ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg><span class="name">introduction.tex</span></li>
+        <li class="row in1 on"><svg class="i ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg><span class="name">method.tex</span><span class="dirty" title="Unsaved changes"></span></li>
+        <li class="row in1"><svg class="i ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg><span class="name">results.tex</span></li>
+        <li class="row dir"><svg class="i chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="i ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="name">figures</span></li>
+        <li class="row" style="padding-left:29px"><svg class="i ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg><span class="name">main.tex</span><span class="tag">MAIN</span></li>
+        <li class="row" style="padding-left:29px"><svg class="i ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v16"/><path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z"/></svg><span class="name">refs.bib</span></li>
+      </ul>
+      <div class="side-foot"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6a9 9 0 0 0-9 9V3"/><path d="M15 6A3 3 0 1 0 21 6A3 3 0 1 0 15 6Z"/><path d="M3 18A3 3 0 1 0 9 18A3 3 0 1 0 3 18Z"/></svg>main · 3 changes</div>
+    </section>
+
+    <section class="panel outline" aria-label="Outline">
+      <div class="side-head"><h2>Outline</h2><button class="act" aria-label="Collapse all"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 20 5-5 5 5"/><path d="m7 4 5 5 5-5"/></svg></button></div>
+      <ul class="tree">
+        <li class="row outline-row"><span class="name">1 Introduction</span><span class="num">3</span></li>
+        <li class="row outline-row on"><span class="name">2 Method</span><span class="num">1</span></li>
+        <li class="row outline-row sub"><span class="name">2.1 Policy updates</span><span class="num">9</span></li>
+        <li class="row outline-row"><span class="name">3 Results</span><span class="num">1</span></li>
+        <li class="row outline-row"><span class="name">References</span><span class="num">12</span></li>
+      </ul>
+    </section>
+
+    <section class="panel later" aria-label="Panel">
+      <div class="side-head"><h2>Panel</h2></div>
+      <p class="later-box">Search, Git, History, Comments and To-dos move into this sidebar. Each gets its own mockup in step 4 of the plan.</p>
+    </section>
+  </aside>
+
+  <!-- Editor and PDF as two cards -->
+  <main class="main">
+    <section class="card editor" aria-label="Editor">
+      <div class="tabs" role="tablist">
+        <button class="tab on" role="tab" aria-selected="true">method.tex<span class="dirty"></span><span class="x" aria-label="Close"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></span></button>
+        <button class="tab" role="tab">main.tex<span class="x" aria-label="Close"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></span></button>
+        <button class="tab" role="tab">refs.bib<span class="x" aria-label="Close"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></span></button>
+        <span class="fill"></span>
+        <button class="tab-act" aria-label="More"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 12A1 1 0 1 0 13 12A1 1 0 1 0 11 12Z"/><path d="M18 12A1 1 0 1 0 20 12A1 1 0 1 0 18 12Z"/><path d="M4 12A1 1 0 1 0 6 12A1 1 0 1 0 4 12Z"/></svg></button>
+      </div>
+      <div class="bar" role="toolbar" aria-label="Formatting">
+        <button class="tb style">Paragraph <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+        <span class="vr"></span>
+        <button class="tb" aria-label="Bold  Ctrl B"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h9a4 4 0 0 1 0 8H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7a4 4 0 0 1 0 8"/></svg></button>
+        <button class="tb" aria-label="Italic  Ctrl I"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 4L10 4"/><path d="M14 20L5 20"/><path d="M15 4L9 20"/></svg></button>
+        <button class="tb" aria-label="Link"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>
+        <span class="vr"></span>
+        <button class="tb" aria-label="Maths"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 7V5a1 1 0 0 0-1-1H6.5a.5.5 0 0 0-.4.8l4.5 6a2 2 0 0 1 0 2.4l-4.5 6a.5.5 0 0 0 .4.8H17a1 1 0 0 0 1-1v-2"/></svg></button>
+        <button class="tb" aria-label="Symbol"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4L9 20"/><path d="M4 7c0-1.7 1.3-3 3-3h13"/><path d="M18 20c-1.7 0-3-1.3-3-3V4"/></svg></button>
+        <button class="tb opt" aria-label="Figure"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2Z"/><path d="M7 9A2 2 0 1 0 11 9A2 2 0 1 0 7 9Z"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg></button>
+        <button class="tb opt" aria-label="Table"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18"/><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2Z"/><path d="M3 9h18"/><path d="M3 15h18"/></svg></button>
+        <button class="tb opt opt2" aria-label="Code block"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg></button>
+        <span class="vr"></span>
+        <button class="tb" aria-label="Bulleted list"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/></svg></button>
+        <button class="tb opt opt2" aria-label="Numbered list"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h10"/><path d="M11 12h10"/><path d="M11 19h10"/><path d="M4 4h1v5"/><path d="M4 9h2"/><path d="M6.5 20H3.4c0-1 2.6-1.925 2.6-3.5a1.5 1.5 0 0 0-2.6-1.02"/></svg></button>
+        <span class="vr"></span>
+        <button class="tb label"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v16"/><path d="M16 13h2"/><path d="M16 9h2"/><path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z"/><path d="M6 13h2"/><path d="M6 9h2"/></svg><span>Cite</span></button>
+        <span class="fill"></span>
+        <button class="tb label opt"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/><path d="M12 8v6"/><path d="M9 11h6"/></svg><span>Comment</span></button>
+        <button class="tb label opt"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12L5 12"/><path d="M19 12L22 12"/><path d="M12 2L12 5"/><path d="M12 19L12 22"/><path d="M5 12A7 7 0 1 0 19 12A7 7 0 1 0 5 12Z"/></svg><span>Show in PDF</span></button>
+        <button class="tb" aria-label="More tools"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 12A1 1 0 1 0 13 12A1 1 0 1 0 11 12Z"/><path d="M18 12A1 1 0 1 0 20 12A1 1 0 1 0 18 12Z"/><path d="M4 12A1 1 0 1 0 6 12A1 1 0 1 0 4 12Z"/></svg></button>
+      </div>
+      <div class="code" aria-label="method.tex">
+        <div class="ln"><span class="n">1</span><span class="t"><span class="c">\section</span>{<span class="a">Method</span>}<span class="c">\label</span>{<span class="a">sec:method</span>}</span></div>
+        <div class="ln"><span class="n">2</span><span class="t">The objective maximises the expected return</span></div>
+        <div class="ln"><span class="n">3</span><span class="t"><span class="c">\begin</span>{<span class="a">equation</span>}<span class="c">\label</span>{<span class="a">eq:objective</span>}</span></div>
+        <div class="ln"><span class="n">4</span><span class="t"><span class="m">  J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\left[\sum_{t=0}^{T} \gamma^t r_t\right]</span></span></div>
+        <div class="ln"><span class="n">5</span><span class="t"><span class="c">\end</span>{<span class="a">equation</span>}</span></div>
+        <div class="ln"><span class="n">6</span><span class="t">as in Equation~<span class="c">\ref</span>{<span class="a">eq:objective</span>}, following~<span class="c">\cite</span>{<span class="a">schulman2017ppo</span>}.</span></div>
+        <div class="ln cur"><span class="n">7</span><span class="t">Section~<span class="c">\ref</span>{<span class="a w-warn">sec:missing</span>} does not exist, and neither does~<span class="c">\cite</span>{<span class="a w-err">nobody2020</span>}.<span class="caret"></span></span></div>
+        <div class="ln"><span class="n">8</span><span class="t"> </span></div>
+        <div class="ln"><span class="n">9</span><span class="t"><span class="c">\subsection</span>{<span class="a">Policy updates</span>}<span class="c">\label</span>{<span class="a">sec:updates</span>}</span></div>
+        <div class="ln"><span class="n">10</span><span class="t"><span class="k">% TODO: compare the clipped and the KL-penalised objective</span></span></div>
+        <div class="ln"><span class="n">11</span><span class="t">Each update clips the probability ratio</span></div>
+        <div class="ln"><span class="n">12</span><span class="t"><span class="c">\begin</span>{<span class="a">itemize</span>}</span></div>
+        <div class="ln"><span class="n">13</span><span class="t">  <span class="c">\item</span> to the interval <span class="m">$[1-\epsilon, 1+\epsilon]$</span>,</span></div>
+        <div class="ln"><span class="n">14</span><span class="t">  <span class="c">\item</span> over a fixed number of epochs per batch.</span></div>
+        <div class="ln"><span class="n">15</span><span class="t"><span class="c">\end</span>{<span class="a">itemize</span>}</span></div>
+      </div>
+      <div class="foot">
+        <span>Ln 7, Col 78</span><span>Unsaved</span>
+        <span class="probs"><span style="color:var(--error)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12A10 10 0 1 0 22 12A10 10 0 1 0 2 12Z"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>1</span><span style="color:var(--warn)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>3</span></span>
+        <span class="fill"></span>
+        <span>en-GB</span><span>1,284 words</span><span>pdfLaTeX</span>
+      </div>
+    </section>
+
+    <div class="gutter-drag" id="drag" role="separator" aria-label="Resize editor and PDF" aria-orientation="vertical" tabindex="0"></div>
+
+    <section class="card pdf" aria-label="PDF">
+      <div class="bar">
+        <button class="chip"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>4 issues</button>
+        <span class="vr"></span>
+        <div class="pager">
+          <button class="tb" aria-label="Previous page"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
+          <span class="pg mono">7</span><span>/ 42</span>
+          <button class="tb" aria-label="Next page"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+        </div>
+        <span class="fill"></span>
+        <div class="zoom">
+          <button class="tb" aria-label="Zoom out"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11A8 8 0 1 0 19 11A8 8 0 1 0 3 11Z"/><path d="M21 21L16.65 16.65"/><path d="M8 11L14 11"/></svg></button>
+          <span class="val">Fit width</span>
+          <button class="tb" aria-label="Zoom in"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11A8 8 0 1 0 19 11A8 8 0 1 0 3 11Z"/><path d="M21 21L16.65 16.65"/><path d="M11 8L11 14"/><path d="M8 11L14 11"/></svg></button>
+        </div>
+        <span class="vr"></span>
+        <button class="tb" aria-label="Search the PDF"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.34-4.34"/><path d="M3 11A8 8 0 1 0 19 11A8 8 0 1 0 3 11Z"/></svg></button>
+        <button class="tb" aria-label="Download the PDF"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg></button>
+        <button class="tb" aria-label="More"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 12A1 1 0 1 0 13 12A1 1 0 1 0 11 12Z"/><path d="M18 12A1 1 0 1 0 20 12A1 1 0 1 0 18 12Z"/><path d="M4 12A1 1 0 1 0 6 12A1 1 0 1 0 4 12Z"/></svg></button>
+      </div>
+      <div class="pdf-body">
+        <article class="page" aria-label="Page 7">
+          <h3>2&nbsp;&nbsp;Method</h3>
+          <p>The objective maximises the expected return</p>
+          <div class="eq"><span>J(θ) = 𝔼<sub>τ∼π<sub>θ</sub></sub>&thinsp;[&thinsp;∑<sub>t=0</sub><sup>T</sup> γ<sup>t</sup> r<sub>t</sub>&thinsp;]</span><span class="no">(2.1)</span></div>
+          <p>as in Equation 2.1, following [1]. <span class="sync">Section ?? does not exist, and neither does <b>[nobody2020]</b>.</span></p>
+          <h4>2.1&nbsp;&nbsp;Policy updates</h4>
+          <p>Each update clips the probability ratio</p>
+          <ul><li>to the interval [1 − ε, 1 + ε],</li><li>over a fixed number of epochs per batch.</li></ul>
+          <div class="pno">7</div>
+        </article>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="before" aria-hidden="true"><img src="today-workspace.png" alt="The workspace today"></div>
+
+<div class="mock" role="group" aria-label="Mockup controls">
+  <span class="lbl">Mockup</span>
+  <button id="theme" aria-pressed="false"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>Dark</button>
+  <button id="before" aria-pressed="false"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg>Today's UI</button>
+</div>
+
+<script>
+// Mockup behaviour only: switches classes on the root, as the app would switch state.
+const app = document.getElementById('app');
+const swap = (prefix, value) => { app.className = app.className.replace(new RegExp('\\b' + prefix + '-\\w+'), prefix + '-' + value); };
+document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => swap('v', b.dataset.view));
+document.querySelectorAll('[data-panel]').forEach(b => b.onclick = () => {
+  const open = app.classList.contains('p-' + b.dataset.panel) && !app.classList.contains('no-side');
+  if (open) { app.classList.add('no-side'); return; }   // clicking the open panel's icon hides the sidebar
+  app.classList.remove('no-side'); swap('p', b.dataset.panel);
+  document.querySelector('.panel.later h2').textContent = b.getAttribute('aria-label').split(',')[0];
+});
+const themeBtn = document.getElementById('theme');
+const isDark = () => document.documentElement.dataset.theme ? document.documentElement.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+const setTheme = dark => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; themeBtn.setAttribute('aria-pressed', dark); };
+themeBtn.setAttribute('aria-pressed', isDark());
+themeBtn.onclick = () => setTheme(!isDark());
+const beforeBtn = document.getElementById('before');
+beforeBtn.onclick = () => { const on = document.body.classList.toggle('show-before'); beforeBtn.setAttribute('aria-pressed', on); };
+// Draggable divider between editor and PDF.
+const drag = document.getElementById('drag'), ed = document.querySelector('.editor'), pdf = document.querySelector('.pdf');
+drag.onpointerdown = e => {
+  drag.setPointerCapture(e.pointerId);
+  const box = document.querySelector('.main').getBoundingClientRect();
+  drag.onpointermove = m => { const f = Math.min(.8, Math.max(.2, (m.clientX - box.left) / box.width)); ed.style.flex = `1 1 ${f * 100}%`; pdf.style.flex = `1 1 ${(1 - f) * 100}%`; };
+  drag.onpointerup = () => { drag.onpointermove = null; };
+};
+</script>
+</body>
+</html>
