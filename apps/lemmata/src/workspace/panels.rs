@@ -219,10 +219,7 @@ impl Workspace {
         settings: &mut crate::store::Settings,
     ) -> bool {
         match self.side_panel {
-            SidePanel::Files => {
-                chrome::files_panel(ui, p, self, settings, backend);
-                false
-            }
+            SidePanel::Files => chrome::files_panel(ui, p, self, settings, backend),
             SidePanel::Outline => {
                 chrome::outline_panel(ui, p, self, backend);
                 false
@@ -662,6 +659,7 @@ impl Workspace {
                                             FontId::monospace(11.0),
                                             p.faint,
                                         );
+                                        widgets::focus_ring(ui, &resp, r, p, 6);
                                         if resp
                                             .on_hover_text(format!("Go to line {}", t.line))
                                             .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -811,7 +809,7 @@ impl Workspace {
                     .collect();
                 for path in open {
                     let p = path.clone();
-                    b.spawn(move |shell| {
+                    ws.spawn(b, move |shell| {
                         crate::backend::Msg::DiskText(p.clone(), shell.read_text(p))
                     });
                 }

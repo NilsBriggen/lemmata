@@ -95,8 +95,9 @@ pub fn open_with_command(command: &str) -> Result<(), String> {
                 "start",
                 "Lemmata",
                 "cmd",
+                "/v:on",
                 "/k",
-                "echo Lemmata wants to run:& echo.& echo     %LEMMATA_INSTALL_CMD%& echo.& echo Press any key to run it, or close this window to cancel.& pause >nul& call %LEMMATA_INSTALL_CMD%& echo.& pause",
+                "echo Lemmata wants to run:& echo.& echo     !LEMMATA_INSTALL_CMD!& echo.& echo Press any key to run it, or close this window to cancel.& pause >nul& call !LEMMATA_INSTALL_CMD!& echo.& pause",
             ])
             .spawn()
             .map(|_| ())

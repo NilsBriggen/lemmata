@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 spellbook = "0.4"
+flate2.workspace = true
 serde.workspace = true
 # Same reqwest/rustls line as lemmata-bib: ring is the only TLS crypto stack.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy", "gzip"] }

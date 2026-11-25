@@ -171,7 +171,13 @@ fn base64(bytes: &[u8]) -> String {
 /// A folder name the user typed: no separators, not empty, not "." or "..".
 fn check_name(name: &str) -> Result<&str, String> {
     let name = name.trim();
-    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\'])
+        || (cfg!(windows) && name.contains(':'))
+        || name.chars().any(char::is_control)
+    {
         return Err("Choose a folder name without slashes.".into());
     }
     Ok(name)

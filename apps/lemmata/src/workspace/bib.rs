@@ -948,7 +948,13 @@ impl BibManager {
                                     ui.spacing_mut().item_spacing.x = 6.0;
                                     ui.label(RichText::new(format!("{}:{} · {}", e.entry.file, e.line, e.entry.kind)).size(11.0).color(p.muted));
                                     if !e.cited {
-                                        tag(ui, p, "Not cited", false);
+                                        widgets::chip(
+                                            ui,
+                                            p,
+                                            None,
+                                            "Not cited",
+                                            widgets::ChipTone::Neutral,
+                                        );
                                     }
                                     for (kind, others) in ws {
                                         let t = match *kind {
@@ -956,7 +962,8 @@ impl BibManager {
                                             "doi" => "Same DOI",
                                             _ => "Same title",
                                         };
-                                        tag(ui, p, t, true).on_hover_text(Self::describe(&lib, kind, others));
+                                        widgets::chip(ui, p, None, t, widgets::ChipTone::Error)
+                                            .on_hover_text(Self::describe(&lib, kind, others));
                                     }
                                 });
                                 for (kind, others) in ws {
@@ -996,8 +1003,8 @@ impl BibManager {
                                     }
                                 }
                             });
-                            // .actions: at most 270 px, wrapping.
-                            ui.allocate_ui_with_layout(vec2(270.0, 0.0), egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true), |ui| {
+                            // .actions: keep single-line when space allows, wrap on narrow modals.
+                            ui.allocate_ui_with_layout(vec2(332.0, 0.0), egui::Layout::right_to_left(egui::Align::Min).with_main_wrap(true), |ui| {
                                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                                 if Button::new("Open").size(Size::Sm).show(ui, p).clicked() {
                                     *out = Some(Manage::Open(e.entry.file.clone(), e.line));
@@ -1040,23 +1047,6 @@ impl BibManager {
         });
         self.lib = Some(lib);
     }
-}
-
-/// `.tag`: a pill with a border; red for a warning.
-fn tag(ui: &mut Ui, p: &Palette, text: &str, warn: bool) -> egui::Response {
-    let c = if warn { p.error } else { p.muted };
-    let g = ui
-        .painter()
-        .layout_no_wrap(text.to_owned(), FontId::proportional(11.0), c);
-    let (rect, r) = ui.allocate_exact_size(g.size() + vec2(14.0, 2.0), Sense::hover());
-    ui.painter().rect_stroke(
-        rect,
-        CornerRadius::same(255),
-        Stroke::new(1.0, if warn { p.error } else { p.border_strong }),
-        StrokeKind::Inside,
-    );
-    ui.painter().galley(rect.min + vec2(7.0, 1.0), g, c);
-    r
 }
 
 // ── Wiring ─────────────────────────────────────────────────────────────────────

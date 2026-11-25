@@ -113,7 +113,7 @@ impl Workspace {
             move |shell| shell.save_pasted_image(&png),
             move |ws, b, r| match r {
                 Ok(rel) => {
-                    b.spawn(|shell| Msg::Info(shell.project_info_cmd()));
+                    ws.spawn(b, |shell| Msg::Info(shell.project_info_cmd()));
                     let indent = ws.indent;
                     if let Some(ed) = ws.editors.get_mut(&file) {
                         ed.insert_template(&table::figure_snippet(&rel), indent);
@@ -202,7 +202,7 @@ impl Workspace {
                         Err(e) => ws.notice(e, Tone::Error),
                     }
                 }
-                b.spawn(|shell| Msg::Info(shell.project_info_cmd()));
+                ws.spawn(b, |shell| Msg::Info(shell.project_info_cmd()));
             },
         );
     }

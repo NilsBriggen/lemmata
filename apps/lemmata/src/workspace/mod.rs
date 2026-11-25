@@ -258,6 +258,8 @@ pub struct Workspace {
     pub project_settings: Option<project_settings::ProjectSettings>,
     /// Set once an async project-settings save finishes, so the unified Settings window closes.
     pub project_settings_saved: bool,
+    /// True while an app-level modal (Settings, Snippets, SaveTemplate, Report, Quit) is open.
+    pub app_modal_open: bool,
     pub palette: Option<palette::Palette>,
     /// Presenting the PDF full screen.
     pub presentation: Option<crate::pdf::present::Presentation>,
@@ -417,6 +419,7 @@ impl Workspace {
             rename: None,
             project_settings: None,
             project_settings_saved: false,
+            app_modal_open: false,
             palette: None,
             presentation: None,
             words: None,
@@ -1488,8 +1491,8 @@ impl Workspace {
         }
 
         // The app's own keys come before the editor's; an open dialog keeps them.
-        self.tree_keys(&ctx, backend, settings);
-        if !self.modal_open() {
+        if !self.modal_open() && !self.app_modal_open {
+            self.tree_keys(&ctx, backend, settings);
             self.shortcuts(&ctx, backend, settings, &mut action);
         }
         self.snapshot_timer(backend);
@@ -1547,13 +1550,18 @@ impl Workspace {
         let show_pdf = settings.layout != "editor" && !self.focus_mode;
         let show_sidebar = settings.sidebar_open && !self.focus_mode;
         let drawer_mode = full.width() <= 1000.0;
-        let raw_side_w = if self.side_panel.is_wide() {
+        let wide_side = self.side_panel.is_wide();
+        let side_min_w = if wide_side { 240.0 } else { 180.0 };
+        let side_max_w = 480.0_f32
+            .min((panes.width() - 360.0).max(side_min_w))
+            .min((panes.width() * 0.45).max(side_min_w));
+        let raw_side_w = if wide_side {
             settings.tool_sidebar_width as f32
         } else {
             settings.sidebar_width as f32
         };
         let side_w = if show_sidebar {
-            raw_side_w.clamp(180.0, (panes.width() * 0.45).max(200.0))
+            raw_side_w.clamp(side_min_w, side_max_w)
         } else {
             0.0
         };
@@ -1640,9 +1648,6 @@ impl Workspace {
         }
         // Splitters in the quiet 8 px gaps between panes.
         if show_sidebar && !drawer_mode {
-            let wide = self.side_panel.is_wide();
-            let min_w = if wide { 240.0 } else { 180.0 };
-            let max_w = 480.0_f32.min((panes.width() - 360.0).max(min_w));
             match widgets::splitter(
                 ui,
                 p,
@@ -1650,13 +1655,13 @@ impl Workspace {
                 side.right() + card_pad / 2.0,
                 cards_rect.y_range(),
                 side_w,
-                min_w,
-                max_w,
+                side_min_w,
+                side_max_w,
                 false,
                 "Resize the file panel",
             ) {
                 Some(w) if w.is_nan() => {
-                    if wide {
+                    if wide_side {
                         settings.tool_sidebar_width = Settings::default().tool_sidebar_width;
                     } else {
                         settings.sidebar_width = Settings::default().sidebar_width;
@@ -1664,7 +1669,7 @@ impl Workspace {
                     action = Some(Action::Settings);
                 }
                 Some(w) => {
-                    if wide {
+                    if wide_side {
                         settings.tool_sidebar_width = w as f64;
                     } else {
                         settings.sidebar_width = w as f64;
@@ -1710,6 +1715,12 @@ impl Workspace {
                 egui::Id::unique("drawer-scrim"),
                 egui::Sense::click(),
             );
+            // Swallow pointer events on empty drawer space so clicks never hit the editor/PDF behind.
+            let _ = ui.interact(
+                drawer,
+                egui::Id::unique("drawer-bg"),
+                egui::Sense::click_and_drag(),
+            );
             ui.painter().rect_filled(
                 scrim,
                 0,
@@ -1723,6 +1734,7 @@ impl Workspace {
                 drawer.y_range(),
                 Stroke::new(1.0, p.border),
             );
+            let before_nav = (self.active.clone(), self.pending_line.clone());
             if self.show_side_panel(
                 &mut ui.new_child(egui::UiBuilder::new().max_rect(drawer)),
                 p,
@@ -1731,7 +1743,12 @@ impl Workspace {
             ) {
                 action = Some(Action::Settings);
             }
-            if scrim_resp.clicked() {
+            let navigated = self.active != before_nav.0 || self.pending_line != before_nav.1;
+            let esc = !self.modal_open()
+                && !self.app_modal_open
+                && self.menu.is_none()
+                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            if scrim_resp.clicked() || esc || navigated {
                 settings.sidebar_open = false;
                 action = Some(Action::Settings);
             }
@@ -2327,7 +2344,10 @@ impl Workspace {
         });
         let Some(n) = self.notices.last() else { return };
         if n.action.is_none() && n.tone != Tone::Error {
-            ctx.request_repaint_after(Duration::from_millis(500));
+            let left = Duration::from_secs(8)
+                .saturating_sub(n.at.elapsed())
+                .max(Duration::from_millis(50));
+            ctx.request_repaint_after(left);
         }
         let (text, tone, acts) = (n.text.clone(), n.tone, [n.action.clone(), n.also.clone()]);
         let screen = ctx.content_rect();
@@ -2336,7 +2356,7 @@ impl Workspace {
         egui::Area::new(egui::Id::unique("toast"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::CENTER_BOTTOM)
-            .fixed_pos(pos2(screen.center().x, screen.bottom() - 20.0))
+            .fixed_pos(pos2(screen.center().x, screen.bottom() - 48.0))
             .show(ctx, |ui| {
                 ui.set_max_width((screen.width() - 32.0).min(480.0));
                 let border = if tone == Tone::Error {

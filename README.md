@@ -9,8 +9,8 @@ Your projects are ordinary folders on your disk, and they build with the TeX you
 ## What it does
 
 **Writing**
-- An Overleaf-style layout: file tree and outline, the editor, and the PDF side by side.
-- A formatting toolbar, and dialogs for figures, tables, citations and symbols.
+- A clean native interface with a refreshed workspace, file tree, outline, editor, and live PDF side by side.
+- A formatting toolbar, and dialogs for figures, tables, citations, code blocks, and symbols.
 - Completion for commands, environments, labels, citations, files and packages, including the commands of the packages your document loads.
 - `\begin` and `\end` stay in step when you rename one.
 - Indentation follows your environments as you type. Long lines wrap under their own indentation, and faint guides show how environments nest.
@@ -19,9 +19,9 @@ Your projects are ordinary folders on your disk, and they build with the TeX you
 
 **Building**
 - Builds start as you stop typing, with latexmk and pdfLaTeX, XeLaTeX, LuaLaTeX or Tectonic.
-- Errors and warnings are explained in plain words and point at the line.
+- Errors and warnings are explained in plain words and point at the line, with a notification center for past notices and a searchable raw log.
 - One-click fixes, such as adding a missing `\usepackage`, or the exact command to install a missing package.
-- A fast draft mode, and several build targets per project (a paper and its slides).
+- A fast draft mode, selective chapter builds (`\includeonly`), and a toolbar switcher for projects with multiple build targets (such as a paper and its slides).
 
 **PDF**
 - Text selection, search, working links, the outline and page thumbnails.
@@ -43,8 +43,9 @@ Your projects are ordinary folders on your disk, and they build with the TeX you
 - Review comments on any part of the text.
 
 **Projects**
+- Guided 4-step first-run setup for your TeX engine, theme & typography, writing workflow, and starter project.
 - Start from templates: six built in, and about thirty in the [template collection](https://github.com/NilsBriggen/lemmata-templates). Save any project as a template of your own.
-- A start screen with folders: drag projects into them.
+- A Library start screen with folders, grid/list views, search, and drag-and-drop organization.
 - Import a project from Overleaf (its zip download), or export a zip or a ready-to-upload arXiv bundle.
 
 **Private by default.** Lemmata goes online only when you ask it to. That covers:
@@ -127,6 +128,7 @@ cargo run -p lemmata-app
 | `crates/lemmata-pkgmap` | Which TeX package provides a missing file, and how to install it |
 | `crates/lemmata-env` | Gives programs started from the AppImage the system's libraries |
 | `crates/lemmata-cli` | The `lemmata` command-line tool |
+| `data/dictionaries/` | Gzip-compressed bundled Hunspell dictionaries (`en`, `en-GB`, `de`, `fr`) |
 | `data/install.toml` | TeX install commands per system |
 | `packaging/` | The Linux desktop entry |
 | `tests/fixtures` | Sample projects and real TeX logs |
@@ -134,11 +136,11 @@ cargo run -p lemmata-app
 ### Releasing
 
 ```bash
-scripts/release.sh prepare 2.1.0
+scripts/release.sh prepare 4.0.0
 ```
 
 ```bash
-scripts/release.sh tag 2.1.0
+scripts/release.sh tag 4.0.0
 ```
 
 ```bash

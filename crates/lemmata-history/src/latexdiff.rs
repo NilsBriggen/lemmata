@@ -66,10 +66,17 @@ impl History {
 
 /// Runs `cmd` with its output going to files, killing it after `timeout`.
 fn run(mut cmd: Command, out: &Path, err: &Path, timeout: Duration) -> Result<bool> {
+    let custom_path = cmd
+        .get_envs()
+        .find(|(k, _)| *k == std::ffi::OsStr::new("PATH"))
+        .and_then(|(_, v)| v.map(std::ffi::OsStr::to_os_string));
     cmd.stdin(Stdio::null())
         .stdout(std::fs::File::create(out)?)
         .stderr(std::fs::File::create(err)?);
     no_window(&mut cmd);
+    if let Some(p) = custom_path {
+        cmd.env("PATH", p);
+    }
     // A group of its own, so a timeout can stop latexmk and the engine it started.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
@@ -292,7 +299,7 @@ fn diff_and_compile(
     let path_env = |c: &mut Command| {
         let mut dirs = tools.path_dirs.clone();
         dirs.extend(
-            std::env::var_os("PATH")
+            lemmata_env::host_path()
                 .iter()
                 .flat_map(std::env::split_paths),
         );
@@ -315,7 +322,7 @@ fn diff_and_compile(
     let encoding = diff_encoding(&root.join(&old_main), &root.join(&new_main));
     let mut diff = Command::new(tools.latexdiff);
     diff.current_dir(root)
-        .args(["--flatten", &format!("--encoding={encoding}")])
+        .args(["--flatten", &format!("--encoding={encoding}"), "--"])
         .arg(old_main)
         .arg(new_main);
     path_env(&mut diff);

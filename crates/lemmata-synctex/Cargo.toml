@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 lemmata-env.workspace = true
-flate2 = "1"
+flate2.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

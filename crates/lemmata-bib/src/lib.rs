@@ -232,28 +232,32 @@ pub fn parse_bib(src: &str) -> Result<Bibliography, String> {
     let parents: HashMap<&str, Vec<String>> = raw
         .entries
         .iter()
-        .map(|e| {
+        .filter_map(|e| {
             let mut ps = Vec::new();
             for f in &e.v.fields {
-                let k = f.key.v.to_ascii_lowercase();
-                if k == "crossref" || k == "xdata" {
+                if f.key.v.eq_ignore_ascii_case("crossref") || f.key.v.eq_ignore_ascii_case("xdata")
+                {
                     ps.extend(text(&f.value.v).split(',').map(|s| s.trim().to_string()));
                 }
             }
-            (e.v.key.v, ps)
+            (!ps.is_empty()).then_some((e.v.key.v, ps))
         })
         .collect();
-    let graph: HashMap<&str, Vec<&str>> = parents
-        .iter()
-        .map(|(k, ps)| (*k, ps.iter().map(String::as_str).collect()))
-        .collect();
-    let cut = cyclic(&graph, MAX_DEPTH);
-    for e in &mut raw.entries {
-        if cut.contains(e.v.key.v) {
-            e.v.fields.retain(|f| {
-                let k = f.key.v.to_ascii_lowercase();
-                k != "crossref" && k != "xdata"
-            });
+    if !parents.is_empty() {
+        let graph: HashMap<&str, Vec<&str>> = parents
+            .iter()
+            .map(|(k, ps)| (*k, ps.iter().map(String::as_str).collect()))
+            .collect();
+        let cut = cyclic(&graph, MAX_DEPTH);
+        if !cut.is_empty() {
+            for e in &mut raw.entries {
+                if cut.contains(e.v.key.v) {
+                    e.v.fields.retain(|f| {
+                        !f.key.v.eq_ignore_ascii_case("crossref")
+                            && !f.key.v.eq_ignore_ascii_case("xdata")
+                    });
+                }
+            }
         }
     }
     Bibliography::from_raw(raw).map_err(|e| e.to_string())

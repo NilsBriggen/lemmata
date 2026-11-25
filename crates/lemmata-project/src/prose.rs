@@ -172,6 +172,9 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
 
     while i < b.len() {
         if let Some(env) = &state.env {
+            if !code[i..].contains("\\end{") {
+                return out;
+            }
             let end = format!("\\end{{{env}}}");
             match code[i..].find(&end) {
                 Some(p) => {
@@ -235,10 +238,8 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                     };
                     continue;
                 }
-                let name: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphabetic())
-                    .collect();
+                let name_len = rest.bytes().take_while(|b| b.is_ascii_alphabetic()).count();
+                let name = &rest[..name_len];
                 if name.is_empty() {
                     // Escaped character like \% or \&.
                     i += 1 + rest.chars().next().map_or(0, char::len_utf8);
@@ -254,10 +255,7 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                     continue;
                 }
                 i += 1 + name.len();
-                if matches!(
-                    name.as_str(),
-                    "verb" | "Verb" | "lstinline" | "mintinline" | "path"
-                ) {
+                if matches!(name, "verb" | "Verb" | "lstinline" | "mintinline" | "path") {
                     // Optional `*`, optional `[options]`, `\mintinline{lang}`, then either
                     // `{...}` (except `\verb`) or a matched delimiter (`|...|`).
                     if code[i..].starts_with('*') {
@@ -347,7 +345,7 @@ fn scan(line: &str, state: &mut State) -> Vec<(usize, usize, bool)> {
                     }
                     continue;
                 }
-                if NON_PROSE_ARGS.contains(&name.as_str()) {
+                if NON_PROSE_ARGS.contains(&name) {
                     // Skip a star, up to two optional arguments (`\citep[see][p.~5]{key}`) and up
                     // to two braced ones.
                     if code[i..].starts_with('*') {

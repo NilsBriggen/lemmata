@@ -1,6 +1,8 @@
-//! Shown when no usable TeX installation was found (Onboarding.svelte). Lemmata never runs the
-//! install itself: it shows the command for this system and checks again.
+//! Shown when no usable TeX installation was found (`Onboarding`). Shares the two-column guided
+//! setup shell with `welcome.rs` so TeX setup flows seamlessly into first-run preferences.
+//! Lemmata never runs the install itself: it shows the command for this system and checks again.
 
+use super::welcome::{self, StepItem};
 use crate::icons;
 use crate::theme::{self, Palette};
 use crate::widgets::{self, Button, Kind, Rich, Size};
@@ -29,6 +31,25 @@ pub enum Action {
 
 const ORDER: [&str; 7] = [
     "arch", "debian", "fedora", "suse", "macos", "windows", "other",
+];
+
+const ONBOARDING_STEPS: [StepItem; 4] = [
+    StepItem {
+        title: "TeX engine",
+        subtitle: "Install or locate TeX",
+    },
+    StepItem {
+        title: "Appearance",
+        subtitle: "Theme & typography",
+    },
+    StepItem {
+        title: "Workflow",
+        subtitle: "Save, spell & helpers",
+    },
+    StepItem {
+        title: "Start",
+        subtitle: "Your first project",
+    },
 ];
 
 pub struct State {
@@ -74,68 +95,28 @@ pub fn show(
     can_skip: bool,
     st: &mut State,
 ) -> Option<Action> {
-    let mut action = None;
-    let full = ui.max_rect();
-    ui.painter().rect_filled(full, 0, p.app);
-    widgets::radial_glow(
-        ui.painter(),
-        pos2(full.center().x, full.top() - 0.1 * full.height()),
-        Vec2::new(1200.0, 500.0),
-        Palette::mix(p.accent, 12.0),
-        0.7,
+    let mut body_action = None;
+    let mut foot_action = None;
+    let (_, skipped) = welcome::guide_shell(
+        ui,
+        p,
+        "onboarding",
+        "TeX setup",
+        &ONBOARDING_STEPS,
+        0,
+        false,
+        can_skip,
+        |ui| {
+            body(ui, p, status, checking, st, &mut body_action);
+        },
+        |ui| {
+            footer(ui, p, checking, can_skip, &mut foot_action);
+        },
     );
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.add_space(24.0);
-        widgets::column(ui, 860.0, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                let _ = widgets::logo_mark(ui, 28.0);
-                ui.label(
-                    egui::RichText::new("Lemmata")
-                        .font(FontId::new(22.0, theme::font::display()))
-                        .color(p.ink),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 14.0;
-                    for (idx, lbl) in [(2, "Start"), (1, "Preferences"), (0, "TeX engine")] {
-                        let on = idx == 0;
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            let (dot, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-                            ui.painter().circle_filled(
-                                dot.center(),
-                                3.5,
-                                if on { p.accent } else { p.border_strong },
-                            );
-                            ui.label(
-                                egui::RichText::new(lbl)
-                                    .font(FontId::new(12.0, theme::font::sans_500()))
-                                    .color(if on { p.ink } else { p.faint }),
-                            );
-                        });
-                    }
-                });
-            });
-            ui.add_space(0.04 * full.height());
-            widgets::card(
-                ui,
-                p,
-                theme::R_XL,
-                Margin {
-                    left: 36,
-                    right: 36,
-                    top: 30,
-                    bottom: 26,
-                },
-                |ui| {
-                    ui.spacing_mut().item_spacing.y = 16.0;
-                    body(ui, p, status, checking, can_skip, st, &mut action);
-                },
-            );
-            ui.add_space(40.0);
-        });
-    });
+    let mut action = body_action.or(foot_action);
+    if skipped {
+        action = Some(Action::Skip);
+    }
     // Keeps "Copied" and the spinner moving without input.
     if checking
         || st
@@ -152,36 +133,17 @@ fn body(
     p: &Palette,
     status: &TexStatus,
     checking: bool,
-    can_skip: bool,
     st: &mut State,
     action: &mut Option<Action>,
 ) {
+    ui.spacing_mut().item_spacing.y = 11.0;
     let d = &status.detection;
     let found = d.tools.iter().filter(|t| t.path.is_some()).count();
-    let mut eyebrow = egui::text::LayoutJob::default();
-    eyebrow.append(
-        "ONE STEP BEFORE YOU START",
-        0.0,
-        egui::TextFormat {
-            font_id: FontId::new(11.0, theme::font::sans_600()),
-            color: p.accent,
-            extra_letter_spacing: 0.08 * 11.0,
-            ..Default::default()
-        },
-    );
-    ui.label(eyebrow);
-    ui.add_space(-6.0);
     let title = if found == 0 {
         "TeX Live isn't installed yet"
     } else {
         "TeX Live is incomplete"
     };
-    ui.label(
-        egui::RichText::new(title)
-            .font(FontId::new(30.0, theme::font::display()))
-            .color(p.ink)
-            .line_height(Some(41.3)),
-    );
     let lede = format!(
         "Lemmata uses the TeX installation on your computer to build PDFs. We looked in your PATH and the usual install folders{}. Install it with the command below, then click Check again.",
         if found == 0 {
@@ -190,15 +152,7 @@ fn body(
             ", but some required tools are missing"
         }
     );
-    // 64ch at 14.5 px, as Chrome resolves ch for IBM Plex Sans (0.5 em).
-    widgets::paragraph(
-        ui,
-        &lede,
-        FontId::proportional(14.5),
-        p.muted,
-        1.55,
-        64.0 * 7.25,
-    );
+    welcome::step_heading(ui, p, "STEP 1 OF 4 · TEX ENGINE", title, &lede);
 
     checks(ui, p, status);
     tabs(ui, p, status, st);
@@ -224,7 +178,7 @@ fn body(
             });
         }
         if let Some(e) = &st.terminal_error {
-            ui.add_space(-12.0);
+            ui.add_space(-10.0);
             ui.label(egui::RichText::new(e).size(12.0).color(p.error));
         }
     } else {
@@ -238,14 +192,14 @@ fn body(
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.label(
                 egui::RichText::new("Installer and instructions: ")
-                    .font(FontId::proportional(13.0))
+                    .font(FontId::proportional(12.5))
                     .color(p.muted),
             );
             let r = ui
                 .add(
                     egui::Label::new(
                         egui::RichText::new(link)
-                            .font(FontId::monospace(13.0))
+                            .font(FontId::monospace(12.5))
                             .color(p.accent)
                             .underline(),
                     )
@@ -271,14 +225,13 @@ fn body(
             ui.label(egui::RichText::new(e).color(p.error));
         }
     }
-    footer(ui, p, checking, can_skip, action);
 }
 
 fn note(ui: &mut Ui, p: &Palette, text: &str) {
     widgets::paragraph(
         ui,
         text,
-        FontId::proportional(13.0),
+        FontId::proportional(12.5),
         p.muted,
         1.45,
         ui.available_width(),
@@ -289,7 +242,7 @@ fn note(ui: &mut Ui, p: &Palette, text: &str) {
 fn checks(ui: &mut Ui, p: &Palette, status: &TexStatus) {
     let tools = &status.detection.tools;
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+        ui.spacing_mut().item_spacing = Vec2::new(7.0, 7.0);
         for t in tools {
             let (icon, bg, border, fg, state) = match (&t.path, t.required) {
                 (Some(_), _) => (
@@ -310,14 +263,14 @@ fn checks(ui: &mut Ui, p: &Palette, status: &TexStatus) {
             };
             let ng = ui.painter().layout_no_wrap(
                 t.name.clone(),
-                FontId::new(12.0, theme::font::mono_500()),
+                FontId::new(11.5, theme::font::mono_500()),
                 fg,
             );
             let sg =
                 ui.painter()
-                    .layout_no_wrap(format!("· {state}"), FontId::proportional(11.5), fg);
-            let w = 10.0 + 13.0 + 6.0 + ng.size().x + 5.0 + sg.size().x + 10.0;
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::hover());
+                    .layout_no_wrap(format!("· {state}"), FontId::proportional(11.0), fg);
+            let w = 9.0 + 12.0 + 6.0 + ng.size().x + 5.0 + sg.size().x + 9.0;
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 26.0), Sense::hover());
             let painter = ui.painter();
             painter.rect(
                 rect,
@@ -326,16 +279,16 @@ fn checks(ui: &mut Ui, p: &Palette, status: &TexStatus) {
                 Stroke::new(1.0, border),
                 StrokeKind::Inside,
             );
-            let mut x = rect.left() + 10.0;
+            let mut x = rect.left() + 9.0;
             icons::paint(
                 painter,
-                egui::Rect::from_min_size(pos2(x, rect.center().y - 6.5), Vec2::splat(13.0)),
+                egui::Rect::from_min_size(pos2(x, rect.center().y - 6.0), Vec2::splat(12.0)),
                 icon,
                 fg,
             );
-            x += 19.0;
+            x += 18.0;
             painter.galley(pos2(x, rect.center().y - ng.size().y / 2.0), ng, fg);
-            let x2 = rect.right() - 10.0 - sg.size().x;
+            let x2 = rect.right() - 9.0 - sg.size().x;
             painter.galley(
                 pos2(x2, rect.center().y - sg.size().y / 2.0),
                 sg,
@@ -367,13 +320,17 @@ fn tabs(ui: &mut Ui, p: &Palette, status: &TexStatus, st: &mut State) {
     let opts: Vec<(Option<icons::Icon>, &str)> =
         labels.iter().map(|l| (None, l.as_str())).collect();
     let cur = keys.iter().position(|k| *k == st.platform).unwrap_or(0);
-    if let Some(i) = widgets::segmented(ui, p, &opts, cur, false) {
-        st.platform = keys[i].into();
-    }
+    egui::ScrollArea::horizontal()
+        .id_salt("onboarding-os-tabs")
+        .show(ui, |ui| {
+            if let Some(i) = widgets::segmented(ui, p, &opts, cur, false) {
+                st.platform = keys[i].into();
+            }
+        });
 }
 
 fn sizes(ui: &mut Ui, p: &Palette, st: &mut State, recommended: &str, full: &str) {
-    let w = (ui.available_width() - 10.0) / 2.0;
+    let w = ((ui.available_width() - 10.0) / 2.0).max(160.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         for (is_full, title, body) in [
@@ -388,52 +345,60 @@ fn sizes(ui: &mut Ui, p: &Palette, st: &mut State, recommended: &str, full: &str
                 "Every package, so you're never asked to install more",
             ),
         ] {
-            let (rect, r) = ui.allocate_exact_size(Vec2::new(w, 66.0), Sense::click());
             let on = st.full == is_full;
-            r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, &title));
+            let body_g = ui.painter().layout(
+                body.into(),
+                FontId::proportional(11.5),
+                p.muted,
+                (w - 46.0).max(80.0),
+            );
+            let card_h = (36.0 + body_g.size().y + 12.0).max(66.0);
+            let (rect, r) = ui.allocate_exact_size(Vec2::new(w, card_h), Sense::click());
+            let sel_t = if cfg!(test) || theme::ease_secs() == 0.0 {
+                if on { 1.0 } else { 0.0 }
+            } else {
+                ui.ctx()
+                    .animate_bool_with_time(r.id.with("sel"), on, theme::ease_secs())
+            };
+            r.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, on, &title));
             let painter = ui.painter();
             let rad = CornerRadius::same(theme::R_MD);
-            if on {
+            if sel_t > 0.01 {
                 painter.rect_stroke(
                     rect.expand(1.5),
                     CornerRadius::same(theme::R_MD + 2),
-                    Stroke::new(3.0, Palette::mix(p.accent, 18.0)),
+                    Stroke::new(3.0, Palette::mix(p.accent, 18.0 * sel_t)),
                     StrokeKind::Outside,
                 );
             }
             painter.rect(
                 rect,
                 rad,
-                if on { p.accent_soft } else { p.surface },
-                Stroke::new(
-                    if on { 1.5 } else { 1.0 },
-                    if on { p.accent } else { p.border },
-                ),
+                p.surface.lerp_to_gamma(p.accent_soft, sel_t),
+                Stroke::new(1.0 + 0.5 * sel_t, p.border.lerp_to_gamma(p.accent, sel_t)),
                 StrokeKind::Inside,
             );
             // Radio dot on left.
-            let radio = pos2(rect.left() + 18.0, rect.top() + 21.0);
+            let radio = pos2(rect.left() + 18.0, rect.top() + 20.0);
             painter.circle_stroke(
                 radio,
                 7.0,
-                Stroke::new(1.5, if on { p.accent } else { p.border_strong }),
+                Stroke::new(1.5, p.border_strong.lerp_to_gamma(p.accent, sel_t)),
             );
-            if on {
-                painter.circle_filled(radio, 3.8, p.accent);
+            if sel_t > 0.05 {
+                painter.circle_filled(radio, 3.8 * sel_t, p.accent);
             }
             painter.text(
-                rect.min + Vec2::new(34.0, 13.0),
+                rect.min + Vec2::new(34.0, 12.0),
                 egui::Align2::LEFT_TOP,
                 &title,
-                FontId::new(13.0, theme::font::sans_600()),
+                FontId::new(12.5, theme::font::sans_600()),
                 p.ink,
             );
-            painter.text(
-                rect.min + Vec2::new(34.0, 35.0),
-                egui::Align2::LEFT_TOP,
-                body,
-                FontId::proportional(12.0),
-                p.muted,
+            painter.galley(
+                rect.min + Vec2::new(34.0, 32.0),
+                body_g,
+                Color32::PLACEHOLDER,
             );
             widgets::focus_ring(ui, &r, rect, p, theme::R_MD);
             if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -443,15 +408,17 @@ fn sizes(ui: &mut Ui, p: &Palette, st: &mut State, recommended: &str, full: &str
     });
 }
 
-/// CommandBox.svelte: the command on a dark box with Copy and Open terminal. True when Open terminal was clicked.
+/// The install command on a dark terminal box with Copy and Open terminal. True when Open terminal was clicked.
 pub fn command_box(ui: &mut Ui, p: &Palette, command: &str, copied: &mut Option<Instant>) -> bool {
     const BOX: Color32 = Color32::from_rgb(0x0f, 0x14, 0x18);
     const INK: Color32 = Color32::from_rgb(0xd5, 0xdd, 0xe3);
+    const PROMPT: Color32 = Color32::from_rgb(0x6c, 0x99, 0xbb);
     let mut open = false;
     egui::Frame::new()
         .fill(BOX)
-        .corner_radius(theme::R)
-        .inner_margin(Margin::symmetric(12, 10))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(0x25, 0x2f, 0x38)))
+        .corner_radius(theme::R_MD)
+        .inner_margin(Margin::symmetric(14, 11))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_top(|ui| {
@@ -462,40 +429,51 @@ pub fn command_box(ui: &mut Ui, p: &Palette, command: &str, copied: &mut Option<
                     if showing_copied { "Copied" } else { "Copy" },
                     "Open terminal",
                 ];
-                let font = FontId::proportional(13.0);
+                let font = FontId::proportional(12.5);
                 let widths: Vec<f32> = labels
                     .iter()
                     .map(|l| {
                         ui.fonts_mut(|f| f.layout_no_wrap((*l).into(), font.clone(), INK).size().x)
-                            + 14.0
+                            + 16.0
                     })
                     .collect();
-                let text_w = ui.available_width() - widths.iter().sum::<f32>() - 6.0 - 12.0;
+                let text_w = (ui.available_width() - widths.iter().sum::<f32>() - 18.0).max(80.0);
                 Rich::new()
-                    .add(command, FontId::monospace(12.5), INK)
-                    .line_height(12.5 * 1.6)
+                    .add("$ ", FontId::monospace(12.0), PROMPT)
+                    .add(command, FontId::monospace(12.0), INK)
+                    .line_height(12.0 * 1.6)
                     .wrap(text_w)
                     .show(ui);
                 ui.spacing_mut().item_spacing.x = 6.0;
                 for (i, l) in labels.iter().enumerate() {
                     let (rect, r) =
-                        ui.allocate_exact_size(Vec2::new(widths[i], 24.0), Sense::click());
+                        ui.allocate_exact_size(Vec2::new(widths[i], 26.0), Sense::click());
                     r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, *l));
                     let hover = r.hovered();
+                    let is_copied = i == 0 && showing_copied;
                     ui.painter().rect(
                         rect,
-                        CornerRadius::same(2),
-                        if hover {
+                        CornerRadius::same(theme::R_SM),
+                        if is_copied {
+                            Color32::from_rgb(0x1b, 0x3b, 0x2b)
+                        } else if hover {
                             Color32::from_rgb(0x26, 0x30, 0x39)
                         } else {
                             Color32::from_rgb(0x1d, 0x25, 0x2c)
                         },
-                        Stroke::new(1.0, Color32::from_rgb(0x2c, 0x34, 0x3d)),
+                        Stroke::new(
+                            1.0,
+                            if is_copied {
+                                Color32::from_rgb(0x2f, 0x7a, 0x52)
+                            } else {
+                                Color32::from_rgb(0x2c, 0x34, 0x3d)
+                            },
+                        ),
                         StrokeKind::Inside,
                     );
                     widgets::centered_text(ui, rect, l, font.clone(), INK);
-                    widgets::focus_ring(ui, &r, rect, p, 2);
-                    if r.clicked() {
+                    widgets::focus_ring(ui, &r, rect, p, theme::R_SM);
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         if i == 0 {
                             ui.ctx().copy_text(command.into());
                             *copied = Some(Instant::now());
@@ -518,7 +496,7 @@ fn tectonic(ui: &mut Ui, p: &Palette, st: &mut State, checking: bool, action: &m
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 16.0;
+                ui.spacing_mut().item_spacing.x = 14.0;
                 let label = if st.installing {
                     "Downloading…"
                 } else {
@@ -527,15 +505,15 @@ fn tectonic(ui: &mut Ui, p: &Palette, st: &mut State, checking: bool, action: &m
                 let btn_w = ui.fonts_mut(|f| {
                     f.layout_no_wrap(
                         label.into(),
-                        FontId::new(13.0, theme::font::sans_500()),
+                        FontId::new(12.5, theme::font::sans_500()),
                         p.ink,
                     )
                     .size()
                     .x
                 }) + 24.0;
-                let text_w = (ui.available_width() - btn_w - 16.0).min(62.0 * 6.25);
+                let text_w = (ui.available_width() - btn_w - 14.0).max(120.0);
                 ui.vertical(|ui| {
-                    ui.set_width(ui.available_width() - btn_w - 16.0);
+                    ui.set_width(text_w);
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(
                         egui::RichText::new("Or use Tectonic: nothing to install")
@@ -543,10 +521,10 @@ fn tectonic(ui: &mut Ui, p: &Palette, st: &mut State, checking: bool, action: &m
                             .color(p.ink),
                     );
                     let body = format!(
-                        "A small LaTeX engine. Lemmata downloads it (~{} MB) and it fetches each package the first time a document needs it, so the first build needs an internet connection. biblatex with biber isn't supported; use BibTeX.",
+                        "A small LaTeX engine (~{} MB). Fetches packages automatically on first build (needs internet). biblatex with biber isn't supported; use BibTeX.",
                         st.tectonic_mb
                     );
-                    widgets::paragraph(ui, &body, FontId::proportional(12.5), p.muted, 1.45, text_w);
+                    widgets::paragraph(ui, &body, FontId::proportional(12.0), p.muted, 1.45, text_w);
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if Button::new(label)
@@ -562,34 +540,33 @@ fn tectonic(ui: &mut Ui, p: &Palette, st: &mut State, checking: bool, action: &m
 }
 
 fn footer(ui: &mut Ui, p: &Palette, checking: bool, can_skip: bool, action: &mut Option<Action>) {
-    ui.add_space(6.0);
-    let y = ui.cursor().top();
-    ui.painter()
-        .hline(ui.max_rect().x_range(), y, Stroke::new(1.0, p.border));
-    ui.add_space(16.0);
-    let draw_choose = |ui: &mut Ui, action: &mut Option<Action>| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.label(egui::RichText::new("Installed somewhere else? ").color(p.muted));
-        let link = ui.add(
-            egui::Label::new(
-                egui::RichText::new("Choose the TeX bin folder")
-                    .color(p.accent)
-                    .underline(),
-            )
-            .sense(Sense::click()),
-        );
-        link.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::Role::Button, true, "Choose the TeX bin folder")
-        });
-        if link
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked()
-        {
-            *action = Some(Action::ChooseFolder);
-        }
-    };
-    let draw_buttons = |ui: &mut Ui, action: &mut Option<Action>| {
-        ui.spacing_mut().item_spacing.x = 12.0;
+    ui.spacing_mut().item_spacing.x = 0.0;
+    ui.label(
+        egui::RichText::new("Installed elsewhere? ")
+            .size(12.5)
+            .color(p.muted),
+    );
+    let link = ui.add(
+        egui::Label::new(
+            egui::RichText::new("Choose the TeX bin folder")
+                .size(12.5)
+                .color(p.accent)
+                .underline(),
+        )
+        .sense(Sense::click()),
+    );
+    link.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Button, true, "Choose the TeX bin folder")
+    });
+    if link
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+    {
+        *action = Some(Action::ChooseFolder);
+    }
+
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
         let label = if checking {
             "Checking…"
         } else {
@@ -619,27 +596,7 @@ fn footer(ui: &mut Ui, p: &Palette, checking: bool, can_skip: bool, action: &mut
         {
             *action = Some(Action::Skip);
         }
-    };
-    if can_skip && ui.available_width() < 700.0 {
-        ui.horizontal_wrapped(|ui| draw_choose(ui, action));
-        ui.add_space(10.0);
-        ui.allocate_ui_with_layout(
-            Vec2::new(ui.available_width(), 38.0),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| draw_buttons(ui, action),
-        );
-    } else {
-        ui.allocate_ui_with_layout(
-            Vec2::new(ui.available_width(), 38.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                draw_choose(ui, action);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    draw_buttons(ui, action);
-                });
-            },
-        );
-    }
+    });
 }
 
 #[cfg(test)]

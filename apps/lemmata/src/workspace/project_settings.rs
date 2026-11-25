@@ -27,6 +27,7 @@ pub struct ProjectSettings {
     /// "Trust this project", kept on this computer rather than in lemmata.toml.
     pub trusted: bool,
     pub(crate) busy: bool,
+    pub error: Option<String>,
     pub initial_section: ProjectSection,
     /// One-shot signal so the unified Settings window focuses Project scope when reopened.
     pub focus_project_scope: bool,
@@ -97,6 +98,14 @@ impl Workspace {
     pub fn open_project_settings_on(&mut self, section: ProjectSection) {
         let mut config = self.info.config.clone();
         config.main.get_or_insert_with(|| self.info.main.clone());
+        if config.engine == Engine::Tectonic
+            || config
+                .targets
+                .iter()
+                .any(|t| t.engine == Some(Engine::Tectonic))
+        {
+            config.bib = Bib::Bibtex;
+        }
         let timeout = config.timeout_secs.to_string();
         let chapters = lemmata_env::fs::read_text(self.info.root.join(&self.info.main))
             .map(|t| lemmata_project::included_chapters(&t))
@@ -112,6 +121,7 @@ impl Workspace {
             rules_open: false,
             trusted: self.trusted,
             busy: false,
+            error: None,
             initial_section: section,
             focus_project_scope: true,
         });
@@ -138,6 +148,7 @@ impl Workspace {
         let trusted = self.trusted;
         let was_on = self.info.config.shell_escape;
         d.busy = true;
+        d.error = None;
         let mut config = d.config.clone();
         config.timeout_secs =
             timeout_ok(&d.timeout).unwrap_or(lemmata_project::DEFAULT_TIMEOUT_SECS);
@@ -174,13 +185,12 @@ impl Workspace {
                     }
                     Err(e) => {
                         // The dialog stays open, so the choices aren't lost.
+                        let msg = format!("Could not change the project settings: {e}");
                         if let Some(d) = &mut ws.project_settings {
                             d.busy = false;
+                            d.error = Some(msg.clone());
                         }
-                        ws.notice(
-                            format!("Could not change the project settings: {e}"),
-                            Tone::Error,
-                        );
+                        ws.notice(msg, Tone::Error);
                     }
                 },
             );
@@ -228,29 +238,33 @@ pub fn show_build_section(
                     .map_or(Engine::Pdflatex, |e| e.0);
             }
         });
+        let uses_tectonic = c.engine == Engine::Tectonic
+            || c.targets.iter().any(|t| t.engine == Some(Engine::Tectonic));
         widgets::field(&mut cols[1], p, "Bibliography", |ui| {
-            let mut v = if c.bib == Bib::Bibtex {
-                "bibtex"
-            } else {
-                "biber"
-            }
-            .to_owned();
-            if widgets::select(
-                ui,
-                p,
-                "Bibliography",
-                &mut v,
-                &[
-                    ("biber", "Biber (biblatex)"),
-                    ("bibtex", "BibTeX (natbib, .bst)"),
-                ],
-            ) {
-                c.bib = if v == "bibtex" {
-                    Bib::Bibtex
+            ui.add_enabled_ui(!uses_tectonic, |ui| {
+                let mut v = if c.bib == Bib::Bibtex {
+                    "bibtex"
                 } else {
-                    Bib::Biber
-                };
-            }
+                    "biber"
+                }
+                .to_owned();
+                if widgets::select(
+                    ui,
+                    p,
+                    "Bibliography",
+                    &mut v,
+                    &[
+                        ("biber", "Biber (biblatex)"),
+                        ("bibtex", "BibTeX (natbib, .bst)"),
+                    ],
+                ) {
+                    c.bib = if v == "bibtex" {
+                        Bib::Bibtex
+                    } else {
+                        Bib::Biber
+                    };
+                }
+            });
         });
     });
     if c.engine == Engine::Tectonic || c.targets.iter().any(|t| t.engine == Some(Engine::Tectonic))
@@ -460,6 +474,7 @@ pub fn show_trust_section(
     trusted: bool,
     was_on: bool,
 ) {
+    ui.add_space(6.0);
     let c = &mut d.config;
     // Trust toggle row.
     ui.horizontal(|ui| {

@@ -350,7 +350,7 @@ impl Doc {
 
     /// The end of line `n`, before its line break.
     pub fn line_end(&self, n: usize) -> usize {
-        self.line_start(n) + self.line(n).chars().count()
+        self.line_start(n) + self.line_len(n)
     }
 
     pub fn line_of(&self, pos: usize) -> usize {

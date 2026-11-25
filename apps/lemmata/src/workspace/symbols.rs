@@ -129,7 +129,9 @@ impl SymbolPalette {
             });
         }
         let vh = ui.ctx().content_rect().height();
-        let max_h = (vh - 210.0).clamp(140.0, vh * 0.52);
+        let raw_h = (vh - 210.0).clamp(162.0, vh * 0.52);
+        // Snap to a whole multiple of the 54 px tile row stride so the last row isn't sliced.
+        let max_h = (raw_h / 54.0).floor().max(3.0) * 54.0;
         egui::ScrollArea::vertical()
             .max_height(max_h)
             .min_scrolled_height(max_h)

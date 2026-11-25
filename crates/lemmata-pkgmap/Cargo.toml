@@ -9,4 +9,4 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 toml.workspace = true
-flate2 = "1"
+flate2.workspace = true

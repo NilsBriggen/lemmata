@@ -86,6 +86,9 @@ pub enum Event {
 
 pub type Sink = Arc<dyn Fn(Event) + Send + Sync>;
 
+type BibCacheEntry = (u64, std::time::SystemTime, Arc<Vec<lemmata_bib::Entry>>);
+type BibCache = std::collections::HashMap<PathBuf, BibCacheEntry>;
+
 pub struct Shell {
     pub dirs: Dirs,
     sink: Sink,
@@ -107,7 +110,7 @@ pub struct Shell {
     build_generation: std::sync::atomic::AtomicU64,
     lsp: tokio::sync::Mutex<Option<lsp::Server>>,
     lsp_generation: std::sync::atomic::AtomicU64,
-    pub(crate) speller: Mutex<Option<lemmata_spell::Speller>>,
+    pub(crate) speller: Mutex<spell::SpellerState>,
     /// Stops when dropped, i.e. when another project opens.
     watcher: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
     /// What the app last wrote to each file, so its own saves aren't reported as outside edits.
@@ -115,6 +118,9 @@ pub struct Shell {
     /// Files opened as Windows-1252: one saved with only plain letters left keeps that encoding
     /// for the next umlaut instead of turning UTF-8 halfway.
     latin1: Mutex<std::collections::HashSet<PathBuf>>,
+    /// Parsed `.bib` entries cached by `(abs_path, len, mtime)` so `.tex` autosaves do not
+    /// re-read and re-parse unchanged bibliographies.
+    bib_cache: Mutex<BibCache>,
     /// The open request from the command line or a second launch, until the UI takes it.
     open_request: open_with::OpenRequest,
     /// Project jobs share a read guard; opening another project takes the write guard.
@@ -145,6 +151,7 @@ impl Shell {
             watcher: Default::default(),
             written: Default::default(),
             latin1: Default::default(),
+            bib_cache: Default::default(),
             open_request: open_with::OpenRequest::from_command_line(),
             operation: Default::default(),
             generation: Default::default(),
@@ -329,11 +336,65 @@ fn analysis_of_with(
     }
 }
 
+fn analysis_of_cached(shell: &Shell, p: &Project, tree: Vec<Entry>) -> ProjectAnalysis {
+    let sources = lemmata_project::source_snapshot_with(p, &tree, |path| {
+        lemmata_env::fs::read(path).map(|b| lemmata_env::fs::decode_text(b).0)
+    });
+    let analysis = lemmata_project::analyze_with_sources(p, &tree, &sources);
+    let files = lemmata_bib::bib_files_with_sources(p, &tree, &sources);
+    let cites = shell.cached_bib_entries(&p.root, &files);
+    let pdf_current = lemmata_tex::up_to_date_with_tree(p, &tree);
+    ProjectAnalysis {
+        info: project_info_with_tree(p, tree),
+        outline: analysis.outline,
+        labels: analysis.labels,
+        macro_text: analysis.macro_text,
+        cites,
+        pdf_current,
+    }
+}
+
 impl Shell {
+    fn cached_bib_entries(&self, root: &Path, files: &[String]) -> Vec<lemmata_bib::Entry> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for rel in files {
+            let abs = root.join(rel);
+            let stat = std::fs::metadata(&abs)
+                .ok()
+                .and_then(|m| Some((m.len(), m.modified().ok()?)));
+            let cached = stat.and_then(|(len, mtime)| {
+                self.bib_cache
+                    .lock_safe()
+                    .get(&abs)
+                    .filter(|(cl, cm, _)| *cl == len && *cm == mtime)
+                    .map(|(_, _, entries)| entries.clone())
+            });
+            let entries = match cached {
+                Some(entries) => entries,
+                None => {
+                    let parsed = Arc::new(lemmata_bib::entries(root, std::slice::from_ref(rel)));
+                    if let Some((len, mtime)) = stat {
+                        self.bib_cache
+                            .lock_safe()
+                            .insert(abs, (len, mtime, parsed.clone()));
+                    }
+                    parsed
+                }
+            };
+            for e in entries.iter() {
+                if seen.insert(e.key.clone()) {
+                    out.push(e.clone());
+                }
+            }
+        }
+        out
+    }
+
     pub fn analyze_project(&self) -> CmdResult<ProjectAnalysis> {
         let p = project(self)?;
         let tree = lemmata_project::tree(&p.root, &p.config.outdir);
-        Ok(analysis_of(&p, tree))
+        Ok(analysis_of_cached(self, &p, tree))
     }
 
     /// `trusted`: the user said the project may run programs (its latexmkrc, shell escape, git
@@ -370,6 +431,7 @@ impl Shell {
         // Clear per-project caches so they do not grow unboundedly across project switches.
         self.written.lock_safe().clear();
         self.latin1.lock_safe().clear();
+        self.bib_cache.lock_safe().clear();
         // Without a watcher the app still works; it just won't notice outside edits.
         *self.watcher.lock_safe() = files::watch(
             watcher_sink,

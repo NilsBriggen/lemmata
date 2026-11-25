@@ -750,6 +750,23 @@ pub fn logo_mark(ui: &mut Ui, size: f32) -> Response {
     r
 }
 
+/// Clickable Lemmata Typeset Split logo button with focus ring and accessible label.
+pub fn logo_button(ui: &mut Ui, p: &Palette, size: f32, label: &str) -> Response {
+    let (rect, r) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    r.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, label));
+    if ui.is_rect_visible(rect) {
+        let tex = logo_texture(ui.ctx());
+        ui.painter().image(
+            tex.id(),
+            rect,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        focus_ring(ui, &r, rect, p, theme::R_MD);
+    }
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// `kbd`: 11 px mono on the surface, with a 2 px bottom border.
 pub fn kbd(ui: &mut Ui, p: &Palette, keys: &str) -> Response {
     let galley = ui
@@ -986,13 +1003,6 @@ impl Rich {
         );
         self
     }
-    /// Underlines the last part added, offset like `text-underline-offset: 3px` (as close as epaint gets).
-    pub fn underline(mut self) -> Self {
-        if let Some(sec) = self.0.sections.last_mut() {
-            sec.format.underline = Stroke::new(1.0, sec.format.color);
-        }
-        self
-    }
     /// Line height in points, as CSS `line-height` × font size.
     pub fn line_height(mut self, px: f32) -> Self {
         for s in &mut self.0.sections {
@@ -1073,27 +1083,6 @@ pub fn column<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
         Sense::hover(),
     );
     inner.unwrap()
-}
-
-/// A raised surface: `--surface` fill, `--border`, a radius and `--shadow`.
-pub fn card<R>(
-    ui: &mut Ui,
-    p: &Palette,
-    radius: u8,
-    padding: egui::Margin,
-    add: impl FnOnce(&mut Ui) -> R,
-) -> R {
-    egui::Frame::new()
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(radius)
-        .shadow(p.shadow)
-        .inner_margin(padding)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui)
-        })
-        .inner
 }
 
 /// CSS `radial-gradient(rx ry at center, color, transparent stop)`, drawn as a fan of triangles.
@@ -1326,6 +1315,16 @@ pub fn modal_focus_restore(ctx: &egui::Context, id_salt: &str, previous: Option<
         ctx.add_plugin(ModalFocus::default());
         ctx.with_plugin(|plugin: &mut ModalFocus| plugin.0.push((1, id)));
     }
+}
+
+/// Restores focus saved by `modal_focus_enter` or `modal_full` using only the modal's salt/title.
+pub fn modal_focus_restore_by_salt(ctx: &egui::Context, id_salt: &str) {
+    let restore_id = egui::Id::unique(("modal-restore", id_salt));
+    let previous = ctx.data_mut(|d| {
+        d.get_temp::<Option<egui::Id>>(restore_id)
+            .unwrap_or_default()
+    });
+    modal_focus_restore(ctx, id_salt, previous);
 }
 
 /// `modal_with` for a dialog the user types into: a click beside the panel doesn't close it (and
@@ -1571,6 +1570,7 @@ fn modal_full<R>(
         .response
         .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Dialog, true, title));
     if backdrop.inner.clicked()
+        && !any_popup_open
         && !panel
             .response
             .rect

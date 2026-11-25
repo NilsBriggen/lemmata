@@ -641,14 +641,47 @@ fn format_cmd(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().context("starting formatter")?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text.as_bytes())?;
+    let input = text.as_bytes().to_vec();
+    let writer = child.stdin.take().map(|mut stdin| {
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        })
+    });
+    let out_reader = child.stdout.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut s, &mut buf);
+            buf
+        })
+    });
+    let err_reader = child.stderr.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut s, &mut buf);
+            buf
+        })
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("Formatter timed out after 30 seconds.");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    if let Some(t) = writer {
+        let _ = t.join();
     }
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    let stdout = out_reader.and_then(|t| t.join().ok()).unwrap_or_default();
+    let stderr = err_reader.and_then(|t| t.join().ok()).unwrap_or_default();
+    if !status.success() {
+        bail!("{}", String::from_utf8_lossy(&stderr).trim());
     }
-    let formatted = String::from_utf8_lossy(&out.stdout).into_owned();
+    let formatted = String::from_utf8_lossy(&stdout).into_owned();
     if formatted == text {
         return Ok(true);
     }
@@ -656,6 +689,8 @@ fn format_cmd(
         println!("{} would be reformatted", target.display());
         return Ok(false);
     }
+    let trusted = TRUST.load(std::sync::atomic::Ordering::Relaxed);
+    lemmata_env::fs::may_write(&project.root, trusted, &target)?;
     let bytes = lemmata_env::fs::encode_like_disk(&target, &formatted)?;
     lemmata_env::fs::write_atomic(&target, &bytes)?;
     println!("Formatted {}", target.display());

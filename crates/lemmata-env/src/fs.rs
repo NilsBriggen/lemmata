@@ -93,7 +93,7 @@ pub fn read_text(path: impl AsRef<Path>) -> std::io::Result<String> {
 /// `text` as the bytes to write over `path`: in Windows-1252 when the file on disk is not UTF-8,
 /// so an edit keeps the encoding the document declares.
 pub fn encode_like_disk(path: &Path, text: &str) -> std::io::Result<Vec<u8>> {
-    if read(path).is_ok_and(|d| std::str::from_utf8(&d).is_err()) {
+    if read_limited(path, TEXT_LIMIT).is_ok_and(|d| std::str::from_utf8(&d).is_err()) {
         return encode_cp1252(text).map_err(|c| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

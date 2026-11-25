@@ -42,6 +42,7 @@ struct Editing {
     error: Option<String>,
     /// A new folder made from a project's menu takes that project in.
     project: Option<String>,
+    focused: bool,
 }
 
 pub struct Deleting {
@@ -228,16 +229,23 @@ pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
             (None, _) => return std::cmp::Ordering::Less,
             (_, None) => return std::cmp::Ordering::Greater,
             (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
-                let num = |it: &mut std::iter::Peekable<std::str::Chars>| {
-                    let mut n = String::new();
-                    while let Some(c) = it.peek().filter(|c| c.is_ascii_digit()) {
-                        n.push(*c);
+                // Zero-allocation natural numeric run comparison.
+                let read_num = |it: &mut std::iter::Peekable<std::str::Chars>| -> (usize, u128) {
+                    let mut sig_len = 0usize;
+                    let mut val = 0u128;
+                    while let Some(c) = it.peek().copied().filter(char::is_ascii_digit) {
                         it.next();
+                        if sig_len > 0 || c != '0' {
+                            sig_len += 1;
+                            val = val
+                                .saturating_mul(10)
+                                .saturating_add((c as u8 - b'0') as u128);
+                        }
                     }
-                    n.trim_start_matches('0').to_owned()
+                    (sig_len, val)
                 };
-                let (nx, ny) = (num(&mut a), num(&mut b));
-                let o = nx.len().cmp(&ny.len()).then(nx.cmp(&ny));
+                let (nx, ny) = (read_num(&mut a), read_num(&mut b));
+                let o = nx.cmp(&ny);
                 if o.is_ne() {
                     return o;
                 }
@@ -429,8 +437,18 @@ pub fn show(ui: &mut Ui, p: &Palette, st: &mut State, c: &mut Ctx) -> Option<Act
     if st.toast.as_ref().is_some_and(|(_, t)| expired(t)) {
         st.toast = None;
     }
-    if st.undo.is_some() || st.template_note.is_some() || st.toast.is_some() {
-        ui.ctx().request_repaint_after(Duration::from_millis(500));
+    let next_expiry = [
+        st.undo.as_ref().map(|u| u.at),
+        st.template_note.as_ref().map(|(_, t)| *t),
+        st.toast.as_ref().map(|(_, t)| *t),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|t| Duration::from_secs(8).saturating_sub(t.elapsed()))
+    .min();
+    if let Some(left) = next_expiry {
+        ui.ctx()
+            .request_repaint_after(left.max(Duration::from_millis(50)));
     }
     action
 }
@@ -1019,16 +1037,20 @@ fn continue_writing_row(
     section_label(ui, p, "Continue writing");
     ui.add_space(10.0);
     let w = ui.available_width();
-    let cols = if w < 560.0 {
+    let grid_cols = if w < 560.0 {
         1
     } else if w < 820.0 {
         2
     } else {
         3
-    }
-    .min(top.len());
+    };
+    let cols = grid_cols.min(top.len());
     let gap = 14.0;
-    let cw = (w - gap * (cols as f32 - 1.0)) / cols as f32;
+    let cw = if top.len() == 1 && grid_cols > 1 {
+        ((w - gap * (grid_cols as f32 - 1.0)) / grid_cols as f32 * 1.45).min(w)
+    } else {
+        (w - gap * (cols as f32 - 1.0)) / cols as f32
+    };
     let ch = 134.0;
     let (area, _) = ui.allocate_exact_size(Vec2::new(w, ch), Sense::hover());
     let painter = ui.painter().clone();
@@ -1091,7 +1113,18 @@ fn continue_writing_row(
                 }
                 None => {
                     let inner = thumb_r.shrink(1.0);
-                    painter.rect_filled(inner, CornerRadius::same(3), Color32::WHITE);
+                    let page_bg = if p.dark { p.surface } else { Color32::WHITE };
+                    let title_bar = if p.dark {
+                        p.faint
+                    } else {
+                        Color32::from_rgb(0xa6, 0xae, 0xb6)
+                    };
+                    let line_bar = if p.dark {
+                        p.border_strong
+                    } else {
+                        Color32::from_rgb(0xdf, 0xe3, 0xe7)
+                    };
+                    painter.rect_filled(inner, CornerRadius::same(3), page_bg);
                     let mut ly = inner.top() + 14.0;
                     painter.rect_filled(
                         Rect::from_min_size(
@@ -1099,7 +1132,7 @@ fn continue_writing_row(
                             Vec2::new(inner.width() - 28.0, 5.0),
                         ),
                         2,
-                        Color32::from_rgb(0xa6, 0xae, 0xb6),
+                        title_bar,
                     );
                     ly += 13.0;
                     for k in 0..5 {
@@ -1110,7 +1143,7 @@ fn continue_writing_row(
                                 Vec2::new(lw.max(12.0), 3.0),
                             ),
                             1,
-                            Color32::from_rgb(0xdf, 0xe3, 0xe7),
+                            line_bar,
                         );
                         ly += 9.0;
                     }
@@ -1666,7 +1699,7 @@ fn grid(
                     pos2(thumb.center().x - page_w / 2.0, thumb.top() + 16.0),
                     pos2(thumb.center().x + page_w / 2.0, thumb.bottom()),
                 );
-                painter.add(theme::SHADOW_SM.as_shape(page, 0));
+                painter.add(p.shadow_card.as_shape(page, 0));
                 match &tex {
                     Some(t) => {
                         let [tw, th] = t.size().map(|v| v as f32);
@@ -1682,7 +1715,18 @@ fn grid(
                         );
                     }
                     None => {
-                        painter.rect_filled(page, 0, Color32::WHITE);
+                        let page_bg = if p.dark { p.surface } else { Color32::WHITE };
+                        let title_bar = if p.dark {
+                            p.faint
+                        } else {
+                            Color32::from_rgb(0xa6, 0xae, 0xb6)
+                        };
+                        let line_bar = if p.dark {
+                            p.border_strong
+                        } else {
+                            Color32::from_rgb(0xdf, 0xe3, 0xe7)
+                        };
+                        painter.rect_filled(page, 0, page_bg);
                         let mut y = page.top() + 18.0;
                         let title_w = (page.width() - 28.0) * 0.55;
                         painter.rect_filled(
@@ -1691,7 +1735,7 @@ fn grid(
                                 Vec2::new(title_w, 6.0),
                             ),
                             2,
-                            Color32::from_rgb(0xa6, 0xae, 0xb6),
+                            title_bar,
                         );
                         y += 6.0 + 6.0 + 8.0;
                         for _ in 0..4 {
@@ -1701,7 +1745,7 @@ fn grid(
                                     Vec2::new(page.width() - 28.0, 4.0),
                                 ),
                                 2,
-                                Color32::from_rgb(0xdf, 0xe3, 0xe7),
+                                line_bar,
                             );
                             y += 12.0;
                         }
@@ -1834,6 +1878,7 @@ fn start_edit(st: &mut State, c: &Ctx, id: Option<String>, project: Option<Strin
         name,
         error: None,
         project,
+        focused: false,
     });
 }
 
@@ -1936,7 +1981,10 @@ fn overlays(
             MenuResult::Clicked(i) => {
                 st.folder_menu = None;
                 match i {
-                    0 => st.view = View::Group(id),
+                    0 => {
+                        st.recent_only = false;
+                        st.view = View::Group(id);
+                    }
                     1 => start_edit(st, c, Some(id), None),
                     _ => remove_group(st, c, &id, action),
                 }
@@ -2020,8 +2068,9 @@ fn folder_name_dialog(
             let input = widgets::text_input(ui, p, &mut ed.name, "Folder name", false);
             ui.ctx()
                 .accesskit_node_builder(input.id, |n| n.set_label("Folder name"));
-            if !input.has_focus() && ui.memory(|m| m.focused().is_none()) {
+            if !ed.focused {
                 input.request_focus();
+                ed.focused = true;
             }
             if input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 enter = true;
@@ -2205,7 +2254,7 @@ fn delete_dialog(ctx: &egui::Context, p: &Palette, st: &mut State, action: &mut 
         Some(&mut |ui: &mut Ui| {
             go |= Button::new("Move to trash")
                 .kind(Kind::Primary)
-                .ink(Color32::WHITE)
+                .ink(p.accent_ink)
                 .fill(p.error)
                 .enabled(!busy)
                 .show(ui, p)

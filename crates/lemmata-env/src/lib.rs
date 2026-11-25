@@ -8,6 +8,21 @@ pub mod fs;
 use std::ffi::{OsStr, OsString};
 use std::process::Command;
 
+/// `PATH` with any AppImage mount entries stripped.
+pub fn host_path() -> Option<OsString> {
+    let existing = std::env::var_os("PATH")?;
+    let appdir = std::env::var_os("APPDIR");
+    for (key, value) in changes(
+        appdir.as_deref(),
+        [(OsString::from("PATH"), existing.clone())],
+    ) {
+        if key == OsStr::new("PATH") {
+            return value;
+        }
+    }
+    Some(existing)
+}
+
 /// Gives `cmd` the user's environment: without any AppImage's paths and settings.
 /// Changes nothing when no AppImage is involved.
 pub fn host(cmd: &mut Command) -> &mut Command {
@@ -138,6 +153,7 @@ pub fn git_guard(git: &std::path::Path, dir: &std::path::Path) -> Option<Vec<Str
         "log.showSignature=false",
         &format!("core.hooksPath={no_hooks}"),
         "protocol.allow=never",
+        "diff.external=",
     ] {
         args.extend(["-c".to_string(), kv.to_string()]);
     }

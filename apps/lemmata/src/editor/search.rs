@@ -120,14 +120,18 @@ fn regex(query: &str, case_sensitive: bool, regexp: bool) -> Result<regex::Regex
 }
 
 /// The replacement for the match at char `from`: in regexp mode `$1` and `${name}` are expanded.
-fn replacement(s: &Search, text: &str, byte_of: &[usize], from: usize) -> String {
-    if !s.regexp {
+fn replacement(
+    s: &Search,
+    re: Option<&regex::Regex>,
+    text: &str,
+    byte_of: &[usize],
+    from: usize,
+) -> String {
+    let Some(re) = re else {
         return s.replace.clone();
-    }
+    };
     let at = byte_of.get(from).copied().unwrap_or(text.len());
-    regex(&s.query, s.case_sensitive, true)
-        .ok()
-        .and_then(|re| re.captures_at(text, at))
+    re.captures_at(text, at)
         .filter(|c| c.get(0).is_some_and(|m| m.start() == at))
         .map_or_else(
             || s.replace.clone(),
@@ -236,7 +240,11 @@ fn replace_next(ed: &mut Editor) {
     let main = ed.doc.selection.main();
     if s.matches.contains(&(main.from(), main.to())) {
         let text = ed.doc.text();
-        let replacement = replacement(s, &text, &byte_offsets(&text), main.from());
+        let re = s
+            .regexp
+            .then(|| regex(&s.query, s.case_sensitive, true).ok())
+            .flatten();
+        let replacement = replacement(s, re.as_ref(), &text, &byte_offsets(&text), main.from());
         let n = replacement.chars().count();
         let cs = ChangeSet::new(vec![Change {
             from: main.from(),
@@ -257,13 +265,17 @@ fn replace_all(ed: &mut Editor) {
     }
     let text = ed.doc.text();
     let bytes = byte_offsets(&text);
+    let re = s
+        .regexp
+        .then(|| regex(&s.query, s.case_sensitive, true).ok())
+        .flatten();
     let changes = s
         .matches
         .iter()
         .map(|&(a, b)| Change {
             from: a,
             to: b,
-            insert: replacement(s, &text, &bytes, a),
+            insert: replacement(s, re.as_ref(), &text, &bytes, a),
         })
         .collect();
     let cs = ChangeSet::new(changes);

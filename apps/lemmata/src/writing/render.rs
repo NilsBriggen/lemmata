@@ -103,8 +103,8 @@ struct Cache {
     macros: BTreeMap<String, super::math::Macro>,
     /// The macros as `\def`s put before every formula.
     prelude: String,
-    done: HashMap<Key, Result<Math, String>>,
-    order: std::collections::VecDeque<Key>,
+    done: HashMap<Key, (u64, Result<Math, String>)>,
+    tick: u64,
     pending: std::collections::HashSet<Key>,
     generation: u64,
     /// Pixels held by `done`'s textures, in bytes.
@@ -135,7 +135,7 @@ pub fn set_macro_defs(macros: BTreeMap<String, super::math::Macro>) {
             .collect();
         c.macros = macros;
         c.done.clear();
-        c.order.clear();
+        c.tick = 0;
         c.pending.clear();
         c.bytes = 0;
         c.generation += 1;
@@ -210,17 +210,23 @@ fn receive(ctx: &egui::Context) {
             let bytes = result
                 .as_ref()
                 .map_or(0, |m| m.texture.size().iter().product::<usize>() * 4);
-            while (c.done.len() >= 800 || c.bytes + bytes > MAX_BYTES) && !c.order.is_empty() {
-                let old = c.order.pop_front().unwrap();
-                if let Some(old) = c.done.remove(&old) {
+            while (c.done.len() >= 800 || c.bytes + bytes > MAX_BYTES) && !c.done.is_empty() {
+                let oldest = c
+                    .done
+                    .iter()
+                    .min_by_key(|(_, (t, _))| *t)
+                    .map(|(k, _)| k.clone());
+                let Some(old_key) = oldest else { break };
+                if let Some((_, old)) = c.done.remove(&old_key) {
                     c.bytes -= old
                         .as_ref()
                         .map_or(0, |m| m.texture.size().iter().product::<usize>() * 4);
                 }
             }
+            c.tick += 1;
+            let t = c.tick;
             c.bytes += bytes;
-            c.order.push_back(job.key.clone());
-            c.done.insert(job.key, result);
+            c.done.insert(job.key, (t, result));
         });
     }
 }
@@ -243,14 +249,11 @@ pub fn render(
         ppp.to_bits(),
     );
     let hit = CACHE.with_borrow_mut(|c| {
-        let hit = c.done.get(&key).cloned()?;
-        // Used now: the last to be evicted, not the first formula that was drawn.
-        if let Some(i) = c.order.iter().rposition(|k| *k == key)
-            && let Some(k) = c.order.remove(i)
-        {
-            c.order.push_back(k);
-        }
-        Some(hit)
+        c.tick += 1;
+        let t = c.tick;
+        let entry = c.done.get_mut(&key)?;
+        entry.0 = t;
+        Some(entry.1.clone())
     });
     if let Some(hit) = hit {
         return hit;
@@ -531,7 +534,14 @@ mod tests {
         done("a+1");
         done("b+2");
         done("a+1");
-        CACHE.with_borrow(|c| assert_eq!(c.order.back().map(|k| k.0.as_str()), Some("a+1")));
+        CACHE.with_borrow(|c| {
+            let most_recent = c
+                .done
+                .iter()
+                .max_by_key(|(_, (t, _))| *t)
+                .map(|(k, _)| k.0.as_str());
+            assert_eq!(most_recent, Some("a+1"));
+        });
     }
 
     #[test]

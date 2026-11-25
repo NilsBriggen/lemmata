@@ -294,7 +294,7 @@ impl PdfView {
     }
 
     fn bound_texture_map(&mut self, full: bool, budget: usize) {
-        let viewport = Rect::from_min_size(pos2(0.0, self.scroll_y), self.client);
+        let viewport = Rect::from_min_size(pos2(self.scroll_x, self.scroll_y), self.client);
         let visible: HashSet<usize> = self
             .rects
             .iter()
@@ -316,7 +316,7 @@ impl PdfView {
                 .copied();
             let Some(page) = page else { break };
             textures.remove(&page);
-            self.asked.remove(&(page, full));
+            self.asked.remove(&(page, !full));
         }
     }
 
@@ -329,6 +329,7 @@ impl PdfView {
 
     /// Takes what the engine finished.
     fn receive(&mut self, ctx: &egui::Context) {
+        let mut page_uploads = 0u8;
         loop {
             let Some(engine) = &self.engine else { return };
             let Ok(d) = engine.rx.try_recv() else {
@@ -353,6 +354,7 @@ impl PdfView {
                             self.search_text.clear();
                             self.decorating.clear();
                             self.selection = None;
+                            self.copy_waiting = false;
                             if self.png_wanted {
                                 self.engine
                                     .as_ref()
@@ -393,8 +395,15 @@ impl PdfView {
                         self.thumbs.insert(page, t);
                     } else {
                         self.tex.insert(page, t);
+                        page_uploads += 1;
                     }
                     self.bound_textures();
+                    // Cap full-page GPU texture uploads per frame so simultaneous worker
+                    // completions don't hitch scrolling or zooming.
+                    if page_uploads >= 2 {
+                        ctx.request_repaint();
+                        break;
+                    }
                 }
                 Done::Decorated {
                     doc,
@@ -953,7 +962,7 @@ impl PdfView {
         // Ctrl+wheel and pinch zoom applied on the SAME frame before ScrollArea lays out or
         // paints, so layout scale and scroll offset never disagree by a frame.
         let now_time = ui.input(|i| i.time);
-        let scroll_min = ui.available_rect_before_wrap().min;
+        let scroll_min = area.min;
         #[cfg(test)]
         {
             self.last_scroll_min = scroll_min;
@@ -1078,7 +1087,12 @@ impl PdfView {
             ui.spacing_mut().scroll.kinetic.decay_time = 0.0;
         }
         let mut event = None;
-        let out = scroll.show_viewport(ui, |ui, viewport| {
+        let mut body_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(area)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        let out = scroll.show_viewport(&mut body_ui, |ui, viewport| {
             let origin = ui.max_rect().min;
             let (resp_rect, resp) = ui.allocate_exact_size(self.content, Sense::click_and_drag());
             let _ = resp_rect;
@@ -1255,7 +1269,7 @@ impl PdfView {
             self.copy_waiting = false;
             ctx.copy_text(self.selected_text());
         }
-        if self.highlight.is_some() || !self.asked.is_empty() || !self.decorating.is_empty() {
+        if self.highlight.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(30));
         } else if self.last_zoom_at.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(85));

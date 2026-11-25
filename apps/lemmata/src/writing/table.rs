@@ -129,15 +129,16 @@ pub fn tsv_to_tabular(text: &str) -> Option<String> {
 
 /// The file name without folders or extension.
 fn stem(path: &str) -> &str {
-    let name = path.rsplit('/').next().unwrap_or(path);
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
     name.rfind('.').map_or(name, |i| &name[..i])
 }
 
 /// A figure for a pasted or dropped image, as a template with the cursor in the caption.
 pub fn figure_snippet(path: &str) -> String {
+    let safe_path = path.replace('%', "\\%").replace('#', "\\#");
+    let label = slug(stem(path));
     format!(
-        "\\begin{{figure}}[htbp]\n  \\centering\n  \\includegraphics[width=0.8\\linewidth]{{{path}}}\n  \\caption{{${{}}}}\n  \\label{{fig:{}}}\n\\end{{figure}}\n",
-        stem(path)
+        "\\begin{{figure}}[htbp]\n  \\centering\n  \\includegraphics[width=0.8\\linewidth]{{{safe_path}}}\n  \\caption{{${{}}}}\n  \\label{{fig:{label}}}\n\\end{{figure}}\n",
     )
 }
 
@@ -449,5 +450,14 @@ mod tests {
             fig.contains("foo\\_bar"),
             "prose underscore must still escape: {fig}"
         );
+    }
+
+    #[test]
+    fn figure_snippet_escapes_special_chars_and_slugifies_label() {
+        let s = figure_snippet(r"figures\results 100% #1.png");
+        assert!(
+            s.contains(r"\includegraphics[width=0.8\linewidth]{figures\results 100\% \#1.png}")
+        );
+        assert!(s.contains(r"\label{fig:results-100-1}"));
     }
 }

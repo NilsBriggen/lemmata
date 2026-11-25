@@ -56,7 +56,7 @@ done
 if [[ ,$formats, == *,rpm,* ]]; then
   # RPM has no "-" in versions; a pre-release sorts before its release with "~".
   version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2 | tr '-' '~')
-  cargo generate-rpm -p apps/lemmata --target "$target" -o "$out/" --set-metadata "version = \"$version\""
+  cargo generate-rpm -p apps/lemmata --target "$target" --payload-compress zstd -o "$out/" --set-metadata "version = \"$version\""
 fi
 
 # The updater replaces the whole bundle on macOS, from a tarball of it. A Mac only needs its own
@@ -71,7 +71,7 @@ if [[ ,$formats, == *,app,* ]]; then
       thin="$tmp/$(basename "$app")/Contents/MacOS/lemmata-app"
       cp "target/$arch-apple-darwin/release/lemmata-app" "$thin"
       codesign --force --sign - "$thin"
-      tar -czf "$out/Lemmata.$arch.app.tar.gz" -C "$tmp" "$(basename "$app")"
+      GZIP=-9 tar -czf "$out/Lemmata.$arch.app.tar.gz" -C "$tmp" "$(basename "$app")"
       if [[ ,$formats, == *,dmg,* ]]; then
         ln -s /Applications "$tmp/Applications"
         hdiutil create -fs HFS+ -format UDZO -volname Lemmata -srcfolder "$tmp" \
@@ -80,7 +80,7 @@ if [[ ,$formats, == *,app,* ]]; then
       rm -rf "$tmp"
     done
   else
-    tar -czf "$out/Lemmata.app.tar.gz" -C "$(dirname "$app")" "$(basename "$app")"
+    GZIP=-9 tar -czf "$out/Lemmata.app.tar.gz" -C "$(dirname "$app")" "$(basename "$app")"
   fi
 fi
 

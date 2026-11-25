@@ -71,20 +71,36 @@ pub(crate) fn eligible(project: &Project, miktex: bool) -> bool {
 }
 
 /// The `-fmt` argument for a usable format of the current preamble.
-pub(crate) fn usable(project: &Project, engine: &Path) -> Option<String> {
-    (recorded(project, engine)?
+pub(crate) fn usable_with_tree(
+    project: &Project,
+    engine: &Path,
+    tree: &[lemmata_project::Entry],
+) -> Option<String> {
+    (recorded_with_tree(project, engine, tree)?
         && dir(project)
             .join(format!("{}.fmt", stem(project)))
             .is_file())
     .then(|| format!("{}/{}", rel_dir(project), stem(project)))
 }
 
+#[cfg(test)]
+pub(crate) fn usable(project: &Project, engine: &Path) -> Option<String> {
+    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
+    usable_with_tree(project, engine, &tree)
+}
+
 /// The folders a format is being made in, each with the switch that stops it.
 static BUSY: Mutex<Vec<(PathBuf, watch::Sender<bool>)>> = Mutex::new(Vec::new());
 
 /// Makes and checks a format for the current preamble in the background, unless that was done already.
-pub(crate) fn spawn(project: Project, engine: PathBuf, path: Option<OsString>, limit: Duration) {
-    if recorded(&project, &engine).is_some() {
+pub(crate) fn spawn_with_tree(
+    project: Project,
+    engine: PathBuf,
+    path: Option<OsString>,
+    limit: Duration,
+    tree: &[lemmata_project::Entry],
+) {
+    if recorded_with_tree(&project, &engine, tree).is_some() {
         return;
     }
     let dir = dir(&project);
@@ -175,6 +191,17 @@ fn preamble(main: &str) -> Option<&str> {
 /// What the format depends on: any change means a new format, checked again. `inputs` are the
 /// files the preamble read (from the format run's .fls); their size and time stand for their content.
 fn key(project: &Project, engine: &Path, preamble: &str, inputs: &[String]) -> String {
+    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
+    key_with_tree(project, engine, preamble, inputs, &tree)
+}
+
+fn key_with_tree(
+    project: &Project,
+    engine: &Path,
+    preamble: &str,
+    inputs: &[String],
+    tree: &[lemmata_project::Entry],
+) -> String {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let stat = |p: &Path| {
         std::fs::metadata(p)
@@ -198,11 +225,7 @@ fn key(project: &Project, engine: &Path, preamble: &str, inputs: &[String]) -> S
         }
     }
     // A file the preamble looks for but doesn't find yet leaves no trace in the .fls.
-    tex_files(&lemmata_project::tree(
-        &project.root,
-        &project.config.outdir,
-    ))
-    .hash(&mut h);
+    tex_files(tree).hash(&mut h);
     format!("{:016x}", h.finish())
 }
 
@@ -225,13 +248,24 @@ fn tex_files(entries: &[lemmata_project::Entry]) -> Vec<&str> {
 
 /// What was recorded for the current preamble: `Some(true)` checked and good, `Some(false)` not
 /// suitable, `None` nothing yet or stale.
-pub(crate) fn recorded(project: &Project, engine: &Path) -> Option<bool> {
+pub(crate) fn recorded_with_tree(
+    project: &Project,
+    engine: &Path,
+    tree: &[lemmata_project::Entry],
+) -> Option<bool> {
     let text = lemmata_env::fs::read_to_string(key_path(project)).ok()?;
     let mut lines = text.lines();
     let (state, recorded_key) = lines.next()?.split_once(' ')?;
     let inputs: Vec<String> = lines.map(String::from).collect();
     let main = lemmata_env::fs::read_text(project.main_abs()).ok()?;
-    (recorded_key == key(project, engine, preamble(&main)?, &inputs)).then_some(state == "ok")
+    (recorded_key == key_with_tree(project, engine, preamble(&main)?, &inputs, tree))
+        .then_some(state == "ok")
+}
+
+#[cfg(test)]
+pub(crate) fn recorded(project: &Project, engine: &Path) -> Option<bool> {
+    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
+    recorded_with_tree(project, engine, &tree)
 }
 
 /// The files a run read according to its .fls, but not the main file (its preamble is hashed

@@ -361,6 +361,7 @@ impl Shell {
     pub fn create_path(&self, path: String, dir: bool) -> CmdResult<()> {
         let p = project(self)?;
         let full = p.root.join(safe_rel(&path)?);
+        lemmata_env::fs::may_write(&p.root, p.trusted, &full).map_err(err)?;
         if full.exists() {
             return Err(format!("{path} already exists."));
         }
@@ -386,7 +387,7 @@ pub(crate) fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
         } else if kind.is_symlink() && entry.path().is_dir() {
             // A link to a folder is left out: following it could loop, and `copy` can't read a folder.
         } else {
-            std::fs::copy(entry.path(), dest)?;
+            lemmata_env::fs::copy(entry.path(), dest)?;
         }
     }
     Ok(())
@@ -397,6 +398,7 @@ impl Shell {
     pub fn copy_path(&self, from: String, to: String) -> CmdResult<()> {
         let p = project(self)?;
         let (src, dest) = (p.root.join(safe_rel(&from)?), p.root.join(safe_rel(&to)?));
+        lemmata_env::fs::may_write(&p.root, p.trusted, &dest).map_err(err)?;
         if dest.exists() {
             return Err(format!("{to} already exists."));
         }
@@ -412,7 +414,7 @@ impl Shell {
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent).map_err(err)?;
             }
-            std::fs::copy(&src, &dest).map(|_| ()).map_err(err)
+            lemmata_env::fs::copy(&src, &dest).map(|_| ()).map_err(err)
         }
     }
 }
@@ -669,6 +671,8 @@ fn rename_one(
 ) -> CmdResult<usize> {
     let src = p.root.join(safe_rel(from)?);
     let dst = p.root.join(safe_rel(to)?);
+    lemmata_env::fs::may_write(&p.root, p.trusted, &src).map_err(err)?;
+    lemmata_env::fs::may_write(&p.root, p.trusted, &dst).map_err(err)?;
     rename_on_disk(&src, &dst, to)?;
     // Update tracked latin1 paths for renamed files/folders.
     {
@@ -967,7 +971,7 @@ fn move_all(pairs: &[(PathBuf, PathBuf)], what: &str) -> CmdResult<()> {
 /// Removes `dir` and the folders in it that are empty, never a file.
 fn prune_empty(dir: &Path) {
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        if e.path().is_dir() {
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
             prune_empty(&e.path());
         }
     }
@@ -993,6 +997,7 @@ pub fn restore_from(root: &Path, id: &str) -> CmdResult<Vec<String>> {
         return Err("Unknown trash entry.".into());
     }
     let batch = root.join(TRASH_DIR).join(id);
+    lemmata_env::fs::may_write(root, false, &batch).map_err(err)?;
     let manifest: TrashBatch = serde_json::from_slice(
         &lemmata_env::fs::read(batch.join(MANIFEST))
             .map_err(|_| "That deletion can't be undone anymore.")?,
@@ -1000,7 +1005,9 @@ pub fn restore_from(root: &Path, id: &str) -> CmdResult<Vec<String>> {
     .map_err(err)?;
     for rel in &manifest.paths {
         safe_rel(rel)?;
-        if root.join(rel).exists() {
+        let dest = root.join(rel);
+        lemmata_env::fs::may_write(root, false, &dest).map_err(err)?;
+        if dest.exists() {
             return Err(format!("{rel} exists again, so it can't be restored."));
         }
     }
@@ -1050,8 +1057,14 @@ fn now_ms() -> u128 {
 
 pub fn purge_in(root: &Path, days: u64, now: u128) -> usize {
     let limit = u128::from(days) * 24 * 60 * 60 * 1000;
+    let trash = root.join(TRASH_DIR);
+    if lemmata_env::fs::may_write(root, false, &trash).is_err()
+        || !trash.symlink_metadata().is_ok_and(|m| m.is_dir())
+    {
+        return 0;
+    }
     let mut removed = 0;
-    let Ok(read) = std::fs::read_dir(root.join(TRASH_DIR)) else {
+    let Ok(read) = std::fs::read_dir(&trash) else {
         return 0;
     };
     for e in read.flatten() {
@@ -1257,7 +1270,7 @@ fn drop_unchanged(
             Ok(m) => {
                 let modified = m.modified().unwrap_or(std::time::UNIX_EPOCH);
                 let recent = modified.elapsed().is_ok_and(|d| d < TICK);
-                let hash = if recent {
+                let hash = if recent && m.len() <= (1 << 20) {
                     match lemmata_env::fs::read(&abs) {
                         Ok(b) => Some(hash_bytes(&b)),
                         Err(_) => return true,
@@ -1942,5 +1955,19 @@ mod tests {
         assert_eq!(std::fs::read_to_string(r.join("a.tex")).unwrap(), "a");
         assert_eq!(std::fs::read_to_string(r.join("c.tex")).unwrap(), "c");
         assert!(!t.join("a.tex").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_in_ignores_symlinked_trash_directory() {
+        let proj = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("1000");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("important.txt"), "keep").unwrap();
+        std::fs::create_dir_all(proj.path().join(".lemmata")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), proj.path().join(".lemmata/trash")).unwrap();
+        assert_eq!(purge_in(proj.path(), 0, u128::MAX), 0);
+        assert!(victim.join("important.txt").is_file());
     }
 }

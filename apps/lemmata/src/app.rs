@@ -19,6 +19,8 @@ pub struct App {
     palette: Palette,
     pub(crate) backend: Backend,
     tex: Option<TexStatus>,
+    /// Cached result of `lemmata_tex::tectonic::installed_path().is_some()` so we don't stat disk every frame.
+    tectonic_on_disk: Option<bool>,
     checking: bool,
     was_focused: Option<bool>,
     /// The first-run welcome, and its step.
@@ -151,6 +153,7 @@ impl App {
             palette,
             backend,
             tex: None,
+            tectonic_on_disk: None,
             checking: true,
             was_focused: None,
             welcome: None,
@@ -599,6 +602,7 @@ impl App {
                 }
             }
             Msg::Tex(status) => {
+                self.tectonic_on_disk = None;
                 self.checking = false;
                 if status.detection.ready {
                     self.onboarding = None;
@@ -690,6 +694,7 @@ impl App {
                 });
             }
             Msg::Tectonic(r) => {
+                self.tectonic_on_disk = None;
                 if let Some(o) = &mut self.onboarding {
                     o.installing = false;
                     o.tectonic_error = r.as_ref().err().cloned();
@@ -895,6 +900,7 @@ impl App {
                 .as_ref()
                 .is_none_or(|st| st.close_after_project_save)
             {
+                widgets::modal_focus_restore_by_salt(ctx, "settings-modal");
                 self.prefs = None;
                 return;
             } else if let Some(st) = &mut self.prefs {
@@ -1292,10 +1298,9 @@ impl App {
             A::Example => self.finish_welcome(ctx, true),
             A::Welcome => self.welcome = Some(0),
             A::Reveal(path) => {
-                if let Err(e) = reveal_in_file_manager(std::path::Path::new(&path)) {
-                    self.open_error =
-                        Some(format!("Couldn't show {path} in the file manager: {e}"));
-                }
+                std::thread::spawn(move || {
+                    let _ = reveal_in_file_manager(std::path::Path::new(&path));
+                });
             }
             A::Trash(path) => {
                 let p = path.clone();
@@ -1372,6 +1377,8 @@ pub(crate) fn reveal_in_file_manager(path: &std::path::Path) -> std::io::Result<
             lemmata_env::host(&mut cmd)
                 .args([
                     "--session",
+                    "--print-reply",
+                    "--reply-timeout=1500",
                     "--dest=org.freedesktop.FileManager1",
                     "--type=method_call",
                     "/org/freedesktop/FileManager1",
@@ -1443,6 +1450,14 @@ impl eframe::App for App {
             self.palette = palette;
             theme::apply(&ctx, &palette);
         }
+        let app_modal_open = self.prefs.is_some()
+            || self.dialog.is_some()
+            || self.report.is_some()
+            || (!self.whats_new.is_empty() && self.welcome.is_none())
+            || matches!(self.quit, Quit::Asking(..));
+        if let Some(ws) = &mut self.project {
+            ws.app_modal_open = app_modal_open;
+        }
         self.screen(ui);
         self.show_update(&ctx);
         self.show_dialog(&ctx);
@@ -1496,7 +1511,21 @@ impl App {
         // A first launch waits for TeX detection before the welcome or the TeX setup replaces the
         // window: an empty library with live buttons would show meanwhile.
         if self.welcome.is_some() && self.project.is_none() && self.tex.is_none() {
-            ui.centered_and_justified(|ui| ui.add(egui::Spinner::new()));
+            ui.centered_and_justified(|ui| {
+                let r = ui
+                    .allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover())
+                    .0;
+                let t = ui.input(|i| i.time) as f32 * 4.5;
+                let pts: Vec<egui::Pos2> = (0..=14)
+                    .map(|k| {
+                        let a = t + (k as f32 / 14.0) * std::f32::consts::PI * 1.45;
+                        r.center() + egui::vec2(a.cos(), a.sin()) * 9.0
+                    })
+                    .collect();
+                ui.painter()
+                    .add(egui::Shape::line(pts, egui::Stroke::new(2.0, p.accent)));
+            });
+            ui.ctx().request_repaint_after(theme::ANIMATION_FRAME);
             return;
         }
         if let Some(step) = &mut self.welcome
@@ -1562,7 +1591,10 @@ impl App {
             ws.tex_ready = ready;
             ws.tex_known = self.tex.is_some();
             ws.tex_outdated = self.tex.as_ref().is_some_and(|t| t.detection.outdated);
-            ws.tectonic_installed = lemmata_tex::tectonic::installed_path().is_some()
+            let tectonic_on_disk = *self
+                .tectonic_on_disk
+                .get_or_insert_with(|| lemmata_tex::tectonic::installed_path().is_some());
+            ws.tectonic_installed = tectonic_on_disk
                 || self.tex.as_ref().is_some_and(|t| {
                     t.detection
                         .tools

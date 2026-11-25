@@ -60,15 +60,11 @@ skrifa = "0.49"
 resvg = { version = "0.45.1", default-features = false, features = ["text", "raster-images"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff", "bmp"] }
-wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl"] }
-
-# OpenGL as well, for virtual machines and older graphics without Vulkan or DirectX 12 (wgpu
-# picks it only when nothing better is there). On a Mac, Metal is always there.
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-wgpu = { version = "30", default-features = false, features = ["gles"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl"] }
 
 # Files and links opened from Finder arrive as Apple Events (src/macos.rs); winit already uses these.
 [target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["metal"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
@@ -86,6 +82,7 @@ libloading = "0.8"
 
 # Touchpad pinches on Wayland (src/wayland.rs): winit already builds all of these.
 [target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["vulkan", "gles"] }
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
@@ -93,6 +90,7 @@ raw-window-handle = "0.6"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["dx12", "vulkan", "gles"] }
 rusty-leveldb = "4"
 
 # Embeds icons/icon.ico in the .exe (build.rs): Explorer, Start menu shortcuts and pinned taskbar
@@ -135,6 +133,9 @@ depends = ["libvulkan1", "libxkbcommon0"]
 
 [package.metadata.packager.macos]
 minimum-system-version = "10.15"
+
+[package.metadata.packager.nsis]
+compression = "lzma"
 
 # cargo-generate-rpm (release.yml): cargo-packager makes no .rpm.
 [package.metadata.generate-rpm]

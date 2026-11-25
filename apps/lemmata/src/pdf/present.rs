@@ -205,6 +205,7 @@ impl Presentation {
                     page, scale, image, ..
                 } => {
                     let key = (page, scale_key(scale));
+                    self.asked.remove(&key);
                     let t = ctx.load_texture(
                         format!("present-{page}-{}", key.1),
                         image,
@@ -229,6 +230,7 @@ impl Presentation {
                     sizes.sort_unstable_by_key(|s| std::cmp::Reverse(*s));
                     for (_, k) in sizes.into_iter().skip(3) {
                         self.tex.remove(&k);
+                        self.asked.remove(&k);
                     }
                 }
                 _ => {}

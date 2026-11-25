@@ -150,13 +150,17 @@ impl Shell {
             lemmata_tex::Distribution::Miktex { .. }
         );
         let engine = project.config.engine;
+        let miktex_bin = match engine {
+            lemmata_project::Engine::Tectonic => "xelatex",
+            other => other.binary(),
+        };
         let tools = lemmata_history::Tools {
             latexdiff: &latexdiff,
             latexmk,
             engine_flag: engine.latexmk_flag(),
             installer: Some(detection.installer(lemmata_tex::os::detect().family)),
             extra_args: if miktex {
-                vec![format!("-{0}={0} --enable-installer %O %S", engine.binary()).into()]
+                vec![format!("-{miktex_bin}={miktex_bin} --enable-installer %O %S").into()]
             } else {
                 Vec::new()
             },

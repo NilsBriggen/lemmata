@@ -55,8 +55,8 @@ pub fn rail(
             .layout(egui::Layout::top_down(egui::Align::Center)),
     );
     top.spacing_mut().item_spacing.y = 4.0;
-    let logo_resp = widgets::logo_mark(&mut top, 32.0);
-    if logo_resp.on_hover_text("Lemmata").clicked() {
+    let logo_resp = widgets::logo_button(&mut top, p, 32.0, "Lemmata");
+    if logo_resp.on_hover_text("Back to all projects").clicked() {
         action = Some(Action::Library);
     }
     top.add_space(10.0);
@@ -333,6 +333,7 @@ pub fn toolbar(
         icons::CHEVRON_DOWN,
         p.muted,
     );
+    widgets::focus_ring(&l, &presp, prect, p, theme::R_MD);
     if presp
         .on_hover_text("Project menu")
         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -550,6 +551,7 @@ pub fn toolbar(
             FontId::proportional(12.0),
             p.muted,
         );
+        widgets::focus_ring(&r, &presp, prect, p, theme::R_MD);
         if presp
             .on_hover_text(format!("Command palette ({shortcut})"))
             .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -570,7 +572,7 @@ pub fn files_panel(
     ws: &mut Workspace,
     settings: &mut Settings,
     backend: &Backend,
-) {
+) -> bool {
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, 0, p.app);
 
@@ -689,10 +691,13 @@ pub fn files_panel(
                 p.accent_text,
             );
         }
+        widgets::focus_ring(ui, &resp, btn_r, p, theme::R);
         if resp.clicked() {
             ws.open_side(SidePanel::Git, backend, settings);
+            return true;
         }
     }
+    false
 }
 
 pub fn outline_panel(ui: &mut Ui, p: &Palette, ws: &mut Workspace, backend: &Backend) {
@@ -2340,7 +2345,8 @@ pub fn menus(
                 .data(|d| d.get_temp::<u64>(seen_id))
                 .is_none_or(|f| frame > f + 1);
             ctx.data_mut(|d| d.insert_temp(seen_id, frame));
-            let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+            let mut close = !ws.modal_open()
+                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
             let mut clear = false;
             let area = egui::Area::new(egui::Id::unique("notices-drawer"))
                 .order(egui::Order::Foreground)

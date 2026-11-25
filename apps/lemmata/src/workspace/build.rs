@@ -607,7 +607,7 @@ impl Workspace {
             note: self.build.note.as_deref(),
             failed: self.build.failed(),
             status: self.build.outcome.as_ref().map(|o| o.status),
-            id: self.build.seq,
+            id: self.build.diag_gen,
             problems_open,
             raw_log_open: self.build.raw_log_open,
             source: &source,
@@ -630,6 +630,10 @@ impl Workspace {
                     if self.toggle_side(super::panels::SidePanel::Problems, backend, settings) {
                         settings_changed = true;
                     }
+                }
+                PaneAction::OpenProblems => {
+                    self.open_side(super::panels::SidePanel::Problems, backend, settings);
+                    settings_changed = true;
                 }
                 PaneAction::RawLog(open) => {
                     self.build.raw_log_open = open;
@@ -667,7 +671,7 @@ impl Workspace {
                     settings_changed = true;
                 }
                 PaneAction::ReadLog => {
-                    let id = self.build.seq;
+                    let id = self.build.diag_gen;
                     self.spawn(backend, move |shell| Msg::Log(id, shell.read_log()));
                 }
                 PaneAction::OpenCommand(command) => {

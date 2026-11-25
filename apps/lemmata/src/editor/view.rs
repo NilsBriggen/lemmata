@@ -150,6 +150,17 @@ pub struct Editor {
     hl_version: u64,
     heights: Vec<f32>,
     heights_key: (u64, u32, u32, bool, u32),
+    /// Cached cumulative line tops (`PAD_TOP` + sum of preceding heights), rebuilt only when heights change.
+    tops: Vec<f32>,
+    tops_end: f32,
+    tops_dirty: bool,
+    /// Cross-frame cache of laid-out visible lines (`Arc<Galley>`), invalidated on edit or style change.
+    line_layouts: HashMap<usize, LineLayout>,
+    line_layouts_key: (u64, u32, u32, bool, u32, bool),
+    /// Memoized `cmd::matching_bracket` for `(doc.version, main.head)`.
+    bracket_cache: (u64, usize, Option<(usize, usize)>),
+    /// Memoized `writing::math::math_at` for `(doc.version, main.head)`.
+    math_cache: (u64, usize, Option<crate::writing::math::Span>),
     /// Heights by line text, so an edit lays out only the lines it changed.
     height_cache: HashMap<u64, f32>,
     /// Measured heights for lines corrected during rendering of long (`>1500`-line) files,
@@ -241,6 +252,13 @@ impl Editor {
             hl_version: u64::MAX,
             heights: Vec::new(),
             heights_key: (u64::MAX, 0, 0, false, 0),
+            tops: Vec::new(),
+            tops_end: PAD_TOP,
+            tops_dirty: true,
+            line_layouts: HashMap::new(),
+            line_layouts_key: (u64::MAX, 0, 0, false, 0, false),
+            bracket_cache: (u64::MAX, usize::MAX, None),
+            math_cache: (u64::MAX, usize::MAX, None),
             height_cache: HashMap::new(),
             measured_heights: HashMap::new(),
             cache_key: (0, 0, false, 0),
@@ -314,7 +332,10 @@ impl Editor {
 
     /// Inserts a template at the selection (a toolbar button, a dialog), as a snippet.
     pub fn insert_template(&mut self, template: &str, indent: Indent) {
+        self.end_snippet();
+        flush_journal(self);
         let fields = cmd::insert_template(&mut self.doc, template, indent);
+        flush_journal(self);
         self.snippet = super::snippet::Active::start(fields);
         after_command(self);
     }
@@ -357,7 +378,10 @@ impl Editor {
 
     /// Replaces `from..to` with a snippet (a completion).
     pub fn apply_snippet(&mut self, from: usize, to: usize, template: &str, indent: Indent) {
+        self.end_snippet();
+        flush_journal(self);
         let fields = super::snippet::insert(&mut self.doc, from, to, template, indent);
+        flush_journal(self);
         self.snippet = super::snippet::Active::start(fields);
         self.reveal = true;
     }
@@ -530,6 +554,7 @@ impl Editor {
 }
 
 /// A laid-out line: the text after its leading whitespace in a galley that starts `hang` in.
+#[derive(Clone)]
 struct LineLayout {
     galley: Arc<Galley>,
     ws: Vec<char>,
@@ -569,19 +594,19 @@ struct Lay<'a> {
 }
 
 impl Lay<'_> {
-    fn ws_width(&self, ws: &[char]) -> f32 {
-        cmd::indent_columns(&ws.iter().collect::<String>(), self.style.indent.tab_size()) as f32
-            * self.cw
-    }
-
     fn layout(&self, ui: &Ui, text: &str, tokens: &[(usize, usize, Token)]) -> LineLayout {
-        let chars: Vec<char> = text.chars().collect();
-        let ws_len = chars
-            .iter()
-            .take_while(|c| **c == ' ' || **c == '\t')
+        // Map char index -> UTF-8 byte offset once so LayoutJob::append slices `&str` directly
+        // without allocating a temporary `String` per token span.
+        let mut char_bytes: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+        let char_count = char_bytes.len();
+        char_bytes.push(text.len());
+        let ws_len = text
+            .bytes()
+            .take_while(|&b| b == b' ' || b == b'\t')
             .count();
-        let ws: Vec<char> = chars[..ws_len].to_vec();
-        let ws_width = self.ws_width(&ws);
+        let ws: Vec<char> = text[..ws_len].chars().collect();
+        let ws_width =
+            cmd::indent_columns(&text[..ws_len], self.style.indent.tab_size()) as f32 * self.cw;
         // Wrapped rows continue under the indentation; a very deep line keeps half the width.
         let hang = if self.style.wrap {
             ws_width.min((self.text_w / 2.0).max(0.0))
@@ -604,11 +629,12 @@ impl Lay<'_> {
         let mut col = ws_len;
         let mut first = true;
         let mut push = |job: &mut LayoutJob, from: usize, to: usize, fmt: TextFormat| {
+            let to = to.min(char_count);
             if from >= to {
                 return;
             }
-            let s: String = chars[from..to].iter().collect();
-            job.append(&s, if first { lead } else { 0.0 }, fmt);
+            let s = &text[char_bytes[from]..char_bytes[to]];
+            job.append(s, if first { lead } else { 0.0 }, fmt);
             first = false;
         };
         for &(a, b, t) in tokens {
@@ -624,8 +650,8 @@ impl Lay<'_> {
             push(&mut job, a, b, fmt);
             col = col.max(b);
         }
-        if col < chars.len() {
-            push(&mut job, col, chars.len(), base.clone());
+        if col < char_count {
+            push(&mut job, col, char_count, base.clone());
         }
         if first {
             job.append("", lead, base);
@@ -813,6 +839,41 @@ impl Geo<'_> {
     }
 }
 
+/// Applies queued document edits in `ed.doc.journal` to folds, active snippet fields, prose
+/// dirty-line tracking, unmatched delimiters, and problem spans.
+fn flush_journal(ed: &mut Editor) {
+    let journal = std::mem::take(&mut ed.doc.journal);
+    if journal.is_empty() {
+        return;
+    }
+    // Only folds that moved change which lines are hidden; without any, the heights are
+    // patched after the edit instead of measured again.
+    if !ed.folds.0.is_empty() {
+        ed.folds.map(&journal, &ed.doc);
+        ed.folds_gen += 1;
+    }
+    if let Some(s) = &mut ed.snippet {
+        s.map(&journal);
+    }
+    let first_line = journal
+        .iter()
+        .filter_map(|c| c.0.first())
+        .map(|c| ed.doc.line_of(c.from.min(ed.doc.len())))
+        .min()
+        .unwrap_or(0);
+    ed.prose.1 = ed.prose.1.min(first_line + 1);
+    for u in &mut ed.unmatched.1 {
+        *u = (
+            super::buffer::Doc::map_through(&journal, u.0, -1),
+            super::buffer::Doc::map_through(&journal, u.1, 1),
+        );
+    }
+    for pr in &mut ed.problems {
+        pr.from = super::buffer::Doc::map_through(&journal, pr.from, -1);
+        pr.to = super::buffer::Doc::map_through(&journal, pr.to, 1).max(pr.from);
+    }
+}
+
 /// `label` names the editor for screen readers ("Text of main.tex").
 #[allow(clippy::too_many_arguments)]
 pub fn show(
@@ -827,35 +888,7 @@ pub fn show(
 ) -> Output {
     let mut out = Output::default();
     checks.spell.poll();
-    let journal = std::mem::take(&mut ed.doc.journal);
-    if !journal.is_empty() {
-        // Only folds that moved change which lines are hidden; without any, the heights are
-        // patched after the edit instead of measured again.
-        if !ed.folds.0.is_empty() {
-            ed.folds.map(&journal, &ed.doc);
-            ed.folds_gen += 1;
-        }
-        if let Some(s) = &mut ed.snippet {
-            s.map(&journal);
-        }
-        let first_line = journal
-            .iter()
-            .filter_map(|c| c.0.first())
-            .map(|c| ed.doc.line_of(c.from.min(ed.doc.len())))
-            .min()
-            .unwrap_or(0);
-        ed.prose.1 = ed.prose.1.min(first_line + 1);
-        for u in &mut ed.unmatched.1 {
-            *u = (
-                super::buffer::Doc::map_through(&journal, u.0, -1),
-                super::buffer::Doc::map_through(&journal, u.1, 1),
-            );
-        }
-        for pr in &mut ed.problems {
-            pr.from = super::buffer::Doc::map_through(&journal, pr.from, -1);
-            pr.to = super::buffer::Doc::map_through(&journal, pr.to, 1).max(pr.from);
-        }
-    }
+    flush_journal(ed);
     let mut area = ui.available_rect_before_wrap();
     ui.painter().rect_filled(area, 0, p.code_bg);
     ui.allocate_rect(area, Sense::hover());
@@ -904,14 +937,32 @@ pub fn show(
     }
 
     update_heights(ui, ed, &lay);
-    let mut tops = Vec::with_capacity(ed.heights.len());
-    let mut y = PAD_TOP;
-    for h in &ed.heights {
-        tops.push(y);
-        y += h;
+    if ed.tops_dirty || ed.tops.len() != ed.heights.len() {
+        ed.tops.clear();
+        ed.tops.reserve(ed.heights.len());
+        let mut y = PAD_TOP;
+        for h in &ed.heights {
+            ed.tops.push(y);
+            y += h;
+        }
+        ed.tops_end = y;
+        ed.tops_dirty = false;
     }
-    let total = y + area.height() * 0.4;
+    let tops = ed.tops.clone();
+    let total = ed.tops_end + area.height() * 0.4;
 
+    let lkey = (
+        ed.doc.version,
+        lay.text_w.to_bits(),
+        lay.style.font.size.to_bits(),
+        lay.style.wrap,
+        tab as u32,
+        p.dark,
+    );
+    if ed.line_layouts_key != lkey {
+        ed.line_layouts.clear();
+        ed.line_layouts_key = lkey;
+    }
     let hidden = ed.hidden.clone();
     let mut geo = Geo {
         lay: &lay,
@@ -1052,6 +1103,7 @@ pub fn show(
         painter.rect_filled(gutter, 0, p.gutter);
 
         let focused = ui.memory(|m| m.has_focus(id));
+        let win_focused = ui.input(|i| i.viewport().focused != Some(false));
         let head_lines: Vec<usize> = ed
             .doc
             .selection
@@ -1060,7 +1112,14 @@ pub fn show(
             .map(|r| ed.doc.line_of(r.head))
             .collect();
         let bracket = if main.is_empty() {
-            cmd::matching_bracket(&ed.doc, main.head)
+            if ed.bracket_cache.0 != ed.doc.version || ed.bracket_cache.1 != main.head {
+                ed.bracket_cache = (
+                    ed.doc.version,
+                    main.head,
+                    cmd::matching_bracket(&ed.doc, main.head),
+                );
+            }
+            ed.bracket_cache.2
         } else {
             None
         };
@@ -1124,20 +1183,30 @@ pub fn show(
                 continue;
             }
             let text = ed.doc.line(n);
-            let tokens = if ed.tex {
-                ed.hl.tokens(n, |k| ed.doc.line(k))
-            } else if ed.path.ends_with(".bib") {
-                super::highlight::bib_line(&text)
+            let l = if let Some(cached) = ed.line_layouts.get(&n) {
+                cached.clone()
             } else {
-                Vec::new()
+                let tokens = if ed.tex {
+                    ed.hl.tokens(n, |k| ed.doc.line(k))
+                } else if ed.path.ends_with(".bib") {
+                    super::highlight::bib_line(&text)
+                } else {
+                    Vec::new()
+                };
+                let built = lay.layout(ui, &text, &tokens);
+                if ed.line_layouts.len() > 400 {
+                    ed.line_layouts.clear();
+                }
+                ed.line_layouts.insert(n, built.clone());
+                built
             };
-            let l = lay.layout(ui, &text, &tokens);
             if (l.height - ed.heights[n]).abs() > 0.5 {
                 // A guessed height was off; remember it for future re-measures and update next frame.
                 ed.height_cache.insert(hash(&text), l.height);
                 ed.measured_heights
                     .insert(n, (text.chars().count(), l.height));
                 ed.heights[n] = l.height;
+                ed.tops_dirty = true;
                 ui.ctx().request_repaint();
             }
             let top = tops[n];
@@ -1530,20 +1599,25 @@ pub fn show(
         }
 
         // The maths under the cursor, previewed above it (writing/math.ts).
-        if ed.tex
-            && focused
-            && main.is_empty()
-            && style.math_preview
-            && let Some(span) = crate::writing::math::math_at(&ed.doc, main.head)
-            && !span.tex.trim().is_empty()
-        {
-            // Inline maths is anchored at its start; tall display maths at the cursor.
-            let anchor_pos = if span.display { main.head } else { span.from };
-            let n = ed.doc.line_of(anchor_pos);
-            if let Some(l) = geo.layouts.get(&n) {
-                let pt = col_pos(l, anchor_pos - ed.doc.line_start(n), cw, tab).0;
-                let at = screen(text_x, tops[n]) + pt.to_vec2();
-                math_preview(ui, p, ed, &span.tex, span.display, at, style.font.size, lh);
+        if ed.tex && focused && main.is_empty() && style.math_preview {
+            if ed.math_cache.0 != ed.doc.version || ed.math_cache.1 != main.head {
+                ed.math_cache = (
+                    ed.doc.version,
+                    main.head,
+                    crate::writing::math::math_at(&ed.doc, main.head),
+                );
+            }
+            if let Some(span) = ed.math_cache.2.clone()
+                && !span.tex.trim().is_empty()
+            {
+                // Inline maths is anchored at its start; tall display maths at the cursor.
+                let anchor_pos = if span.display { main.head } else { span.from };
+                let n = ed.doc.line_of(anchor_pos);
+                if let Some(l) = geo.layouts.get(&n) {
+                    let pt = col_pos(l, anchor_pos - ed.doc.line_start(n), cw, tab).0;
+                    let at = screen(text_x, tops[n]) + pt.to_vec2();
+                    math_preview(ui, p, ed, &span.tex, span.display, at, style.font.size, lh);
+                }
             }
         }
 
@@ -1558,10 +1632,11 @@ pub fn show(
             }
         }
 
-        // Cursors: 2 px accent, blinking at CodeMirror's 1.2 s, while focused.
+        // Cursors: 2 px accent, blinking at CodeMirror's 1.2 s, while focused (only blink when the
+        // OS window is active so an unfocused/minimized window stays at 0% idle CPU).
         if focused {
             let since = now - ed.last_activity;
-            if since < 0.6 || ((since / 0.6) as u64).is_multiple_of(2) {
+            if !win_focused || since < 0.6 || ((since / 0.6) as u64).is_multiple_of(2) {
                 for r in &ed.doc.selection.ranges {
                     let n = ed.doc.line_of(r.head);
                     if let Some(l) = geo.layouts.get(&n) {
@@ -1575,10 +1650,12 @@ pub fn show(
                     }
                 }
             }
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_secs_f64(
-                    (0.6 - since % 0.6).max(0.05),
-                ));
+            if win_focused {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs_f64(
+                        (0.6 - since % 0.6).max(0.05),
+                    ));
+            }
             // Where an input method shows its candidates, and what it is composing.
             let n = ed.doc.line_of(main.head);
             if let Some(l) = geo.layouts.get(&n) {
@@ -2466,6 +2543,8 @@ pub fn show(
         }
     }
 
+    // Map edits typed during this frame before checking whether the cursor left the snippet.
+    flush_journal(ed);
     // Leaving the snippet's fields ends it.
     if ed
         .snippet
@@ -3180,38 +3259,31 @@ fn math_preview(
                 .stroke(Stroke::new(1.0, p.border))
                 .corner_radius(crate::theme::R_LG)
                 .shadow(p.shadow)
-                .inner_margin(egui::Margin::same(8))
+                .inner_margin(egui::Margin::symmetric(14, 10))
                 .show(ui, |ui| {
                     ui.set_max_width(ui.ctx().content_rect().width() * 0.7);
-                    egui::Frame::new()
-                        .fill(p.surface_2)
-                        .stroke(Stroke::new(1.0, p.border))
-                        .corner_radius(crate::theme::R_MD)
-                        .inner_margin(egui::Margin::symmetric(14, 10))
-                        .show(ui, |ui| match &result {
-                            Ok(m) => {
-                                ui.image((m.texture.id(), m.size));
-                            }
-                            Err(e) => {
-                                if let Some(old) = &ed.last_math {
-                                    ui.add(
-                                        egui::Image::new((old.texture.id(), old.size))
-                                            .tint(Color32::from_white_alpha(115)),
-                                    );
-                                }
-                                ui.add_space(4.0);
-                                // Still drawing is not a mistake in the formula.
-                                ui.label(
-                                    egui::RichText::new(e).font(FontId::monospace(12.0)).color(
-                                        if e == render::PENDING {
-                                            p.muted
-                                        } else {
-                                            p.error
-                                        },
-                                    ),
+                    match &result {
+                        Ok(m) => {
+                            ui.image((m.texture.id(), m.size));
+                        }
+                        Err(e) => {
+                            if let Some(old) = &ed.last_math {
+                                ui.add(
+                                    egui::Image::new((old.texture.id(), old.size))
+                                        .tint(Color32::from_white_alpha(115)),
                                 );
                             }
-                        });
+                            ui.add_space(4.0);
+                            // Still drawing is not a mistake in the formula.
+                            ui.label(egui::RichText::new(e).font(FontId::monospace(12.0)).color(
+                                if e == render::PENDING {
+                                    p.muted
+                                } else {
+                                    p.error
+                                },
+                            ));
+                        }
+                    }
                 });
         });
 }
@@ -3528,16 +3600,22 @@ fn update_heights(ui: &Ui, ed: &mut Editor, lay: &Lay) {
         let n = ed.doc.line_count();
         let old = ed.heights.len();
         if from + tail <= n.min(old) {
-            let delta = n as isize - old as isize;
-            let mut next = HashMap::with_capacity(ed.measured_heights.len());
-            for (idx, val) in ed.measured_heights.drain() {
-                if idx < from {
-                    next.insert(idx, val);
-                } else if idx >= old - tail {
-                    next.insert((idx as isize + delta) as usize, val);
+            if n == old {
+                for idx in from..n - tail {
+                    ed.measured_heights.remove(&idx);
                 }
+            } else {
+                let delta = n as isize - old as isize;
+                let mut next = HashMap::with_capacity(ed.measured_heights.len());
+                for (idx, val) in ed.measured_heights.drain() {
+                    if idx < from {
+                        next.insert(idx, val);
+                    } else if idx >= old - tail {
+                        next.insert((idx as isize + delta) as usize, val);
+                    }
+                }
+                ed.measured_heights = next;
             }
-            ed.measured_heights = next;
         } else {
             ed.measured_heights.clear();
         }
@@ -3580,20 +3658,46 @@ fn update_heights(ui: &Ui, ed: &mut Editor, lay: &Lay) {
     {
         let (n, old) = (ed.doc.line_count(), ed.heights.len());
         if from + tail <= n.min(old) {
-            let kept = ed.heights.split_off(old - tail);
-            ed.heights.truncate(from);
-            for i in from..n - tail {
-                let h = measure(
-                    &mut ed.height_cache,
-                    &ed.measured_heights,
-                    &ed.doc,
-                    i,
-                    ed.doc.line_len(i),
-                );
-                ed.heights.push(h);
+            if n == old {
+                // Common case (typing/deleting within existing lines): update in place with zero Vec reallocations.
+                let mut any_changed = false;
+                for i in from..n - tail {
+                    let h = measure(
+                        &mut ed.height_cache,
+                        &ed.measured_heights,
+                        &ed.doc,
+                        i,
+                        ed.doc.line_len(i),
+                    );
+                    if (ed.heights[i] - h).abs() > f32::EPSILON {
+                        ed.heights[i] = h;
+                        any_changed = true;
+                    }
+                }
+                if ed.hidden.len() != n {
+                    ed.hidden.resize(n, false);
+                }
+                if any_changed {
+                    ed.tops_dirty = true;
+                }
+            } else {
+                let kept = ed.heights.split_off(old - tail);
+                ed.heights.truncate(from);
+                for i in from..n - tail {
+                    let h = measure(
+                        &mut ed.height_cache,
+                        &ed.measured_heights,
+                        &ed.doc,
+                        i,
+                        ed.doc.line_len(i),
+                    );
+                    ed.heights.push(h);
+                }
+                ed.heights.extend(kept);
+                ed.hidden.clear();
+                ed.hidden.resize(n, false);
+                ed.tops_dirty = true;
             }
-            ed.heights.extend(kept);
-            ed.hidden = vec![false; n];
             ed.heights_key = hkey;
         }
     }
@@ -3613,6 +3717,7 @@ fn update_heights(ui: &Ui, ed: &mut Editor, lay: &Lay) {
             ed.heights.push(h);
         }
         ed.heights_key = hkey;
+        ed.tops_dirty = true;
     }
 }
 
@@ -4482,5 +4587,57 @@ mod tests {
             .collect();
         assert_eq!(marks, [(11, 14, true)], "\"has\" on line 3");
         h.snapshot("grammar");
+    }
+
+    #[test]
+    fn multi_field_snippet_survives_frames_typing_and_tab() {
+        let p = theme::LIGHT;
+        let mut checks = crate::writing::Checks::default();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([520.0, 200.0])
+            .with_context_setup(move |ctx| {
+                theme::install_fonts(ctx);
+                theme::apply(ctx, &p);
+            })
+            .build_ui_state(
+                move |ui, ed: &mut Editor| {
+                    let rect = ui.ctx().content_rect();
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                    show(
+                        &mut child,
+                        &p,
+                        ed,
+                        &style(),
+                        egui::Id::unique("ed-snip"),
+                        "Editor",
+                        &Lookups::default(),
+                        &mut checks,
+                    );
+                },
+                Editor::new("", true),
+            );
+        h.run();
+        h.state_mut()
+            .insert_template(r"\frac{${a}}{${b}}", Indent::Spaces(2));
+        h.run_steps(2);
+        assert!(
+            h.state().snippet.is_some(),
+            "snippet must remain active across frames after insertion"
+        );
+        // Typing into the first field must keep the snippet alive, then Tab jumps to the second.
+        h.ctx
+            .memory_mut(|m| m.request_focus(egui::Id::unique("ed-snip")));
+        h.run();
+        h.input_mut().events.push(egui::Event::Text("x".into()));
+        h.run_steps(2);
+        assert!(
+            h.state().snippet.is_some(),
+            "snippet must remain active after typing into a field"
+        );
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.input_mut().events.push(egui::Event::Text("y".into()));
+        h.run_steps(2);
+        assert_eq!(h.state().doc.text(), r"\frac{x}{y}");
     }
 }

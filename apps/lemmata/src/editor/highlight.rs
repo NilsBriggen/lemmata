@@ -147,8 +147,9 @@ impl Stream<'_> {
             false
         }
     }
-    fn current(&self) -> String {
-        self.s[self.start..self.pos].iter().collect()
+    fn current_after_backslash_eq(&self, target: &str) -> bool {
+        let slice = &self.s[self.start + 1..self.pos];
+        slice.len() == target.len() && slice.iter().copied().eq(target.chars())
     }
 }
 
@@ -162,13 +163,15 @@ fn cmd_char(c: char) -> bool {
 
 fn normal(s: &mut Stream, st: &mut State) -> Option<Token> {
     if s.match_cmd(cmd_char) {
-        let name = s.current()[1..].to_owned();
+        let is_verb = s.current_after_backslash_eq("verb");
+        let is_cap_verb = !is_verb && s.current_after_backslash_eq("Verb");
+        let is_lstinline = !is_verb && !is_cap_verb && s.current_after_backslash_eq("lstinline");
         // `\verb|$x|`, `\Verb|$x|`, `\lstinline|$x|`: what's between the delimiters is literal.
-        if matches!(name.as_str(), "verb" | "Verb" | "lstinline") {
-            if name != "lstinline" && s.peek() == Some('*') {
+        if is_verb || is_cap_verb || is_lstinline {
+            if !is_lstinline && s.peek() == Some('*') {
                 s.pos += 1;
             }
-            if name != "verb" && s.peek() == Some('[') {
+            if !is_verb && s.peek() == Some('[') {
                 let mut depth = 0i32;
                 while let Some(c) = s.next() {
                     if c == '[' {
@@ -182,7 +185,7 @@ fn normal(s: &mut Stream, st: &mut State) -> Option<Token> {
                 }
             }
             if let Some(d) = s.next() {
-                if name == "lstinline" && d == '{' {
+                if is_lstinline && d == '{' {
                     let mut depth = 1i32;
                     while let Some(c) = s.next() {
                         if c == '{' {
@@ -201,7 +204,10 @@ fn normal(s: &mut Stream, st: &mut State) -> Option<Token> {
             return Some(Token::Atom);
         }
         let plug = Plug {
-            name: PLUGINS.iter().find(|p| **p == name).copied(),
+            name: PLUGINS
+                .iter()
+                .find(|p| s.current_after_backslash_eq(p))
+                .copied(),
             bracket_no: 0,
         };
         st.cmd.push(plug);
@@ -500,7 +506,13 @@ fn code_without_inline_verbatim(text: &str) -> String {
 /// The verbatim-like environment this line opens and leaves open, outside comments and inline
 /// verbatim commands.
 fn opens_verbatim(text: &str) -> Option<&'static str> {
+    if !text.contains("\\begin{") {
+        return None;
+    }
     let code = code_without_inline_verbatim(text);
+    if !code.contains("\\begin{") {
+        return None;
+    }
     super::commands::VERBATIM.into_iter().find(|name| {
         code.rfind(&format!("\\begin{{{name}}}"))
             .is_some_and(|i| !code[i..].contains(&format!("\\end{{{name}}}")))

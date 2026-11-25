@@ -377,25 +377,31 @@ pub struct Grammar {
 impl Grammar {
     /// Applies the settings; another server or language forgets what was found.
     pub fn configure(&mut self, mode: &str, custom_url: &str, spell_lang: &str) {
-        let url = if mode == "custom" {
-            custom_url.trim().to_owned()
+        let want_url = if mode == "custom" {
+            custom_url.trim()
         } else {
-            LOCAL_URL.to_owned()
+            LOCAL_URL
         };
-        let target = (mode != "off")
-            .then(|| lt_language(spell_lang))
-            .flatten()
-            .map(|l| (url, l.to_owned()));
-        if target != self.target {
-            self.target = target;
-            self.found.clear();
-            self.asked.clear();
-            self.error = None;
-            self.generation += 1;
+        let want_lang = (mode != "off").then(|| lt_language(spell_lang)).flatten();
+        let unchanged = match (&self.target, want_lang) {
+            (None, None) => true,
+            (Some((u, l)), Some(wl)) => u == want_url && l == wl,
+            _ => false,
+        };
+        if unchanged {
+            return;
         }
+        self.target = want_lang.map(|l| (want_url.to_owned(), l.to_owned()));
+        self.found.clear();
+        self.asked.clear();
+        self.error = None;
+        self.generation += 1;
     }
 
     pub fn set_ignored(&mut self, ids: &[String]) {
+        if ids.len() == self.ignored.len() && ids.iter().all(|id| self.ignored.contains(id)) {
+            return;
+        }
         let set: HashSet<String> = ids.iter().cloned().collect();
         if set != self.ignored {
             self.ignored = set;

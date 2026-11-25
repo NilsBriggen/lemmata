@@ -11,7 +11,6 @@ mod index;
 
 use index::Index;
 use serde::Serialize;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -138,25 +137,23 @@ fn load_in(cache: &Mutex<Cache>, pdf: &Path) -> Option<Arc<Index>> {
 }
 
 fn parse_file(path: &Path) -> Option<Arc<Index>> {
+    use std::io::{BufRead, BufReader};
     // A thesis's synctex is tens of megabytes; past this it is something else (a file that
     // unpacks to gigabytes), and the synctex program answers instead.
     const LIMIT: u64 = 512 << 20;
     if std::fs::metadata(path).ok()?.len() > LIMIT {
         return None;
     }
-    let mut bytes = lemmata_env::fs::read(path).ok()?;
-    if bytes.starts_with(&[0x1f, 0x8b]) {
-        let mut text = Vec::new();
-        flate2::read::GzDecoder::new(&bytes[..])
-            .take(LIMIT + 1)
-            .read_to_end(&mut text)
-            .ok()?;
-        if text.len() as u64 > LIMIT {
-            return None;
-        }
-        bytes = text;
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let is_gzip = reader.fill_buf().ok()?.starts_with(&[0x1f, 0x8b]);
+    let parent = path.parent()?;
+    if is_gzip {
+        let gz = BufReader::with_capacity(64 * 1024, flate2::read::GzDecoder::new(reader));
+        Index::parse_reader(gz, parent, LIMIT).map(Arc::new)
+    } else {
+        Index::parse_reader(reader, parent, LIMIT).map(Arc::new)
     }
-    Index::parse(&String::from_utf8_lossy(&bytes), path.parent()?).map(Arc::new)
 }
 
 fn run(synctex: &Path, args: &[&str]) -> Result<String> {

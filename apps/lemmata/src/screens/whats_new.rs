@@ -15,6 +15,27 @@ pub struct Release {
 /// Newest first.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "4.0.0",
+        highlights: &[
+            (
+                "A refreshed interface and new icon",
+                "Every screen—Library, Workspace, Preferences, dialogs, and panels—has been redesigned with cleaner visual hierarchy, calmer surfaces, and the new Typeset Split icon.",
+            ),
+            (
+                "Guided Welcome & TeX setup",
+                "A new four-step setup flow walks through your TeX engine, visual System/Light/Dark theme and typography previews, writing workflow, and first project.",
+            ),
+            (
+                "Faster editing, builds, SyncTeX and Git",
+                "Cross-frame editor line caching, zero-idle-CPU background behavior, cached .bib parsing, streaming SyncTeX, fewer build directory walks, and faster Git & History operations.",
+            ),
+            (
+                "Smaller install footprint",
+                "Gzip-compressed bundled dictionaries, OS-gated GPU backends, and tuned release profiles cut disk and installer size without removing any features.",
+            ),
+        ],
+    },
+    Release {
         version: "3.3.0",
         highlights: &[
             (

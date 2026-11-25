@@ -319,7 +319,7 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
                 Rect::from_min_max(pos2(top.left(), nr.bottom()), top.max),
             )
         } else {
-            let nr = Rect::from_min_size(top.min, Vec2::new(212.0, top.height()));
+            let nr = Rect::from_min_size(top.min, Vec2::new(232.0, top.height()));
             (nr, Rect::from_min_max(pos2(nr.right(), top.top()), top.max))
         };
         ui.painter().rect_filled(
@@ -357,6 +357,9 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
             .count();
         let mut nav_ui =
             ui.new_child(egui::UiBuilder::new().max_rect(nav_rect.shrink2(Vec2::new(12.0, 14.0))));
+        if busy {
+            nav_ui.disable();
+        }
         if compact {
             nav_ui.spacing_mut().item_spacing.y = 6.0;
             nav_ui.label(
@@ -530,6 +533,9 @@ pub fn new_project(ctx: &egui::Context, p: &Palette, st: &mut NewProject) -> Opt
         let gallery_rect =
             Rect::from_min_max(pos2(main_rect.left(), topbar.bottom()), main_rect.max);
         let mut gal_ui = main_ui.new_child(egui::UiBuilder::new().max_rect(gallery_rect));
+        if busy {
+            gal_ui.disable();
+        }
         egui::ScrollArea::vertical()
             .id_salt("np-templates")
             .auto_shrink([false, false])
@@ -743,8 +749,19 @@ fn gallery_grid(ui: &mut Ui, p: &Palette, st: &mut NewProject, action: &mut Opti
                             pos2(thumb.center().x - pw / 2.0, thumb.top() + 10.0),
                             pos2(thumb.center().x + pw / 2.0, thumb.bottom()),
                         );
-                        painter.add(theme::SHADOW_SM.as_shape(page, 2));
-                        painter.rect_filled(page, 2, Color32::WHITE);
+                        painter.add(p.shadow_card.as_shape(page, 2));
+                        let page_bg = if p.dark { p.surface } else { Color32::WHITE };
+                        let title_bar = if p.dark {
+                            p.faint
+                        } else {
+                            Color32::from_rgb(0x9a, 0xa3, 0xad)
+                        };
+                        let line_bar = if p.dark {
+                            p.border_strong
+                        } else {
+                            Color32::from_rgb(0xdf, 0xe3, 0xe7)
+                        };
+                        painter.rect_filled(page, 2, page_bg);
                         let mut ly = page.top() + 14.0;
                         painter.rect_filled(
                             Rect::from_min_size(
@@ -752,7 +769,7 @@ fn gallery_grid(ui: &mut Ui, p: &Palette, st: &mut NewProject, action: &mut Opti
                                 Vec2::new(pw - 24.0, 5.0),
                             ),
                             2,
-                            Color32::from_rgb(0x9a, 0xa3, 0xad),
+                            title_bar,
                         );
                         ly += 12.0;
                         for k in 0..4 {
@@ -763,7 +780,7 @@ fn gallery_grid(ui: &mut Ui, p: &Palette, st: &mut NewProject, action: &mut Opti
                                     Vec2::new(lw.max(10.0), 3.0),
                                 ),
                                 1,
-                                Color32::from_rgb(0xdf, 0xe3, 0xe7),
+                                line_bar,
                             );
                             ly += 9.0;
                         }

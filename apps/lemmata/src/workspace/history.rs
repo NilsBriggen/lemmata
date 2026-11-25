@@ -1007,6 +1007,8 @@ impl Workspace {
                     ((id, path, other, then, now), removes)
                 },
                 |ws, _, (d, removes)| {
+                    ws.build.raw_log_open = false;
+                    ws.history.review = None;
                     ws.history.diff = Some(d);
                     ws.history.restore_removes = removes;
                     ws.history.diff_cache = None;
@@ -1231,6 +1233,8 @@ impl Workspace {
                     ws.history.busy = None;
                     match r {
                         Ok((base, list, files)) => {
+                            ws.build.raw_log_open = false;
+                            ws.history.diff = None;
                             ws.history.snapshots = list;
                             ws.history.accepted.clear();
                             ws.history.review = Some((base, files));
@@ -1317,7 +1321,7 @@ impl Workspace {
                     for p in open {
                         ws.reload(b, &p);
                     }
-                    b.spawn(|shell| Msg::Info(shell.project_info_cmd()));
+                    ws.spawn(b, |shell| Msg::Info(shell.project_info_cmd()));
                     ws.load_history(b);
                     ws.build_soon(false, false);
                 }

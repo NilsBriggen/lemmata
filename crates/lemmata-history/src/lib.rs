@@ -107,12 +107,16 @@ pub fn parse_status(z: &str, prefix: &str) -> Vec<FileStatus> {
 /// that opens an install dialog when the Command Line Tools are missing, and
 /// Lemmata calls git after every save, so it only counts when they are there.
 fn find_git() -> Option<PathBuf> {
-    let git = which::which("git").ok()?;
-    if cfg!(target_os = "macos") && git == Path::new("/usr/bin/git") {
-        let tools = Command::new("xcode-select").arg("-p").output();
-        return tools.is_ok_and(|o| o.status.success()).then_some(git);
-    }
-    Some(git)
+    static GIT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    GIT.get_or_init(|| {
+        let git = which::which("git").ok()?;
+        if cfg!(target_os = "macos") && git == Path::new("/usr/bin/git") {
+            let tools = Command::new("xcode-select").arg("-p").output();
+            return tools.is_ok_and(|o| o.status.success()).then_some(git);
+        }
+        Some(git)
+    })
+    .clone()
 }
 
 /// No console window flashes up on Windows, and git runs with the user's
@@ -655,14 +659,37 @@ impl History {
     /// snapshot are rewritten, files that didn't exist then are removed. The
     /// current state is snapshotted first, so this can be undone.
     pub fn restore_all(&self, id: &str) -> Result<usize> {
-        self.snapshot("Before restoring the project")?;
+        let before = self.snapshot("Before restoring the project")?.or_else(|| {
+            self.run(&["rev-parse", "--verify", SNAPSHOT_REF])
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
         let wanted: std::collections::HashSet<String> = self
             .paths(&["ls-tree", "-r", "-z", "--name-only", id, "--", "."])?
             .into_iter()
             .collect();
         let current = self.paths(&["ls-files", "-z", "--", "."])?;
+        let candidates: Vec<String> = if let Some(ref cur_id) = before {
+            self.paths(&[
+                "diff-tree",
+                "-r",
+                "-z",
+                "--name-only",
+                cur_id,
+                id,
+                "--",
+                ".",
+            ])
+            .unwrap_or_else(|_| wanted.iter().cloned().collect())
+        } else {
+            wanted.iter().cloned().collect()
+        };
         let mut changed = 0;
-        for path in &wanted {
+        for path in &candidates {
+            if !wanted.contains(path.as_str()) {
+                continue;
+            }
             let now = lemmata_env::fs::read(self.root.join(path)).ok();
             let want = self.bytes_at(id, path)?;
             if now != want {

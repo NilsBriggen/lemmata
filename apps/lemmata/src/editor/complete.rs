@@ -618,8 +618,6 @@ static ENV: LazyLock<Regex> =
 static CMD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\[A-Za-z]*$").unwrap());
 static IMAGES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\.(png|jpe?g|pdf|svg|eps|gif|webp)$").unwrap());
-static USED_ENV: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\\begin\{([A-Za-z*]+)\}").unwrap());
 static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z][A-Za-z0-9-]*$").unwrap());
 
 /// The environments most documents use come first.
@@ -721,23 +719,23 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
                 it
             })
             .collect();
-        // Also names already used in this document.
-        let mut used: Vec<String> = environments().iter().map(|e| e.name.to_owned()).collect();
-        for x in USED_ENV.captures_iter(&d.text()) {
-            if !used.contains(&x[1].to_owned()) {
-                used.push(x[1].to_owned());
+        // Also names already used in this document (from the cached environment token list).
+        let mut used: std::collections::HashSet<String> =
+            environments().iter().map(|e| e.name.to_owned()).collect();
+        for tok in super::envs::tokens(d).iter() {
+            if tok.begin && used.insert(tok.name.clone()) {
                 let apply = if plain {
-                    Apply::Text(format!("{}}}", &x[1]))
+                    Apply::Text(format!("{}}}", tok.name))
                 } else {
-                    Apply::Snippet(format!("{0}}}\n\t${{}}\n\\end{{{0}}}", &x[1]))
+                    Apply::Snippet(format!("{0}}}\n\t${{}}\n\\end{{{0}}}", tok.name))
                 };
-                let boost = if open.as_deref() == Some(&x[1]) {
+                let boost = if open.as_deref() == Some(tok.name.as_str()) {
                     30
                 } else {
                     0
                 };
                 items.push(
-                    Item::new(&x[1], Kind::Class, apply)
+                    Item::new(&tok.name, Kind::Class, apply)
                         .detail("used here")
                         .boost(boost),
                 );
@@ -745,10 +743,9 @@ pub fn latex(d: &Doc, pos: usize, look: &Lookups, explicit: bool) -> Option<Foun
         }
         // Environments of other packages (minted, algorithm, tcolorbox…), below the common ones.
         for (name, pkg) in lemmata_log::packages::environments() {
-            if used.iter().any(|u| u == name) {
+            if !used.insert((*name).to_owned()) {
                 continue;
             }
-            used.push((*name).to_owned());
             let apply = if plain {
                 Apply::Text(format!("{name}}}"))
             } else {
@@ -944,12 +941,9 @@ pub fn snippets(d: &Doc, pos: usize, look: &Lookups) -> Option<Found> {
                     s.description.clone()
                 })
                 .boost(99);
-            it.info = Some(
-                Regex::new(r"\$\{[^}]*\}")
-                    .unwrap()
-                    .replace_all(&s.body, "…")
-                    .into_owned(),
-            );
+            static PLACEHOLDER: LazyLock<Regex> =
+                LazyLock::new(|| Regex::new(r"\$\{[^}]*\}").unwrap());
+            it.info = Some(PLACEHOLDER.replace_all(&s.body, "…").into_owned());
             it.from = from;
             it.to = pos;
             it

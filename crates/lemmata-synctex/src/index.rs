@@ -105,8 +105,13 @@ fn dist(span: (f32, f32), p: f32) -> f32 {
 }
 
 impl Index {
-    /// `base` resolves relative `Input:` paths.
-    pub fn parse(text: &str, base: &Path) -> Option<Index> {
+    /// Streams lines from `reader` using a single reused buffer, avoiding materializing the
+    /// entire uncompressed `.synctex` file in memory at once.
+    pub fn parse_reader<R: std::io::BufRead>(
+        mut reader: R,
+        base: &Path,
+        limit: u64,
+    ) -> Option<Index> {
         let (mut unit, mut mag, mut xoff, mut yoff) = (1.0f64, 1000.0f64, 0.0f64, 0.0f64);
         let mut inputs = Vec::new();
         let mut nodes: Vec<Node> = Vec::new();
@@ -117,8 +122,27 @@ impl Index {
         let mut open: Vec<u32> = Vec::new();
         let mut last: Vec<u32> = vec![NONE];
         let mut saw_header = false;
+        let mut buf = Vec::with_capacity(256);
+        let mut total_bytes = 0u64;
 
-        for raw in text.lines() {
+        loop {
+            buf.clear();
+            let n = reader.read_until(b'\n', &mut buf).ok()?;
+            if n == 0 {
+                break;
+            }
+            total_bytes = total_bytes.saturating_add(n as u64);
+            if total_bytes > limit {
+                return None;
+            }
+            if buf.ends_with(b"\n") {
+                buf.pop();
+                if buf.ends_with(b"\r") {
+                    buf.pop();
+                }
+            }
+            let raw_cow = String::from_utf8_lossy(&buf);
+            let raw = raw_cow.as_ref();
             if !saw_header {
                 saw_header = true;
                 if !raw.starts_with("SyncTeX Version") {
@@ -133,7 +157,9 @@ impl Index {
             // Inputs are listed before the content and again after it (aux files).
             if let Some(r) = raw.strip_prefix("Input:") {
                 let (tag, path) = r.split_once(':')?;
-                inputs.push((tag.parse().ok()?, base.join(path)));
+                let joined = base.join(path);
+                let norm = crate::normalize(&joined.to_string_lossy());
+                inputs.push((tag.parse().ok()?, norm));
                 continue;
             }
             if !in_content {
@@ -158,6 +184,12 @@ impl Index {
             let (ox, oy) = (xoff / SP_PER_BP, yoff / SP_PER_BP);
             match c {
                 '{' => {
+                    if let Some(prev) = sheets
+                        .last_mut()
+                        .filter(|s: &&mut Sheet| s.end == usize::MAX)
+                    {
+                        prev.end = nodes.len();
+                    }
                     page = rest.trim().parse().ok()?;
                     sheets.push(Sheet {
                         page,
@@ -272,16 +304,20 @@ impl Index {
     /// Tags of the recorded inputs that are the same file as `path`.
     fn tags_for(&self, path: &Path) -> Vec<u32> {
         let want = crate::normalize(&path.to_string_lossy());
-        let want_canon = want.canonicalize().ok();
+        let mut want_canon: Option<Option<PathBuf>> = None;
         let name = want.file_name();
         self.inputs
             .iter()
             .filter(|(_, p)| {
-                let p = crate::normalize(&p.to_string_lossy());
-                p == want
-                    || (p.file_name() == name
-                        && want_canon.is_some()
-                        && p.canonicalize().ok() == want_canon)
+                if *p == want {
+                    return true;
+                }
+                if p.file_name() == name {
+                    let wc = want_canon.get_or_insert_with(|| want.canonicalize().ok());
+                    wc.is_some() && p.canonicalize().ok() == *wc
+                } else {
+                    false
+                }
             })
             .map(|(t, _)| *t)
             .collect()
@@ -289,6 +325,9 @@ impl Index {
 
     pub fn forward(&self, tex_file: &Path, line: u32) -> Vec<PdfBox> {
         let tags = self.tags_for(tex_file);
+        if tags.is_empty() {
+            return Vec::new();
+        }
         let exact = self.hits(&tags, line);
         if !exact.is_empty() {
             return exact;
@@ -299,10 +338,9 @@ impl Index {
             .filter(|(t, _)| tags.contains(t))
             .map(|&(_, l)| l)
             .collect();
-        lines.sort_unstable();
-        lines.dedup();
         // Nearest line with a hit, a later one if two are equally far (like synctex).
-        lines.sort_by_key(|&l| (l.abs_diff(line), l < line));
+        lines.sort_unstable_by_key(|&l| (l.abs_diff(line), l < line));
+        lines.dedup();
         for l in lines.into_iter().take(32) {
             let hits = self.hits(&tags, l);
             if !hits.is_empty() {
@@ -397,7 +435,7 @@ impl Index {
         };
         let tag = self.inputs.iter().find(|(t, _)| *t == n.tag)?;
         Some(SourceLocation {
-            file: crate::normalize(&tag.1.to_string_lossy()),
+            file: tag.1.clone(),
             line: n.line,
             column: None,
         })

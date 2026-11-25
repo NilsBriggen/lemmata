@@ -332,7 +332,7 @@ pub async fn refresh(cache: &Path) -> Result<usize, String> {
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let result = download(&client, &base, &entries, cache, &staging).await;
-    if result.is_ok() {
+    if result.is_ok() || !staging.join(".backup").exists() {
         let _ = std::fs::remove_dir_all(staging);
     }
     result

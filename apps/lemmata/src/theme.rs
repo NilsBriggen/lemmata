@@ -158,9 +158,6 @@ pub const DARK: Palette = Palette {
     dark: true,
 };
 
-/// `--shadow-sm`, the same in both themes.
-pub const SHADOW_SM: Shadow = shadow(1, 2, 0, rgba(16, 24, 32, 0.08));
-
 pub const R_SM: u8 = 4;
 pub const R: u8 = 6;
 pub const R_MD: u8 = 8;
@@ -221,28 +218,59 @@ pub mod font {
     }
 }
 
-macro_rules! fonts {
-    ($($name:literal),* $(,)?) => {
-        [$(($name, include_bytes!(concat!("../assets/fonts/", $name, ".ttf")) as &'static [u8])),*]
-    };
-}
+/// Shared IBM Plex Sans 400 bytes (also reused by the SVG viewer's font database).
+pub(crate) const IBM_PLEX_SANS_400: &[u8] =
+    include_bytes!("../assets/fonts/ibm-plex-sans-latin-400.ttf");
 
 /// The latin and latin-ext subsets the Svelte bundle ships. Glyphs outside them fall through to the
 /// system fonts eframe's `system_fonts` feature adds.
-const FONT_FILES: [(&str, &[u8]); 12] = fonts!(
-    "young-serif-latin-400",
-    "young-serif-latin-ext-400",
-    "ibm-plex-sans-latin-400",
-    "ibm-plex-sans-latin-ext-400",
-    "ibm-plex-sans-latin-500",
-    "ibm-plex-sans-latin-ext-500",
-    "ibm-plex-sans-latin-600",
-    "ibm-plex-sans-latin-ext-600",
-    "ibm-plex-mono-latin-400",
-    "ibm-plex-mono-latin-ext-400",
-    "ibm-plex-mono-latin-500",
-    "ibm-plex-mono-latin-ext-500",
-);
+const FONT_FILES: [(&str, &[u8]); 12] = [
+    (
+        "young-serif-latin-400",
+        include_bytes!("../assets/fonts/young-serif-latin-400.ttf"),
+    ),
+    (
+        "young-serif-latin-ext-400",
+        include_bytes!("../assets/fonts/young-serif-latin-ext-400.ttf"),
+    ),
+    ("ibm-plex-sans-latin-400", IBM_PLEX_SANS_400),
+    (
+        "ibm-plex-sans-latin-ext-400",
+        include_bytes!("../assets/fonts/ibm-plex-sans-latin-ext-400.ttf"),
+    ),
+    (
+        "ibm-plex-sans-latin-500",
+        include_bytes!("../assets/fonts/ibm-plex-sans-latin-500.ttf"),
+    ),
+    (
+        "ibm-plex-sans-latin-ext-500",
+        include_bytes!("../assets/fonts/ibm-plex-sans-latin-ext-500.ttf"),
+    ),
+    (
+        "ibm-plex-sans-latin-600",
+        include_bytes!("../assets/fonts/ibm-plex-sans-latin-600.ttf"),
+    ),
+    (
+        "ibm-plex-sans-latin-ext-600",
+        include_bytes!("../assets/fonts/ibm-plex-sans-latin-ext-600.ttf"),
+    ),
+    (
+        "ibm-plex-mono-latin-400",
+        include_bytes!("../assets/fonts/ibm-plex-mono-latin-400.ttf"),
+    ),
+    (
+        "ibm-plex-mono-latin-ext-400",
+        include_bytes!("../assets/fonts/ibm-plex-mono-latin-ext-400.ttf"),
+    ),
+    (
+        "ibm-plex-mono-latin-500",
+        include_bytes!("../assets/fonts/ibm-plex-mono-latin-500.ttf"),
+    ),
+    (
+        "ibm-plex-mono-latin-ext-500",
+        include_bytes!("../assets/fonts/ibm-plex-mono-latin-ext-500.ttf"),
+    ),
+];
 
 pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(definitions(&[]));

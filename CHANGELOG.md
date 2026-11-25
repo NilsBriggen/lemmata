@@ -2,6 +2,27 @@
 
 All notable changes to Lemmata.
 
+## 4.0.0-rc.1 (2026-11-25)
+
+A major visual refresh paired with a comprehensive performance, security, and install-size overhaul—with zero features removed.
+
+### Added
+- **Refreshed UI across all screens:** Redesigned Library (grid and list views, sidebar navigation, search, folder organization), Workspace chrome, Preferences, Project settings, Bibliography manager, Symbols, and modal dialogs, paired with the new **Typeset Split** app icon set.
+- **Guided 4-step Welcome & TeX setup:** New two-column setup shell with an animated miniature split-workspace preview, visual System/Light/Dark theme cards with live typography preview, grouped workflow preferences, starter action cards, and a unified TeX Live / Tectonic onboarding flow.
+
+### Changed
+- **Smaller install footprint:** Bundled Hunspell dictionaries (`en`, `en-GB`, `de`, `fr`) are now shipped gzip-compressed (cutting dictionary disk usage by ~70%), `wgpu` GPU backends are gated per target OS, release profiles are tuned for size on cold crates (plus a dedicated `panic = "abort"` profile for `lemmata-cli`), and `.rpm`/tarball/NSIS packaging uses stronger compression.
+- **Tighter trust and path boundaries:** Hardened project path validation, shell/latexdiff command safety, SVG decompression guards, and settings persistence.
+
+### Faster
+- **Editor & UI responsiveness:** Cross-frame `LineLayout` (`Arc<Galley>`) caching, zero-copy `LayoutJob` slicing, in-place height updates on same-line edits, memoized bracket matching and math-under-cursor lookup, and a fast-path LaTeX syntax highlighter.
+- **Zero idle CPU when unfocused:** Caret blink stops waking the app when the window is unfocused or minimized, redundant 30 ms PDF polling and per-frame `tectonic` disk `stat()` syscalls are removed, and toast timers wake once at exact expiry.
+- **PDF, Math & SVG rendering:** Eliminated full-page pixel copies in light-mode PDF rendering, throttled multi-page GPU texture uploads, switched math preview cache to O(1) LRU ticks, and cached the SVG viewer's font database.
+- **LaTeX builds, SyncTeX, BibTeX & Git:** Eliminated up to 9 redundant directory walks and double `.log` reads per build, offloaded build file hashing to blocking threads with `(len, mtime)` for binary assets, cached parsed `.bib` files across `.tex` autosaves, streamed `.synctex.gz` line-by-line to cut peak RAM, cached Git repo metadata with adaptive command backoff, sped up History full-project restore with `diff-tree`, and moved spellchecking to a persistent worker thread with a 2-entry dictionary LRU.
+
+### Fixed
+- Resolved dozens of UI state, accessibility, PDF/editor interaction, and edge-case bugs identified during a full codebase audit.
+
 ## 3.3.0 (2026-11-24)
 
 A release of fixes and smaller features from a review of the whole app: more than 200 problems, from wrong clicks in the Compile menu to text that could be lost in rare cases.

@@ -6,6 +6,7 @@
 //! "ss" wherever standard German writes "ß".
 
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 mod remote;
@@ -40,11 +41,15 @@ pub struct Available {
     pub size_kb: u32,
 }
 
+fn has_dict(dir: &Path) -> bool {
+    dir.join("index.dic").exists() || dir.join("index.dic.gz").exists()
+}
+
 /// Every supported language: the bundled ones, then the downloadable ones,
 /// with whether each is usable now. `bundled`/`downloaded` are the two roots
 /// `Speller::load` searches.
 pub fn available(bundled: &Path, downloaded: &Path) -> Vec<Available> {
-    let has = |root: &Path, code: &str| root.join(code).join("index.dic").exists();
+    let has = |root: &Path, code: &str| has_dict(&root.join(code));
     let builtin = LANGUAGES.iter().map(|&code| Available {
         code: code.into(),
         label: builtin_label(code).into(),
@@ -77,9 +82,24 @@ fn builtin_label(code: &str) -> &'static str {
 
 /// The first of `dirs` that has a dictionary named `name`.
 fn find(dirs: &[&Path], name: &str) -> Option<PathBuf> {
-    dirs.iter()
-        .map(|d| d.join(name))
-        .find(|f| f.join("index.dic").exists())
+    dirs.iter().map(|d| d.join(name)).find(|f| has_dict(f))
+}
+
+fn read_dict_file(base: &Path, name: &str, lang: &str) -> Result<String, Error> {
+    let plain = base.join(name);
+    if plain.exists() {
+        return std::fs::read_to_string(&plain)
+            .map_err(|e| Error(format!("Could not read the {lang} dictionary: {e}")));
+    }
+    let gz = base.join(format!("{name}.gz"));
+    let file = std::fs::File::open(&gz)
+        .map_err(|e| Error(format!("Could not read the {lang} dictionary: {e}")))?;
+    let mut decoder = flate2::read::GzDecoder::new(std::io::BufReader::new(file));
+    let mut out = String::new();
+    decoder
+        .read_to_string(&mut out)
+        .map_err(|e| Error(format!("Could not read the {lang} dictionary: {e}")))?;
+    Ok(out)
 }
 
 impl Speller {
@@ -101,12 +121,8 @@ impl Speller {
         } else {
             folder.clone()
         };
-        let read = |base: &Path, name: &str| {
-            std::fs::read_to_string(base.join(name))
-                .map_err(|e| Error(format!("Could not read the {lang} dictionary: {e}")))
-        };
-        let aff = read(&affix_folder, "index.aff")?;
-        let dict = spellbook::Dictionary::new(&aff, &read(&folder, "index.dic")?)
+        let aff = read_dict_file(&affix_folder, "index.aff", lang)?;
+        let dict = spellbook::Dictionary::new(&aff, &read_dict_file(&folder, "index.dic", lang)?)
             .map_err(|e| Error(format!("The {lang} dictionary is invalid: {e}")))?;
         Ok(Speller {
             dict,
@@ -117,6 +133,11 @@ impl Speller {
 
     pub fn add(&mut self, word: &str) {
         self.personal.insert(word.to_string());
+    }
+
+    pub fn set_personal(&mut self, words: impl IntoIterator<Item = String>) {
+        self.personal.clear();
+        self.personal.extend(words);
     }
 
     pub fn check(&self, word: &str) -> bool {

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/lemmata"]
 
 [workspace.package]
-version = "3.3.0"
+version = "4.0.0-rc.1"
 edition = "2024"
 license = "GPL-3.0-only"
 repository = "https://github.com/NilsBriggen/lemmata"
@@ -31,6 +31,7 @@ which = "8"
 walkdir = "2"
 tempfile = "3"
 # Deflate through flate2 and zlib-rs only: "deflate" adds zopfli, used just for levels above 9.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [profile.release]
@@ -40,9 +41,15 @@ codegen-units = 1
 panic = "unwind"
 strip = true
 
+# CLI has no catch_unwind sites: abort and size-optimize to drop unwind tables (~10-15% smaller).
+[profile.release-cli]
+inherits = "release"
+panic = "abort"
+opt-level = "z"
+
 # Size: dependencies are built for size, except the ones on every frame or keystroke
 # (drawing, text, the PDF and maths renderers, spell check, regex, image decoding), which stay
-# built for speed. The workspace's own crates keep opt-level 3.
+# built for speed.
 [profile.release.package."*"]
 opt-level = "s"
 
@@ -53,12 +60,6 @@ opt-level = 3
 opt-level = 3
 
 [profile.release.package.egui]
-opt-level = 3
-
-[profile.release.package.egui-wgpu]
-opt-level = 3
-
-[profile.release.package.egui-winit]
 opt-level = 3
 
 [profile.release.package.emath]
@@ -76,40 +77,19 @@ opt-level = 3
 [profile.release.package.font-types]
 opt-level = 3
 
-[profile.release.package.gif]
-opt-level = 3
-
 [profile.release.package.harfrust]
 opt-level = 3
 
 [profile.release.package.hayro]
 opt-level = 3
 
-[profile.release.package.hayro-ccitt]
-opt-level = 3
-
-[profile.release.package.hayro-cmap]
-opt-level = 3
-
 [profile.release.package.hayro-interpret]
-opt-level = 3
-
-[profile.release.package.hayro-jbig2]
-opt-level = 3
-
-[profile.release.package.hayro-jpeg2000]
-opt-level = 3
-
-[profile.release.package.hayro-postscript]
 opt-level = 3
 
 [profile.release.package.hayro-syntax]
 opt-level = 3
 
 [profile.release.package.image]
-opt-level = 3
-
-[profile.release.package.image-webp]
 opt-level = 3
 
 [profile.release.package.kurbo]
@@ -127,28 +107,13 @@ opt-level = 3
 [profile.release.package.png]
 opt-level = 3
 
-[profile.release.package.ratex-font]
-opt-level = 3
-
 [profile.release.package.ratex-layout]
-opt-level = 3
-
-[profile.release.package.ratex-lexer]
-opt-level = 3
-
-[profile.release.package.ratex-parser]
-opt-level = 3
-
-[profile.release.package.read-fonts]
 opt-level = 3
 
 [profile.release.package.regex]
 opt-level = 3
 
 [profile.release.package.regex-automata]
-opt-level = 3
-
-[profile.release.package.regex-syntax]
 opt-level = 3
 
 [profile.release.package.ropey]
@@ -178,7 +143,65 @@ opt-level = 3
 [profile.release.package.zune-jpeg]
 opt-level = 3
 
-# The workspace's crates that run once per build, save or click, not per frame or keystroke.
+# Cold infrastructure crates: optimize aggressively for size.
+[profile.release.package.naga]
+opt-level = "z"
+
+[profile.release.package.wgpu-core]
+opt-level = "z"
+
+[profile.release.package.wgpu-hal]
+opt-level = "z"
+
+[profile.release.package.zbus]
+opt-level = "z"
+
+[profile.release.package.ashpd]
+opt-level = "z"
+
+[profile.release.package.accesskit_unix]
+opt-level = "z"
+
+[profile.release.package.atspi-common]
+opt-level = "z"
+
+[profile.release.package.rustls]
+opt-level = "z"
+
+[profile.release.package.reqwest]
+opt-level = "z"
+
+[profile.release.package.tokio]
+opt-level = "z"
+
+[profile.release.package.winit]
+opt-level = "z"
+
+[profile.release.package.usvg]
+opt-level = "z"
+
+[profile.release.package.tiny-skia]
+opt-level = "z"
+
+[profile.release.package.rustybuzz]
+opt-level = "z"
+
+[profile.release.package.pic-scale]
+opt-level = "z"
+
+[profile.release.package.moxcms]
+opt-level = "z"
+
+# Workspace crates built for size (hot loops live in egui/epaint/ropey/hayro/spellbook/lemmata-spell).
+[profile.release.package.lemmata-app]
+opt-level = "s"
+
+[profile.release.package.lemmata-cli]
+opt-level = "s"
+
+[profile.release.package.lemmata-project]
+opt-level = "s"
+
 [profile.release.package.lemmata-shell]
 opt-level = "s"
 

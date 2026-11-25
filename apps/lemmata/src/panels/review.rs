@@ -4,7 +4,7 @@
 use crate::theme::{self, Palette};
 use crate::widgets::{self, Button, Kind, Size};
 use eframe::egui::{
-    self, Color32, CornerRadius, FontId, Margin, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2,
+    self, CornerRadius, FontId, Margin, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -275,6 +275,7 @@ impl Review {
                 font.clone(),
                 if on { p.ink } else { p.muted },
             );
+            widgets::focus_ring(&hright, &resp, r, p, 5);
             if resp.clicked() {
                 self.show_resolved = i == 1;
             }
@@ -384,7 +385,11 @@ impl Review {
                                 {
                                     add = true;
                                 }
-                                if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                if (r.has_focus() || r.lost_focus())
+                                    && ui.input_mut(|i| {
+                                        i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                                    })
+                                {
                                     cancel = true;
                                 }
                                 ui.allocate_ui_with_layout(
@@ -573,7 +578,7 @@ impl Review {
                                             if Button::new("Delete for good")
                                                 .size(Size::Sm)
                                                 .fill(p.error)
-                                                .ink(Color32::WHITE)
+                                                .ink(p.accent_ink)
                                                 .show(ui, p)
                                                 .clicked()
                                             {

@@ -456,7 +456,10 @@ pub fn show(
             nav.add_space(10.0);
         }
         if let Some(pr) = project.as_ref() {
-            if let Some(picked) = scope_switch(&mut nav, p, pr.name, st.scope)
+            let picked = nav
+                .add_enabled_ui(!project_busy, |ui| scope_switch(ui, p, pr.name, st.scope))
+                .inner;
+            if let Some(picked) = picked
                 && picked != st.scope
             {
                 match picked {
@@ -642,7 +645,10 @@ pub fn show(
                 ui.set_width(content_w);
                 ui.spacing_mut().item_spacing.y = 0.0;
 
-                if st.unsaved_prompt && in_project_scope {
+                if !project_dirty {
+                    st.unsaved_prompt = false;
+                }
+                if st.unsaved_prompt && in_project_scope && project_dirty {
                     egui::Frame::new()
                         .fill(p.warn_soft)
                         .stroke(Stroke::new(1.0, p.warn.gamma_multiply(0.35)))
@@ -693,7 +699,29 @@ pub fn show(
                         if let Some(pr) = project.as_mut()
                             && let Some(ps) = pr.settings.as_deref_mut()
                         {
-                            match st.project_section {
+                            if let Some(err_msg) = ps.error.clone() {
+                                egui::Frame::new()
+                                    .fill(p.error_soft)
+                                    .stroke(Stroke::new(1.0, p.error.gamma_multiply(0.35)))
+                                    .corner_radius(theme::R_MD)
+                                    .inner_margin(Margin::symmetric(12, 10))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
+                                            icons::show(ui, icons::CIRCLE_ALERT, 15.0, p.error);
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(err_msg)
+                                                        .size(12.5)
+                                                        .color(p.error),
+                                                )
+                                                .wrap(),
+                                            );
+                                        });
+                                    });
+                            }
+                            ui.add_enabled_ui(!project_busy, |ui| match st.project_section {
                                 ProjectSection::Build => {
                                     project_settings::show_build_section(ui, p, ps, pr.candidates)
                                 }
@@ -704,7 +732,7 @@ pub fn show(
                                     pr.trusted,
                                     pr.was_shell_escape,
                                 ),
-                            }
+                            });
                         }
                     }
                 }
@@ -779,6 +807,7 @@ pub fn show(
 
     if backdrop_closes
         && !project_busy
+        && !any_popup_open
         && backdrop.inner.clicked()
         && !panel
             .response
@@ -1155,15 +1184,14 @@ fn show_app_section(
                 .inner;
             if picked {
                 st.spell_error = None;
-                match st.dicts.iter().find(|d| d.code == lang) {
-                    Some(d) if d.installed => {
-                        s.spell_default = lang;
-                        changed = true;
-                    }
-                    _ => {
-                        st.downloading = Some(lang.clone());
-                        *out = Some(Out::Download(lang));
-                    }
+                if matches!(lang.as_str(), "auto" | "off")
+                    || !st.dicts.iter().any(|d| d.code == lang && !d.installed)
+                {
+                    s.spell_default = lang;
+                    changed = true;
+                } else {
+                    st.downloading = Some(lang.clone());
+                    *out = Some(Out::Download(lang));
                 }
             }
             if let Some(d) = &st.downloading {
@@ -1502,6 +1530,7 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
         }),
     );
     if save {
+        widgets::modal_focus_restore_by_salt(ctx, "Snippets");
         let list = st.snippets.take().unwrap_or_default();
         s.snippets = (0..list.len())
             .filter(|&i| !invalid(&list, i))
@@ -1513,6 +1542,9 @@ fn snippets(ctx: &egui::Context, p: &Palette, st: &mut Prefs, s: &mut Settings) 
         return Some(Out::Changed);
     }
     if r.closed || cancel {
+        if cancel && !r.closed {
+            widgets::modal_focus_restore_by_salt(ctx, "Snippets");
+        }
         st.snippets = None;
     }
     None

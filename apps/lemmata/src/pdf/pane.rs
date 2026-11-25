@@ -40,8 +40,10 @@ pub struct Build<'a> {
 
 /// What the pane asks of the workspace.
 pub enum Action {
-    /// Open or toggle the Problems sidebar panel.
+    /// Toggle the Problems sidebar panel (PDF bar issues chip).
     Problems,
+    /// Unconditionally open the Problems sidebar panel (error banner / empty state).
+    OpenProblems,
     /// Open or close the raw TeX log view in the PDF card.
     RawLog(bool),
     SourceClick(usize, f32, f32),
@@ -211,7 +213,8 @@ impl Pane {
 
         let mut body = Rect::from_min_max(pos2(rect.left(), y), rect.max);
         if let Some(side) = self.side.filter(|_| !b.raw_log_open) {
-            let r = Rect::from_min_size(body.min, vec2(220.0, body.height()));
+            let side_w = (body.width() * 0.30).clamp(120.0, 200.0);
+            let r = Rect::from_min_size(body.min, vec2(side_w, body.height()));
             ui.painter().rect_filled(r, 0, p.surface);
             ui.painter()
                 .vline(r.right() - 0.5, r.y_range(), Stroke::new(1.0, p.border));
@@ -263,7 +266,7 @@ impl Pane {
                 .show(&mut c, p)
                 .clicked()
             {
-                out.push(Action::Problems);
+                out.push(Action::OpenProblems);
             }
             let with = if errors > 0 {
                 format!(" with {errors} error{}", if errors == 1 { "" } else { "s" })
@@ -301,7 +304,7 @@ impl Pane {
         } else {
             self.view.show(&mut c, p);
             if self.view.error.is_none() && empty_state(&mut c, p, b) {
-                out.push(Action::Problems);
+                out.push(Action::OpenProblems);
             }
         }
         self.menus(&ctx, p, &mut out);

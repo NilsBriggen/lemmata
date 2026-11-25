@@ -166,7 +166,17 @@ pub struct Spell {
     in_flight: HashSet<String>,
     /// Completed background batch verdicts waiting to be merged into `known`.
     done: Arc<Mutex<Vec<BatchResult>>>,
+    /// Persistent background worker channel (avoids spawning an OS thread per frame).
+    worker: Option<std::sync::mpsc::Sender<SpellJob>>,
     pub shell: Option<Arc<Shell>>,
+}
+
+struct SpellJob {
+    shell: Arc<Shell>,
+    generation: u64,
+    batch: Vec<String>,
+    done: Arc<Mutex<Vec<BatchResult>>>,
+    ctx: egui::Context,
 }
 
 impl Spell {
@@ -219,20 +229,37 @@ impl Spell {
         let generation = self.batch_gen;
         let done = self.done.clone();
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let bad: HashSet<String> = shell.spell_check(batch.clone()).into_iter().collect();
-            let verdicts: Vec<(String, bool)> = batch
-                .into_iter()
-                .map(|w| {
-                    let ok = !bad.contains(&w);
-                    (w, ok)
+        let job = SpellJob {
+            shell,
+            generation,
+            batch,
+            done,
+            ctx,
+        };
+        let failed_job = match &self.worker {
+            Some(tx) => tx.send(job).err().map(|e| e.0),
+            None => Some(job),
+        };
+        if let Some(job) = failed_job {
+            let (tx, rx) = std::sync::mpsc::channel::<SpellJob>();
+            let _ = tx.send(job);
+            self.worker = Some(tx);
+            std::thread::Builder::new()
+                .name("lemmata-spell".into())
+                .spawn(move || {
+                    while let Ok(j) = rx.recv() {
+                        let flags = j.shell.spell_check_flags(&j.batch);
+                        let verdicts: Vec<(String, bool)> =
+                            j.batch.into_iter().zip(flags).collect();
+                        j.done
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push((j.generation, verdicts));
+                        j.ctx.request_repaint();
+                    }
                 })
-                .collect();
-            done.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push((generation, verdicts));
-            ctx.request_repaint();
-        });
+                .ok();
+        }
     }
 
     /// Whether `word` is known to be misspelled; unseen words are queued asynchronously.

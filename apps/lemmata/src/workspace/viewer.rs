@@ -67,6 +67,17 @@ pub fn decode_sized(path: &str, bytes: &[u8]) -> Result<(ColorImage, [usize; 2])
     ))
 }
 
+fn svg_fontdb() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
+    static DB: std::sync::OnceLock<std::sync::Arc<resvg::usvg::fontdb::Database>> =
+        std::sync::OnceLock::new();
+    DB.get_or_init(|| {
+        let mut db = resvg::usvg::fontdb::Database::new();
+        db.load_font_data(crate::theme::IBM_PLEX_SANS_400.to_vec());
+        std::sync::Arc::new(db)
+    })
+    .clone()
+}
+
 fn decode_svg(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
     const MAX_BYTES: usize = 8_000_000;
     const MAX_PIXELS: usize = 4_000_000;
@@ -80,10 +91,9 @@ fn decode_svg(path: &str, bytes: &[u8]) -> Result<ColorImage, String> {
     }
     let mut options = resvg::usvg::Options {
         font_family: "IBM Plex Sans".into(),
+        fontdb: svg_fontdb(),
         ..Default::default()
     };
-    std::sync::Arc::make_mut(&mut options.fontdb)
-        .load_font_data(include_bytes!("../../assets/fonts/ibm-plex-sans-latin-400.ttf").to_vec());
     options.image_href_resolver.resolve_string = Box::new(|_, _| None);
     let tree = resvg::usvg::Tree::from_data(bytes, &options)
         .map_err(|e| format!("Could not open {path}: {e}"))?;

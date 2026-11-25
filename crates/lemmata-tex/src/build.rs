@@ -187,15 +187,21 @@ pub async fn build_with(
     let restricted = restrict(project);
     let project = restricted.as_ref().unwrap_or(project);
     let started = Instant::now();
-    // What the build reads, once: for "nothing changed" and for the stamp it leaves.
-    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
-    let files = files_hash_with_tree(project, &tree);
+    // What the build reads, once (off the async worker threads): for "nothing changed" and for the stamp it leaves.
+    let project_for_hash = project.clone();
+    let (tree, files) = tokio::task::spawn_blocking(move || {
+        let tree = lemmata_project::tree(&project_for_hash.root, &project_for_hash.config.outdir);
+        let files = files_hash_with_tree(&project_for_hash, &tree);
+        (tree, files)
+    })
+    .await
+    .map_err(|e| Error::SpawnTool("latexmk".into(), std::io::Error::other(e.to_string())))?;
     // Nothing changed since the last good build: no TeX run at all, just its result again.
     if !force && let Some(o) = cached_outcome_with(project, started, &tree, &files) {
         return Ok(o);
     }
     let started_at = SystemTime::now();
-    prepare_outdir(project);
+    prepare_outdir_with_tree(project, &tree);
     // With the slack in written_since, last build's log would look fresh; no log is the signal that latexmk never ran TeX.
     let _ = std::fs::remove_file(project.log_path());
 
@@ -220,7 +226,7 @@ pub async fn build_with(
     }
     // Like latexmk's -f: past errors to the most complete PDF, unless the project asks to stop.
     let keep_going = no_latexmk && !project.config.stop_on_error;
-    let warm = can_go_direct && (no_latexmk || !skip_latexmk) && warm_ok(project);
+    let warm = can_go_direct && (no_latexmk || !skip_latexmk) && warm_ok_with_tree(project, &tree);
     // No stamp: the last build failed or was stopped midway, and a killed TeX run may have taken
     // the log and synctex with it. latexmk's record still says the PDF matches, so it would do
     // nothing once the text is back to what it last built (undoing a broken edit, say).
@@ -231,44 +237,52 @@ pub async fn build_with(
     // A warm rebuild can start from the precompiled preamble; an explicit Recompile never does.
     let fmt = match &engine {
         Some(e) if warm && !force && format::eligible(project, opts.miktex) => {
-            format::usable(project, e)
+            format::usable_with_tree(project, e, &tree)
         }
         _ => None,
     };
     // On skipping, the earlier failure's output file stays to explain the note below.
     let mut status = Status::Failed;
+    let mut direct_log: Option<String> = None;
     if warm
-        && let Ok(s) = direct_build(
+        && let Ok((s, log)) = direct_build(
             project,
             opts,
             deadline.saturating_duration_since(Instant::now()),
             &mut cancel,
             fmt.as_deref(),
             keep_going,
+            &tree,
         )
         .await
     {
         status = s;
+        direct_log = log;
     }
     let fmt_failed = fmt.is_some() && status == Status::Failed;
     if fmt_failed {
         // Its errors could be the format's own: only a build without it gets to report them.
         let _ = std::fs::remove_file(project.log_path());
+        direct_log = None;
     }
     // A failed direct build is run again by latexmk, which keeps going past errors the way the user
     // chose. Without latexmk it already went on past them, unless the precompiled preamble failed.
     let settled = warm && (status != Status::Failed || (no_latexmk && !fmt_failed));
     if !settled && no_latexmk {
-        status = direct_build(
+        let (s, log) = direct_build(
             project,
             opts,
             deadline.saturating_duration_since(Instant::now()),
             &mut cancel,
             None,
             keep_going,
+            &tree,
         )
         .await?;
+        status = s;
+        direct_log = log;
     } else if !settled && !(skip_latexmk && can_go_direct) {
+        direct_log = None;
         let (out, err) =
             match std::fs::File::create(&output_path).and_then(|f| f.try_clone().map(|g| (f, g))) {
                 Ok((f, g)) => (Stdio::from(f), Stdio::from(g)),
@@ -313,11 +327,13 @@ pub async fn build_with(
             &mut cancel,
             None,
             !project.config.stop_on_error,
+            &tree,
         )
         .await
         {
-            Ok(s) => {
+            Ok((s, log)) => {
                 status = s;
+                direct_log = log;
                 fell_back = true;
             }
             Err(e) => eprintln!("lemmata: building without latexmk failed too: {e}"),
@@ -364,8 +380,8 @@ pub async fn build_with(
 
     let pdf = project.pdf_path();
     let fresh = written_since(&pdf, started_at);
-    let mut diagnostics = read_log(project);
-    merge_blg(project, &mut diagnostics, started_at);
+    let mut diagnostics = read_log_with(project, direct_log);
+    merge_blg_with_tree(project, &mut diagnostics, started_at, &tree);
     // Files in the build folder (.bbl, .aux) aren't something the user can edit.
     let outdir = project.config.outdir.trim_start_matches("./");
     for d in &mut diagnostics {
@@ -420,14 +436,14 @@ pub async fn build_with(
     }
 
     if status == Status::Success && fresh {
-        mark_ok(project, started_at, &files);
+        mark_ok_with_tree(project, started_at, &files, &tree);
         if fmt_failed {
             format::reject(project);
         }
         if let Some(e) = engine
             && format::eligible(project, opts.miktex)
         {
-            format::spawn(project.clone(), e, path_env(opts), limit);
+            format::spawn_with_tree(project.clone(), e, path_env(opts), limit, &tree);
         }
     }
 
@@ -559,12 +575,22 @@ pub(crate) fn merge_blg(
     diagnostics: &mut Vec<Diagnostic>,
     started_at: SystemTime,
 ) {
+    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
+    merge_blg_with_tree(project, diagnostics, started_at, &tree);
+}
+
+pub(crate) fn merge_blg_with_tree(
+    project: &Project,
+    diagnostics: &mut Vec<Diagnostic>,
+    started_at: SystemTime,
+    tree: &[lemmata_project::Entry],
+) {
     let blg_path = out_file(project, "blg");
     // The tool is rightly skipped when its input is unchanged: its log from the last run still holds.
     let biber = project.config.bib == lemmata_project::Bib::Biber;
     let blg_ok = written_since(&blg_path, started_at)
         || (blg_path.is_file()
-            && bib_fingerprint(project, biber).is_some_and(|fp| {
+            && bib_fingerprint_with_tree(project, biber, tree).is_some_and(|fp| {
                 std::fs::read_to_string(out_file(project, "lemmata-bib")).is_ok_and(|s| s == fp)
             }));
     if blg_ok && let Ok(bytes) = lemmata_env::fs::read(&blg_path) {
@@ -661,7 +687,13 @@ pub(crate) fn read_tail(path: &Path, n: u64) -> Vec<u8> {
 /// The diagnostics in the main log. A run from the precompiled preamble didn't read the preamble,
 /// so what it said then comes from the log of the run that made the format.
 pub(crate) fn read_log(project: &Project) -> Vec<Diagnostic> {
-    let mut log = String::from_utf8_lossy(&read_capped(&project.log_path(), LOG_CAP)).into_owned();
+    read_log_with(project, None)
+}
+
+fn read_log_with(project: &Project, cached_log: Option<String>) -> Vec<Diagnostic> {
+    let mut log = cached_log.unwrap_or_else(|| {
+        String::from_utf8_lossy(&read_capped(&project.log_path(), LOG_CAP)).into_owned()
+    });
     if project.config.engine == lemmata_project::Engine::Tectonic {
         log = crate::tectonic::normalize_log(&log);
     }
@@ -698,7 +730,10 @@ fn path_env(opts: &BuildOptions<'_>) -> Option<OsString> {
     let mut path_dirs: Vec<&Path> = Vec::new();
     path_dirs.extend(opts.bin_dir);
     path_dirs.extend(opts.perl_dir);
-    (!path_dirs.is_empty()).then(|| prepend_paths(&path_dirs))
+    if path_dirs.is_empty() {
+        return None;
+    }
+    prepend_paths(&path_dirs)
 }
 
 /// Runs one command to the end, killing it and its children on timeout or
@@ -708,8 +743,18 @@ pub(crate) async fn run_step(
     limit: Duration,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Option<Status>, Error> {
+    // Preserve any custom PATH already prepared by `set_path` so `lemmata_env::host` doesn't
+    // overwrite `bin_dir` / `perl_dir` when running inside an AppImage.
+    let custom_path = cmd
+        .as_std()
+        .get_envs()
+        .find(|(k, _)| *k == std::ffi::OsStr::new("PATH"))
+        .and_then(|(_, v)| v.map(std::ffi::OsStr::to_os_string));
     // Every TeX tool starts here: with the user's environment, not an AppImage's.
     lemmata_env::host(cmd.as_std_mut());
+    if let Some(p) = custom_path {
+        cmd.env("PATH", p);
+    }
     cmd.kill_on_drop(true);
     #[cfg(unix)]
     cmd.process_group(0);
@@ -780,49 +825,86 @@ pub(crate) fn files_hash(project: &Project) -> String {
     )
 }
 
+fn is_binary_asset(path: &str) -> bool {
+    let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "pdf"
+            | "eps"
+            | "svg"
+            | "tif"
+            | "tiff"
+            | "bmp"
+            | "webp"
+            | "gif"
+            | "mp4"
+            | "mov"
+            | "zip"
+            | "gz"
+            | "xz"
+            | "csv"
+            | "dat"
+    )
+}
+
 pub(crate) fn files_hash_with_tree(
     project: &Project,
     entries: &[lemmata_project::Entry],
 ) -> String {
     use std::hash::{Hash, Hasher};
-    // Figures and data files are big and aren't edited in the app: their size and time (to the
+    use std::io::Read;
+    // Figures and data files aren't edited in the app: their size and time (to the
     // nanosecond) stand for their content. Sources, which an autosave rewrites right before a
-    // build, are hashed by content.
+    // build, are hashed by content using a single reused read buffer.
     const BIG: u64 = 1 << 20;
-    fn walk(root: &Path, entries: &[lemmata_project::Entry], h: &mut impl Hasher) {
+    fn walk(
+        root: &Path,
+        entries: &[lemmata_project::Entry],
+        buf: &mut Vec<u8>,
+        h: &mut impl Hasher,
+    ) {
         for e in entries {
             (&e.path, e.is_dir, e.size).hash(h);
             if e.is_dir {
-                walk(root, &e.children, h);
+                walk(root, &e.children, buf, h);
                 continue;
             }
             // What a link names decides, not the link: one to /dev/zero or a huge file isn't read.
             let path = root.join(&e.path);
             match std::fs::metadata(&path) {
-                Ok(m) if m.is_file() && m.len() <= BIG => match std::fs::read(&path) {
-                    Ok(bytes) => bytes.hash(h),
-                    Err(e) => e.to_string().hash(h),
-                },
+                Ok(m) if m.is_file() && m.len() <= BIG && !is_binary_asset(&e.path) => {
+                    buf.clear();
+                    match std::fs::File::open(&path).and_then(|mut f| f.read_to_end(buf)) {
+                        Ok(_) => buf.as_slice().hash(h),
+                        Err(e) => e.to_string().hash(h),
+                    }
+                }
                 Ok(m) => (m.len(), m.modified().ok()).hash(h),
                 Err(e) => e.to_string().hash(h),
             }
         }
     }
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    walk(&project.root, entries, &mut h);
+    let mut buf = Vec::with_capacity(64 * 1024);
+    walk(&project.root, entries, &mut buf, &mut h);
     format!("{:x}", h.finish())
 }
 
 /// Whether the engine can be run directly instead of latexmk: the last build here
 /// succeeded, and nothing configures steps that only latexmk runs.
-fn warm_ok(project: &Project) -> bool {
+fn warm_ok_with_tree(project: &Project, tree: &[lemmata_project::Entry]) -> bool {
     let outdir = project.outdir_abs();
     let main = project.main.to_string_lossy();
     if !std::fs::read_to_string(outdir.join(OK_STAMP)).is_ok_and(|s| s == main) {
         return false;
     }
     // Nothing changed since the last good build: latexmk sees that at once (faster than an engine run).
-    if !changed_since(project, &outdir.join(OK_STAMP)) {
+    if !changed_since_with_tree(project, &outdir.join(OK_STAMP), tree) {
         return false;
     }
     let rcs = [
@@ -938,6 +1020,7 @@ fn others_changed(project: &Project, entries: &[lemmata_project::Entry], stamp: 
 
 /// True when some project file was modified after the time on `stamp`, the start of the last good build
 /// (or up to `MTIME_SLACK` before it: at worst one build too many, never an edit left out).
+#[cfg(test)]
 fn changed_since(project: &Project, stamp: &Path) -> bool {
     changed_since_with_tree(
         project,
@@ -975,14 +1058,24 @@ fn changed_since_with_tree(
 /// Records a successful build, and what the bibliography tool read, so the next one can go direct without running it again.
 /// `files` is `files_hash` from when the build began.
 pub(crate) fn mark_ok(project: &Project, started_at: SystemTime, files: &str) {
+    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
+    mark_ok_with_tree(project, started_at, files, &tree);
+}
+
+pub(crate) fn mark_ok_with_tree(
+    project: &Project,
+    started_at: SystemTime,
+    files: &str,
+    tree: &[lemmata_project::Entry],
+) {
     let biber = project.config.bib == lemmata_project::Bib::Biber;
     // A .bib saved while the build ran was maybe not what the tool read: then it runs next time.
-    let bib_edited = bib_files(project).iter().any(|e| {
+    let bib_edited = bib_files_with_tree(tree).iter().any(|e| {
         std::fs::metadata(project.root.join(&e.path))
             .and_then(|m| m.modified())
             .is_ok_and(|t| t + MTIME_SLACK >= started_at)
     });
-    match bib_fingerprint(project, biber) {
+    match bib_fingerprint_with_tree(project, biber, tree) {
         Some(fp) if !bib_edited => {
             let _ = std::fs::write(out_file(project, "lemmata-bib"), fp);
         }
@@ -1072,7 +1165,8 @@ async fn direct_build(
     fmt: Option<&str>,
     // On past a pass that reported errors, as latexmk -f does.
     keep_going: bool,
-) -> Result<Status, Error> {
+    tree: &[lemmata_project::Entry],
+) -> Result<(Status, Option<String>), Error> {
     let engine = project.config.engine.binary();
     let engine_path = tool(opts, engine)
         .ok_or_else(|| Error::SpawnTool(engine.into(), std::io::Error::other("not found")))?;
@@ -1080,6 +1174,7 @@ async fn direct_build(
     let mut bib_checked = false;
     let mut status = Status::Failed;
     let mut failed = false;
+    let mut last_log = None;
     // This writes over latexmk's outputs without latexmk knowing: its record would later call a
     // stale PDF up to date (e.g. after undoing a broken edit) and skip the build.
     let _ = std::fs::remove_file(out_file(project, "fdb_latexmk"));
@@ -1111,7 +1206,7 @@ async fn direct_build(
         if status == Status::Failed && keep_going && wrote_log {
             failed = true;
         } else if status != Status::Success {
-            return Ok(status);
+            return Ok((status, None));
         }
 
         let log =
@@ -1124,21 +1219,23 @@ async fn direct_build(
         ]
         .iter()
         .any(|m| log.contains(m));
+        last_log = Some(log);
 
         // The bibliography tool runs at most once, and only when what it reads has changed.
         // A contents list that changed in this pass needs another one to print it.
         let mut again = rerun || toc_state(project) != before;
         if !bib_checked && pass < MAX_PASSES - 1 {
             bib_checked = true;
-            match run_bibliography(
+            match run_bibliography_with_tree(
                 project,
                 opts,
                 deadline.saturating_duration_since(Instant::now()),
                 cancel,
+                tree,
             )
             .await?
             {
-                Bib::Stopped(s) => return Ok(s),
+                Bib::Stopped(s) => return Ok((s, None)),
                 // The new .bbl only matters if it differs from the one the last pass used.
                 Bib::Ran { changed } => again |= changed,
                 Bib::Skipped => {}
@@ -1148,7 +1245,7 @@ async fn direct_build(
             break;
         }
     }
-    Ok(if failed { Status::Failed } else { status })
+    Ok((if failed { Status::Failed } else { status }, last_log))
 }
 
 /// The contents, figure and table lists, which a pass writes for the next one to print.
@@ -1168,7 +1265,11 @@ enum Bib {
 /// Hash of what the bibliography tool would read: the citations TeX collected
 /// (from the .bcf for biber, the \citation lines of the .aux for bibtex) and the
 /// size and time of every .bib file.
-fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
+fn bib_fingerprint_with_tree(
+    project: &Project,
+    biber: bool,
+    tree: &[lemmata_project::Entry],
+) -> Option<String> {
     use std::hash::{Hash, Hasher};
     let mirror = |ext: &str| out_file(project, ext);
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1196,7 +1297,7 @@ fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
             line.hash(&mut h);
         }
     }
-    let bibs: Vec<String> = bib_files(project)
+    let bibs: Vec<String> = bib_files_with_tree(tree)
         .iter()
         .map(|e| format!("{}:{}:{}", e.path, e.size, e.modified))
         .collect();
@@ -1227,35 +1328,50 @@ fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
     Some(format!("{:x}", h.finish()))
 }
 
-/// The project's .bib files.
-fn bib_files(project: &Project) -> Vec<lemmata_project::Entry> {
-    fn walk(entries: Vec<lemmata_project::Entry>, out: &mut Vec<lemmata_project::Entry>) {
+/// The project's .bib files, extracted from an existing project tree.
+fn bib_files_with_tree(entries: &[lemmata_project::Entry]) -> Vec<&lemmata_project::Entry> {
+    fn walk<'a>(entries: &'a [lemmata_project::Entry], out: &mut Vec<&'a lemmata_project::Entry>) {
         for e in entries {
             if e.is_dir {
-                walk(e.children, out);
+                walk(&e.children, out);
             } else if e.path.ends_with(".bib") {
                 out.push(e);
             }
         }
     }
     let mut out = Vec::new();
-    walk(
-        lemmata_project::tree(&project.root, &project.config.outdir),
-        &mut out,
-    );
+    walk(entries, &mut out);
     out
 }
 
-/// Runs biber or bibtex when the .bbl is missing or what the tool reads changed since it last ran.
+#[cfg(test)]
+fn bib_fingerprint(project: &Project, biber: bool) -> Option<String> {
+    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
+    bib_fingerprint_with_tree(project, biber, &tree)
+}
+
+#[cfg(test)]
 async fn run_bibliography(
     project: &Project,
     opts: &BuildOptions<'_>,
     limit: Duration,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Bib, Error> {
+    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
+    run_bibliography_with_tree(project, opts, limit, cancel, &tree).await
+}
+
+/// Runs biber or bibtex when the .bbl is missing or what the tool reads changed since it last ran.
+async fn run_bibliography_with_tree(
+    project: &Project,
+    opts: &BuildOptions<'_>,
+    limit: Duration,
+    cancel: &mut oneshot::Receiver<()>,
+    tree: &[lemmata_project::Entry],
+) -> Result<Bib, Error> {
     let biber = project.config.bib == lemmata_project::Bib::Biber;
     let mirror = |ext: &str| out_file(project, ext);
-    let Some(fingerprint) = bib_fingerprint(project, biber) else {
+    let Some(fingerprint) = bib_fingerprint_with_tree(project, biber, tree) else {
         return Ok(Bib::Skipped);
     };
     let (bbl, stamp) = (mirror("bbl"), mirror("lemmata-bib"));
@@ -1274,12 +1390,18 @@ async fn run_bibliography(
             vec![
                 format!("--input-directory={outdir}"),
                 format!("--output-directory={outdir}"),
+                "--".into(),
                 stem,
             ],
         )
     } else {
         // From the build folder, as latexmk does: the chapters' .aux files are named relative to it.
-        ("bibtex", vec![stem])
+        let safe_stem = if stem.starts_with('-') {
+            format!("./{stem}")
+        } else {
+            stem
+        };
+        ("bibtex", vec![safe_stem])
     };
     let Some(path) = helper(opts, name) else {
         return Ok(Bib::Skipped);
@@ -1458,9 +1580,15 @@ pub fn clean(project: &Project) -> std::io::Result<usize> {
     clean_dir(&outdir, &project.pdf_path())
 }
 
+#[cfg(test)]
+pub(crate) fn prepare_outdir(project: &Project) {
+    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
+    prepare_outdir_with_tree(project, &tree);
+}
+
 /// `\include{chapters/x}` writes `chapters/x.aux` inside the output folder,
 /// and TeX can't create folders, so mirror the project's folders there.
-pub(crate) fn prepare_outdir(project: &Project) {
+pub(crate) fn prepare_outdir_with_tree(project: &Project, tree: &[lemmata_project::Entry]) {
     fn mirror(entries: &[lemmata_project::Entry], outdir: &Path) {
         for e in entries.iter().filter(|e| e.is_dir) {
             let _ = std::fs::create_dir_all(outdir.join(&e.path));
@@ -1489,18 +1617,15 @@ pub(crate) fn prepare_outdir(project: &Project) {
             let _ = std::fs::remove_file(e.path());
         }
     }
-    mirror(
-        &lemmata_project::tree(&project.root, &project.config.outdir),
-        &outdir,
-    );
+    mirror(tree, &outdir);
 }
 
-fn prepend_paths(dirs: &[&Path]) -> OsString {
+fn prepend_paths(dirs: &[&Path]) -> Option<OsString> {
     let mut paths: Vec<PathBuf> = dirs.iter().map(|d| d.to_path_buf()).collect();
-    if let Some(existing) = std::env::var_os("PATH") {
+    if let Some(existing) = lemmata_env::host_path() {
         paths.extend(std::env::split_paths(&existing));
     }
-    std::env::join_paths(paths).unwrap_or_default()
+    std::env::join_paths(paths).ok()
 }
 
 /// How long a build gets to exit after the polite kill before it is forced.

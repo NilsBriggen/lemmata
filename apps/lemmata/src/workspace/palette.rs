@@ -298,8 +298,9 @@ impl Palette {
             if i.consume_key(Modifiers::NONE, Key::Escape) {
                 picked = Some(None);
             }
-            // Options aren't tab stops: Tab stays in the input.
+            // Options aren't tab stops: Tab / Shift+Tab stay in the input.
             i.consume_key(Modifiers::NONE, Key::Tab);
+            i.consume_key(Modifiers::SHIFT, Key::Tab);
         });
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
             picked = Some(self.results().get(self.selected).map(|i| i.cmd.clone()));
@@ -322,13 +323,17 @@ impl Palette {
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();
-        let panel = egui::Area::new(egui::Id::unique("palette"))
+        let area = egui::Area::new(egui::Id::unique("palette"))
+            .kind(egui::UiKind::Modal)
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::CENTER_TOP)
             .fixed_pos(pos2(
                 screen.center().x,
                 screen.top() + screen.height() * 0.12,
-            ))
+            ));
+        let layer = area.layer();
+        ctx.memory_mut(|m| m.set_modal_layer(layer));
+        let panel_resp = area
             .show(ctx, |ui| {
                 ui.set_width(width);
                 egui::Frame::new()
@@ -608,8 +613,19 @@ impl Palette {
                         }
                     });
             })
-            .response
-            .rect;
+            .response;
+        panel_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Dialog,
+                true,
+                if is_commands {
+                    "Command palette"
+                } else {
+                    "Quick open"
+                },
+            )
+        });
+        let panel = panel_resp.rect;
         if backdrop.inner.clicked()
             && !panel.contains(backdrop.inner.interact_pointer_pos().unwrap_or_default())
         {

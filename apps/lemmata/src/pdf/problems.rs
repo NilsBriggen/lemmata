@@ -151,11 +151,7 @@ impl Problems {
         );
         h.add_space(6.0);
         h.spacing_mut().item_spacing.x = 6.0;
-        h.label(
-            egui::RichText::new("Problems")
-                .font(FontId::new(13.0, theme::font::sans_600()))
-                .color(p.ink),
-        );
+        widgets::label(&mut h, p, "Problems");
         if !errors.is_empty() {
             widgets::chip(
                 &mut h,
@@ -288,7 +284,10 @@ impl Problems {
         let mut out = Vec::new();
         let body = ui.max_rect();
         ui.painter().rect_filled(body, 0, p.surface);
-        if self.log.as_ref().is_none_or(|(id, _)| *id != b.id) && self.asked != Some(b.id) {
+        if !b.building
+            && self.log.as_ref().is_none_or(|(id, _)| *id != b.id)
+            && self.asked != Some(b.id)
+        {
             self.asked = Some(b.id);
             out.push(Action::ReadLog);
         }
@@ -315,9 +314,13 @@ impl Problems {
         let copied_recently = self
             .log_copied
             .is_some_and(|t| t.elapsed().as_secs_f32() < 2.0);
-        if copied_recently {
-            tb.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(200));
+        if let Some(t) = self.log_copied
+            && t.elapsed().as_secs_f32() < 2.0
+        {
+            let left = std::time::Duration::from_secs(2)
+                .saturating_sub(t.elapsed())
+                .max(std::time::Duration::from_millis(50));
+            tb.ctx().request_repaint_after(left);
         }
         let raw_ok = self.log.as_ref().and_then(|(_, r)| r.as_ref().ok());
         if Button::new(if copied_recently {

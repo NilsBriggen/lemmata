@@ -7,13 +7,12 @@
 //! if its version matches Tectonic's bundled biblatex (TeX Live 2022).
 
 use crate::build::{
-    Error, OK_STAMP, Outcome, Status, mark_ok, merge_blg, prepare_outdir, read_log, tail_of,
-    written_since,
+    Error, OK_STAMP, Outcome, Status, mark_ok, merge_blg, read_log, tail_of, written_since,
 };
 use lemmata_log::{Diagnostic, Kind, Severity};
 use lemmata_project::Project;
 use regex::Regex;
-use sha2::{Digest, Sha256};
+use ring::digest::{Context as Sha256Context, SHA256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -231,13 +230,19 @@ pub async fn build(
     let restricted = crate::build::restrict(project);
     let project = restricted.as_ref().unwrap_or(project);
     let started = Instant::now();
-    let tree = lemmata_project::tree(&project.root, &project.config.outdir);
-    let files = crate::build::files_hash_with_tree(project, &tree);
+    let project_for_hash = project.clone();
+    let (tree, files) = tokio::task::spawn_blocking(move || {
+        let tree = lemmata_project::tree(&project_for_hash.root, &project_for_hash.config.outdir);
+        let files = crate::build::files_hash_with_tree(&project_for_hash, &tree);
+        (tree, files)
+    })
+    .await
+    .map_err(|e| Error::SpawnTool("tectonic".into(), std::io::Error::other(e.to_string())))?;
     if !force && let Some(o) = crate::build::cached_outcome_with(project, started, &tree, &files) {
         return Ok(o);
     }
     let started_at = SystemTime::now();
-    prepare_outdir(project);
+    crate::build::prepare_outdir_with_tree(project, &tree);
     let outdir = project.outdir_abs();
     let _ = std::fs::remove_file(project.log_path());
     let _ = std::fs::remove_file(outdir.join(OK_STAMP));
@@ -526,7 +531,7 @@ pub enum InstallError {
 pub fn sha256_hex(path: &Path) -> std::io::Result<String> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
+    let mut hasher = Sha256Context::new(&SHA256);
     let mut buf = vec![0; 64 * 1024];
     loop {
         let n = file.read(&mut buf)?;
@@ -536,7 +541,8 @@ pub fn sha256_hex(path: &Path) -> std::io::Result<String> {
         hasher.update(&buf[..n]);
     }
     Ok(hasher
-        .finalize()
+        .finish()
+        .as_ref()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect())

@@ -510,11 +510,13 @@ fn draw<'a>(
     };
     let pixmap = render(page, cache, settings, &RenderSettings::default(), &pix);
     let size = [pixmap.width() as usize, pixmap.height() as usize];
-    let mut data = pixmap.data_as_u8_slice().to_vec();
     if dark {
+        let mut data = pixmap.data_as_u8_slice().to_vec();
         darken(&mut data);
+        ColorImage::from_rgba_premultiplied(size, &data)
+    } else {
+        ColorImage::from_rgba_premultiplied(size, pixmap.data_as_u8_slice())
     }
-    ColorImage::from_rgba_premultiplied(size, &data)
 }
 
 /// `filter: invert(0.92) hue-rotate(180deg)`, the dark-pages look of the web app, per pixel.

@@ -159,12 +159,16 @@ pub fn parse_status(z: &str) -> Status {
 /// The git program, if there is a usable one. On macOS, /usr/bin/git is a stub
 /// that opens an install dialog when the Command Line Tools are missing.
 fn find_git() -> Option<PathBuf> {
-    let git = which::which("git").ok()?;
-    if cfg!(target_os = "macos") && git == Path::new("/usr/bin/git") {
-        let tools = Command::new("xcode-select").arg("-p").output();
-        return tools.is_ok_and(|o| o.status.success()).then_some(git);
-    }
-    Some(git)
+    static GIT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    GIT.get_or_init(|| {
+        let git = which::which("git").ok()?;
+        if cfg!(target_os = "macos") && git == Path::new("/usr/bin/git") {
+            let tools = Command::new("xcode-select").arg("-p").output();
+            return tools.is_ok_and(|o| o.status.success()).then_some(git);
+        }
+        Some(git)
+    })
+    .clone()
 }
 
 /// No console window flashes up on Windows, and git runs with the user's
@@ -214,9 +218,9 @@ fn exec(git: &Path, dir: Option<&Path>, args: &[&str], timeout: Duration) -> Res
         if let Some(d) = dir {
             own.arg("-C").arg(d);
         }
-        let own = lemmata_env::host(&mut own)
-            .args(["config", "core.sshCommand"])
-            .output();
+        lemmata_env::host(&mut own);
+        no_window(&mut own);
+        let own = own.args(["config", "core.sshCommand"]).output();
         if own.is_ok_and(|o| o.stdout.is_empty()) {
             c.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
         }
@@ -237,6 +241,7 @@ fn exec(git: &Path, dir: Option<&Path>, args: &[&str], timeout: Duration) -> Res
         drain(Box::new(child.stderr.take().unwrap())),
     );
     let start = Instant::now();
+    let mut poll_ms = 1u64;
     let status = loop {
         if let Some(st) = child.try_wait()? {
             break st;
@@ -272,7 +277,8 @@ fn exec(git: &Path, dir: Option<&Path>, args: &[&str], timeout: Duration) -> Res
                 format!("Git didn't finish in {n} seconds and was stopped.")
             });
         }
-        std::thread::sleep(Duration::from_millis(15));
+        std::thread::sleep(Duration::from_millis(poll_ms));
+        poll_ms = (poll_ms * 2).min(15);
     };
     Ok(Out {
         ok: status.success(),
@@ -345,18 +351,59 @@ struct Repo {
     /// See `lemmata_env::git_guard`: the panel shows status and the log unasked. What the user
     /// asks for (stage, commit, pull) runs with the repository's own config, as in a terminal.
     guard: Vec<String>,
+    git_dir: PathBuf,
+}
+
+#[derive(Clone)]
+struct CachedRepo {
+    top: PathBuf,
+    prefix: String,
+    git_dir: PathBuf,
+    guard: Vec<String>,
+    config_stamp: Option<(u64, std::time::SystemTime)>,
+}
+
+fn config_stamp(git_dir: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let m = std::fs::metadata(git_dir.join("config")).ok()?;
+    Some((m.len(), m.modified().ok()?))
 }
 
 impl Repo {
     fn open(root: &Path) -> Result<Repo> {
+        static CACHE: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<PathBuf, CachedRepo>>,
+        > = std::sync::OnceLock::new();
         let git = find_git().ok_or(Error::NoGit)?;
+        let cache = CACHE.get_or_init(Default::default);
+        if let Some(hit) = cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(root)
+            .cloned()
+            && hit.git_dir.exists()
+            && config_stamp(&hit.git_dir) == hit.config_stamp
+        {
+            return Ok(Repo {
+                git,
+                top: hit.top,
+                prefix: hit.prefix,
+                guard: hit.guard,
+                git_dir: hit.git_dir,
+            });
+        }
         let o = exec(
             &git,
             Some(root),
-            &["rev-parse", "--show-toplevel", "--show-prefix"],
+            &[
+                "rev-parse",
+                "--show-toplevel",
+                "--show-prefix",
+                "--absolute-git-dir",
+            ],
             LOCAL,
         )?;
         if !o.ok {
+            cache.lock().unwrap_or_else(|e| e.into_inner()).remove(root);
             return if o.stderr.contains("not a git repository") {
                 Err(Error::NotARepo)
             } else {
@@ -366,16 +413,32 @@ impl Repo {
         let mut lines = o.stdout.lines();
         let top = PathBuf::from(lines.next().unwrap_or_default().trim());
         let prefix = lines.next().unwrap_or_default().trim().to_string();
+        let git_dir = PathBuf::from(lines.next().unwrap_or_default().trim());
         let Some(guard) = lemmata_env::git_guard(&git, &top) else {
             return msg(
                 "This repository's config names a filter Lemmata can't turn off, so the Git panel is off.",
             );
         };
+        let entry = CachedRepo {
+            top: top.clone(),
+            prefix: prefix.clone(),
+            git_dir: git_dir.clone(),
+            guard: guard.clone(),
+            config_stamp: config_stamp(&git_dir),
+        };
+        {
+            let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+            if map.len() > 32 {
+                map.clear();
+            }
+            map.insert(root.to_path_buf(), entry);
+        }
         Ok(Repo {
             git,
             top,
             prefix,
             guard,
+            git_dir,
         })
     }
 
@@ -431,13 +494,8 @@ impl Repo {
         Ok(status)
     }
 
-    fn git_dir(&self) -> Option<PathBuf> {
-        let out = self.run(&["rev-parse", "--absolute-git-dir"], LOCAL).ok()?;
-        out.ok.then(|| PathBuf::from(out.stdout.trim()))
-    }
-
     fn in_progress(&self) -> Option<&'static str> {
-        let gd = self.git_dir()?;
+        let gd = &self.git_dir;
         if gd.join("MERGE_HEAD").exists() {
             Some("merge")
         } else if gd.join("rebase-merge").exists() || gd.join("rebase-apply").exists() {
@@ -715,7 +773,7 @@ pub fn stash_pop(root: &Path) -> Result<String> {
 /// Unified diff of unstaged or staged changes, optionally scoped to `path`.
 pub fn diff(root: &Path, path: Option<&str>, staged: bool) -> Result<String> {
     let r = Repo::open(root)?;
-    let mut args = vec!["diff", "--no-color"];
+    let mut args = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv"];
     if staged {
         args.push("--cached");
     }
@@ -801,11 +859,19 @@ pub fn create_branch(root: &Path, name: &str) -> Result<()> {
 /// The last 50 commits of the current branch.
 pub fn log(root: &Path) -> Result<Vec<Commit>> {
     let r = Repo::open(root)?;
-    if !r.status()?.has_commits {
-        return Ok(Vec::new());
+    let o = r.run(
+        &["log", "-50", "--format=%h%x1f%s%x1f%an%x1f%ar%x1e"],
+        LOCAL,
+    )?;
+    if !o.ok {
+        if o.stderr.contains("does not have any commits yet")
+            || o.stderr.contains("ambiguous argument 'HEAD'")
+        {
+            return Ok(Vec::new());
+        }
+        return msg(tidy(&o.stderr));
     }
-    let out = r.ok(&["log", "-50", "--format=%h%x1f%s%x1f%an%x1f%ar%x1e"])?;
-    Ok(out
+    Ok(o.stdout
         .split('\x1e')
         .filter_map(|rec| {
             let mut f = rec.trim_start_matches('\n').split('\x1f');
@@ -845,7 +911,12 @@ pub fn clone(url: &str, parent: &Path, name: &str) -> Result<PathBuf> {
     } else {
         name.trim().to_string()
     };
-    if name.contains(['/', '\\']) || name == ".." || name == "." {
+    if name.contains(['/', '\\'])
+        || (cfg!(windows) && name.contains(':'))
+        || name.chars().any(char::is_control)
+        || name == ".."
+        || name == "."
+    {
         return msg("The folder name can't contain slashes.");
     }
     if !parent.is_dir() {

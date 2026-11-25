@@ -173,22 +173,40 @@ fn valid_settings(saved: &Map<String, Value>) -> Map<String, Value> {
     let kind = |v: &Value| std::mem::discriminant(v);
     saved
         .iter()
-        .filter(|(k, v)| match defaults.get(*k) {
-            None => false,
-            // A number or "tab"; `valid_indent` checks it. (The Svelte app dropped "tab" here, so a
-            // tab indent never survived a restart.)
-            Some(_) if k.as_str() == "indent" => true,
-            Some(Value::Null) => v.is_null() || v.is_string(),
-            Some(d) => kind(d) == kind(v),
-        })
-        // The right kind of value can still be the wrong shape inside (a snippet without its
-        // description): that key goes, not all of them.
-        .filter(|(k, v)| {
+        .filter_map(|(k, v)| {
+            let matches_kind = match defaults.get(k) {
+                None => false,
+                // A number or "tab"; `valid_indent` checks it. (The Svelte app dropped "tab" here, so a
+                // tab indent never survived a restart.)
+                Some(_) if k.as_str() == "indent" => true,
+                Some(Value::Null) => v.is_null() || v.is_string(),
+                Some(d) => kind(d) == kind(v),
+            };
+            if !matches_kind {
+                return None;
+            }
+            // One bad keybinding entry must not cost all custom keybindings: salvage string entries
+            // before validating the Settings shape.
+            let candidate = if k.as_str() == "keybindings"
+                && let Value::Object(map) = v
+            {
+                Value::Object(
+                    map.iter()
+                        .filter(|(_, val)| val.is_string())
+                        .map(|(bk, bv)| (bk.clone(), bv.clone()))
+                        .collect(),
+                )
+            } else {
+                v.clone()
+            };
+            // The right kind of value can still be the wrong shape inside (a snippet without its
+            // description): that key goes, not all of them.
             let mut one = defaults.clone();
-            one.insert((*k).clone(), (*v).clone());
-            serde_json::from_value::<Settings>(Value::Object(one)).is_ok()
+            one.insert(k.clone(), candidate.clone());
+            serde_json::from_value::<Settings>(Value::Object(one))
+                .is_ok()
+                .then(|| (k.clone(), candidate))
         })
-        .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
 }
 
@@ -861,5 +879,22 @@ mod tests {
             Groups::parse(Some(damaged)).members,
             BTreeMap::from([("/q".into(), "a".into())])
         );
+    }
+
+    #[test]
+    fn valid_settings_salvages_good_keybindings_when_one_is_malformed() {
+        let saved: Map<String, Value> = serde_json::from_value(json!({
+            "keybindings": {
+                "recompile": "Mod-b",
+                "broken": 42
+            }
+        }))
+        .unwrap();
+        let s = Settings::from_saved(&saved);
+        assert_eq!(
+            s.keybindings.get("recompile").map(String::as_str),
+            Some("Mod-b")
+        );
+        assert!(!s.keybindings.contains_key("broken"));
     }
 }

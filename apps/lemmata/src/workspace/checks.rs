@@ -107,10 +107,17 @@ impl Workspace {
                     self.checks.spell.set_loaded(lang);
                 }
             }
-            Msg::SpellLoaded(_, Err(_)) => {
+            Msg::SpellLoaded(lang, Err(_)) => {
                 // No word is marked. Not asked again until the language or words change or the
                 // dictionary is downloaded, or this would retry on every frame.
-                self.checks.spell.set_loaded(None);
+                if self
+                    .spell_asked
+                    .as_ref()
+                    .map(|a| (a.0 != "off").then(|| a.0.clone()))
+                    == Some(lang)
+                {
+                    self.checks.spell.set_loaded(None);
+                }
             }
             Msg::Dictionary(d) => {
                 let size = (d.size_kb / 1024).max(1);

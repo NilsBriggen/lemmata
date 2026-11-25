@@ -682,16 +682,17 @@ impl Workspace {
                             ink,
                         );
                         if two && let Some(new) = &m.replaced {
-                            let shown: String = if new.chars().count() > 90 {
-                                new.chars().take(90).collect::<String>() + "…"
-                            } else {
-                                new.clone()
-                            };
-                            clip.text(
-                                pos2(tx, r.top() + 21.0),
-                                egui::Align2::LEFT_TOP,
-                                format!("→ {shown}"),
+                            let mut rep_job = egui::text::LayoutJob::simple_singleline(
+                                format!("→ {new}"),
                                 font.clone(),
+                                fade(p.ok),
+                            );
+                            rep_job.wrap.max_width = (r.right() - tx - 8.0).max(20.0);
+                            rep_job.wrap.max_rows = 1;
+                            rep_job.wrap.overflow_character = Some('…');
+                            clip.galley(
+                                pos2(tx, r.top() + 21.0),
+                                ui.fonts_mut(|fo| fo.layout_job(rep_job)),
                                 fade(p.ok),
                             );
                         }
