@@ -1,0 +1,18 @@
+<div class="before" aria-hidden="true"><img src="today/{today}" alt="The workspace today"></div>
+
+<div class="mock" role="group" aria-label="Mockup controls">
+  <a class="lbl" href="index.html">All screens</a>
+  <button id="theme" aria-pressed="false"><i data-i="MOON"></i>Dark</button>
+  <button id="before" aria-pressed="false"><i data-i="UNDO_2"></i>Today's UI</button>
+</div>
+<script>
+// Mockup controls (not part of the design): theme follows the system until switched; the choice carries across pages.
+(() => {
+  const root = document.documentElement, btn = document.getElementById('theme'), before = document.getElementById('before');
+  try { const t = localStorage.getItem('lemmata-mock-theme'); if (t) root.dataset.theme = t; } catch (e) {}
+  const isDark = () => root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  btn.setAttribute('aria-pressed', isDark());
+  btn.onclick = () => { const d = !isDark(); root.dataset.theme = d ? 'dark' : 'light'; btn.setAttribute('aria-pressed', d); try { localStorage.setItem('lemmata-mock-theme', root.dataset.theme); } catch (e) {} };
+  before.onclick = () => before.setAttribute('aria-pressed', document.body.classList.toggle('show-before'));
+})();
+</script>

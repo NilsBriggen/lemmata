@@ -2,8 +2,17 @@
 
 The plan is one screen at a time. Each screen gets an HTML mockup and an OK before any Rust is written.
 
-Mockups:
-- `mockups/workspace.html`: screen 1. Open it in a browser. The switch at the bottom right toggles light/dark and shows today's UI for comparison.
+Mockups: open `mockups/index.html` in a browser. Every page has a switch at the bottom right that toggles light/dark and shows today's UI for comparison.
+
+| Screen | Mockup |
+|---|---|
+| 1 Workspace | `mockups/workspace.html` |
+| 2 Library | `mockups/library.html` |
+| 3a New project | `mockups/new-project.html` |
+| 3b Set up TeX (onboarding) | `mockups/onboarding.html` |
+| 4 Workspace panels | `mockups/workspace.html#search`, `#problems`, `#git`, `#history`, `#comments` and `#todos` (or click the rail) |
+| 5 Settings | `mockups/settings.html` (`#project` opens the project scope) |
+| 6 Popups | `mockups/popups.html` |
 
 ## Direction
 
@@ -30,12 +39,21 @@ Everything in the mockup can be drawn in egui: solid fills, 1 px strokes, rounde
 
 ## Screens, in order
 
-1. **Workspace (editor + PDF):** mockup ready (`mockups/workspace.html`).
-2. **Library (home):** the light sidebar from screen 1, a "Continue writing" row with real PDF first-page thumbnails (today's cards are empty placeholders), quick actions (New, Open folder, Clone, Import from Overleaf) and the list/grid view.
-3. **New project and onboarding (TeX setup):** template cards with a preview, and onboarding in the same card style.
-4. **Workspace panels:** Logs/Problems, Git, History, Comments and To-dos as rail panels.
-5. **Preferences and project settings:** a settings layout with a left nav.
-6. **Polish:** command palette, quick open, completion and hover popups.
+1. **Workspace (editor + PDF).**
+2. **Library (home).**
+   - The sidebar holds New project, Recent / All projects / Templates, folders, and the ways to bring a project in (open a folder, clone, import from Overleaf, the example document).
+   - "Continue writing" shows the three latest projects with a page thumbnail and their build status.
+   - Below that, every project in a table with folder, compiler and last opened.
+3. **New project and onboarding:**
+   - New project is a template gallery: categories on the left, cards with page previews on the right, and name + location always visible at the bottom.
+   - Onboarding uses the same card style, with a three-step header, found and missing tools as chips, and a per-system install command.
+4. **Workspace panels.** Search, Problems, Git, History, Comments and To-dos open in the left sidebar, which widens to 312 px, instead of replacing the PDF. The PDF's "4 issues" chip opens Problems.
+5. **Settings.** Preferences and project settings are one window, with a "Lemmata | rl-thesis" switch and sections on the left. Each row has its label and help text on the left and the control on the right. Switches replace checkboxes. Project settings still save to lemmata.toml with Save/Cancel; preferences apply at once.
+6. **Popups:**
+   - one command palette (Ctrl K) for commands, files, sections and labels, replacing the separate palette and quick open;
+   - completion with kind badges and a help line;
+   - maths and citation hover cards;
+   - notices at the bottom centre with their action inline.
 
 ## Token changes for `apps/lemmata/src/theme.rs`
 
@@ -80,6 +98,6 @@ These are the shared patterns behind the direction. The links open on Mobbin.
   - [Snowflake home](https://mobbin.com/screens/eabc3923-dafb-4de7-ad04-44f226c6473b)
   - [Subframe projects](https://mobbin.com/screens/b8d8bc11-c02b-4bf8-bfa7-ed4d3d60a19f)
 
-## Building the mockup
+## Building the mockups
 
-`mockups/workspace.html` is generated: its icons are inlined from `apps/lemmata/src/icons_data.rs`, so it stays one self-contained file. It loads only Google Fonts.
+The pages in `mockups/` are generated: edit `mockups/src/` and run `python3 design/build.py`. The build expands `<!-- @include partial.html -->` from `mockups/src/partials/` and inlines the Lucide icons from `apps/lemmata/src/icons_data.rs`. All pages share `base.css`, the tokens and components, and load only Google Fonts. `mockups/today/` holds the current kittest snapshots for the before/after switch.

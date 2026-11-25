@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!-- @include head.html -->
+<title>Set up TeX</title>
+<style>
+body { background: var(--app); }
+.ob { min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 28px 16px 80px; }
+.ob-top { width: min(860px, 100%); display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+.steps { display: flex; align-items: center; gap: 8px; color: var(--faint); font-size: 12.5px; font-weight: 500; }
+.steps .st-i { display: flex; align-items: center; gap: 6px; }
+.steps .dot { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font: 600 11px "IBM Plex Sans"; background: var(--surface-3); color: var(--muted); }
+.steps .now .dot { background: var(--accent); color: var(--accent-ink); }
+.steps .now { color: var(--ink); }
+.steps .line { width: 24px; height: 1px; background: var(--border-strong); }
+.ob-card { width: min(860px, 100%); background: var(--surface); border-radius: 14px; box-shadow: var(--shadow-card); padding: 32px 36px 24px; }
+.eyebrow { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent-text, var(--accent)); }
+.ob-card h1 { margin: 8px 0 10px; font: 32px/1.15 "Young Serif", serif; }
+.lead { margin: 0 0 22px; max-width: 60ch; color: var(--ink-2); font-size: 14px; line-height: 1.55; }
+.tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-bottom: 26px; }
+.tool { display: flex; align-items: center; gap: 9px; padding: 9px 11px; border-radius: 9px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); }
+.tool svg.i { width: 16px; height: 16px; }
+.tool b { font: 500 13px "IBM Plex Mono", monospace; display: block; }
+.tool small { color: var(--faint); font-size: 11.5px; }
+.tool.miss svg.i { color: var(--error); }
+.tool.miss { background: var(--error-soft); box-shadow: none; }
+.tool.optional svg.i { color: var(--faint); }
+.h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+.os { margin-bottom: 14px; display: inline-flex; flex-wrap: wrap; }
+.os button { padding: 0 12px; }
+.os .here { color: var(--faint); font-weight: 400; margin-left: 4px; }
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.choice { display: flex; gap: 10px; padding: 12px 14px; border-radius: 10px; text-align: left; box-shadow: inset 0 0 0 1px var(--border); }
+.choice.on { box-shadow: inset 0 0 0 2px var(--accent); background: var(--accent-soft); }
+.radio { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--border-strong); flex: none; margin-top: 2px; }
+.choice.on .radio { border: 5px solid var(--accent); }
+.choice b { display: block; font-weight: 600; }
+.choice span { color: var(--muted); font-size: 12.5px; }
+.cmd { position: relative; margin: 0 0 8px; padding: 14px 16px; border-radius: 10px; background: #0f1418; color: #dbe3ea; font: 13px/1.6 "IBM Plex Mono", monospace; white-space: pre-wrap; }
+.cmd-btns { display: flex; gap: 8px; margin-bottom: 6px; }
+.small { color: var(--faint); font-size: 12.5px; margin: 0 0 24px; }
+.alt { display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: 10px; background: var(--surface-2); margin-bottom: 24px; }
+.alt b { display: block; font-weight: 600; margin-bottom: 2px; }
+.alt p { margin: 0; color: var(--muted); font-size: 12.5px; max-width: 58ch; }
+.alt .btn { margin-left: auto; }
+.ob-foot { display: flex; align-items: center; gap: 12px; padding-top: 18px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.ob-foot .btn.primary { margin-left: auto; height: 36px; padding: 0 16px; }
+@media (max-width: 760px) { .ob-card { padding: 22px 18px; } .choices { grid-template-columns: 1fr; } .alt { flex-direction: column; align-items: flex-start; } .alt .btn { margin-left: 0; } .steps .label { display: none; } }
+</style>
+</head>
+<body>
+<div class="ob">
+  <div class="ob-top">
+    <div class="wordmark" style="padding:0">Lemmata</div>
+    <ol class="steps" aria-label="Setup steps" style="list-style:none;margin:0;padding:0">
+      <li class="st-i now"><span class="dot">1</span><span class="label">Install TeX</span></li><li class="line" aria-hidden="true"></li>
+      <li class="st-i"><span class="dot">2</span><span class="label">Check</span></li><li class="line" aria-hidden="true"></li>
+      <li class="st-i"><span class="dot">3</span><span class="label">Start writing</span></li>
+    </ol>
+  </div>
+
+  <main class="ob-card">
+    <div class="eyebrow">One step before you start</div>
+    <h1>Lemmata needs TeX Live to build PDFs</h1>
+    <p class="lead">Lemmata uses the TeX installation on your computer. It looked in your PATH and the usual install folders and found nothing. Install it with the command below, then click Check again.</p>
+
+    <div class="tools" aria-label="What was found">
+      <div class="tool miss"><i data-i="CIRCLE_X"></i><div><b>latexmk</b><small>required</small></div></div>
+      <div class="tool miss"><i data-i="CIRCLE_X"></i><div><b>pdflatex</b><small>required</small></div></div>
+      <div class="tool optional"><i data-i="CIRCLE"></i><div><b>biber</b><small>optional</small></div></div>
+      <div class="tool optional"><i data-i="CIRCLE"></i><div><b>xelatex</b><small>optional</small></div></div>
+      <div class="tool optional"><i data-i="CIRCLE"></i><div><b>synctex</b><small>optional</small></div></div>
+    </div>
+
+    <h2 class="h3">Install it</h2>
+    <div class="seg os" role="group" aria-label="System">
+      <button class="on">Arch / CachyOS<span class="here">· this computer</span></button>
+      <button>Debian / Ubuntu</button>
+      <button>Fedora</button>
+      <button>macOS</button>
+      <button>Windows</button>
+    </div>
+    <div class="choices">
+      <button class="choice on" aria-pressed="true"><span class="radio"></span><span><b>Recommended · about 1.2 GB</b><span>Covers almost every paper, thesis and Beamer deck</span></span></button>
+      <button class="choice" aria-pressed="false"><span class="radio"></span><span><b>Full · about 5.6 GB</b><span>Every package, so you're never asked to install more</span></span></button>
+    </div>
+    <pre class="cmd">sudo pacman -S --needed texlive-basic texlive-latex texlive-latexrecommended texlive-latexextra texlive-fontsrecommended texlive-bibtexextra texlive-binextra texlive-mathscience biber</pre>
+    <div class="cmd-btns"><button class="btn sm ghost"><i data-i="COPY"></i>Copy</button><button class="btn sm ghost"><i data-i="EXTERNAL_LINK"></i>Open a terminal</button></div>
+    <p class="small">Open a terminal shows the command and waits for you to press Enter. Lemmata never installs TeX Live by itself.</p>
+
+    <div class="alt">
+      <div><b>Or use Tectonic: nothing to install</b><p>A small LaTeX engine (about 11 MB). It fetches each package the first time a document needs it, so the first build needs an internet connection. biblatex with biber isn't supported; use BibTeX.</p></div>
+      <button class="btn">Use Tectonic</button>
+    </div>
+
+    <footer class="ob-foot">
+      <span class="muted">Installed somewhere else? <a class="link-btn" href="#">Choose the TeX bin folder</a></span>
+      <button class="btn primary"><i data-i="REFRESH_CW"></i>Check again</button>
+    </footer>
+  </main>
+</div>
+<!-- @include mock.html today=onboarding-light.png -->
+</body>
+</html>

@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>Lemmata workspace</title>
+<!-- @include head.html -->
+</head>
+<body>
+<div class="app p-files v-split" id="app">
+
+  <!-- Rail: switches what the sidebar shows (replaces the top bar's Comments / History / Git buttons) -->
+  <nav class="rail" aria-label="Panels">
+    <div class="logo" aria-hidden="true">L</div>
+    <button class="rail-btn" data-panel="files" aria-label="Files" title="Files  Ctrl Shift E"><i data-i="FILES"></i></button>
+    <button class="rail-btn" data-panel="outline" aria-label="Outline" title="Outline"><i data-i="LIST_TREE"></i></button>
+    <button class="rail-btn" data-panel="search" aria-label="Search the project" title="Search  Ctrl Shift F"><i data-i="SEARCH"></i></button>
+    <button class="rail-btn" data-panel="problems" aria-label="Problems, 1 error" title="Problems"><i data-i="CIRCLE_ALERT"></i><span class="badge err">1</span></button>
+    <button class="rail-btn" data-panel="git" aria-label="Git, 3 changes" title="Git"><i data-i="GIT_BRANCH"></i><span class="badge">3</span></button>
+    <button class="rail-btn" data-panel="history" aria-label="History" title="History"><i data-i="HISTORY"></i></button>
+    <button class="rail-btn" data-panel="comments" aria-label="Comments, 2 open" title="Comments"><i data-i="MESSAGE_SQUARE"></i><span class="badge">2</span></button>
+    <button class="rail-btn" data-panel="todos" aria-label="To-dos" title="To-dos"><i data-i="CIRCLE_CHECK"></i></button>
+    <div class="rail-sep"></div>
+    <button class="rail-btn" aria-label="Back to projects" title="All projects"><i data-i="LAYOUT_GRID"></i></button>
+    <button class="rail-btn" aria-label="Preferences" title="Preferences  Ctrl ,"><i data-i="SETTINGS"></i></button>
+  </nav>
+
+  <!-- Top bar -->
+  <header class="top">
+    <div class="crumbs">
+      <button class="proj">rl-thesis <i data-i="CHEVRON_DOWN"></i></button>
+      <span class="sep">/</span>
+      <span class="file">chapters / method.tex</span>
+    </div>
+    <div class="seg" role="group" aria-label="Layout">
+      <button data-view="editor"><i data-i="SQUARE_PEN"></i>Editor</button>
+      <button data-view="split"><i data-i="COLUMNS_2"></i>Split</button>
+      <button data-view="pdf"><i data-i="FILE_TEXT"></i>PDF</button>
+    </div>
+    <div class="top-right">
+      <button class="cmdk" aria-label="Search or run a command"><i data-i="SEARCH"></i><span class="t">Search or run a command</span><span class="kbd">Ctrl K</span></button>
+      <div class="status" title="pdfLaTeX, compiled in 1.1 s"><i data-i="CHECK"></i><span>Compiled 1.1 s</span></div>
+      <div class="split-btn">
+        <button><i data-i="REFRESH_CW"></i>Recompile</button>
+        <button class="more" aria-label="Compile options"><i data-i="CHEVRON_DOWN"></i></button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="side">
+    <section class="panel files" aria-label="Files">
+      <div class="side-head">
+        <h2>Files</h2>
+        <button class="act" aria-label="New file"><i data-i="FILE_PLUS"></i></button>
+        <button class="act" aria-label="New folder"><i data-i="FOLDER_PLUS"></i></button>
+        <button class="act" aria-label="Upload"><i data-i="UPLOAD"></i></button>
+      </div>
+      <ul class="tree">
+        <li class="row dir"><i data-i="CHEVRON_DOWN" class="chev"></i><i data-i="FOLDER_OPEN" class="ico"></i><span class="name">chapters</span></li>
+        <li class="row in1"><i data-i="FILE_TEXT" class="ico"></i><span class="name">introduction.tex</span></li>
+        <li class="row in1 on"><i data-i="FILE_TEXT" class="ico"></i><span class="name">method.tex</span><span class="dirty" title="Unsaved changes"></span></li>
+        <li class="row in1"><i data-i="FILE_TEXT" class="ico"></i><span class="name">results.tex</span></li>
+        <li class="row dir"><i data-i="CHEVRON_RIGHT" class="chev"></i><i data-i="FOLDER" class="ico"></i><span class="name">figures</span></li>
+        <li class="row" style="padding-left:29px"><i data-i="FILE_TEXT" class="ico"></i><span class="name">main.tex</span><span class="tag">MAIN</span></li>
+        <li class="row" style="padding-left:29px"><i data-i="BOOK_OPEN" class="ico"></i><span class="name">refs.bib</span></li>
+      </ul>
+      <div class="side-foot"><i data-i="GIT_BRANCH"></i>main · 3 changes</div>
+    </section>
+
+    <section class="panel outline" aria-label="Outline">
+      <div class="side-head"><h2>Outline</h2><button class="act" aria-label="Collapse all"><i data-i="CHEVRONS_DOWN_UP"></i></button></div>
+      <ul class="tree">
+        <li class="row outline-row"><span class="name">1 Introduction</span><span class="num">3</span></li>
+        <li class="row outline-row on"><span class="name">2 Method</span><span class="num">1</span></li>
+        <li class="row outline-row sub"><span class="name">2.1 Policy updates</span><span class="num">9</span></li>
+        <li class="row outline-row"><span class="name">3 Results</span><span class="num">1</span></li>
+        <li class="row outline-row"><span class="name">References</span><span class="num">12</span></li>
+      </ul>
+    </section>
+
+    <!-- Screen 4: the panels that used to replace the PDF pane -->
+    <section class="panel search" aria-label="Search">
+      <div class="side-head"><h2>Search</h2><button class="act" aria-label="Show replace"><i data-i="CHEVRONS_UP_DOWN"></i></button></div>
+      <div class="pad">
+        <label class="field"><i data-i="SEARCH"></i><input value="policy" aria-label="Search the project"><span class="opts"><button class="opt on" aria-label="Match case" title="Match case">Aa</button><button class="opt" aria-label="Whole word" title="Whole word">ab</button><button class="opt" aria-label="Regular expression" title="Regular expression">.*</button></span></label>
+        <label class="field"><i data-i="PENCIL"></i><input placeholder="Replace with" aria-label="Replace with"></label>
+        <div class="hint-row"><span>9 hits in 3 files</span><button class="link-btn">Replace all</button></div>
+      </div>
+      <div class="scroll">
+        <div class="group"><i data-i="CHEVRON_DOWN" class="chev"></i><i data-i="FILE_TEXT" class="ico"></i><b>chapters/method.tex</b><span class="count">4</span></div>
+        <div class="hit on"><span class="num">9</span><span>\subsection{<mark>Policy</mark> updates}</span></div>
+        <div class="hit"><span class="num">11</span><span>…the probability ratio of the new <mark>policy</mark></span></div>
+        <div class="hit"><span class="num">24</span><span>the old <mark>policy</mark> is kept for one epoch</span></div>
+        <div class="hit"><span class="num">31</span><span>\label{fig:<mark>policy</mark>-loss}</span></div>
+        <div class="group"><i data-i="CHEVRON_DOWN" class="chev"></i><i data-i="FILE_TEXT" class="ico"></i><b>chapters/introduction.tex</b><span class="count">3</span></div>
+        <div class="hit"><span class="num">5</span><span>learns a <mark>policy</mark> from rewards alone</span></div>
+        <div class="hit"><span class="num">17</span><span>on-<mark>policy</mark> methods such as PPO</span></div>
+        <div class="hit"><span class="num">18</span><span>and off-<mark>policy</mark> methods</span></div>
+        <div class="group"><i data-i="CHEVRON_RIGHT" class="chev"></i><i data-i="BOOK_OPEN" class="ico"></i><b>refs.bib</b><span class="count">2</span></div>
+      </div>
+    </section>
+
+    <section class="panel problems" aria-label="Problems">
+      <div class="side-head"><h2>Problems</h2><span class="pill err">1</span><span class="pill warn">3</span><span class="grow"></span><button class="act" aria-label="Raw log" title="Raw log"><i data-i="SCROLL_TEXT"></i></button></div>
+      <div class="scroll">
+        <article class="prob err">
+          <div class="prob-head"><i data-i="CIRCLE_X"></i><b>Citation <code>nobody2020</code> isn't in any .bib file</b></div>
+          <button class="loc">chapters/method.tex:7</button>
+          <pre class="excerpt"><span class="n">6</span>as in Equation~\ref{eq:objective},
+<span class="n hl">7</span><span class="hl">Section~\ref{sec:missing} … ~\cite{nobody2020}.</span>
+<span class="n">8</span></pre>
+          <div class="fix"><button class="btn sm">Search online</button><button class="btn sm ghost">Open refs.bib</button></div>
+        </article>
+        <article class="prob warn">
+          <div class="prob-head"><i data-i="TRIANGLE_ALERT"></i><b>Reference <code>sec:missing</code> is undefined</b></div>
+          <button class="loc">chapters/method.tex:7</button>
+          <p>No \label with this name. A label added just now resolves on the next build.</p>
+        </article>
+        <article class="prob warn">
+          <div class="prob-head"><i data-i="TRIANGLE_ALERT"></i><b>Overfull \hbox (12.3 pt too wide)</b></div>
+          <button class="loc">chapters/results.tex:42</button>
+        </article>
+        <article class="prob warn">
+          <div class="prob-head"><i data-i="TRIANGLE_ALERT"></i><b>There were undefined references</b></div>
+          <button class="loc">main.tex</button>
+        </article>
+        <label class="check"><input type="checkbox"> Show 2 layout notes</label>
+      </div>
+    </section>
+
+    <section class="panel git" aria-label="Git">
+      <div class="side-head"><h2>Git</h2><button class="act" aria-label="Refresh"><i data-i="REFRESH_CW"></i></button></div>
+      <div class="pad">
+        <button class="select"><i data-i="GIT_BRANCH"></i><span class="grow">main</span><span class="muted">↑1 ↓0</span><i data-i="CHEVRON_DOWN"></i></button>
+        <div class="btn-row"><button class="btn sm ghost">Fetch</button><button class="btn sm ghost"><i data-i="ARROW_DOWN"></i>Pull</button><button class="btn sm ghost"><i data-i="ARROW_UP"></i>Push 1</button></div>
+      </div>
+      <div class="sub-head">Changes <span class="count">3</span><span class="grow"></span><button class="link-btn">Stage all</button></div>
+      <ul class="tree">
+        <li class="row"><input type="checkbox" checked aria-label="Stage"><span class="name">chapters/method.tex</span><span class="st m">M</span></li>
+        <li class="row"><input type="checkbox" checked aria-label="Stage"><span class="name">figures/policy-loss.pdf</span><span class="st a">A</span></li>
+        <li class="row"><input type="checkbox" aria-label="Stage"><span class="name">refs.bib</span><span class="st m">M</span></li>
+      </ul>
+      <div class="pad">
+        <textarea class="area" rows="3" aria-label="Commit message">Write up the clipped objective</textarea>
+        <button class="btn primary block">Commit 2 files <span class="kbd on-accent">Ctrl Enter</span></button>
+      </div>
+      <div class="sub-head">Recent</div>
+      <ul class="tree commits">
+        <li><b>Add the PPO citation</b><span>3e91a2c · Nils · 2 h ago</span></li>
+        <li><b>Results chapter skeleton</b><span>b04d5e1 · Nils · yesterday</span></li>
+        <li><b>Initial commit</b><span>3900d17 · Nils · 3 days ago</span></li>
+      </ul>
+    </section>
+
+    <section class="panel history" aria-label="History">
+      <div class="side-head"><h2>History</h2><button class="btn sm ghost"><i data-i="PLUS"></i>Snapshot</button></div>
+      <div class="pad">
+        <span class="lbl-sm">Review changes since</span>
+        <button class="select"><span class="grow">Before supervisor meeting</span><i data-i="CHEVRON_DOWN"></i></button>
+        <div class="btn-row"><button class="btn sm primary">Review changes</button><button class="btn sm ghost"><i data-i="FILE_TEXT"></i>PDF of changes</button></div>
+      </div>
+      <div class="sub-head">Today</div>
+      <ol class="timeline">
+        <li class="on"><b>Autosave</b><span>12:03 · 2 files</span></li>
+        <li><b>Autosave</b><span>10:41 · 1 file</span></li>
+      </ol>
+      <div class="sub-head">Yesterday</div>
+      <ol class="timeline">
+        <li class="named"><b>Before supervisor meeting</b><span>16:20 · 5 files · named</span></li>
+        <li><b>Autosave</b><span>14:02 · 3 files</span></li>
+      </ol>
+    </section>
+
+    <section class="panel comments" aria-label="Comments">
+      <div class="side-head"><h2>Comments</h2><span class="tabs-sm"><button class="on">Open 2</button><button>Resolved</button></span></div>
+      <div class="scroll">
+        <article class="thread on">
+          <q>maximises the expected return</q>
+          <div class="msg"><span class="av">AK</span><div><b>Anna K.</b> <span class="muted">· 2 h ago</span><p>Say which discount factor you use here, readers will ask.</p></div></div>
+          <div class="msg"><span class="av me">NB</span><div><b>You</b> <span class="muted">· 1 h ago</span><p>Good point, adding γ = 0.99 in the setup.</p></div></div>
+          <div class="reply"><input placeholder="Reply…" aria-label="Reply"><button class="btn sm ghost">Resolve</button></div>
+        </article>
+        <article class="thread">
+          <q>over a fixed number of epochs per batch</q>
+          <div class="msg"><span class="av">AK</span><div><b>Anna K.</b> <span class="muted">· yesterday</span><p>How many?</p></div></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel todos" aria-label="To-dos">
+      <div class="side-head"><h2>To-dos</h2><span class="count">3</span></div>
+      <div class="scroll">
+        <div class="group"><i data-i="FILE_TEXT" class="ico"></i><b>chapters/method.tex</b></div>
+        <div class="hit"><span class="num">10</span><span>compare the clipped and the KL-penalised objective</span></div>
+        <div class="group"><i data-i="FILE_TEXT" class="ico"></i><b>chapters/results.tex</b></div>
+        <div class="hit"><span class="num">3</span><span>add the learning curves from run 12</span></div>
+        <div class="hit"><span class="num">27</span><span>FIXME table overflows the margin</span></div>
+        <p class="note">Collected from % TODO and % FIXME comments.</p>
+      </div>
+    </section>
+  </aside>
+
+  <!-- Editor and PDF as two cards -->
+  <main class="main">
+    <section class="card editor" aria-label="Editor">
+      <div class="tabs" role="tablist">
+        <button class="tab on" role="tab" aria-selected="true">method.tex<span class="dirty"></span><span class="x" aria-label="Close"><i data-i="X"></i></span></button>
+        <button class="tab" role="tab">main.tex<span class="x" aria-label="Close"><i data-i="X"></i></span></button>
+        <button class="tab" role="tab">refs.bib<span class="x" aria-label="Close"><i data-i="X"></i></span></button>
+        <span class="fill"></span>
+        <button class="tab-act" aria-label="More"><i data-i="ELLIPSIS"></i></button>
+      </div>
+      <div class="bar" role="toolbar" aria-label="Formatting">
+        <button class="tb style">Paragraph <i data-i="CHEVRON_DOWN"></i></button>
+        <span class="vr"></span>
+        <button class="tb" aria-label="Bold  Ctrl B"><i data-i="BOLD"></i></button>
+        <button class="tb" aria-label="Italic  Ctrl I"><i data-i="ITALIC"></i></button>
+        <button class="tb" aria-label="Link"><i data-i="LINK"></i></button>
+        <span class="vr"></span>
+        <button class="tb" aria-label="Maths"><i data-i="SIGMA"></i></button>
+        <button class="tb" aria-label="Symbol"><i data-i="PI"></i></button>
+        <button class="tb opt" aria-label="Figure"><i data-i="IMAGE"></i></button>
+        <button class="tb opt" aria-label="Table"><i data-i="TABLE"></i></button>
+        <button class="tb opt opt2" aria-label="Code block"><i data-i="CODE"></i></button>
+        <span class="vr"></span>
+        <button class="tb" aria-label="Bulleted list"><i data-i="LIST"></i></button>
+        <button class="tb opt opt2" aria-label="Numbered list"><i data-i="LIST_ORDERED"></i></button>
+        <span class="vr"></span>
+        <button class="tb label"><i data-i="BOOK_OPEN_TEXT"></i><span>Cite</span></button>
+        <span class="fill"></span>
+        <button class="tb label opt"><i data-i="MESSAGE_SQUARE_PLUS"></i><span>Comment</span></button>
+        <button class="tb label opt"><i data-i="LOCATE"></i><span>Show in PDF</span></button>
+        <button class="tb" aria-label="More tools"><i data-i="ELLIPSIS"></i></button>
+      </div>
+      <div class="code" aria-label="method.tex">
+        <div class="ln"><span class="n">1</span><span class="t"><span class="c">\section</span>{<span class="a">Method</span>}<span class="c">\label</span>{<span class="a">sec:method</span>}</span></div>
+        <div class="ln"><span class="n">2</span><span class="t">The objective maximises the expected return</span></div>
+        <div class="ln"><span class="n">3</span><span class="t"><span class="c">\begin</span>{<span class="a">equation</span>}<span class="c">\label</span>{<span class="a">eq:objective</span>}</span></div>
+        <div class="ln"><span class="n">4</span><span class="t"><span class="m">  J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\left[\sum_{t=0}^{T} \gamma^t r_t\right]</span></span></div>
+        <div class="ln"><span class="n">5</span><span class="t"><span class="c">\end</span>{<span class="a">equation</span>}</span></div>
+        <div class="ln"><span class="n">6</span><span class="t">as in Equation~<span class="c">\ref</span>{<span class="a">eq:objective</span>}, following~<span class="c">\cite</span>{<span class="a">schulman2017ppo</span>}.</span></div>
+        <div class="ln cur"><span class="n">7</span><span class="t">Section~<span class="c">\ref</span>{<span class="a w-warn">sec:missing</span>} does not exist, and neither does~<span class="c">\cite</span>{<span class="a w-err">nobody2020</span>}.<span class="caret"></span></span></div>
+        <div class="ln"><span class="n">8</span><span class="t"> </span></div>
+        <div class="ln"><span class="n">9</span><span class="t"><span class="c">\subsection</span>{<span class="a">Policy updates</span>}<span class="c">\label</span>{<span class="a">sec:updates</span>}</span></div>
+        <div class="ln"><span class="n">10</span><span class="t"><span class="k">% TODO: compare the clipped and the KL-penalised objective</span></span></div>
+        <div class="ln"><span class="n">11</span><span class="t">Each update clips the probability ratio</span></div>
+        <div class="ln"><span class="n">12</span><span class="t"><span class="c">\begin</span>{<span class="a">itemize</span>}</span></div>
+        <div class="ln"><span class="n">13</span><span class="t">  <span class="c">\item</span> to the interval <span class="m">$[1-\epsilon, 1+\epsilon]$</span>,</span></div>
+        <div class="ln"><span class="n">14</span><span class="t">  <span class="c">\item</span> over a fixed number of epochs per batch.</span></div>
+        <div class="ln"><span class="n">15</span><span class="t"><span class="c">\end</span>{<span class="a">itemize</span>}</span></div>
+      </div>
+      <div class="foot">
+        <span>Ln 7, Col 78</span><span>Unsaved</span>
+        <span class="probs"><span style="color:var(--error)"><i data-i="CIRCLE_X"></i>1</span><span style="color:var(--warn)"><i data-i="TRIANGLE_ALERT"></i>3</span></span>
+        <span class="fill"></span>
+        <span>en-GB</span><span>1,284 words</span><span>pdfLaTeX</span>
+      </div>
+    </section>
+
+    <div class="gutter-drag" id="drag" role="separator" aria-label="Resize editor and PDF" aria-orientation="vertical" tabindex="0"></div>
+
+    <section class="card pdf" aria-label="PDF">
+      <div class="bar">
+        <button class="chip" data-panel="problems" title="Open Problems"><i data-i="TRIANGLE_ALERT"></i>4 issues</button>
+        <span class="vr"></span>
+        <div class="pager">
+          <button class="tb" aria-label="Previous page"><i data-i="CHEVRON_LEFT"></i></button>
+          <span class="pg mono">7</span><span>/ 42</span>
+          <button class="tb" aria-label="Next page"><i data-i="CHEVRON_RIGHT"></i></button>
+        </div>
+        <span class="fill"></span>
+        <div class="zoom">
+          <button class="tb" aria-label="Zoom out"><i data-i="ZOOM_OUT"></i></button>
+          <span class="val">Fit width</span>
+          <button class="tb" aria-label="Zoom in"><i data-i="ZOOM_IN"></i></button>
+        </div>
+        <span class="vr"></span>
+        <button class="tb" aria-label="Search the PDF"><i data-i="SEARCH"></i></button>
+        <button class="tb" aria-label="Download the PDF"><i data-i="DOWNLOAD"></i></button>
+        <button class="tb" aria-label="More"><i data-i="ELLIPSIS"></i></button>
+      </div>
+      <div class="pdf-body">
+        <article class="page" aria-label="Page 7">
+          <h3>2&nbsp;&nbsp;Method</h3>
+          <p>The objective maximises the expected return</p>
+          <div class="eq"><span>J(θ) = 𝔼<sub>τ∼π<sub>θ</sub></sub>&thinsp;[&thinsp;∑<sub>t=0</sub><sup>T</sup> γ<sup>t</sup> r<sub>t</sub>&thinsp;]</span><span class="no">(2.1)</span></div>
+          <p>as in Equation 2.1, following [1]. <span class="sync">Section ?? does not exist, and neither does <b>[nobody2020]</b>.</span></p>
+          <h4>2.1&nbsp;&nbsp;Policy updates</h4>
+          <p>Each update clips the probability ratio</p>
+          <ul><li>to the interval [1 − ε, 1 + ε],</li><li>over a fixed number of epochs per batch.</li></ul>
+          <div class="pno">7</div>
+        </article>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- @include mock.html today=editor-split-light.png -->
+
+<script>
+// Mockup behaviour only: switches classes on the root, as the app would switch state.
+const app = document.getElementById('app');
+const swap = (prefix, value) => { app.className = app.className.replace(new RegExp('\\b' + prefix + '-\\w+'), prefix + '-' + value); };
+document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => swap('v', b.dataset.view));
+document.querySelectorAll('[data-panel]').forEach(b => b.onclick = () => {
+  const open = app.classList.contains('p-' + b.dataset.panel) && !app.classList.contains('no-side');
+  if (open) { app.classList.add('no-side'); return; }   // clicking the open panel's icon hides the sidebar
+  open_(b.dataset.panel);
+});
+const open_ = p => { app.classList.remove('no-side'); swap('p', p); };
+const fromHash = () => { if (location.hash.length > 1) open_(location.hash.slice(1)); };   // workspace.html#git opens a panel
+fromHash(); addEventListener('hashchange', fromHash);
+// Draggable divider between editor and PDF.
+const drag = document.getElementById('drag'), ed = document.querySelector('.editor'), pdf = document.querySelector('.pdf');
+drag.onpointerdown = e => {
+  drag.setPointerCapture(e.pointerId);
+  const box = document.querySelector('.main').getBoundingClientRect();
+  drag.onpointermove = m => { const f = Math.min(.8, Math.max(.2, (m.clientX - box.left) / box.width)); ed.style.flex = `1 1 ${f * 100}%`; pdf.style.flex = `1 1 ${(1 - f) * 100}%`; };
+  drag.onpointerup = () => { drag.onpointermove = null; };
+};
+</script>
+</body>
+</html>
