@@ -5903,10 +5903,11 @@ engine = "xelatex"
         h.run_steps(2);
         h.get_by_role_and_label(egui::accesskit::Role::MenuItemRadio, "Slides")
             .click();
-        h.run_steps(3);
-        let ws = h.state().project.as_ref().unwrap();
-        assert_eq!(ws.info.main, "slides.tex");
-        assert_eq!(ws.info.config.engine, lemmata_project::Engine::Xelatex);
+        wait_for(&mut h, "target switch to slides.tex", |h| {
+            let ws = h.state().project.as_ref().unwrap();
+            ws.info.main == "slides.tex"
+                && ws.info.config.engine == lemmata_project::Engine::Xelatex
+        });
     }
 
     #[test]

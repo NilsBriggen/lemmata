@@ -2,6 +2,13 @@
 
 All notable changes to Lemmata.
 
+## 4.0.0-rc.5 (2026-11-25)
+
+A major visual refresh paired with a comprehensive performance, security, and install-size overhaul—with zero features removed.
+
+### Fixed (since rc.4)
+- Awaited async `save_project_config` completion via `wait_for` in `build_targets_toolbar_picker_switches_main_and_engine` instead of a fixed 3-frame step count.
+
 ## 4.0.0-rc.4 (2026-11-25)
 
 A major visual refresh paired with a comprehensive performance, security, and install-size overhaul—with zero features removed.
