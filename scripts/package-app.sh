@@ -135,9 +135,23 @@ for app in "$out"/*.app "$out"/*/*.app; do
   [[ -d $app ]] || continue
   carries "$app" "$(find "$app" -type d | sed 's|$|/|')"
 done
-for exe in "$out"/*-setup.exe "$out"/*.msi; do
+for exe in "$out"/*-setup.exe; do
   [[ -e $exe ]] || continue
   if command -v 7z >/dev/null; then carries "$exe" "$(7z l "$exe")"; else echo "::warning::no 7z: $exe not inspected"; fi
+done
+for msi in "$out"/*.msi; do
+  [[ -e $msi ]] || continue
+  if command -v msiexec >/dev/null; then
+    tmp=$(mktemp -d)
+    # msiexec expects Windows paths; MSYS_NO_PATHCONV stops Git Bash from rewriting /a and /qn.
+    msi_win=$(cygpath -w "$(realpath "$msi")")
+    tmp_win=$(cygpath -w "$tmp")
+    MSYS_NO_PATHCONV=1 msiexec /a "$msi_win" /qn "TARGETDIR=$tmp_win"
+    carries "$msi" "$(find "$tmp" -type d | sed 's|$|/|')"
+    rm -rf "$tmp"
+  else
+    echo "::warning::no msiexec: $msi not inspected"
+  fi
 done
 
 if [[ -n ${CARGO_PACKAGER_SIGN_PRIVATE_KEY:-} ]]; then
