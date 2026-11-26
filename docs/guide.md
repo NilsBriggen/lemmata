@@ -4,6 +4,8 @@ Lemmata is a LaTeX editor that builds your document as you write and shows the P
 
 ## First launch
 
+On first launch, a 4-step **Welcome** setup walks you through checking your TeX installation, choosing a theme (**System**, **Light**, or **Dark**) and editor typography with a live preview, setting auto-save and spell-check defaults, and creating or opening your first project. You can re-open it later from **Show welcome screen** at the bottom of the start screen sidebar.
+
 Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't find one, it shows the install command for your system. **Open terminal** shows that command in a terminal and waits for you to press Enter; Lemmata never installs anything by itself. Afterwards click **Check again**. If TeX is installed somewhere unusual, choose its `bin` folder. **Continue without compiling** opens Lemmata without TeX: nothing compiles until TeX is found, and Lemmata checks again when you come back to its window. A notice offers **Set up TeX** to return to these steps.
 
 **No TeX and no wish to install it?** On the same screen, **Use Tectonic (no install)** downloads Tectonic, a small LaTeX engine (the button shows the size: about 10 MB on Linux, 22 MB on macOS and Windows). You can also pick **Tectonic** as the *Compiler* in project settings, or put `% !TeX program = tectonic` in the first lines of the main file; the comment counts only when `lemmata.toml` doesn't set a compiler. The first build downloads the packages your document needs, so it needs an internet connection and can take a minute or two (the PDF pane counts the files as they arrive); later builds are fast. On a computer with Tectonic and no TeX distribution, new projects start with Tectonic as their compiler. Tectonic runs BibTeX itself. biblatex with biber often fails because Tectonic bundles an older biblatex, so use BibTeX. Fast (draft) mode has no effect with Tectonic. The PDF of the changes in History needs `latexdiff` and `latexmk`, so it needs TeX Live or MiKTeX.
@@ -12,7 +14,7 @@ Lemmata needs a TeX distribution (TeX Live, or MiKTeX on Windows). If it can't f
 
 ## Projects
 
-**Folders on the start screen.** The start screen shows your folders first, then the projects that aren't in one. *New folder* (above the list) makes one. Drag a project onto a folder to put it there, or use *Move to folder…* in its menu. Click a folder to open it; drag a project onto *Your projects* at the top to take it out again. Inside a folder, *Rename* and *Delete folder* are next to the search box, and a folder's ⋯ button (or right-click) has them too. A search looks through every folder. New and imported projects land in the folder you are in. Deleting a folder doesn't delete anything: its projects go back to the top level, and **Undo** brings the folder back for about eight seconds. Folders only arrange the list: the project folders on disk don't move. The list remembers up to 200 projects.
+**Folders and views on the start screen.** The start screen has a sidebar for **All projects**, **Recent**, **Templates**, your folders, and project actions (**Open folder…**, **Clone a repository…**, **Import from Overleaf…**, **Example document**). Switch between card **Grid** and **List** views next to the search box, or sort by name or last opened. Your folders appear first, then projects that aren't in one. *New folder* makes one. Drag a project onto a folder to put it there, or use *Move to folder…* in its menu. Click a folder to open it; drag a project onto *Your projects* at the top to take it out again. Inside a folder, *Rename* and *Delete folder* are next to the search box, and a folder's ⋯ button (or right-click) has them too. A search looks through every folder. New and imported projects land in the folder you are in. Deleting a folder doesn't delete anything: its projects go back to the top level, and **Undo** brings the folder back for about eight seconds. Folders only arrange the list: the project folders on disk don't move. The list remembers up to 200 projects.
 
 **Project menu.** Right-click a project on the start screen, or use its ⋯ button, to open it, show it in your file manager, save it as a template, move it to a folder, remove it from the list (the files stay on disk), or *Delete project…*, which moves the whole project folder to your system's trash after asking. Lemmata only deletes folders that hold a `.tex` file or `lemmata.toml` directly, never your home folder or a folder above it.
 
@@ -53,7 +55,7 @@ If a build fails but an older PDF is still there, the PDF pane keeps that PDF an
 
 Errors and warnings appear in the **Problems** panel in plain language, with a few lines of source and a hint where one is known. Click one to jump to its line (**F8** and **Shift+F8** step through problems in the editor). Some come with a one-click fix: **Add `\usepackage{amssymb}`** when a command like `\mathbb` is undefined, or the exact install command when a package is missing from your TeX installation. Problems from the bibliography tool (a missing `.bib` file, a broken entry) are listed too. Many common TeX errors also come with a one-sentence explanation of what went wrong and, where there is one, a fix.
 
-**TODOs** (in the main menu ☰ under *Tools*, or the command palette) lists every `% TODO`, `% FIXME` and `% XXX` comment and every `\todo{…}` note in the project, grouped by file. Click one to go to its line.
+**TODOs** (in the left activity rail or the command palette) lists every `% TODO`, `% FIXME` and `% XXX` comment and every `\todo{…}` note in the project, grouped by file. Click one to go to its line, or press **F7** to step through them. Past notices and warnings can be reviewed in the **Notifications** panel from the bell icon at the bottom of the activity rail.
 
 If a save fails, the tab stays open with your text, the status bar says **Not saved** in red, and the error stays on screen until you dismiss it. With autosave on, closing the window saves unsaved files first. If a file can't be saved, or autosave is off, Lemmata asks before it closes. Switching projects saves first too, and stays where it is if a save fails.
 
@@ -71,12 +73,12 @@ If a save fails, the tab stays open with your text, the status bar says **Not sa
 - **Format document** (main menu or command palette) re-indents the open file with `tex-fmt` or `latexindent` (part of TeX Live), whichever is installed, using your indentation setting. The change is a single edit, so Ctrl+Z brings the old layout back.
 - **Indentation as you type.** Enter inside an environment indents one level more than its `\begin`, and typing `\end{…}` lines it up with its `\begin` (lines directly in `document` keep their own indentation, so both styles work). **Reindent lines** (main menu, command palette or `Ctrl+Shift+I`, `⌘⇧I` on a Mac) does the same for the selected lines, or the whole file when nothing is selected, without an external formatter. Long lines wrap under their own indentation, and faint guides show the nesting.
 - **Hover cards.** Hover over `\ref`, `\eqref` or `\cref` to see what it points to: the rendered equation, the figure with its caption and image, the table caption or the section heading. Over `\cite`, you see the entry. Over `\includegraphics` or `\input`, you see the file. A citation key that's in no `.bib` file offers **Search online**, and a label that doesn't exist offers **Search the project**.
-- **Review comments.** Select the text, then click **Comment** in the editor toolbar or press Ctrl+Alt+M (**Add a comment** in the palette). The text is highlighted and the Comments panel opens for you to write. The **Comments** button in the top toolbar opens the panel at any time; its badge shows how many comments are open. In the panel you can reply, **Resolve** a thread and **Reopen** it later, or **Delete** it (a second click confirms). **Show resolved** lists the resolved threads too. Comments follow the text as you edit it. They are saved in `.lemmata/comments.json` in the project. Lemmata doesn't change your `.gitignore`, so `.lemmata/` is ignored only if yours lists it. To share the comments through git, commit just that file with `git add -f .lemmata/comments.json`; the force flag adds it even when the folder is ignored.
+- **Review comments.** Select the text, then click **Comment** in the editor toolbar or press Ctrl+Alt+M (**Add a comment** in the palette). The text is highlighted and the Comments panel opens for you to write. The **Comments** icon in the left activity rail opens the panel at any time; its badge shows how many comments are open, and **F9** steps through them. In the panel you can reply, **Resolve** a thread and **Reopen** it later, or **Delete** it (a second click confirms). **Show resolved** lists the resolved threads too. Comments follow the text as you edit it. They are saved in `.lemmata/comments.json` in the project. Lemmata doesn't change your `.gitignore`, so `.lemmata/` is ignored only if yours lists it. To share the comments through git, commit just that file with `git add -f .lemmata/comments.json`; the force flag adds it even when the folder is ignored.
 
 ## The PDF
 
 - **Double-click** (or Ctrl+click) in the PDF to jump to the source line.
-- **Ctrl+J** in the editor, or the **Go to PDF** button in the editor toolbar, shows the current line in the PDF.
+- **Ctrl+J** in the editor, or the **Show in PDF** button in the editor toolbar, shows the current line in the PDF.
 - Text in the PDF can be **selected and copied**. **Ctrl+F** with the PDF focused searches it and highlights every match.
 - Links in the PDF work: `\ref`, the table of contents and URLs.
 - The **outline** button lists the PDF's bookmarks (load `hyperref` to get them).
@@ -91,7 +93,7 @@ If a save fails, the tab stays open with your text, the status bar says **Not sa
 
 ## Shortcuts
 
-Press **Ctrl+Shift+/** or **F1** for the full list inside Lemmata. It has a search box and also lists mouse actions, such as double-clicking in the PDF. The most used:
+Press **Ctrl+Shift+/** or **F1** for the full list inside Lemmata. It has a search box, lists mouse actions (such as double-clicking in the PDF), and lets you rebind any shortcut by clicking its keys and pressing the ones you want. The most used:
 
 | Keys | Action |
 |---|---|
@@ -155,7 +157,7 @@ Dictionaries: English (US and UK), German, Swiss German (with ss instead of ß) 
 
 **Grammar checking** is off by default. Choose a mode under **Preferences → Grammar check**: **LanguageTool on this computer** (a server at `http://localhost:8081`), or **LanguageTool at an address…** for a server you run or trust. Lemmata sends the prose of the document to that server, a paragraph at a time, and nowhere else. Preferences shows where the text goes, and **Test the connection** checks that a server answers. Lemmata doesn't start one for you; to run one for a session, start it in Docker with `docker run -p 8081:8010 erikvl87/languagetool`, or with the standalone jar with `java -cp languagetool-server.jar org.languagetool.server.HTTPServer --port 8081`, and stop it with Ctrl+C when you're done. Findings get a dotted underline. Hover over one to see its suggestions as buttons, or **Ignore this rule**. Ignored rules are saved with the project; **Project settings** lists them, and **Check again** brings one back. Grammar checking covers English (US and UK), German (Germany and Switzerland) and French, following the spell-check language; other languages are not grammar-checked.
 
-The status bar shows the word count of the document body, and the number of words in your selection. Click the word count in the status bar (or **Word count** in the main menu) for a breakdown by file; it and counts headings, maths, figures, tables and citations. The outline shows words per section and folds.
+The status bar shows the word count of the document body, and the number of words in your selection. Click the word count in the status bar (or **Word count** in the command palette) for a breakdown by file; it also counts headings, maths, figures, tables and citations. The outline shows words per section and folds.
 
 ## History
 
@@ -169,7 +171,7 @@ History is on for every project; it only needs git to be installed. A project th
 
 ## Git
 
-Lemmata works with the git on your computer; install git first if you don't have it. The panel is on for trusted projects (see [Trusted and restricted projects](#trusted-and-restricted-projects)). Open the panel with the **Git** button in the top toolbar; its badge counts the files that changed since the last commit. It's also in the main menu and the command palette.
+Lemmata works with the git on your computer; install git first if you don't have it. The panel is on for trusted projects (see [Trusted and restricted projects](#trusted-and-restricted-projects)). Open the panel with the **Git** icon in the left activity rail; its badge counts the files that changed since the last commit. It's also in the command palette.
 
 - **Turn this project into a git repository** appears when the project isn't in one. It runs `git init`, adds a `.gitignore` containing `.lemmata/` if there is none, and makes a first commit of everything.
 - **Changes** are listed as *Staged*, *Changes* and *Untracked*. Tick a file to stage it and untick it to unstage it. **Stage all** stages every change in one go. Files with merge conflicts are listed under *Conflicts*; resolve them in a terminal.

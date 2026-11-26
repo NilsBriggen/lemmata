@@ -4,7 +4,7 @@ Thanks for helping. Bug reports, fixes for install instructions and code are all
 
 ## Getting started
 
-See [README.md](README.md#developing) for the toolchain. Then:
+See [README.md](README.md#building-from-source) for the toolchain. Then:
 
 ```bash
 cargo run -p lemmata-app
@@ -21,7 +21,7 @@ cargo build -p lemmata-cli && scripts/check-fixtures.sh target/debug/lemmata
 
 ## Where things live
 
-[docs/egui-plan.md](docs/egui-plan.md) explains the architecture. In short: Rust crates under `crates/` do the work (TeX, logs, SyncTeX, history, spelling, bibliography), `crates/lemmata-shell` ties them together for the app, and `apps/lemmata` is the interface, drawn with egui on wgpu.
+[docs/architecture.md](docs/architecture.md) explains the architecture. In short: Rust crates under `crates/` do the work (TeX, logs, SyncTeX, history, spelling, bibliography), `crates/lemmata-shell` ties them together for the app, and `apps/lemmata` is the interface, drawn with egui on wgpu.
 
 ## Easy first contributions
 

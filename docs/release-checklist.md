@@ -6,7 +6,7 @@ Systems: Linux (the AppImage and the .deb or .rpm), Windows 10 or 11, macOS (App
 
 ## Install and update
 
-- [ ] A fresh install starts and shows the welcome screen.
+- [ ] A fresh install starts and shows the 4-step welcome setup (TeX check, Appearance, Workflow, Start).
 - [ ] Updating from the previous release through the in-app updater works, keeps settings and recent projects, and shows the What's new window once (not again after a restart).
 - [ ] The installer replaces an older version cleanly (Windows: Apps & features shows one Lemmata).
 - [ ] macOS: the app opens from the DMG without a Gatekeeper dead end (right-click, Open, if it is ad hoc signed).

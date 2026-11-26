@@ -1,101 +1,74 @@
-# Handoff: Lemmata homepage
+# Website contract (`lemmata.briggen.dev`)
 
-You are building the homepage for **Lemmata** at `https://lemmata.briggen.dev`. This file has everything you need. The full software plan is in [PLAN.md](PLAN.md); the visual identity and UI mockups are in [pitch.html](pitch.html).
+This document defines the contract between Lemmata releases and the static site at `https://lemmata.briggen.dev`.
 
-## The product
+## Product summary
 
-Lemmata is a free, open-source LaTeX editor for Linux, macOS and Windows. It gives you the Overleaf workflow (editor, live PDF preview, click the PDF to jump to the source) on your own machine, with plain project folders, git history and no account.
+Lemmata is a free, open-source (GPL-3.0) native LaTeX editor for Linux, macOS, and Windows. It brings the Overleaf workflow (editor, live PDF preview, SyncTeX click-to-jump) to local folders with Git history, no account, and no upload.
 
-- Licence: GPL-3.0
-- Source: `https://github.com/NilsBriggen/lemmata`
-- Audience: students and researchers who write in LaTeX and want to work offline or keep their files local.
-- Requirement: a TeX distribution (TeX Live, or MiKTeX on Windows). The app detects it and walks users through installing it, so the site should present this as a step, not a barrier.
+- **Source:** `https://github.com/NilsBriggen/lemmata`
+- **User guide (source of truth for features):** `https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md`
+- **TeX install commands:** `https://raw.githubusercontent.com/NilsBriggen/lemmata/main/data/install.toml`
 
-Only describe features listed in [guide.md](guide.md) (the user guide is the source of truth; PLAN.md §1 lists only what 1.0 shipped). Don't invent features, numbers, testimonials or user counts. Good homepage highlights, in this order: live PDF with click-to-jump; errors explained in plain words with the exact install command for missing packages; citations by DOI, arXiv ID or Zotero; history you can't lose; works offline with your own files. For 1.x the editor features are also worth a short section (1.1 added a real file manager with Undo, build targets, snippets, rename-everywhere for labels and citation keys, and templates of your own): environments that stay paired (`\begin` and `\end`), completion for labels, citations and files, a PDF viewer with search, selectable text and working links, a Fast (draft) build mode, and one-click fixes for undefined commands. The command-line tool (`lemmata build | watch | doctor`) is a small footnote. Lemmata has no real-time collaboration, no visual editor and no grammar checker; say so plainly if the page compares it with Overleaf. Link the user guide from the footer: `https://github.com/NilsBriggen/lemmata/blob/main/docs/guide.md`.
+Only describe features documented in [guide.md](guide.md). Do not invent features, numbers, testimonials, or user counts. State plainly that Lemmata is a local editor with no real-time collaboration and no rich-text (visual) editor.
 
 ## Pages
 
-| Page | Content |
+| Path | Content |
 |---|---|
-| `/` | One-line pitch, three or four feature highlights, screenshot placeholders (real screenshots come later), a download button that detects the visitor's OS and offers the matching file, a link to all downloads |
-| `/download` | Every platform and format, version number, release date, file sizes, checksums, install instructions (below) |
-| `/tex` | How to install TeX Live per OS, using the commands in §3 of PLAN.md. Explain that the app shows the same instructions on first launch |
+| `/` | Editorial hero with OS-detected download CTA, framed 4.0 light/dark workspace screenshot, feature highlights, visual showcases (citations, guided setup, templates), 3-step getting started, and bottom download CTA |
+| `/download` | Every platform and format, version, release date, file sizes, SHA-256 checksums, CLI downloads, and install/verification commands |
+| `/tex` | Per-OS TeX Live / MiKTeX install commands rendered from `data/install.toml`, plus Tectonic no-install notes |
 | `/changelog` | Release notes from GitHub Releases, newest first |
 
-Footer: GitHub link, licence, "Made by Nils Briggen".
+## Release data and asset naming
 
-## Release data
-
-Fetch release information at build time from:
+The site builder fetches release metadata from:
 
 ```
-https://api.github.com/repos/NilsBriggen/lemmata/releases/latest
-https://api.github.com/repos/NilsBriggen/lemmata/releases        (for the changelog)
+https://api.github.com/repos/NilsBriggen/lemmata/releases?per_page=100
 ```
 
-Every plain `X.Y.Z` release has these assets (version `0.3.0` as an example); a suffixed tag such as `0.3.0-rc.1` is a GitHub pre-release with the installers only, no `latest.json`, and no package-manager updates:
+Every stable `vX.Y.Z` release publishes these assets (produced by `.github/workflows/release.yml` and renamed by `scripts/finalize-release.py`; suffixed tags like `vX.Y.Z-rc.N` are GitHub pre-releases without `.msi`, `latest.json`, or package-manager updates):
 
 | File | Platform |
 |---|---|
-| `Lemmata_0.3.0_linux_x86_64.AppImage` | Linux x86_64, any distro |
-| `Lemmata_0.3.0_linux_x86_64.deb` | Debian, Ubuntu, Mint |
-| `Lemmata_0.3.0_linux_x86_64.rpm` | Fedora, openSUSE |
-| `Lemmata_0.3.0_linux_aarch64.AppImage` / `.deb` / `.rpm` | Linux ARM64 |
-| `Lemmata_0.3.0_macos_universal_aarch64.dmg` | macOS, Apple Silicon (smaller download) |
-| `Lemmata_0.3.0_macos_universal_x86_64.dmg` | macOS, Intel (smaller download) |
-| `Lemmata_0.3.0_macos_universal.dmg` | macOS, Apple Silicon and Intel (universal alternative) |
-| `Lemmata_0.3.0_windows_x86_64-setup.exe` | Windows installer (recommended) |
-| `Lemmata_0.3.0_windows_x86_64.msi` | Windows MSI, for managed installs |
-| `lemmata-cli_0.3.0_<platform>.tar.gz` (`.zip` for `windows_x86_64`) | The command-line tool alone, for scripts and CI, for `linux_x86_64`, `linux_aarch64`, `macos_universal` and `windows_x86_64`: the `lemmata` binary and the license |
-| `SHA256SUMS.txt` | Checksums for all of the above |
+| `Lemmata_<ver>_linux_x86_64.AppImage` | Linux x86-64, any distro |
+| `Lemmata_<ver>_linux_x86_64.deb` | Debian, Ubuntu, Mint |
+| `Lemmata_<ver>_linux_x86_64.rpm` | Fedora, openSUSE |
+| `Lemmata_<ver>_linux_aarch64.AppImage` / `.deb` / `.rpm` | Linux ARM64 |
+| `Lemmata_<ver>_macos_universal.dmg` | macOS (Apple Silicon and Intel universal) |
+| `Lemmata_<ver>_macos_universal_aarch64.dmg` | macOS, Apple Silicon |
+| `Lemmata_<ver>_macos_universal_x86_64.dmg` | macOS, Intel |
+| `Lemmata_<ver>_windows_x86_64-setup.exe` | Windows installer (recommended) |
+| `Lemmata_<ver>_windows_x86_64.msi` | Windows MSI, for managed installs |
+| `lemmata-cli_<ver>_<platform>.tar.gz` (`.zip` for `windows_x86_64`) | Standalone `lemmata` CLI for `linux_x86_64`, `linux_aarch64`, `macos_universal`, `windows_x86_64` |
+| `SHA256SUMS.txt` | SHA-256 checksums for all release files |
 
-Ignore `.sig`, `.app.tar.gz` and `latest.json`; they're for the auto-updater. Every release is a production release; show them all, newest first.
-
-**Rebuilds:** the release workflow sends a GitHub `repository_dispatch` event of type `release-published` to the website repo. Trigger a rebuild and deploy on that event. Also rebuild daily as a fallback.
+Ignore `.sig`, `.app.tar.gz`, and `latest.json` on `/download`; they are consumed by the in-app updater.
 
 ## Hard requirement: updater redirects
 
-Installed copies of Lemmata check these URLs for updates. They must work from the first release on:
+Installed copies of Lemmata check these endpoints for updates (`crates/lemmata-shell/src/update.rs`). They must always return `302` with a cache lifetime of at most 5 minutes:
 
 | Path | Response |
 |---|---|
-| `/update/latest.json` | `302` to `https://github.com/NilsBriggen/lemmata/releases/latest/download/latest.json` |
-| `/update/beta.json` | The same `302` as `latest.json`. Older app versions have a beta channel setting; there are no separate beta builds any more |
+| `/update/latest.json` | `302` → `https://github.com/NilsBriggen/lemmata/releases/latest/download/latest.json` |
+| `/update/beta.json` | Same `302` as `/update/latest.json` (kept for compatibility with older clients) |
 
-Don't cache these redirects for longer than 5 minutes.
+## Unsigned-build notices
 
-## Install instructions to show
+While macOS and Windows builds are unsigned, show these notes next to their downloads (kept in one place in the builder so they are easy to remove once signing is enabled):
 
-| Platform | Instructions |
-|---|---|
-| Arch / CachyOS / Manjaro | `yay -S lemmata-bin` (or any AUR helper) |
-| Debian / Ubuntu | Download the `.deb`, then `sudo apt install ./Lemmata_<version>_linux_x86_64.deb` |
-| Fedora / openSUSE | Download the `.rpm`, then `sudo dnf install ./Lemmata_<version>_linux_x86_64.rpm` (or `sudo zypper install …`) |
-| Any Linux | Download the AppImage, `chmod +x Lemmata_*.AppImage`, run it |
-| macOS | `brew install --cask NilsBriggen/tap/lemmata`, or open the `.dmg` and drag Lemmata to Applications |
-| Windows | `winget install NilsBriggen.Lemmata`, or run the setup `.exe` |
+- **macOS:** "macOS may say Lemmata can't be checked for malware. Open System Settings → Privacy & Security and click Open Anyway."
+- **Windows:** "If SmartScreen warns you, click More info → Run anyway."
 
-To verify a download: `sha256sum -c SHA256SUMS.txt --ignore-missing` (Linux), `shasum -a 256 <file>` (macOS), `Get-FileHash <file>` (PowerShell).
+## Brand & constraints
 
-**While builds are unsigned**, show these notes next to the macOS and Windows downloads. They become unnecessary later; keep each in one place so it's easy to remove.
-
-- macOS: "macOS may say Lemmata can't be checked for malware. Open System Settings → Privacy & Security and click Open Anyway."
-- Windows: "If SmartScreen warns you, click More info → Run anyway."
-
-## Brand
-
-Take the design tokens from `pitch.html`:
-
-- Accent: non-photo blue (`#2f7fb8` light, `#6fb3e3` dark), the proofreader's pencil colour
-- Neutrals: cool paper grey `#f3f4f2`, ink `#18212b`
-- Fonts: Young Serif for display, IBM Plex Sans for body, IBM Plex Mono for code and commands
-- Light and dark themes, following the system setting
-- The name means "small proven steps toward a theorem". Tone: plain, precise, a little academic. No hype words.
-
-Commands on the site should have a copy button.
-
-## Out of scope
-
-- No analytics or tracking scripts without a consent prompt; ideally none.
-- No accounts, newsletter or comment system.
-- Don't host the binaries yourself; link to GitHub release assets.
+- **Icon:** Lemmata 4.0 Typeset Split mark (`apps/lemmata/icons/icon.svg`)
+- **Accent:** non-photo blue (`#2f7fb8` light, `#6fb3e3` dark)
+- **Neutrals:** cool paper grey `#f3f4f2` / deep slate `#10151a`, ink `#18212b` / `#e6eaee`
+- **Fonts:** Young Serif (display), IBM Plex Sans (body), IBM Plex Mono (code/commands), STIX Two Text (definition)
+- **Themes:** Light and dark following `prefers-color-scheme`
+- **Tone:** plain, precise, academic; no hype words
+- **Privacy & hosting:** zero analytics/tracking scripts, no accounts/comments, strict CSP, binaries linked directly from GitHub Releases
