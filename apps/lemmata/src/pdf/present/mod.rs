@@ -7,8 +7,8 @@ pub mod export;
 mod stage;
 
 pub use data::{
-    DeckItem, PenColor, PresenterStore, Region, ScreenMode, StageTool, StrokePath, Timer,
-    WhiteboardSlide, clamp_page, extract_tex_notes, fit_scale, from_norm, has_notes_page,
+    DeckItem, PenColor, PresenterStore, Region, ScreenMode, StageTool, StrokePath, StrokeSize,
+    Timer, WhiteboardSlide, clamp_page, extract_tex_notes, fit_scale, from_norm, has_notes_page,
     region_size, regions_swapped, to_norm,
 };
 pub use export::export_annotated_pdf;
@@ -20,6 +20,7 @@ use eframe::egui::{
     pos2, vec2,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -59,6 +60,9 @@ pub struct Presentation {
     pub(crate) has_any_notes: bool,
     /// Rendered pages by (page, scale in 1/16 px per point), with when each was last drawn.
     tex: HashMap<(usize, u32), (TextureHandle, u64)>,
+    /// Cached anti-aliased alpha masks for translucent highlighter strokes (uniform opacity,
+    /// zero double-blending at caps, sharp turns, or self-intersections).
+    hl_cache: HighlighterCache,
     frame: u64,
     asked: HashSet<(usize, u32)>,
     pub presenter: bool,
@@ -158,6 +162,7 @@ impl Presentation {
             frozen_page: None,
             has_any_notes: false,
             tex: HashMap::new(),
+            hl_cache: HighlighterCache::default(),
             frame: 0,
             asked: HashSet::new(),
             presenter: false,
@@ -637,6 +642,31 @@ impl Presentation {
         }
     }
 
+    pub(crate) fn active_stroke_size(&self) -> StrokeSize {
+        if self.tool == StageTool::Highlighter {
+            self.store.highlighter_size
+        } else {
+            self.store.pen_size
+        }
+    }
+
+    pub(crate) fn set_active_stroke_size(&mut self, size: StrokeSize) {
+        if self.tool == StageTool::Highlighter {
+            if self.store.highlighter_size != size {
+                self.store.highlighter_size = size;
+                self.store_dirty = true;
+            }
+        } else if self.store.pen_size != size {
+            self.store.pen_size = size;
+            self.store_dirty = true;
+        }
+    }
+
+    pub(crate) fn step_active_stroke_size(&mut self, delta: isize) {
+        let next = self.active_stroke_size().step(delta);
+        self.set_active_stroke_size(next);
+    }
+
     pub(crate) fn undo_stroke(&mut self) {
         match self.deck_item(self.page) {
             Some(DeckItem::Pdf(idx)) => {
@@ -689,7 +719,10 @@ impl Presentation {
         if let Some(stroke) = self.active_stroke.take()
             && !stroke.points.is_empty()
         {
+            self.hl_cache.promote_active(&stroke, self.frame);
             self.commit_stroke_on_slide(self.page, stroke);
+        } else {
+            self.hl_cache.active.clear();
         }
     }
 
@@ -986,7 +1019,11 @@ impl Presentation {
             }
             StageTool::Pen | StageTool::Highlighter if allow_draw => {
                 let is_hl = self.tool == StageTool::Highlighter;
-                let width = if is_hl { 0.022 } else { 0.0055 };
+                let width = if is_hl {
+                    self.store.highlighter_size.highlighter_width()
+                } else {
+                    self.store.pen_size.pen_width()
+                };
                 let shift_held = ui.input(|i| i.modifiers.shift);
                 if resp.hovered() || resp.dragged() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
@@ -1050,7 +1087,10 @@ impl Presentation {
                     if let Some(stroke) = self.active_stroke.take()
                         && !stroke.points.is_empty()
                     {
+                        self.hl_cache.promote_active(&stroke, self.frame);
                         self.commit_stroke_on_slide(slide_num, stroke);
+                    } else {
+                        self.hl_cache.active.clear();
                     }
                 } else if resp.clicked()
                     && let Some(uv) = resp
@@ -1083,20 +1123,37 @@ impl Presentation {
         show_live_pointer: bool,
     ) {
         let painter = ui.painter().with_clip_rect(slide_rect);
+        let ctx = ui.ctx();
         let item = self.deck_item(slide_num);
         // 1. Committed strokes for this slide (PDF page or Whiteboard).
         match item {
             Some(DeckItem::Pdf(idx)) => {
                 if let Some(strokes) = self.store.annotations.get(&(idx + 1)) {
                     for s in strokes {
-                        paint_stroke(&painter, slide_rect, s);
+                        paint_stroke(
+                            ctx,
+                            &painter,
+                            slide_rect,
+                            s,
+                            &mut self.hl_cache,
+                            self.frame,
+                            false,
+                        );
                     }
                 }
             }
             Some(DeckItem::Whiteboard(id)) => {
                 if let Some(wb) = self.store.whiteboard(id) {
                     for s in &wb.strokes {
-                        paint_stroke(&painter, slide_rect, s);
+                        paint_stroke(
+                            ctx,
+                            &painter,
+                            slide_rect,
+                            s,
+                            &mut self.hl_cache,
+                            self.frame,
+                            false,
+                        );
                     }
                 }
             }
@@ -1106,7 +1163,15 @@ impl Presentation {
         if slide_num == self.page
             && let Some(active) = &self.active_stroke
         {
-            paint_stroke(&painter, slide_rect, active);
+            paint_stroke(
+                ctx,
+                &painter,
+                slide_rect,
+                active,
+                &mut self.hl_cache,
+                self.frame,
+                true,
+            );
         }
         if !show_live_pointer {
             return;
@@ -1308,18 +1373,35 @@ impl Presentation {
             );
         }
         // Magnify committed annotations inside the lens too.
+        let ctx = ui.ctx();
         match item {
             Some(DeckItem::Pdf(idx)) => {
                 if let Some(strokes) = self.store.annotations.get(&(idx + 1)) {
                     for s in strokes {
-                        paint_stroke(&lens_clip, z_slide, s);
+                        paint_stroke(
+                            ctx,
+                            &lens_clip,
+                            z_slide,
+                            s,
+                            &mut self.hl_cache,
+                            self.frame,
+                            false,
+                        );
                     }
                 }
             }
             Some(DeckItem::Whiteboard(id)) => {
                 if let Some(wb) = self.store.whiteboard(id) {
                     for s in &wb.strokes {
-                        paint_stroke(&lens_clip, z_slide, s);
+                        paint_stroke(
+                            ctx,
+                            &lens_clip,
+                            z_slide,
+                            s,
+                            &mut self.hl_cache,
+                            self.frame,
+                            false,
+                        );
                     }
                 }
             }
@@ -1481,6 +1563,7 @@ impl Presentation {
         let mut toggle_pen = false;
         let mut toggle_highlighter = false;
         let mut insert_whiteboard = false;
+        let mut stroke_size_delta: isize = 0;
         let mut clear_strokes = false;
         let mut undo_stroke = false;
         let total = self.total();
@@ -1548,6 +1631,14 @@ impl Presentation {
             }
             if i.consume_key(Modifiers::NONE, Key::U) {
                 toggle_highlighter = true;
+            }
+            if matches!(self.tool, StageTool::Pen | StageTool::Highlighter) {
+                if i.consume_key(Modifiers::NONE, Key::OpenBracket) {
+                    stroke_size_delta = -1;
+                }
+                if i.consume_key(Modifiers::NONE, Key::CloseBracket) {
+                    stroke_size_delta = 1;
+                }
             }
             if i.consume_key(Modifiers::NONE, Key::C) {
                 clear_strokes = true;
@@ -1676,6 +1767,9 @@ impl Presentation {
         if toggle_highlighter {
             self.toggle_tool(StageTool::Highlighter);
         }
+        if stroke_size_delta != 0 {
+            self.step_active_stroke_size(stroke_size_delta);
+        }
         if clear_strokes {
             self.clear_slide_strokes();
         }
@@ -1730,21 +1824,346 @@ fn snap_straight_line(anchor: [f32; 2], end: [f32; 2], slide_rect: Rect) -> [f32
     }
 }
 
-fn paint_stroke(painter: &egui::Painter, slide_rect: Rect, s: &StrokePath) {
+const HIGHLIGHTER_ALPHA: u8 = 92;
+const MAX_HIGHLIGHTER_CACHE: usize = 128;
+const MAX_ACTIVE_HIGHLIGHTER_SLOTS: usize = 8;
+
+struct CachedHighlightMask {
+    tex: TextureHandle,
+    /// Tight normalized UV rect inside `[0, 1] x [0, 1]` on the slide.
+    uv_rect: Rect,
+    last_used: u64,
+}
+
+struct ActiveHighlightMask {
+    geom_hash: u64,
+    uv_rect: Rect,
+    tex: TextureHandle,
+    last_used: u64,
+}
+
+#[derive(Default)]
+struct HighlighterCache {
+    committed: HashMap<(u64, u32, u32), CachedHighlightMask>,
+    /// Keyed per rendered slide pixel size `(slide_px_w, slide_px_h)` so simultaneous views in
+    /// the same frame (Audience fullscreen, Presenter stage, Filmstrip thumbnail) each update
+    /// their own native-resolution GPU texture instead of overwriting a shared handle.
+    active: HashMap<(u32, u32), ActiveHighlightMask>,
+}
+
+impl HighlighterCache {
+    fn promote_active(&mut self, stroke: &StrokePath, frame: u64) {
+        if !stroke.highlighter {
+            self.active.clear();
+            return;
+        }
+        let target_hash = hash_highlighter_geometry(stroke);
+        for ((px_w, px_h), slot) in self.active.drain() {
+            if slot.geom_hash == target_hash {
+                if self.committed.len() >= MAX_HIGHLIGHTER_CACHE
+                    && let Some(&oldest) = self
+                        .committed
+                        .iter()
+                        .min_by_key(|(_, v)| v.last_used)
+                        .map(|(k, _)| k)
+                {
+                    self.committed.remove(&oldest);
+                }
+                self.committed.insert(
+                    (target_hash, px_w, px_h),
+                    CachedHighlightMask {
+                        tex: slot.tex,
+                        uv_rect: slot.uv_rect,
+                        last_used: frame,
+                    },
+                );
+            }
+        }
+    }
+}
+
+fn hash_highlighter_geometry(s: &StrokePath) -> u64 {
+    let mut h = DefaultHasher::new();
+    s.width.to_bits().hash(&mut h);
+    s.points.len().hash(&mut h);
+    for &[u, v] in &s.points {
+        u.to_bits().hash(&mut h);
+        v.to_bits().hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Rasterizes a single highlighter stroke into an opaque white anti-aliased alpha mask cropped to
+/// its tight pixel-aligned slide bounding box. Drawing the opaque mask first and tinting it once
+/// on the GPU guarantees uniform translucency with smooth round caps/joins, phase-locked pixel
+/// coordinates while dragging, and zero double-blending at endpoints, sharp turns, or loops.
+fn rasterize_highlighter_mask(
+    s: &StrokePath,
+    slide_size: egui::Vec2,
+    ppp: f32,
+) -> Option<(Rect, egui::ColorImage)> {
+    if s.points.is_empty() || slide_size.x <= 1.0 || slide_size.y <= 1.0 {
+        return None;
+    }
+    let w_pt = (s.width * slide_size.y).clamp(6.0, 72.0);
+    let r_pt = w_pt * 0.5;
+    let pad = r_pt + 2.0;
+
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for &[u, v] in &s.points {
+        let x = u * slide_size.x;
+        let y = v * slide_size.y;
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    min_x = (min_x - pad).clamp(0.0, slide_size.x);
+    min_y = (min_y - pad).clamp(0.0, slide_size.y);
+    max_x = (max_x + pad).clamp(0.0, slide_size.x);
+    max_y = (max_y + pad).clamp(0.0, slide_size.y);
+    if max_x - min_x <= 0.5 || max_y - min_y <= 0.5 {
+        return None;
+    }
+
+    let max_side = 2048.0_f32;
+    let mut scale = ppp.clamp(1.0, 3.0);
+    let raw_w = max_x - min_x;
+    let raw_h = max_y - min_y;
+    if raw_w * scale > max_side {
+        scale = max_side / raw_w;
+    }
+    if raw_h * scale > max_side {
+        scale = scale.min(max_side / raw_h);
+    }
+    // Snap crop bounds to integer slide pixels so expanding the stroke during a drag never shifts
+    // subpixel raster phase or snaps on mouse release.
+    let px_min_x = (min_x * scale).floor();
+    let px_min_y = (min_y * scale).floor();
+    let px_max_x = (max_x * scale).ceil().max(px_min_x + 1.0);
+    let px_max_y = (max_y * scale).ceil().max(px_min_y + 1.0);
+    let px_w = (px_max_x - px_min_x) as u32;
+    let px_h = (px_max_y - px_min_y) as u32;
+    let origin_x = px_min_x / scale;
+    let origin_y = px_min_y / scale;
+    let cov_w = px_w as f32 / scale;
+    let cov_h = px_h as f32 / scale;
+    let uv_rect = Rect::from_min_size(
+        pos2(origin_x / slide_size.x, origin_y / slide_size.y),
+        vec2(cov_w / slide_size.x, cov_h / slide_size.y),
+    );
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(px_w, px_h)?;
+    let mut paint = resvg::tiny_skia::Paint {
+        anti_alias: true,
+        ..Default::default()
+    };
+    paint.set_color(resvg::tiny_skia::Color::WHITE);
+    let xform = resvg::tiny_skia::Transform::identity();
+    let r_px = r_pt * scale;
+
+    // Filter out sub-quarter-pixel duplicates so tiny pointer jitter never creates zero tangents.
+    let mut pts_px: Vec<(f32, f32)> = Vec::with_capacity(s.points.len());
+    for &[u, v] in &s.points {
+        let px = u * slide_size.x * scale - px_min_x;
+        let py = v * slide_size.y * scale - px_min_y;
+        if pts_px.last().is_none_or(|&(lx, ly)| {
+            let dx = px - lx;
+            let dy = py - ly;
+            dx * dx + dy * dy >= 0.0625
+        }) {
+            pts_px.push((px, py));
+        }
+    }
+    if pts_px.is_empty() {
+        return None;
+    }
+
+    if pts_px.len() == 1 {
+        if let Some(circle) =
+            resvg::tiny_skia::PathBuilder::from_circle(pts_px[0].0, pts_px[0].1, r_px.max(0.5))
+        {
+            pixmap.fill_path(
+                &circle,
+                &paint,
+                resvg::tiny_skia::FillRule::Winding,
+                xform,
+                None,
+            );
+        }
+    } else {
+        let mut pb = resvg::tiny_skia::PathBuilder::new();
+        pb.move_to(pts_px[0].0, pts_px[0].1);
+        for &(px, py) in &pts_px[1..] {
+            pb.line_to(px, py);
+        }
+        if let Some(path) = pb.finish() {
+            let stroke = resvg::tiny_skia::Stroke {
+                width: (w_pt * scale).max(1.0),
+                line_cap: resvg::tiny_skia::LineCap::Round,
+                line_join: resvg::tiny_skia::LineJoin::Round,
+                ..Default::default()
+            };
+            pixmap.stroke_path(&path, &paint, &stroke, xform, None);
+        }
+        // Guard extreme hairpin reversals (>105 deg) against inner-fold winding cancellation by
+        // sealing the sharp vertex with an opaque white disc (never double-darkens because the
+        // mask is opaque and tinted only once on the GPU).
+        for win in pts_px.windows(3) {
+            let (ax, ay) = (win[1].0 - win[0].0, win[1].1 - win[0].1);
+            let (bx, by) = (win[2].0 - win[1].0, win[2].1 - win[1].1);
+            let al = (ax * ax + ay * ay).sqrt();
+            let bl = (bx * bx + by * by).sqrt();
+            if al > 1e-3
+                && bl > 1e-3
+                && (ax * bx + ay * by) / (al * bl) < -0.25
+                && let Some(circle) =
+                    resvg::tiny_skia::PathBuilder::from_circle(win[1].0, win[1].1, r_px.max(0.5))
+            {
+                pixmap.fill_path(
+                    &circle,
+                    &paint,
+                    resvg::tiny_skia::FillRule::Winding,
+                    xform,
+                    None,
+                );
+            }
+        }
+    }
+
+    let img =
+        egui::ColorImage::from_rgba_premultiplied([px_w as usize, px_h as usize], pixmap.data());
+    Some((uv_rect, img))
+}
+
+fn paint_stroke(
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    slide_rect: Rect,
+    s: &StrokePath,
+    hl_cache: &mut HighlighterCache,
+    frame: u64,
+    is_active: bool,
+) {
     if s.points.is_empty() {
         return;
     }
-    let width = if s.highlighter {
-        (s.width * slide_rect.height()).clamp(6.0, 28.0)
-    } else {
-        (s.width * slide_rect.height()).clamp(1.8, 12.0)
-    };
-    let base = s.color.color32();
-    let color = if s.highlighter {
-        Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 92)
-    } else {
-        base
-    };
+    if s.highlighter {
+        let slide_size = slide_rect.size();
+        if slide_size.x <= 1.0 || slide_size.y <= 1.0 {
+            return;
+        }
+        let ppp = ctx.pixels_per_point().clamp(1.0, 3.0);
+        let geom_hash = hash_highlighter_geometry(s);
+        let slide_px_w = (slide_size.x * ppp).round().max(1.0) as u32;
+        let slide_px_h = (slide_size.y * ppp).round().max(1.0) as u32;
+        let size_key = (slide_px_w, slide_px_h);
+
+        let (tex_id, uv_rect) = if is_active {
+            let needs_update = hl_cache
+                .active
+                .get(&size_key)
+                .is_none_or(|slot| slot.geom_hash != geom_hash);
+            if needs_update {
+                let Some((uv_rect, img)) = rasterize_highlighter_mask(s, slide_size, ppp) else {
+                    return;
+                };
+                if let Some(slot) = hl_cache.active.get_mut(&size_key) {
+                    slot.tex.set(img, egui::TextureOptions::LINEAR);
+                    slot.geom_hash = geom_hash;
+                    slot.uv_rect = uv_rect;
+                    slot.last_used = frame;
+                } else {
+                    if hl_cache.active.len() >= MAX_ACTIVE_HIGHLIGHTER_SLOTS
+                        && let Some(&oldest) = hl_cache
+                            .active
+                            .iter()
+                            .min_by_key(|(_, v)| v.last_used)
+                            .map(|(k, _)| k)
+                    {
+                        hl_cache.active.remove(&oldest);
+                    }
+                    let tex = ctx.load_texture(
+                        format!("present-hl-active-{slide_px_w}x{slide_px_h}"),
+                        img,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    hl_cache.active.insert(
+                        size_key,
+                        ActiveHighlightMask {
+                            geom_hash,
+                            uv_rect,
+                            tex,
+                            last_used: frame,
+                        },
+                    );
+                }
+            }
+            let Some(slot) = hl_cache.active.get_mut(&size_key) else {
+                return;
+            };
+            slot.last_used = frame;
+            (slot.tex.id(), slot.uv_rect)
+        } else {
+            let key = (geom_hash, slide_px_w, slide_px_h);
+            if !hl_cache.committed.contains_key(&key) {
+                let Some((uv_rect, img)) = rasterize_highlighter_mask(s, slide_size, ppp) else {
+                    return;
+                };
+                if hl_cache.committed.len() >= MAX_HIGHLIGHTER_CACHE
+                    && let Some(&oldest) = hl_cache
+                        .committed
+                        .iter()
+                        .min_by_key(|(_, v)| v.last_used)
+                        .map(|(k, _)| k)
+                {
+                    hl_cache.committed.remove(&oldest);
+                }
+                let tex = ctx.load_texture(
+                    format!("present-hl-{geom_hash:x}-{slide_px_w}x{slide_px_h}"),
+                    img,
+                    egui::TextureOptions::LINEAR,
+                );
+                hl_cache.committed.insert(
+                    key,
+                    CachedHighlightMask {
+                        tex,
+                        uv_rect,
+                        last_used: frame,
+                    },
+                );
+            }
+            let entry = hl_cache.committed.get_mut(&key).unwrap();
+            entry.last_used = frame;
+            (entry.tex.id(), entry.uv_rect)
+        };
+
+        let dest = Rect::from_min_max(
+            pos2(
+                slide_rect.left() + uv_rect.left() * slide_rect.width(),
+                slide_rect.top() + uv_rect.top() * slide_rect.height(),
+            ),
+            pos2(
+                slide_rect.left() + uv_rect.right() * slide_rect.width(),
+                slide_rect.top() + uv_rect.bottom() * slide_rect.height(),
+            ),
+        );
+        let base = s.color.color32();
+        let tint = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), HIGHLIGHTER_ALPHA);
+        painter.image(
+            tex_id,
+            dest,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            tint,
+        );
+        return;
+    }
+
+    let width = (s.width * slide_rect.height()).clamp(1.5, 28.0);
+    let color = s.color.color32();
     if s.points.len() == 1 {
         painter.circle_filled(from_norm(s.points[0], slide_rect), width * 0.5, color);
         return;
@@ -2069,6 +2488,18 @@ mod tests {
                                 pr.shortcuts_open = mode == 4;
                                 pr.view_menu_open = mode == 5;
                                 pr.overview = mode == 7;
+                                if mode == 1 {
+                                    pr.tool = StageTool::Pen;
+                                    pr.store.annotations.insert(
+                                        1,
+                                        vec![StrokePath {
+                                            color: PenColor::Crimson,
+                                            width: StrokeSize::Medium.pen_width(),
+                                            highlighter: false,
+                                            points: vec![[0.2, 0.2], [0.4, 0.3]],
+                                        }],
+                                    );
+                                }
                                 if mode == 6 {
                                     pr.frozen_page = Some(2);
                                     pr.tool = StageTool::Laser;
@@ -2231,11 +2662,30 @@ mod tests {
                 .grid
         );
 
+        // Pen and Highlighter keep independent 3-step stroke sizes (Fine / Medium / Bold).
+        h.get_by_label("Fine stroke").click();
+        h.run_steps(2);
+        assert_eq!(
+            h.state().as_ref().unwrap().store.pen_size,
+            StrokeSize::Small
+        );
+
         h.state_mut()
             .as_mut()
             .unwrap()
             .toggle_tool(StageTool::Highlighter);
         h.run_steps(2);
+        assert_eq!(
+            h.state().as_ref().unwrap().store.highlighter_size,
+            StrokeSize::Medium,
+            "Highlighter keeps its own independent size"
+        );
+        h.get_by_label("Bold stroke").click();
+        h.run_steps(2);
+        assert_eq!(
+            h.state().as_ref().unwrap().store.highlighter_size,
+            StrokeSize::Large
+        );
         let p0 = pos2(420.0, 320.0);
         let p1 = pos2(660.0, 324.0);
         h.input_mut()
@@ -2367,5 +2817,145 @@ mod tests {
                 "{tool:?} should turn off on release"
             );
         }
+    }
+
+    #[test]
+    fn highlighter_mask_has_uniform_alpha_without_cap_or_bend_overlap() {
+        let slide_size = vec2(800.0, 600.0);
+        // A gnarly highlighter path combining horizontal segments, sharp hairpin reversals, and a
+        // self-crossing loop — the exact cases that caused dark half-circles and shards in epaint.
+        let stroke = StrokePath {
+            color: PenColor::Crimson,
+            width: 0.032,
+            highlighter: true,
+            points: vec![
+                [0.20, 0.20],
+                [0.65, 0.20],
+                [0.25, 0.22], // sharp ~177 deg hairpin reversal
+                [0.60, 0.50],
+                [0.45, 0.65],
+                [0.35, 0.50],
+                [0.55, 0.45], // crosses back over itself
+            ],
+        };
+        let (uv_rect, img) =
+            rasterize_highlighter_mask(&stroke, slide_size, 1.0).expect("mask should rasterize");
+        assert!(img.width() > 20 && img.height() > 20);
+        assert!(uv_rect.width() > 0.0 && uv_rect.height() > 0.0);
+
+        let sample = |u: f32, v: f32| -> Color32 {
+            let fx = ((u - uv_rect.left()) / uv_rect.width() * img.width() as f32)
+                .clamp(0.0, (img.width() - 1) as f32) as usize;
+            let fy = ((v - uv_rect.top()) / uv_rect.height() * img.height() as f32)
+                .clamp(0.0, (img.height() - 1) as f32) as usize;
+            img.pixels[fy * img.width() + fx]
+        };
+
+        // Every interior point (start cap, sharp hairpin bend, self-crossing, end cap) must have
+        // exact uniform opaque white coverage (255) so single-pass GPU tinting yields uniform alpha.
+        for &[u, v] in &[
+            [0.20, 0.20], // start endpoint
+            [0.42, 0.20], // straight interior
+            [0.65, 0.20], // hairpin vertex
+            [0.25, 0.22], // second hairpin vertex
+            [0.55, 0.45], // end endpoint
+        ] {
+            assert_eq!(
+                sample(u, v),
+                Color32::WHITE,
+                "interior mask sample at ({u}, {v}) should be solid white"
+            );
+        }
+        // Outside the stroke must stay completely transparent.
+        assert_eq!(img.pixels[0], Color32::TRANSPARENT);
+
+        // Single-point click dot also rasterizes cleanly as an opaque disc.
+        let dot = StrokePath {
+            color: PenColor::Amber,
+            width: 0.032,
+            highlighter: true,
+            points: vec![[0.50, 0.50]],
+        };
+        let (dot_uv, dot_img) =
+            rasterize_highlighter_mask(&dot, slide_size, 1.0).expect("dot should rasterize");
+        let cx = ((0.50 - dot_uv.left()) / dot_uv.width() * dot_img.width() as f32) as usize;
+        let cy = ((0.50 - dot_uv.top()) / dot_uv.height() * dot_img.height() as f32) as usize;
+        assert_eq!(dot_img.pixels[cy * dot_img.width() + cx], Color32::WHITE);
+    }
+
+    #[test]
+    fn active_highlighter_keeps_distinct_native_res_textures_across_stage_and_filmstrip() {
+        let mut h = crate::testing::cpu_harness_state(
+            [1280.0, 820.0],
+            crate::theme::LIGHT,
+            |ui, state: &mut Option<Presentation>| {
+                let p = state.get_or_insert_with(|| {
+                    let mut pr = test_presentation(ui.ctx());
+                    pr.store.filmstrip = true;
+                    pr.tool = StageTool::Highlighter;
+                    pr.active_stroke = Some(StrokePath {
+                        color: PenColor::Crimson,
+                        width: 0.032,
+                        highlighter: true,
+                        points: vec![[0.25, 0.20], [0.35, 0.80]],
+                    });
+                    pr
+                });
+                // Render both Audience stage and Presenter stage + Filmstrip in the same frame!
+                let mut keep = true;
+                stage::audience_ui(p, ui.ctx(), &crate::theme::LIGHT, &mut keep);
+                p.presenter_ui(ui, &crate::theme::LIGHT);
+            },
+            None,
+        );
+        h.run_steps(2);
+
+        {
+            let p = h.state().as_ref().unwrap();
+            // Audience stage, Presenter current-slide card, and Filmstrip thumbnail must each get
+            // their own active texture handle (never overwriting the main stage with a tiny
+            // filmstrip thumbnail texture).
+            assert!(
+                p.hl_cache.active.len() >= 2,
+                "expected distinct active textures per slide size, got {}",
+                p.hl_cache.active.len()
+            );
+            let ids: HashSet<egui::TextureId> =
+                p.hl_cache.active.values().map(|s| s.tex.id()).collect();
+            assert_eq!(ids.len(), p.hl_cache.active.len());
+            let max_tex_h = p
+                .hl_cache
+                .active
+                .values()
+                .map(|s| s.tex.size()[1])
+                .max()
+                .unwrap();
+            assert!(
+                max_tex_h > 200,
+                "main stage active highlighter texture must stay crisp full-res, got height {max_tex_h}"
+            );
+        }
+
+        // Finishing the stroke promotes the exact same GPU textures into `committed` with zero snap.
+        let active_ids: HashSet<egui::TextureId> = h
+            .state()
+            .as_ref()
+            .unwrap()
+            .hl_cache
+            .active
+            .values()
+            .map(|s| s.tex.id())
+            .collect();
+        h.state_mut().as_mut().unwrap().finish_active_stroke();
+        let committed_ids: HashSet<egui::TextureId> = h
+            .state()
+            .as_ref()
+            .unwrap()
+            .hl_cache
+            .committed
+            .values()
+            .map(|s| s.tex.id())
+            .collect();
+        assert!(active_ids.is_subset(&committed_ids));
     }
 }

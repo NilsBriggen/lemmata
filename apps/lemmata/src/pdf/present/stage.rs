@@ -1,7 +1,8 @@
 //! Audience stage, Slide Overview Grid, and Lemmata-themed Presenter Console UI.
 
 use super::data::{
-    DeckItem, PaceState, PenColor, Region, ScreenMode, StageTool, format_elapsed, format_remaining,
+    DeckItem, PaceState, PenColor, Region, ScreenMode, StageTool, StrokeSize, format_elapsed,
+    format_remaining,
 };
 use super::{PresentAction, Presentation};
 use crate::icons::{self, Icon};
@@ -1308,13 +1309,13 @@ fn presenter_current_card(
             p.frozen_page = Some(p.page);
         }
 
-        // Right-aligned live stage tools: segmented track + ink swatches + Undo/Clear.
+        // Right-aligned live stage tools: segmented track + ink swatches + stroke sizes + Undo/Clear.
         sbar.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            let icon_only_tools = head.width() < 620.0;
+            let is_ink_tool = matches!(p.tool, StageTool::Pen | StageTool::Highlighter);
+            let icon_only_tools = head.width() < 620.0 || (is_ink_tool && head.width() < 780.0);
             stage_tools_track(p, ui, pal, icon_only_tools);
 
-            let is_ink_tool = matches!(p.tool, StageTool::Pen | StageTool::Highlighter);
             if is_ink_tool && head.width() >= 380.0 {
                 for color in PenColor::ALL.into_iter().rev() {
                     let active = p.pen_color == color;
@@ -1333,8 +1334,51 @@ fn presenter_current_card(
                     }
                 }
             }
+            if is_ink_tool && head.width() >= 470.0 {
+                sep_v(ui, pal, 14.0);
+                let cur_size = p.active_stroke_size();
+                for size in StrokeSize::ALL.into_iter().rev() {
+                    let active = cur_size == size;
+                    let (sr, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::Role::Button,
+                            ui.is_enabled(),
+                            active,
+                            size.label(),
+                        )
+                    });
+                    let tip = match size {
+                        StrokeSize::Small => "Fine stroke ([)",
+                        StrokeSize::Medium => "Medium stroke",
+                        StrokeSize::Large => "Bold stroke (])",
+                    };
+                    let resp = resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(tip);
+                    let r = CornerRadius::same(theme::R_SM);
+                    if active {
+                        ui.painter().rect(
+                            sr,
+                            r,
+                            pal.surface_3,
+                            Stroke::new(1.0, pal.border_strong),
+                            StrokeKind::Inside,
+                        );
+                    } else if resp.hovered() {
+                        ui.painter().rect_filled(sr, r, pal.surface_2);
+                    }
+                    let dot_color = if active { pal.ink } else { pal.muted };
+                    ui.painter()
+                        .circle_filled(sr.center(), size.dot_radius(), dot_color);
+                    if resp.clicked() {
+                        p.set_active_stroke_size(size);
+                    }
+                }
+            }
             let has_strokes = p.has_strokes_on_slide(p.page);
-            if has_strokes && head.width() >= 300.0 {
+            let undo_min_w = if is_ink_tool { 555.0 } else { 300.0 };
+            if has_strokes && head.width() >= undo_min_w {
                 if Button::icon(icons::TRASH, "Clear annotations on this slide (C)")
                     .size(Size::Sm)
                     .show_icon(ui, pal)
@@ -2942,6 +2986,7 @@ fn shortcuts_overlay(p: &mut Presentation, ui: &mut Ui, pal: &Palette, full: Rec
             &[
                 ("L / S / Z", "Laser / Spotlight / Zoom lens (click & hold)"),
                 ("D / U", "Draw pen / Translucent highlighter (Shift = line)"),
+                ("[ / ]", "Smaller / larger pen or highlighter stroke"),
                 ("Ctrl+Z / C", "Undo stroke / Clear annotations"),
                 ("K", "Insert blank drawable whiteboard slide"),
                 ("B or . / W / F", "Blackout / Whiteout / Freeze audience"),

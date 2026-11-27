@@ -254,6 +254,68 @@ impl PenColor {
     }
 }
 
+/// Three basic stroke thicknesses for Pen and Highlighter, persisted independently per tool.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StrokeSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl StrokeSize {
+    pub const ALL: [StrokeSize; 3] = [StrokeSize::Small, StrokeSize::Medium, StrokeSize::Large];
+
+    /// Relative pen width as a fraction of slide height.
+    pub fn pen_width(self) -> f32 {
+        match self {
+            StrokeSize::Small => 0.0034,
+            StrokeSize::Medium => 0.0058,
+            StrokeSize::Large => 0.0100,
+        }
+    }
+
+    /// Relative highlighter width as a fraction of slide height.
+    pub fn highlighter_width(self) -> f32 {
+        match self {
+            StrokeSize::Small => 0.014,
+            StrokeSize::Medium => 0.024,
+            StrokeSize::Large => 0.038,
+        }
+    }
+
+    /// Visual indicator dot radius (in UI points) for the 3-dot thickness picker.
+    pub fn dot_radius(self) -> f32 {
+        match self {
+            StrokeSize::Small => 2.4,
+            StrokeSize::Medium => 4.2,
+            StrokeSize::Large => 6.2,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            StrokeSize::Small => "Fine stroke",
+            StrokeSize::Medium => "Medium stroke",
+            StrokeSize::Large => "Bold stroke",
+        }
+    }
+
+    pub fn step(self, delta: isize) -> Self {
+        let idx = match self {
+            StrokeSize::Small => 0isize,
+            StrokeSize::Medium => 1,
+            StrokeSize::Large => 2,
+        };
+        match (idx + delta).clamp(0, 2) {
+            0 => StrokeSize::Small,
+            1 => StrokeSize::Medium,
+            _ => StrokeSize::Large,
+        }
+    }
+}
+
 /// One freehand or straight-line annotation stroke in slide-normalized `[0, 1] x [0, 1]` coords.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StrokePath {
@@ -312,6 +374,10 @@ pub struct PresenterStore {
     pub force_dark: bool,
     pub filmstrip: bool,
     pub swap_notes_half: bool,
+    #[serde(default)]
+    pub pen_size: StrokeSize,
+    #[serde(default)]
+    pub highlighter_size: StrokeSize,
     /// 1-based PDF slide number -> speaker notes text.
     pub notes: BTreeMap<usize, String>,
     /// 1-based PDF slide number -> drawn ink/highlighter strokes.
@@ -340,6 +406,8 @@ impl Default for PresenterStore {
             force_dark: false,
             filmstrip: false,
             swap_notes_half: false,
+            pen_size: StrokeSize::Medium,
+            highlighter_size: StrokeSize::Medium,
             notes: BTreeMap::new(),
             annotations: BTreeMap::new(),
             whiteboards: Vec::new(),

@@ -338,7 +338,7 @@ fn write_pdf_strokes(
             continue;
         }
         let (r, g, b) = stroke.color.rgb_f32();
-        let line_w = (stroke.width * sh_pdf).clamp(0.8, 28.0);
+        let line_w = (stroke.width * sh_pdf).clamp(0.8, 42.0);
         let gs = if stroke.highlighter { "/GSHl" } else { "/GSOp" };
         let _ = writeln!(content, "{gs} gs {r:.3} {g:.3} {b:.3} RG {line_w:.2} w");
         let p0 = stroke.points[0];
