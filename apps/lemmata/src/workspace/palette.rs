@@ -114,6 +114,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("zotero-cite", "Cite from Zotero…", ""),
     ("zotero-sync", "Sync zotero.bib from Zotero", ""),
     ("export-pdf", "Export PDF…", ""),
+    (
+        "export-annotated-pdf",
+        "Export annotated slides with notes…",
+        "",
+    ),
     ("present", "Present full screen", ""),
     ("open-external", "Open the PDF in an external viewer", ""),
     ("save-template", "Save as template…", ""),
@@ -660,7 +665,12 @@ impl Workspace {
                     .filter(|c| c.0 != "format" || is_tex)
                     // PDF commands need a built PDF (and presenting needs the PDF pane visible).
                     .filter(|c| c.0 != "present" || (show_pdf && has_pdf))
-                    .filter(|c| !matches!(c.0, "sync" | "export-pdf" | "open-external") || has_pdf)
+                    .filter(|c| {
+                        !matches!(
+                            c.0,
+                            "sync" | "export-pdf" | "export-annotated-pdf" | "open-external"
+                        ) || has_pdf
+                    })
                     .map(|(id, _, key)| Item {
                         label: label(id, self.focus_mode).to_owned(),
                         detail: if key.is_empty() {
@@ -881,6 +891,7 @@ impl Workspace {
             "zotero-cite" => self.cite_from_zotero(backend),
             "zotero-sync" => self.sync_zotero(backend, true),
             "export-pdf" => self.export(backend, settings, Save::Pdf),
+            "export-annotated-pdf" => self.export_annotated_pdf(backend, true),
             "present" => self.present(ctx),
             "open-external" => self.spawn(backend, |s| Msg::Done(s.open_pdf_externally())),
             "save-template" => {

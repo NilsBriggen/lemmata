@@ -53,7 +53,9 @@ On a machine (or user account) without any TeX distribution:
 ## Presenting and screens
 
 - [ ] Present full screen, then Esc at once: the window doesn't stay full screen.
-- [ ] Two screens: the presenter view shows notes and the timer on one, slides on the other; ending the talk closes both.
+- [ ] Two screens: the presenter view shows current/next slide, speaker notes, timer/target pacing bar, and wall clock on one screen, slides on the other; ending the talk closes both.
+- [ ] Live laser (`L`), spotlight (`S`), pen (`D`), freeze (`F`), blackout (`B`), whiteout (`W`), and filmstrip (`M`) sync cleanly to the audience screen.
+- [ ] Saving an annotated PDF with speaker notes works both during the talk (**Save PDF**) and from the post-presentation prompt without modifying `.tex` files.
 
 ## Export
 

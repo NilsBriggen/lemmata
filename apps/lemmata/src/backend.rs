@@ -123,6 +123,7 @@ pub enum Viewed {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Save {
     Pdf,
+    AnnotatedPdf { include_notes: bool },
     Zip,
     Arxiv { flatten: bool },
 }
@@ -351,6 +352,12 @@ impl Backend {
         self.rt().spawn(async move {
             let (title, filter, ext) = match what {
                 Save::Pdf => ("Export PDF", "PDF", "pdf"),
+                Save::AnnotatedPdf {
+                    include_notes: true,
+                } => ("Export annotated slides with notes", "PDF", "pdf"),
+                Save::AnnotatedPdf {
+                    include_notes: false,
+                } => ("Export annotated slides", "PDF", "pdf"),
                 Save::Zip => ("Export the project as a zip", "Zip", "zip"),
                 Save::Arxiv { .. } => ("Export for arXiv", "Zip", "zip"),
             };

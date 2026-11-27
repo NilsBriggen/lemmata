@@ -29,13 +29,14 @@ pub fn group_digits(n: u32) -> String {
     out
 }
 
-const GROUPS: [&str; 7] = [
+const GROUPS: [&str; 8] = [
     "Project",
     "Navigation",
     "Files",
     "Writing",
     "Editing",
     "PDF",
+    "Presenting",
     "Mouse",
 ];
 
@@ -126,12 +127,14 @@ impl Workspace {
                 }
             }
             let mut done = false;
+            let mut reset_all = false;
+            let has_custom = !settings.keybindings.is_empty();
             let r = widgets::modal_with(
                 ctx,
                 p,
                 "Keyboard shortcuts",
                 None,
-                620.0,
+                660.0,
                 |ui| {
                     if shortcut_sheet(ui, p, query, settings) {
                         *action = Some(super::Action::Settings);
@@ -145,8 +148,22 @@ impl Workspace {
                     {
                         done = true;
                     }
+                    if has_custom
+                        && Button::new("Reset all")
+                            .with_icon(crate::icons::ROTATE_CCW)
+                            .kind(Kind::Ghost)
+                            .show(ui, p)
+                            .clicked()
+                    {
+                        reset_all = true;
+                    }
                 }),
             );
+            if reset_all {
+                settings.keybindings.clear();
+                shortcuts::choose(&settings.keybindings);
+                *action = Some(super::Action::Settings);
+            }
             if r.closed || done {
                 self.shortcut_sheet = None;
                 set_recording(ctx, None);
@@ -170,69 +187,111 @@ fn word_count(ui: &mut Ui, p: &Palette, w: &Words) {
         }
         Words::Done(c) => c,
     };
-    ui.spacing_mut().item_spacing.y = 12.0;
-    // .total: the number in Young Serif 40 px, then "words".
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
+    ui.spacing_mut().item_spacing.y = 14.0;
+    // Hero total in Young Serif 40 px, paired with estimated reading & speaking times.
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
         ui.label(
             RichText::new(group_digits(c.total_words))
                 .font(FontId::new(40.0, theme::font::display()))
                 .color(p.ink),
         );
-        ui.label(RichText::new("words").size(15.0).color(p.muted));
+        ui.vertical(|ui| {
+            ui.add_space(10.0);
+            ui.label(RichText::new("words").size(15.0).color(p.muted));
+            if c.total_words > 0 {
+                let read_min = (c.total_words as f32 / 200.0).ceil().max(1.0) as u32;
+                let speak_min = (c.total_words as f32 / 130.0).ceil().max(1.0) as u32;
+                ui.label(
+                    RichText::new(format!("~{read_min} min read · ~{speak_min} min spoken"))
+                        .size(11.5)
+                        .color(p.faint),
+                );
+            }
+        });
     });
     let stats = [
         ("Headings", c.headings),
         ("Inline maths", c.inline_math),
         ("Display maths", c.display_math),
-        ("Figures and tables", c.floats),
+        ("Figures & tables", c.floats),
         ("Citations", c.citations),
     ];
+    let col_w = ((ui.available_width() - 10.0) / 2.0).max(120.0);
     egui::Grid::new("word-stats")
         .num_columns(2)
-        .spacing(vec2(24.0, 8.0))
-        .min_col_width((ui.available_width() - 24.0) / 2.0)
+        .spacing(vec2(10.0, 8.0))
+        .min_col_width(col_w)
         .show(ui, |ui| {
             for (i, (name, n)) in stats.iter().enumerate() {
-                let r = ui.horizontal(|ui| {
-                    ui.set_width((ui.available_width()).max(0.0));
-                    ui.label(RichText::new(*name).color(p.muted));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(group_digits(*n)).color(p.ink));
+                egui::Frame::new()
+                    .fill(p.surface_2)
+                    .stroke(Stroke::new(1.0, p.card_hairline))
+                    .corner_radius(theme::R_MD)
+                    .inner_margin(Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.set_width((col_w - 24.0).max(80.0));
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(*name).size(12.5).color(p.muted));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(group_digits(*n))
+                                            .font(FontId::new(13.0, theme::font::mono_500()))
+                                            .color(p.ink),
+                                    );
+                                },
+                            );
+                        });
                     });
-                });
-                let b = r.response.rect;
-                ui.painter()
-                    .hline(b.x_range(), b.bottom() + 4.0, Stroke::new(1.0, p.border));
                 if i % 2 == 1 {
                     ui.end_row();
                 }
             }
         });
     if c.files.len() > 1 {
-        ui.add_space(4.0);
+        ui.add_space(2.0);
         widgets::label(ui, p, "By file");
+        let max_file_words = c.files.iter().map(|f| f.words).max().unwrap_or(1).max(1);
         let w = ui.available_width();
-        ui.allocate_ui(vec2(w, 200.0), |ui| {
+        ui.allocate_ui(vec2(w, 190.0), |ui| {
             egui::ScrollArea::vertical()
-                .max_height(200.0)
+                .max_height(190.0)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0;
                     for f in &c.files {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(&f.file)
-                                    .font(FontId::monospace(12.0))
-                                    .color(p.ink),
+                        let frac = (f.words as f32 / max_file_words as f32).clamp(0.0, 1.0);
+                        let (row_r, _) = ui.allocate_exact_size(
+                            vec2(ui.available_width(), 24.0),
+                            egui::Sense::hover(),
+                        );
+                        if frac > 0.0 {
+                            let bar = egui::Rect::from_min_size(
+                                row_r.min,
+                                vec2(row_r.width() * frac, row_r.height()),
                             );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(RichText::new(group_digits(f.words)).color(p.ink));
-                                },
+                            ui.painter().rect_filled(
+                                bar,
+                                CornerRadius::same(5),
+                                p.accent_soft.gamma_multiply(0.55),
                             );
-                        });
+                        }
+                        ui.painter().text(
+                            row_r.left_center() + vec2(8.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            &f.file,
+                            FontId::monospace(12.0),
+                            p.ink,
+                        );
+                        ui.painter().text(
+                            row_r.right_center() - vec2(8.0, 0.0),
+                            egui::Align2::RIGHT_CENTER,
+                            group_digits(f.words),
+                            FontId::new(12.0, theme::font::mono_500()),
+                            p.ink_2,
+                        );
                     }
                 });
         });
@@ -409,16 +468,35 @@ fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String, settings: &mut S
                                                         egui::Align::Center,
                                                     ),
                                                     |ui| {
+                                                        let is_rec = recording == Some(s.id);
                                                         let chip = egui::Frame::new()
-                                                            .fill(p.surface_2)
-                                                            .stroke(Stroke::new(1.0, p.border))
-                                                            .corner_radius(CornerRadius::same(4))
-                                                            .inner_margin(Margin::symmetric(6, 1))
+                                                            .fill(if is_rec {
+                                                                p.accent_soft
+                                                            } else {
+                                                                p.surface_2
+                                                            })
+                                                            .stroke(Stroke::new(
+                                                                1.0,
+                                                                if is_rec {
+                                                                    p.accent
+                                                                } else {
+                                                                    p.border_strong
+                                                                },
+                                                            ))
+                                                            .corner_radius(CornerRadius::same(5))
+                                                            .inner_margin(Margin::symmetric(7, 2))
                                                             .show(ui, |ui| {
                                                                 ui.label(
                                                                     RichText::new(&k)
-                                                                        .size(11.5)
-                                                                        .color(p.ink_2),
+                                                                        .font(FontId::new(
+                                                                            11.5,
+                                                                            theme::font::mono_500(),
+                                                                        ))
+                                                                        .color(if is_rec {
+                                                                            p.accent
+                                                                        } else {
+                                                                            p.ink_2
+                                                                        }),
                                                                 )
                                                             });
                                                         if editable {
@@ -447,20 +525,15 @@ fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String, settings: &mut S
                                                         }
                                                         if editable
                                                             && !shortcuts::specs(s).is_empty()
-                                                            && ui
-                                                                .add(
-                                                                    egui::Label::new(
-                                                                        RichText::new("×")
-                                                                            .size(12.0)
-                                                                            .color(p.muted),
-                                                                    )
-                                                                    .sense(egui::Sense::click()),
-                                                                )
-                                                                .on_hover_cursor(
-                                                                    egui::CursorIcon::PointingHand,
-                                                                )
-                                                                .on_hover_text("Clear shortcut")
-                                                                .clicked()
+                                                            && Button::icon(
+                                                                crate::icons::X,
+                                                                "Clear shortcut",
+                                                            )
+                                                            .size(widgets::Size::Sm)
+                                                            .icon_size(12.0)
+                                                            .show_icon(ui, p)
+                                                            .on_hover_text("Clear shortcut")
+                                                            .clicked()
                                                         {
                                                             settings
                                                                 .keybindings
@@ -471,13 +544,15 @@ fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String, settings: &mut S
                                                             changed = true;
                                                         }
                                                         if settings.keybindings.contains_key(s.id)
-                                                            && ui
-                                                                .link(
-                                                                    RichText::new("Reset")
-                                                                        .size(11.5)
-                                                                        .color(p.muted),
-                                                                )
-                                                                .clicked()
+                                                            && Button::icon(
+                                                                crate::icons::ROTATE_CCW,
+                                                                "Reset shortcut",
+                                                            )
+                                                            .size(widgets::Size::Sm)
+                                                            .icon_size(12.0)
+                                                            .show_icon(ui, p)
+                                                            .on_hover_text("Reset to default")
+                                                            .clicked()
                                                         {
                                                             settings.keybindings.remove(s.id);
                                                             shortcuts::choose(

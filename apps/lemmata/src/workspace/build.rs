@@ -462,6 +462,12 @@ impl Workspace {
         let name = &self.info.name;
         match what {
             Save::Pdf => format!("{name}.pdf"),
+            Save::AnnotatedPdf {
+                include_notes: true,
+            } => format!("{name}-annotated-notes.pdf"),
+            Save::AnnotatedPdf {
+                include_notes: false,
+            } => format!("{name}-annotated.pdf"),
             Save::Zip => format!("{name}.zip"),
             Save::Arxiv { .. } => format!("{name}-arxiv.zip"),
         }
@@ -868,13 +874,53 @@ impl Workspace {
                 self.after_saving(backend, settings, |ws, _| ws.build_soon(false, false));
             }
             Msg::Cleaned(Err(e)) => self.notice(e, Tone::Error),
-            Msg::SaveTo(project, _, None) if project == self.project => {}
+            Msg::SaveTo(project, _, None) if project == self.project => {
+                self.pending_annotated_export = None;
+            }
+            Msg::SaveTo(project, Save::AnnotatedPdf { include_notes }, Some(dest))
+                if project == self.project =>
+            {
+                let name = dest
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let payload = self.pending_annotated_export.take().or_else(|| {
+                    let bytes = self.pane.view.shown_bytes()?;
+                    let store = crate::pdf::present::PresenterStore::load(
+                        std::path::Path::new(&self.info.root),
+                    );
+                    Some((bytes, store))
+                });
+                let Some((bytes, store)) = payload else {
+                    self.notice("There is no PDF to export.", Tone::Error);
+                    return None;
+                };
+                if let Some(pres) = &mut self.presentation {
+                    pres.set_status("Exporting annotated PDF…");
+                }
+                let what = Save::AnnotatedPdf { include_notes };
+                self.spawn(backend, move |_shell| {
+                    let res = crate::pdf::present::export_annotated_pdf(
+                        &bytes,
+                        &store.annotations,
+                        &store.notes,
+                        include_notes,
+                        store.swap_notes_half,
+                    )
+                    .and_then(|pdf| {
+                        std::fs::write(&dest, pdf).map_err(|e| format!("Could not save PDF: {e}"))
+                    })
+                    .map(|_| 1);
+                    Msg::Exported(what, name.clone(), res)
+                });
+            }
             Msg::SaveTo(project, what, Some(dest)) if project == self.project => {
                 let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let dest = dest.to_string_lossy().into_owned();
                 self.spawn(backend, move |shell| {
                     let r = match what {
                         Save::Pdf => shell.export_pdf(dest).map(|_| 1),
+                        Save::AnnotatedPdf { .. } => unreachable!(),
                         Save::Zip => shell.export_zip(dest, true),
                         Save::Arxiv { flatten } => shell.export_arxiv(dest, true, Some(flatten)),
                     };
@@ -887,10 +933,28 @@ impl Workspace {
                         .action(NoticeAction::DraftOff),
                 ),
                 Save::Pdf => self.notice(format!("Saved {name}."), Tone::Info),
+                Save::AnnotatedPdf { include_notes } => {
+                    if let Some(pres) = &mut self.presentation {
+                        pres.mark_exported();
+                        pres.set_status(format!("Saved {name}"));
+                    }
+                    let kind = if include_notes {
+                        "annotated slides with speaker notes"
+                    } else {
+                        "annotated slides"
+                    };
+                    self.notice(format!("Saved {kind} to {name}."), Tone::Ok);
+                }
                 Save::Zip => self.notice(format!("Saved {n} files, with the latest PDF, to {name}."), Tone::Ok),
                 Save::Arxiv { flatten: true } => self.notice(format!("Exported {n} files with the sources merged into one .tex file and comments removed."), Tone::Info),
                 Save::Arxiv { flatten: false } => self.notice(format!("Exported {n} files with comments removed, including the compiled bibliography."), Tone::Info),
             },
+            Msg::Exported(Save::AnnotatedPdf { .. }, _, Err(e)) => {
+                if let Some(pres) = &mut self.presentation {
+                    pres.set_status(format!("Export failed: {e}"));
+                }
+                self.notice(e, Tone::Error);
+            }
             Msg::Exported(_, _, Err(e)) => self.notice(e, Tone::Error),
             Msg::PackageAdded(Ok(())) => {
                 // Read the main file again, with its new \usepackage; text typed meanwhile asks first.

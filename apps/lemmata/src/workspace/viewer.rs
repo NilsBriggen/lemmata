@@ -154,14 +154,72 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) -> Option<Stri
                     egui::TextureOptions::LINEAR,
                 )
             });
+            // Compact 4.0 image viewer toolbar (replaces the hidden LaTeX formatting bar).
+            let bar = Rect::from_min_size(area.min, vec2(area.width(), 40.0));
+            ui.painter().rect_filled(bar, 0, p.surface);
+            ui.painter().hline(
+                bar.x_range(),
+                bar.bottom() - 0.5,
+                Stroke::new(1.0, p.border),
+            );
+            let name = path.rsplit('/').next().unwrap_or(path);
+            {
+                let mut tb = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(bar.shrink2(vec2(12.0, 0.0)))
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                tb.spacing_mut().item_spacing.x = 8.0;
+                crate::icons::show(&mut tb, crate::icons::IMAGE, 14.5, p.muted);
+                tb.label(
+                    egui::RichText::new(name)
+                        .font(FontId::new(13.0, crate::theme::font::sans_500()))
+                        .color(p.ink),
+                );
+                tb.label(
+                    egui::RichText::new(format!("{} × {} px", size[0], size[1]))
+                        .font(FontId::monospace(11.5))
+                        .color(p.muted),
+                );
+                tb.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    if crate::widgets::Button::new("100%")
+                        .size(crate::widgets::Size::Sm)
+                        .kind(if *actual {
+                            crate::widgets::Kind::Primary
+                        } else {
+                            crate::widgets::Kind::Ghost
+                        })
+                        .show(ui, p)
+                        .clicked()
+                    {
+                        *actual = true;
+                    }
+                    if crate::widgets::Button::new("Fit")
+                        .size(crate::widgets::Size::Sm)
+                        .kind(if !*actual {
+                            crate::widgets::Kind::Primary
+                        } else {
+                            crate::widgets::Kind::Ghost
+                        })
+                        .show(ui, p)
+                        .clicked()
+                    {
+                        *actual = false;
+                    }
+                });
+            }
+
+            let canvas = Rect::from_min_max(pos2(area.left(), bar.bottom()), area.max);
             let natural = vec2(size[0] as f32, size[1] as f32) / ui.ctx().pixels_per_point();
-            let stage = area.shrink(24.0);
+            let stage = canvas.shrink(24.0);
             let fitted = {
                 let k = (stage.width() / natural.x)
                     .min(stage.height() / natural.y)
                     .min(1.0);
                 natural * k
             };
+            let dark_mode = p.dark;
             let mut clicked = false;
             let mut draw = |ui: &mut Ui, rect: Rect| {
                 let painter = ui.painter();
@@ -183,7 +241,7 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) -> Option<Stri
                     }
                     .as_shape(rect, 0),
                 );
-                checkerboard(painter, rect);
+                checkerboard(painter, rect, dark_mode);
                 painter.image(
                     tex.id(),
                     rect,
@@ -203,7 +261,7 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) -> Option<Stri
                 }
             };
             if *actual {
-                let mut c = ui.new_child(egui::UiBuilder::new().max_rect(area));
+                let mut c = ui.new_child(egui::UiBuilder::new().max_rect(canvas));
                 egui::ScrollArea::both()
                     .id_salt(("viewer", path))
                     .auto_shrink([false, false])
@@ -221,8 +279,7 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) -> Option<Stri
             if clicked {
                 *actual = !*actual;
             }
-            // .info
-            let name = path.rsplit('/').next().unwrap_or(path);
+            // Quiet status pill at bottom-left.
             let text = format!(
                 "{name} · {} × {} px · click to {}",
                 size[0],
@@ -233,7 +290,10 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) -> Option<Stri
                 .painter()
                 .layout_no_wrap(text, FontId::proportional(12.0), p.muted);
             let r = Rect::from_min_size(
-                pos2(area.left() + 12.0, area.bottom() - 10.0 - g.size().y - 6.0),
+                pos2(
+                    canvas.left() + 12.0,
+                    canvas.bottom() - 10.0 - g.size().y - 6.0,
+                ),
                 g.size() + vec2(18.0, 6.0),
             );
             ui.painter().rect(
@@ -249,10 +309,17 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) -> Option<Stri
     url
 }
 
-/// The 16 px grey-and-white checkerboard behind transparent images.
-fn checkerboard(painter: &egui::Painter, rect: Rect) {
-    painter.rect_filled(rect, 0, Color32::WHITE);
-    let grey = Color32::from_rgb(0xec, 0xec, 0xec);
+/// The 16 px checkerboard behind transparent images, adapted for light and dark themes.
+fn checkerboard(painter: &egui::Painter, rect: Rect, dark: bool) {
+    let (base, alt) = if dark {
+        (
+            Color32::from_rgb(0x20, 0x26, 0x2e),
+            Color32::from_rgb(0x28, 0x30, 0x3a),
+        )
+    } else {
+        (Color32::WHITE, Color32::from_rgb(0xec, 0xec, 0xec))
+    };
+    painter.rect_filled(rect, 0, base);
     // Only the cells on screen: an 8192 px image at 100 % has half a million of them.
     let visible = rect.intersect(painter.clip_rect());
     let c = painter.with_clip_rect(visible);
@@ -265,7 +332,7 @@ fn checkerboard(painter: &egui::Painter, rect: Rect) {
             .max(0.0);
         let mut x = rect.left() + off + first * 16.0;
         while x < visible.right() {
-            c.rect_filled(Rect::from_min_size(pos2(x, y), vec2(8.0, 8.0)), 0, grey);
+            c.rect_filled(Rect::from_min_size(pos2(x, y), vec2(8.0, 8.0)), 0, alt);
             x += 16.0;
         }
         row += 1;
@@ -286,6 +353,7 @@ mod tests {
             checkerboard(
                 &painter,
                 Rect::from_min_size(pos2(0.0, 0.0), vec2(8192.0, 8192.0)),
+                false,
             );
         });
         out.textures_delta.clear();

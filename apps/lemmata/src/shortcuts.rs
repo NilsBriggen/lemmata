@@ -233,6 +233,38 @@ pub const SHORTCUTS: &[Shortcut] = &[
         "Right-click a misspelled word: suggestions",
         "Mouse",
     ),
+    s("present-view", "P", "Open presenter console", "Presenting"),
+    s("present-overview", "G", "Slide overview grid", "Presenting"),
+    s(
+        "present-filmstrip",
+        "M",
+        "Toggle slide filmstrip",
+        "Presenting",
+    ),
+    s(
+        "present-blackout",
+        "B",
+        "Blackout audience screen",
+        "Presenting",
+    ),
+    s(
+        "present-whiteout",
+        "W",
+        "Whiteout audience screen",
+        "Presenting",
+    ),
+    s("present-freeze", "F", "Freeze audience slide", "Presenting"),
+    s("present-laser", "L", "Laser pointer", "Presenting"),
+    s("present-spotlight", "S", "Spotlight cursor", "Presenting"),
+    s("present-pen", "D", "Draw slide annotations", "Presenting"),
+    s(
+        "present-clear",
+        "C",
+        "Clear slide annotations",
+        "Presenting",
+    ),
+    s("present-timer", "T", "Start or pause timer", "Presenting"),
+    s("present-reset", "R", "Reset timer", "Presenting"),
 ];
 
 /// Keys the user chose instead of the default (Preferences → the shortcut sheet), by id. An
@@ -268,7 +300,7 @@ const FIXED: &[&str] = &[
 ];
 
 pub fn editable(s: &Shortcut) -> bool {
-    !s.keys.is_empty() && !FIXED.contains(&s.id)
+    !s.keys.is_empty() && s.group != "Presenting" && !FIXED.contains(&s.id)
 }
 
 /// Takes the user's keys from the settings. Unknown ids, specs that don't parse and fixed

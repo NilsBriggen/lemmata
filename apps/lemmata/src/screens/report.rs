@@ -94,9 +94,20 @@ pub enum Out {
     Open(String),
 }
 
-/// The dialog: the details in a box, then "Open GitHub".
+/// The dialog: the details in a box, then "Copy details" and "Open GitHub".
 pub fn show(ctx: &egui::Context, p: &Palette, system: &str, log: &str) -> Option<Out> {
     let (mut open, mut cancel) = (false, false);
+    let copied_id = egui::Id::unique("report-copied");
+    let copied_at = ctx.data(|d| d.get_temp::<f64>(copied_id));
+    let now = ctx.input(|i| i.time);
+    let recently_copied = copied_at.is_some_and(|t| now - t < 2.0);
+    let full_text = if log.is_empty() {
+        system.to_owned()
+    } else {
+        format!("{system}\n\n{log}")
+    };
+    let copy_text = full_text.clone();
+
     let r = widgets::modal_with(
         ctx,
         p,
@@ -106,27 +117,41 @@ pub fn show(ctx: &egui::Context, p: &Palette, system: &str, log: &str) -> Option
         ),
         560.0,
         |ui| {
+            ui.spacing_mut().item_spacing.y = 10.0;
+            // Compact system summary chips from the first lines of `system`.
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                for line in system.lines().filter(|l| !l.trim().is_empty()) {
+                    egui::Frame::new()
+                        .fill(p.surface_2)
+                        .stroke(Stroke::new(1.0, p.border))
+                        .corner_radius(egui::CornerRadius::same(99))
+                        .inner_margin(Margin::symmetric(9, 3))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(line.trim())
+                                    .font(FontId::monospace(11.5))
+                                    .color(p.ink_2),
+                            );
+                        });
+                }
+            });
             egui::Frame::new()
                 .fill(p.surface_2)
                 .stroke(Stroke::new(1.0, p.border))
-                .corner_radius(crate::theme::R)
+                .corner_radius(crate::theme::R_MD)
                 .inner_margin(Margin::same(12))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    let text = if log.is_empty() {
-                        system.to_owned()
-                    } else {
-                        format!("{system}\n\n{log}")
-                    };
                     let w = ui.available_width();
-                    ui.allocate_ui(vec2(w, 260.0), |ui| {
+                    ui.allocate_ui(vec2(w, 240.0), |ui| {
                         egui::ScrollArea::vertical()
-                            .max_height(260.0)
+                            .max_height(240.0)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new(text)
+                                        RichText::new(&full_text)
                                             .font(FontId::monospace(12.0))
                                             .color(p.ink),
                                     )
@@ -140,10 +165,27 @@ pub fn show(ctx: &egui::Context, p: &Palette, system: &str, log: &str) -> Option
         Some(&mut |ui: &mut Ui| {
             if Button::new("Open GitHub")
                 .kind(Kind::Primary)
+                .with_icon(crate::icons::EXTERNAL_LINK)
                 .show(ui, p)
                 .clicked()
             {
                 open = true;
+            }
+            if Button::new(if recently_copied {
+                "Copied"
+            } else {
+                "Copy details"
+            })
+            .with_icon(if recently_copied {
+                crate::icons::CHECK
+            } else {
+                crate::icons::COPY
+            })
+            .show(ui, p)
+            .clicked()
+            {
+                ui.ctx().copy_text(copy_text.clone());
+                ui.ctx().data_mut(|d| d.insert_temp(copied_id, now));
             }
             if Button::new("Cancel").show(ui, p).clicked() {
                 cancel = true;

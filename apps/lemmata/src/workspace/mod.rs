@@ -263,6 +263,11 @@ pub struct Workspace {
     pub palette: Option<palette::Palette>,
     /// Presenting the PDF full screen.
     pub presentation: Option<crate::pdf::present::Presentation>,
+    /// Prompt shown after ending a presentation when annotations/notes were created.
+    pub post_present_export: Option<PostPresentExport>,
+    /// Snapshot of PDF bytes & presenter store held while the native save dialog is open.
+    pub(crate) pending_annotated_export:
+        Option<(std::sync::Arc<Vec<u8>>, crate::pdf::present::PresenterStore)>,
     pub words: Option<sheets::Words>,
     /// The shortcuts sheet, with its search.
     pub shortcut_sheet: Option<String>,
@@ -422,6 +427,8 @@ impl Workspace {
             app_modal_open: false,
             palette: None,
             presentation: None,
+            post_present_export: None,
+            pending_annotated_export: None,
             words: None,
             shortcut_sheet: None,
             table: None,
@@ -1345,6 +1352,7 @@ impl Workspace {
             || self.project_settings.is_some()
             || self.palette.is_some()
             || self.presentation.is_some()
+            || self.post_present_export.is_some()
             || self.words.is_some()
             || self.shortcut_sheet.is_some()
             || self.history.label.is_some()
@@ -1761,11 +1769,43 @@ impl Workspace {
         self.rename_dialog(&ctx, p, backend, settings);
         self.file_dialogs(&ctx, p, backend, settings);
         self.sheets(&ctx, p, settings, &mut action);
-        if let Some(show) = &mut self.presentation
-            && !show.show(&ctx)
-        {
-            self.presentation = None;
+        if let Some(show) = &mut self.presentation {
+            let keep = show.show(&ctx);
+            let pres_actions = show.take_actions();
+            let mut export_req = None;
+            for pa in pres_actions {
+                match pa {
+                    crate::pdf::present::PresentAction::ExportPdf { include_notes } => {
+                        export_req = Some((include_notes, show.bytes(), show.store.clone()));
+                    }
+                }
+            }
+            if !keep {
+                let ended = self.presentation.take().unwrap();
+                if ended.dirty_for_export
+                    && (ended.store.annotated_slide_count() > 0
+                        || ended.store.has_any_custom_notes())
+                {
+                    let include_notes = ended.store.has_any_custom_notes() || ended.has_any_notes;
+                    self.post_present_export = Some(PostPresentExport {
+                        bytes: ended.bytes(),
+                        store: ended.store,
+                        include_notes,
+                    });
+                }
+            }
+            if let Some((include_notes, bytes, store)) = export_req {
+                self.pending_annotated_export = Some((bytes, store));
+                let what = crate::backend::Save::AnnotatedPdf { include_notes };
+                let name = if include_notes {
+                    format!("{}-annotated-notes.pdf", self.info.name)
+                } else {
+                    format!("{}-annotated.pdf", self.info.name)
+                };
+                backend.save(self.project, what, name);
+            }
         }
+        self.post_present_export_dialog(&ctx, p, backend);
         if let Some(a) = self.palette_ui(&ctx, p, backend, settings) {
             action = Some(a);
         }
@@ -1816,22 +1856,28 @@ impl Workspace {
             );
             y = strip.bottom();
         }
-        let bar = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 40.0));
-        let (sync, comment, cite) = chrome::edit_bar(
-            &mut ui.new_child(egui::UiBuilder::new().max_rect(bar)),
-            p,
-            self,
-        );
-        if sync {
-            self.sync_forward(backend);
+        let is_viewer = self
+            .active
+            .as_ref()
+            .is_some_and(|a| self.viewers.contains_key(a));
+        if !is_viewer {
+            let bar = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 40.0));
+            let (sync, comment, cite) = chrome::edit_bar(
+                &mut ui.new_child(egui::UiBuilder::new().max_rect(bar)),
+                p,
+                self,
+            );
+            if sync {
+                self.sync_forward(backend);
+            }
+            if comment && self.add_comment(backend, settings) {
+                changed = true;
+            }
+            if cite {
+                self.open_cite(backend, None);
+            }
+            y = bar.bottom();
         }
-        if comment && self.add_comment(backend, settings) {
-            changed = true;
-        }
-        if cite {
-            self.open_cite(backend, None);
-        }
-        y = bar.bottom();
         if let Some(e) = self.open_error.clone() {
             // .err-bar
             let r = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 32.0));
@@ -2465,18 +2511,132 @@ pub fn editor_style(ctx: &egui::Context, s: &Settings, focus: bool) -> view::Sty
     }
 }
 
+/// Offered after exiting presentation mode when the user drew annotations or edited notes.
+pub struct PostPresentExport {
+    pub bytes: std::sync::Arc<Vec<u8>>,
+    pub store: crate::pdf::present::PresenterStore,
+    pub include_notes: bool,
+}
+
 impl Workspace {
     /// "Present full screen": the built PDF, from the page on show.
     pub fn present(&mut self, ctx: &egui::Context) {
         match self.pane.view.shown_bytes() {
             Some(bytes) => {
                 let page = self.pane.view.current_page.max(1);
-                self.presentation = Some(crate::pdf::present::Presentation::new(ctx, bytes, page));
+                let root = std::path::PathBuf::from(&self.info.root);
+                // Seed speaker notes from `\note{...}` / `% NOTE:` in the main `.tex` file if any.
+                let main_src = self
+                    .editors
+                    .get(&self.info.main)
+                    .map(|e| e.doc.text())
+                    .or_else(|| std::fs::read_to_string(root.join(&self.info.main)).ok());
+                let tex_notes = main_src
+                    .as_deref()
+                    .map(crate::pdf::present::extract_tex_notes)
+                    .filter(|m| !m.is_empty());
+                self.presentation = Some(crate::pdf::present::Presentation::with_project(
+                    ctx,
+                    bytes,
+                    page,
+                    Some(root),
+                    tex_notes,
+                ));
             }
             None => self.notice(
                 "There is no PDF to present yet. Build the project first.",
                 Tone::Info,
             ),
+        }
+    }
+
+    /// Exports the built PDF together with any saved presenter annotations and speaker notes.
+    pub fn export_annotated_pdf(&mut self, backend: &Backend, include_notes: bool) {
+        let Some(bytes) = self.pane.view.shown_bytes() else {
+            self.notice(
+                "There is no PDF to export yet. Build the project first.",
+                Tone::Info,
+            );
+            return;
+        };
+        let store =
+            crate::pdf::present::PresenterStore::load(std::path::Path::new(&self.info.root));
+        self.pending_annotated_export = Some((bytes, store));
+        let what = crate::backend::Save::AnnotatedPdf { include_notes };
+        let name = if include_notes {
+            format!("{}-annotated-notes.pdf", self.info.name)
+        } else {
+            format!("{}-annotated.pdf", self.info.name)
+        };
+        backend.save(self.project, what, name);
+    }
+
+    fn post_present_export_dialog(&mut self, ctx: &egui::Context, p: &Palette, backend: &Backend) {
+        let Some(mut state) = self.post_present_export.take() else {
+            return;
+        };
+        let ann = state.store.annotated_slide_count();
+        let summary = if ann > 0 {
+            format!(
+                "You annotated {ann} slide{} during your presentation.",
+                if ann == 1 { "" } else { "s" }
+            )
+        } else {
+            "You updated speaker notes during your presentation.".to_owned()
+        };
+        let mut save = false;
+        let mut dismiss = false;
+        let r = widgets::modal_with(
+            ctx,
+            p,
+            "Save annotated PDF?",
+            Some(&summary),
+            480.0,
+            |ui| {
+                ui.spacing_mut().item_spacing.y = 12.0;
+                widgets::checkbox(
+                    ui,
+                    p,
+                    &mut state.include_notes,
+                    "Include speaker notes below each slide (handout layout)",
+                );
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(
+                            "Your original .tex files are untouched. Annotations and speaker notes stay saved in .lemmata/presenter.json so you can also export later from the command palette.",
+                        )
+                        .size(12.5)
+                        .color(p.muted),
+                    )
+                    .wrap(),
+                );
+            },
+            Some(&mut |ui: &mut Ui| {
+                if Button::new("Save PDF…")
+                    .kind(Kind::Primary)
+                    .with_icon(crate::icons::DOWNLOAD)
+                    .show(ui, p)
+                    .clicked()
+                {
+                    save = true;
+                }
+                if Button::new("Not now").show(ui, p).clicked() {
+                    dismiss = true;
+                }
+            }),
+        );
+        if save {
+            let include_notes = state.include_notes;
+            self.pending_annotated_export = Some((state.bytes, state.store));
+            let what = crate::backend::Save::AnnotatedPdf { include_notes };
+            let name = if include_notes {
+                format!("{}-annotated-notes.pdf", self.info.name)
+            } else {
+                format!("{}-annotated.pdf", self.info.name)
+            };
+            backend.save(self.project, what, name);
+        } else if !r.closed && !dismiss {
+            self.post_present_export = Some(state);
         }
     }
 

@@ -15,6 +15,27 @@ pub struct Release {
 /// Newest first.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "4.1.0",
+        highlights: &[
+            (
+                "Studio-dark presenter view overhaul",
+                "A redesigned presenter console with draggable pane splitters, target-duration countdown and dual-track pacing bar, a collapsible bottom slide filmstrip, Whiteout (W), Freeze (F), and a ? shortcuts sheet.",
+            ),
+            (
+                "Live laser pointer, spotlight and slide pen",
+                "Point with a synced red laser (L) or spotlight (S), or draw derivations live in three ink colors (D) with per-slide undo and clear.",
+            ),
+            (
+                "Editable speaker notes & annotated PDF export",
+                "Write per-slide speaker notes right in presenter view (or pre-seed from \\note{} and % NOTE:) and export annotated slides—with or without speaker notes—during or after your talk without touching your .tex files.",
+            ),
+            (
+                "Polished viewers and dialogs",
+                "Image viewer tabs now show a dedicated Fit/100% toolbar instead of the LaTeX bar, and Keyboard shortcuts, Word count, Report a problem, History diff, What's new, and the update toast have all been refined.",
+            ),
+        ],
+    },
+    Release {
         version: "4.0.0",
         highlights: &[
             (
@@ -269,28 +290,37 @@ pub fn show(
 
 fn section(ui: &mut Ui, p: &Palette, r: &Release, labelled: bool) {
     ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 10.0;
+        ui.spacing_mut().item_spacing.y = 12.0;
         if labelled {
             let v = r.version.strip_suffix(".0").unwrap_or(r.version);
-            ui.label(
-                RichText::new(format!("LEMMATA {v}"))
-                    .font(FontId::new(12.0, theme::font::sans_600()))
-                    .color(p.muted),
-            );
+            egui::Frame::new()
+                .fill(p.surface_2)
+                .stroke(egui::Stroke::new(1.0, p.border))
+                .corner_radius(egui::CornerRadius::same(99))
+                .inner_margin(egui::Margin::symmetric(9, 3))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(format!("LEMMATA {v}"))
+                            .font(FontId::new(11.0, theme::font::sans_600()))
+                            .color(p.muted),
+                    );
+                });
         }
         for (title, text) in r.highlights {
             ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                ui.add_space(0.0);
+                ui.spacing_mut().item_spacing.x = 12.0;
+                egui::Frame::new()
+                    .fill(p.accent_soft)
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        icons::show(ui, icons::SPARKLES, 14.0, p.accent);
+                    });
                 ui.vertical(|ui| {
-                    ui.add_space(2.0);
-                    icons::show(ui, icons::SPARKLES, 15.0, p.accent);
-                });
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(
                         RichText::new(*title)
-                            .font(FontId::new(13.0, theme::font::sans_600()))
+                            .font(FontId::new(13.5, theme::font::sans_600()))
                             .color(p.ink),
                     );
                     ui.add(egui::Label::new(RichText::new(*text).color(p.muted)).wrap());

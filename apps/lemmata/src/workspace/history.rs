@@ -1037,7 +1037,10 @@ impl Workspace {
         };
         let mut back = false;
         let mut restore = false;
-        let r = egui::Frame::NONE.inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+        let r = egui::Frame::new()
+            .fill(p.surface)
+            .inner_margin(Margin::symmetric(12, 8))
+            .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
@@ -1154,11 +1157,20 @@ impl Workspace {
                     ui.painter().rect_filled(r, 0, fill);
                     if let Some(n) = n {
                         ui.painter().text(
-                            r.min + vec2(40.0, 1.0),
+                            r.min + vec2(36.0, 1.0),
                             egui::Align2::RIGHT_TOP,
                             n.to_string(),
                             font.clone(),
-                            p.muted,
+                            p.faint,
+                        );
+                    }
+                    if *kind == 1 || *kind == 2 {
+                        ui.painter().text(
+                            r.min + vec2(44.0, 1.0),
+                            egui::Align2::CENTER_TOP,
+                            if *kind == 1 { "−" } else { "+" },
+                            FontId::new(12.5, theme::font::mono_500()),
+                            if *kind == 1 { p.error } else { p.ok },
                         );
                     }
                     if *kind == 3 {
@@ -1170,7 +1182,7 @@ impl Workspace {
                             p.muted,
                         );
                     } else {
-                        ui.painter().galley(r.min + vec2(52.0, 1.0), g, p.ink);
+                        ui.painter().galley(r.min + vec2(54.0, 1.0), g, p.ink);
                     }
                 }
             });
