@@ -2,6 +2,28 @@
 
 All notable changes to Lemmata.
 
+## 4.1.1 (2026-11-27)
+
+Bug-fix and stability release hardening Presenter View, modals, History restore, Word Count, viewers, and Windows path handling—paired with proactive UI geometry, modal isolation, and boundary tests.
+
+### Fixed
+- **Presenter View bottom bar flicker & interaction:** Fixed a 60 Hz hover-oscillation loop in the audience floating HUD caused by gating visibility on background stage hover (`r.hovered()`), added click-blocking on HUD pill padding, and kept the HUD accessible while hovered even with stage tools active.
+- **Presenter View rendering, overlays & layout:**
+  - Raised the per-page render cache limit to eliminate an unbounded re-render loop when Presenter Console, Filmstrip, and Beamer second-screen notes are open together.
+  - Made the Presenter Shortcuts overlay scrollable and tall enough so all 14 shortcut rows stay inside the card.
+  - Moved target-duration and PDF-export popovers onto full-window click-absorbing scrims so outside clicks never leak through to underlying controls, prevented narrow-width clamp panics and target-popover overflow, and blocked stage shortcuts behind open overlays/popovers.
+  - Cleared presenter-only transient states when closing the presenter window or navigating to Overview / Beamer-notes slides, prevented clicks during Frozen + Pen from advancing slides behind the frozen screen, kept single-screen laser/spotlight fade animations smooth, and exited single-screen fullscreen before opening the OS Save dialog.
+  - Made presenter header, stage splitters, speaker notes card, and HUD layout strictly non-overlapping and non-negative across all viewport sizes, aligned countdown overtime display so `"+0:00"` never flashes, protected malformed `.lemmata/presenter.json` files from being overwritten, and improved `.tex` `\note{}` extraction (escaped `\%`, multi-byte UTF-8, `\input`/`\include` files, non-shadowing fallback).
+  - Unified annotated PDF handout wrapping width, split long unbreakable tokens (such as URLs), added ellipsis on truncated notes, and rejected degenerate zero-dimension PDF pages cleanly.
+- **History restore & open tabs:** Restoring a snapshot that removes an open file now closes its tab cleanly without emitting a spurious `"changed outside Lemmata"` error toast, and open image/PDF viewer tabs are refreshed or closed alongside text editors.
+- **Modal & keyboard precedence:** Guarded the References panel (`Escape`), Raw TeX Log / PDF pane (`Ctrl+F` / `F3`), Notices drawer (`Escape`), and unresolved file-conflict modals so background panels never steal keys from foreground dialogs or shortcut recording; restored previous widget focus automatically even when closing modals via footer buttons.
+- **Dialogs, viewers, shortcuts & Word Count:**
+  - Stacked *Later* and *Install and restart* below wrapped text in the Update toast so long errors never push buttons off-screen.
+  - Canonicalized punctuation shortcuts (`Mod-Shift-?` / `Mod-Shift-/`, `Shift-[` / `{`) for clash detection, stripped paste/copy/cut events during shortcut recording, and truncated long shortcut labels against right-aligned key chips.
+  - Hardened the Image viewer toolbar, status pill, and fit scaling against narrow panes and zero-dimension images, and scheduled idle repaint for the *Report a problem* `"Copied"` button reset.
+  - Fixed Word Count to ignore commented `% \begin{document}`, count prose/commands on the `\begin{document}` line, and count only real LaTeX `\...cite` commands (ignoring words like `excite{...}`).
+- **Windows paths, PDF view & settings:** Fixed a UTF-8 byte-index panic in Library path formatting on non-ASCII Windows paths outside `\Users\`, guarded `PdfView` / `Engine` against zero or non-finite PDF page sizes, and normalized float-encoded `indent` JSON values (`2.0`/`4.0`/`8.0`) so Preferences displays the true indentation.
+
 ## 4.1.0 (2026-11-27)
 
 A major overhaul of Presenter View and presentation mode—built for live lectures and academic talks—alongside a 4.0 polish pass across all remaining dialogs and viewers.
