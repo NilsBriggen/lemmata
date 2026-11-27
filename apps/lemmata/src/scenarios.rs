@@ -913,11 +913,16 @@ fn controls_are_where_people_look() {
     wait_for(&mut h, "the breakdown", |h| ws(h).words.is_some());
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
-    // At 560 px the PDF toolbar's extras are in ⋯, Present among them.
+    // At 560 px the PDF toolbar has plenty of room for Present, Outline, and Thumbnails directly
+    // on the bar; at 430 px the extras collapse into ⋯, Present among them.
     if ws(&h).build.raw_log_open {
         ws_mut(&mut h).0.build.raw_log_open = false;
     }
     h.state_mut().settings.pdf_width = 560.0;
+    wait_for(&mut h, "Present directly on the 560 px bar", |h| {
+        h.query_by_label("Present full screen").is_some() && h.query_by_label("More").is_none()
+    });
+    h.state_mut().settings.pdf_width = 430.0;
     wait_for(&mut h, "the ⋯ menu", |h| {
         h.query_by_label("More").is_some()
     });

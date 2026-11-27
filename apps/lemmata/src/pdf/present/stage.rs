@@ -923,13 +923,13 @@ fn presenter_stage(p: &mut Presentation, ui: &mut Ui, main: Rect) {
                 p.toggle_tool(StageTool::Pen);
             }
             if small_tool_btn(ui, icons::SUN, "Spotlight", p.tool == StageTool::Spotlight)
-                .on_hover_text("Spotlight cursor on audience slide (S)")
+                .on_hover_text("Click & hold on slide to spotlight a region (S)")
                 .clicked()
             {
                 p.toggle_tool(StageTool::Spotlight);
             }
             if small_tool_btn(ui, icons::LOCATE, "Laser", p.tool == StageTool::Laser)
-                .on_hover_text("Synced red laser pointer (L)")
+                .on_hover_text("Click & hold on slide for synced red laser pointer (L)")
                 .clicked()
             {
                 p.toggle_tool(StageTool::Laser);

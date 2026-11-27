@@ -81,6 +81,9 @@ pub struct Pane {
     focus_search: bool,
     search_focused: bool,
     pages_in_bar: bool,
+    zoom_btns_in_bar: bool,
+    side_btns_in_bar: bool,
+    present_in_bar: bool,
     query: String,
     /// When the query last changed; it is searched 180 ms later.
     query_at: Option<f64>,
@@ -103,6 +106,9 @@ impl Pane {
             focus_search: false,
             search_focused: false,
             pages_in_bar: true,
+            zoom_btns_in_bar: true,
+            side_btns_in_bar: true,
+            present_in_bar: true,
             query: String::new(),
             query_at: None,
             side: None,
@@ -328,8 +334,18 @@ impl Pane {
 
     fn bar(&mut self, ui: &mut Ui, p: &Palette, b: &Build, out: &mut Vec<Action>) {
         let width = ui.max_rect().width() + 16.0;
-        let narrow = width <= 660.0;
-        ui.spacing_mut().item_spacing.x = if narrow { 6.0 } else { 10.0 };
+        // Progressive collapse based on actual control widths (instead of hiding everything at 660 px):
+        // - > 580 px: full bar (-/+ zoom, Outline, Thumbnails, Present, External, Export, Search)
+        // - 521..=580 px: drop -/+ zoom buttons (zoom dropdown stays); keep all 6 right-hand icons
+        // - 451..=520 px: move Outline, Thumbnails, External into `More`, keep Present on the bar
+        // - 406..=450 px: move Present into `More` as well
+        // - <= 405 px: also move page arrows into `More`
+        self.zoom_btns_in_bar = width > 580.0;
+        self.side_btns_in_bar = width > 520.0;
+        self.present_in_bar = width > 450.0;
+        self.pages_in_bar = width > 405.0;
+        let show_more = !self.side_btns_in_bar || !self.present_in_bar || !self.pages_in_bar;
+        ui.spacing_mut().item_spacing.x = if width <= 620.0 { 6.0 } else { 10.0 };
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             let errors = b
                 .diagnostics
@@ -408,9 +424,8 @@ impl Pane {
             ui.painter().rect_filled(vr, 0, p.border);
             let n = self.view.page_count();
             let cur = self.view.current_page;
-            self.pages_in_bar = width > 340.0;
             if self.pages_in_bar {
-                let box_w = if width <= 460.0 { 30.0 } else { 38.0 };
+                let box_w = if width <= 480.0 { 30.0 } else { 38.0 };
                 group(ui, |ui| {
                     if ghost(ui, p, icons::CHEVRON_LEFT, "Previous page", 16.0)
                         .enabled(cur > 1)
@@ -435,7 +450,7 @@ impl Pane {
                 });
             }
             group(ui, |ui| {
-                if !narrow
+                if self.zoom_btns_in_bar
                     && ghost(ui, p, icons::ZOOM_OUT, "Zoom out", 16.0)
                         .show_icon(ui, p)
                         .clicked()
@@ -459,7 +474,7 @@ impl Pane {
                 if z.clicked() {
                     self.menu = toggle(&self.menu, Menu::Zoom(z.rect));
                 }
-                if !narrow
+                if self.zoom_btns_in_bar
                     && ghost(ui, p, icons::ZOOM_IN, "Zoom in", 16.0)
                         .show_icon(ui, p)
                         .clicked()
@@ -469,7 +484,7 @@ impl Pane {
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if narrow {
+                if show_more {
                     let m = ghost(ui, p, icons::ELLIPSIS, "More", 15.0)
                         .show_icon(ui, p)
                         .on_hover_text("More");
@@ -484,21 +499,23 @@ impl Pane {
                 {
                     out.push(Action::Export);
                 }
-                if !narrow {
-                    if ghost(ui, p, icons::EXTERNAL_LINK, "Open in external viewer", 15.0)
+                if self.side_btns_in_bar
+                    && ghost(ui, p, icons::EXTERNAL_LINK, "Open in external viewer", 15.0)
                         .show_icon(ui, p)
                         .on_hover_text("Open in the system's PDF viewer")
                         .clicked()
-                    {
-                        out.push(Action::OpenExternally);
-                    }
-                    if ghost(ui, p, icons::PRESENTATION, "Present full screen", 15.0)
+                {
+                    out.push(Action::OpenExternally);
+                }
+                if self.present_in_bar
+                    && ghost(ui, p, icons::PRESENTATION, "Present full screen", 15.0)
                         .show_icon(ui, p)
                         .on_hover_text("Present full screen")
                         .clicked()
-                    {
-                        out.push(Action::Present);
-                    }
+                {
+                    out.push(Action::Present);
+                }
+                if self.side_btns_in_bar {
                     let thumbs = self.side == Some(Side::Thumbs);
                     if ghost(ui, p, icons::PANEL_LEFT, "Page thumbnails", 15.0)
                         .on(thumbs)
@@ -871,46 +888,93 @@ impl Pane {
                 }
             }
             Menu::More(anchor) => {
+                #[derive(Clone, Copy)]
+                enum MoreAct {
+                    ZoomIn,
+                    ZoomOut,
+                    Outline,
+                    Thumbs,
+                    Present,
+                    External,
+                    PrevPage,
+                    NextPage,
+                }
                 let (cur, n) = (self.view.current_page, self.view.page_count());
                 let place = format!("{cur} / {n}");
-                let mut items = vec![
-                    MenuItem::new(icons::ZOOM_IN, "Zoom in"),
-                    MenuItem::new(icons::ZOOM_OUT, "Zoom out"),
-                    MenuItem::Separator,
-                    MenuItem::check("Document outline", self.side == Some(Side::Outline)),
-                    MenuItem::check("Page thumbnails", self.side == Some(Side::Thumbs)),
-                    MenuItem::Separator,
-                    MenuItem::new(icons::PRESENTATION, "Present full screen"),
-                    MenuItem::new(icons::EXTERNAL_LINK, "Open in external viewer"),
-                ];
+                let mut items = Vec::new();
+                let mut actions: Vec<Option<MoreAct>> = Vec::new();
+                let push_sep = |items: &mut Vec<MenuItem<'_>>, acts: &mut Vec<Option<MoreAct>>| {
+                    if !items.is_empty() && !matches!(items.last(), Some(MenuItem::Separator)) {
+                        items.push(MenuItem::Separator);
+                        acts.push(None);
+                    }
+                };
+                if !self.zoom_btns_in_bar {
+                    items.push(MenuItem::new(icons::ZOOM_IN, "Zoom in"));
+                    actions.push(Some(MoreAct::ZoomIn));
+                    items.push(MenuItem::new(icons::ZOOM_OUT, "Zoom out"));
+                    actions.push(Some(MoreAct::ZoomOut));
+                }
+                if !self.side_btns_in_bar {
+                    push_sep(&mut items, &mut actions);
+                    items.push(MenuItem::check(
+                        "Document outline",
+                        self.side == Some(Side::Outline),
+                    ));
+                    actions.push(Some(MoreAct::Outline));
+                    items.push(MenuItem::check(
+                        "Page thumbnails",
+                        self.side == Some(Side::Thumbs),
+                    ));
+                    actions.push(Some(MoreAct::Thumbs));
+                }
+                if !self.present_in_bar || !self.side_btns_in_bar {
+                    push_sep(&mut items, &mut actions);
+                    if !self.present_in_bar {
+                        items.push(MenuItem::new(icons::PRESENTATION, "Present full screen"));
+                        actions.push(Some(MoreAct::Present));
+                    }
+                    if !self.side_btns_in_bar {
+                        items.push(MenuItem::new(
+                            icons::EXTERNAL_LINK,
+                            "Open in external viewer",
+                        ));
+                        actions.push(Some(MoreAct::External));
+                    }
+                }
                 if !self.pages_in_bar {
-                    items.push(MenuItem::Separator);
+                    push_sep(&mut items, &mut actions);
                     items.push(
                         MenuItem::new(icons::CHEVRON_LEFT, "Previous page")
                             .hint(&place)
                             .enabled(cur > 1),
                     );
+                    actions.push(Some(MoreAct::PrevPage));
                     items.push(
                         MenuItem::new(icons::CHEVRON_RIGHT, "Next page")
                             .hint(&place)
                             .enabled(cur < n),
                     );
+                    actions.push(Some(MoreAct::NextPage));
                 }
                 match widgets::drop_menu(ctx, p, id, anchor, true, &items) {
                     MenuResult::Open => {}
                     MenuResult::Closed => self.menu = None,
                     MenuResult::Clicked(i) => {
                         self.menu = None;
-                        match i {
-                            0 => self.view.zoom_by(1.15),
-                            1 => self.view.zoom_by(1.0 / 1.15),
-                            3 => self.toggle_side(Side::Outline),
-                            4 => self.toggle_side(Side::Thumbs),
-                            6 => out.push(Action::Present),
-                            7 => out.push(Action::OpenExternally),
-                            9 => self.view.goto_page(cur.saturating_sub(1).max(1)),
-                            10 => self.view.goto_page((cur + 1).min(n)),
-                            _ => {}
+                        if let Some(Some(act)) = actions.get(i).copied() {
+                            match act {
+                                MoreAct::ZoomIn => self.view.zoom_by(1.15),
+                                MoreAct::ZoomOut => self.view.zoom_by(1.0 / 1.15),
+                                MoreAct::Outline => self.toggle_side(Side::Outline),
+                                MoreAct::Thumbs => self.toggle_side(Side::Thumbs),
+                                MoreAct::Present => out.push(Action::Present),
+                                MoreAct::External => out.push(Action::OpenExternally),
+                                MoreAct::PrevPage => {
+                                    self.view.goto_page(cur.saturating_sub(1).max(1))
+                                }
+                                MoreAct::NextPage => self.view.goto_page((cur + 1).min(n)),
+                            }
                         }
                     }
                 }
@@ -1161,5 +1225,76 @@ mod tests {
             "1k-page unchanged thumbnails: median {:.3} ms, p95 {:.3} ms",
             frames[25], frames[47]
         );
+    }
+
+    #[test]
+    fn pdf_bar_progressive_collapse_keeps_controls_visible_without_overlap() {
+        use egui_kittest::kittest::Queryable;
+        for w in [700.0, 590.0, 560.0, 525.0, 480.0, 430.0, 360.0, 320.0] {
+            let mut h = crate::testing::cpu_harness_state(
+                [w, 400.0],
+                crate::theme::LIGHT,
+                |ui, pane: &mut Option<Pane>| {
+                    let pane = pane.get_or_insert_with(|| {
+                        let mut pn = Pane::new(ui.ctx());
+                        pn.view.pages = vec![vec2(600.0, 800.0); 12];
+                        pn.view.current_page = 2;
+                        pn
+                    });
+                    let b = Build {
+                        diagnostics: &[],
+                        building: false,
+                        note: None,
+                        failed: false,
+                        status: None,
+                        id: 0,
+                        problems_open: false,
+                        raw_log_open: false,
+                        source: &|_, _, _| Vec::new(),
+                    };
+                    pane.show(ui, &crate::theme::LIGHT, &b);
+                },
+                None,
+            );
+            h.run_steps(2);
+            crate::testing::assert_ui_geometry(&h, &format!("pdf bar w={w}"));
+
+            // Verify progressive visibility.
+            assert_eq!(h.query_by_label("Zoom in").is_some(), w > 580.0, "w={w}");
+            assert_eq!(
+                h.query_by_label("Document outline").is_some(),
+                w > 520.0,
+                "w={w}"
+            );
+            assert_eq!(
+                h.query_by_label("Present full screen").is_some(),
+                w > 450.0,
+                "w={w}"
+            );
+            assert_eq!(h.query_by_label("More").is_some(), w <= 520.0, "w={w}");
+
+            // Verify left-side controls (Zoom level / Zoom in) NEVER overlap right-side buttons!
+            let left_edge = h
+                .query_by_label("Zoom in")
+                .or_else(|| h.query_by_label("Zoom level"))
+                .unwrap()
+                .rect()
+                .right();
+            let right_edge = [
+                "Search in PDF",
+                "Document outline",
+                "Page thumbnails",
+                "Present full screen",
+                "Export PDF",
+                "More",
+            ]
+            .into_iter()
+            .filter_map(|lbl| h.query_by_label(lbl).map(|n| n.rect().left()))
+            .fold(f32::INFINITY, f32::min);
+            assert!(
+                left_edge <= right_edge + 1.0,
+                "PDF toolbar controls overlapped at w={w}: left_edge={left_edge} > right_edge={right_edge}"
+            );
+        }
     }
 }

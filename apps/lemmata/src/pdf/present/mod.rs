@@ -87,6 +87,7 @@ pub struct Presentation {
     /// Live laser / spotlight position in normalized slide coordinates + recent trail.
     pub(crate) pointer_uv: Option<[f32; 2]>,
     pub(crate) pointer_at: Option<Instant>,
+    pub(crate) pointer_source: Option<&'static str>,
     pub(crate) laser_trail: VecDeque<([f32; 2], Instant)>,
     /// Buffered digits for jump-to-slide (`1`-`9`, `Enter`).
     pub(crate) jump_digits: String,
@@ -162,6 +163,7 @@ impl Presentation {
             active_stroke: None,
             pointer_uv: None,
             pointer_at: None,
+            pointer_source: None,
             laser_trail: VecDeque::new(),
             jump_digits: String::new(),
             jump_at: None,
@@ -212,6 +214,11 @@ impl Presentation {
         self.editing_slide_jump = false;
         self.target_menu_open = false;
         self.export_menu_open = false;
+        if self.pointer_source == Some("presenter-stage") {
+            self.pointer_uv = None;
+            self.pointer_at = None;
+            self.pointer_source = None;
+        }
         self.finish_active_stroke();
     }
 
@@ -308,6 +315,8 @@ impl Presentation {
         };
         if !matches!(self.tool, StageTool::Laser | StageTool::Spotlight) {
             self.pointer_uv = None;
+            self.pointer_at = None;
+            self.pointer_source = None;
             self.laser_trail.clear();
         }
     }
@@ -499,24 +508,32 @@ impl Presentation {
         ui: &mut Ui,
         slide_rect: Rect,
         slide_num: usize,
-        id_salt: &str,
+        id_salt: &'static str,
         allow_draw: bool,
     ) -> bool {
         if self.tool == StageTool::None {
             return false;
         }
-        let sense = if self.tool == StageTool::Pen && allow_draw {
-            egui::Sense::click_and_drag()
-        } else {
-            egui::Sense::hover()
+        let sense = match self.tool {
+            StageTool::Laser | StageTool::Spotlight => egui::Sense::click_and_drag(),
+            StageTool::Pen if allow_draw => egui::Sense::click_and_drag(),
+            _ => egui::Sense::hover(),
         };
         let resp = ui.interact(slide_rect, ui.scope_id().with(id_salt), sense);
         match self.tool {
             StageTool::Laser | StageTool::Spotlight => {
-                if let Some(pos) = resp.hover_pos().and_then(|p| to_norm(p, slide_rect)) {
+                let active_pos = if resp.is_pointer_button_down_on() || resp.dragged() {
+                    resp.interact_pointer_pos()
+                        .or_else(|| ui.input(|i| i.pointer.latest_pos()))
+                        .and_then(|p| to_norm(p, slide_rect))
+                } else {
+                    None
+                };
+                if let Some(pos) = active_pos {
                     let now = Instant::now();
                     self.pointer_uv = Some(pos);
                     self.pointer_at = Some(now);
+                    self.pointer_source = Some(id_salt);
                     if self.tool == StageTool::Laser {
                         self.laser_trail.push_back((pos, now));
                         while self.laser_trail.len() > 14 {
@@ -526,6 +543,15 @@ impl Presentation {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::None);
                     ui.ctx()
                         .request_repaint_after(std::time::Duration::from_millis(16));
+                } else {
+                    if self.pointer_source == Some(id_salt) {
+                        self.pointer_uv = None;
+                        self.pointer_at = None;
+                        self.pointer_source = None;
+                    }
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                    }
                 }
                 true
             }
@@ -628,47 +654,50 @@ impl Presentation {
         while self
             .laser_trail
             .front()
-            .is_some_and(|(_, t)| now.duration_since(*t).as_secs_f32() > 0.22)
+            .is_some_and(|(_, t)| now.duration_since(*t).as_secs_f32() > 0.20)
         {
             self.laser_trail.pop_front();
         }
         let fresh_pointer = self
             .pointer_at
-            .is_some_and(|t| now.duration_since(t).as_secs_f32() < 3.0);
+            .is_some_and(|t| now.duration_since(t).as_secs_f32() < 0.5);
         if !fresh_pointer {
             self.pointer_uv = None;
-        } else if !self.laser_trail.is_empty() {
+            self.pointer_source = None;
+        }
+        if !self.laser_trail.is_empty() {
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(33));
+                .request_repaint_after(std::time::Duration::from_millis(16));
         } else if self.pointer_uv.is_some() {
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(250));
+                .request_repaint_after(std::time::Duration::from_millis(100));
         }
-        // 3. Laser or Spotlight overlay.
+        // 3. Laser trail (fades smoothly right after button release) & active Laser / Spotlight.
+        if self.tool == StageTool::Laser && self.laser_trail.len() >= 2 {
+            let pts: Vec<(Pos2, f32)> = self
+                .laser_trail
+                .iter()
+                .map(|(p, t)| {
+                    let age = now.duration_since(*t).as_secs_f32();
+                    let a = (1.0 - age / 0.20).clamp(0.0, 1.0);
+                    (from_norm(*p, slide_rect), a)
+                })
+                .collect();
+            for win in pts.windows(2) {
+                let a = (win[1].1 * 180.0) as u8;
+                painter.line_segment(
+                    [win[0].0, win[1].0],
+                    egui::Stroke::new(
+                        3.5 * win[1].1 + 1.5,
+                        Color32::from_rgba_unmultiplied(255, 56, 56, a),
+                    ),
+                );
+            }
+        }
         if let Some(uv) = self.pointer_uv {
             let center = from_norm(uv, slide_rect);
             match self.tool {
                 StageTool::Laser => {
-                    // Soft fading trail.
-                    let pts: Vec<(Pos2, f32)> = self
-                        .laser_trail
-                        .iter()
-                        .map(|(p, t)| {
-                            let age = now.duration_since(*t).as_secs_f32();
-                            let a = (1.0 - age / 0.22).clamp(0.0, 1.0);
-                            (from_norm(*p, slide_rect), a)
-                        })
-                        .collect();
-                    for win in pts.windows(2) {
-                        let a = (win[1].1 * 180.0) as u8;
-                        painter.line_segment(
-                            [win[0].0, win[1].0],
-                            egui::Stroke::new(
-                                3.5 * win[1].1 + 1.5,
-                                Color32::from_rgba_unmultiplied(255, 56, 56, a),
-                            ),
-                        );
-                    }
                     // Outer halo + crisp hot core.
                     let r = (slide_rect.height() * 0.014).clamp(6.0, 14.0);
                     painter.circle_filled(
@@ -688,23 +717,46 @@ impl Presentation {
                     );
                 }
                 StageTool::Spotlight => {
-                    // Dim the surrounding slide with 4 rectangles around a circular spotlight feel
-                    // using a thick dark ring + outer scrim.
-                    let radius = (slide_rect.height() * 0.14).clamp(44.0, 140.0);
+                    // Focused circular spotlight cutout via exact triangle-strip annulus mesh
+                    // (immune to thick-stroke tessellation artifacts).
+                    let radius = (slide_rect.height() * 0.085).clamp(24.0, 76.0);
+                    let outer_r = slide_rect.width().hypot(slide_rect.height()) + 4.0;
                     let scrim = Color32::from_rgba_unmultiplied(5, 8, 12, 165);
-                    // Build a clean octagonal/32-gon cutout feel via outer strips + corner arcs:
-                    // simpler & crisp in epaint: concentric translucent dark rings + bright rim.
-                    let max_r = slide_rect.width().hypot(slide_rect.height());
-                    let ring_w = (max_r - radius).max(0.0);
-                    painter.circle_stroke(
-                        center,
-                        radius + ring_w * 0.5,
-                        egui::Stroke::new(ring_w, scrim),
-                    );
+                    let segs: u32 = 48;
+                    let mut mesh = egui::Mesh::default();
+                    mesh.vertices.reserve((segs * 2) as usize);
+                    mesh.indices.reserve((segs * 6) as usize);
+                    for i in 0..segs {
+                        let ang = (i as f32 / segs as f32) * std::f32::consts::TAU;
+                        let (sin, cos) = ang.sin_cos();
+                        mesh.vertices.push(egui::epaint::Vertex {
+                            pos: pos2(center.x + radius * cos, center.y + radius * sin),
+                            uv: egui::epaint::WHITE_UV,
+                            color: scrim,
+                        });
+                    }
+                    for i in 0..segs {
+                        let ang = (i as f32 / segs as f32) * std::f32::consts::TAU;
+                        let (sin, cos) = ang.sin_cos();
+                        mesh.vertices.push(egui::epaint::Vertex {
+                            pos: pos2(center.x + outer_r * cos, center.y + outer_r * sin),
+                            uv: egui::epaint::WHITE_UV,
+                            color: scrim,
+                        });
+                    }
+                    for i in 0..segs {
+                        let j = (i + 1) % segs;
+                        mesh.indices
+                            .extend_from_slice(&[i, j, segs + j, i, segs + j, segs + i]);
+                    }
+                    painter.add(egui::Shape::mesh(mesh));
                     painter.circle_stroke(
                         center,
                         radius,
-                        egui::Stroke::new(2.0, Color32::from_rgba_unmultiplied(255, 255, 255, 190)),
+                        egui::Stroke::new(
+                            1.75,
+                            Color32::from_rgba_unmultiplied(255, 255, 255, 195),
+                        ),
                     );
                 }
                 _ => {}
@@ -1330,6 +1382,62 @@ mod tests {
                     &format!("presenter_ui size={size:?} mode={mode}"),
                 );
             }
+        }
+    }
+
+    #[test]
+    fn laser_and_spotlight_only_light_while_pressed() {
+        for tool in [StageTool::Laser, StageTool::Spotlight] {
+            let mut h = crate::testing::cpu_harness_state(
+                [1200.0, 740.0],
+                crate::theme::DARK,
+                move |ui, state: &mut (Option<Presentation>, bool)| {
+                    let p = state.0.get_or_insert_with(|| {
+                        let mut pr = test_presentation(ui.ctx());
+                        pr.tool = tool;
+                        pr
+                    });
+                    stage::audience_ui(p, ui.ctx(), &mut state.1);
+                },
+                (None, true),
+            );
+            h.run_steps(2);
+
+            // Hovering the slide with Laser/Spotlight enabled must NOT light the pointer.
+            let center = pos2(600.0, 370.0);
+            h.input_mut().events.push(egui::Event::PointerMoved(center));
+            h.run_steps(2);
+            assert!(
+                h.state().0.as_ref().unwrap().pointer_uv.is_none(),
+                "{tool:?} should stay off on hover alone"
+            );
+
+            // Pressing & holding on the slide lights the pointer.
+            h.input_mut().events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.step();
+            assert!(
+                h.state().0.as_ref().unwrap().pointer_uv.is_some(),
+                "{tool:?} should light while primary button is held"
+            );
+            crate::testing::assert_ui_geometry(&h, &format!("{tool:?} active"));
+
+            // Releasing immediately turns the pointer back off.
+            h.input_mut().events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(2);
+            assert!(
+                h.state().0.as_ref().unwrap().pointer_uv.is_none(),
+                "{tool:?} should turn off on release"
+            );
         }
     }
 }

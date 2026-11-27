@@ -92,13 +92,23 @@ jobs:
         run: |
           git config --global user.name "Lemmata CI"
           git config --global user.email "ci@lemmata.invalid"
-      # One at a time with real TeX: the log then names a test that hangs, and the limit stops it.
-      - name: Run the app's tests and scenarios
-        timeout-minutes: 30
-        # Required: without it a broken latexmk or Perl makes the build scenarios return early, green.
+      # Pure unit & UI tests run in parallel first (no MiKTeX builds); app integration tests run
+      # 2-way parallel after MiKTeX is warmed up; heavy multi-step scenarios run 1-by-1 so a hang
+      # clearly names the culprit in the log.
+      - name: Run unit and UI tests
+        timeout-minutes: 15
+        run: cargo test --locked -p lemmata-app -- --skip app::tests:: --skip app::scenarios:: --test-threads=4
+      - name: Run app integration tests
+        timeout-minutes: 20
+        # Required: without it a broken latexmk or Perl makes the build tests return early, green.
         env:
           LEMMATA_REQUIRE_TEX: "1"
-        run: cargo test --locked -p lemmata-app -- --test-threads=1
+        run: cargo test --locked -p lemmata-app app::tests:: -- --test-threads=2
+      - name: Run MiKTeX scenarios
+        timeout-minutes: 20
+        env:
+          LEMMATA_REQUIRE_TEX: "1"
+        run: cargo test --locked -p lemmata-app app::scenarios:: -- --test-threads=1
       - name: Upload the snapshots that differ
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
