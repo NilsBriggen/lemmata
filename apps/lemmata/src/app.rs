@@ -3636,7 +3636,7 @@ pub(crate) mod tests {
                     crate::pdf::present::Presentation::new(ui.ctx(), bytes.clone(), 1)
                 });
                 s.receive(ui.ctx());
-                s.presenter_ui(ui);
+                s.presenter_ui(ui, &crate::theme::LIGHT);
             });
         for _ in 0..40 {
             ph.run_steps(1);

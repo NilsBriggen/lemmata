@@ -192,7 +192,19 @@ pub enum StageTool {
     None,
     Laser,
     Spotlight,
+    Zoom,
     Pen,
+    Highlighter,
+}
+
+/// One entry in the presentation's logical slide sequence: either a compiled PDF page or an
+/// inserted blank whiteboard slide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeckItem {
+    /// 0-based page index into the compiled PDF.
+    Pdf(usize),
+    /// Unique 1-based identifier into `PresenterStore::whiteboards`.
+    Whiteboard(usize),
 }
 
 /// High-contrast ink colors readable on both light and dark Beamer themes.
@@ -203,16 +215,23 @@ pub enum PenColor {
     Crimson,
     Sky,
     Amber,
+    Emerald,
 }
 
 impl PenColor {
-    pub const ALL: [PenColor; 3] = [PenColor::Crimson, PenColor::Sky, PenColor::Amber];
+    pub const ALL: [PenColor; 4] = [
+        PenColor::Crimson,
+        PenColor::Sky,
+        PenColor::Amber,
+        PenColor::Emerald,
+    ];
 
     pub fn color32(self) -> Color32 {
         match self {
             PenColor::Crimson => Color32::from_rgb(0xe8, 0x3b, 0x3b),
             PenColor::Sky => Color32::from_rgb(0x1f, 0x8d, 0xd6),
             PenColor::Amber => Color32::from_rgb(0xd9, 0x77, 0x06),
+            PenColor::Emerald => Color32::from_rgb(0x1f, 0x8a, 0x5b),
         }
     }
 
@@ -230,17 +249,44 @@ impl PenColor {
             PenColor::Crimson => "Red ink",
             PenColor::Sky => "Blue ink",
             PenColor::Amber => "Amber ink",
+            PenColor::Emerald => "Green ink",
         }
     }
 }
 
-/// One freehand annotation stroke in slide-normalized `[0, 1] x [0, 1]` coordinates.
+/// One freehand or straight-line annotation stroke in slide-normalized `[0, 1] x [0, 1]` coords.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StrokePath {
     pub color: PenColor,
-    /// Relative stroke width as a fraction of slide height (e.g. `0.0055`).
+    /// Relative stroke width as a fraction of slide height (e.g. `0.0055` pen, `0.022` highlighter).
     pub width: f32,
+    /// When true, renders as a translucent highlighter that keeps text beneath legible.
+    #[serde(default)]
+    pub highlighter: bool,
     pub points: Vec<[f32; 2]>,
+}
+
+/// An inserted blank drawable whiteboard slide anchored after a 1-based PDF page (`0` = before 1).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WhiteboardSlide {
+    pub id: usize,
+    pub after_pdf_page: usize,
+    #[serde(default)]
+    pub grid: bool,
+    #[serde(default)]
+    pub strokes: Vec<StrokePath>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_notes_width() -> f32 {
+    0.24
+}
+
+fn default_next_width() -> f32 {
+    0.20
 }
 
 /// Persistent presenter state stored in `<project>/.lemmata/presenter.json`.
@@ -252,12 +298,27 @@ pub struct PresenterStore {
     pub notes_font_size: f32,
     pub split_x: f32,
     pub split_y: f32,
+    /// `None` = automatic (open when the deck has speaker notes or Beamer notes, hidden otherwise).
+    pub show_notes: Option<bool>,
+    #[serde(default = "default_true")]
+    pub show_next: bool,
+    #[serde(default = "default_notes_width")]
+    pub notes_width: f32,
+    #[serde(default = "default_next_width")]
+    pub next_width: f32,
+    /// When true, puts Speaker notes on the right and Next slide on the left.
+    pub notes_on_right: bool,
+    /// When true, renders the presenter console in dark mode even while Lemmata is in light mode.
+    pub force_dark: bool,
     pub filmstrip: bool,
     pub swap_notes_half: bool,
-    /// 1-based slide number -> speaker notes text.
+    /// 1-based PDF slide number -> speaker notes text.
     pub notes: BTreeMap<usize, String>,
-    /// 1-based slide number -> drawn ink strokes.
+    /// 1-based PDF slide number -> drawn ink/highlighter strokes.
     pub annotations: BTreeMap<usize, Vec<StrokePath>>,
+    /// Inserted blank whiteboard slides (ordered by insertion, anchored after a PDF page).
+    #[serde(default)]
+    pub whiteboards: Vec<WhiteboardSlide>,
     /// True if an existing `.lemmata/presenter.json` failed to parse; prevents silent overwrite.
     #[serde(skip)]
     pub load_failed: bool,
@@ -271,10 +332,17 @@ impl Default for PresenterStore {
             notes_font_size: 16.0,
             split_x: 0.62,
             split_y: 0.42,
+            show_notes: None,
+            show_next: true,
+            notes_width: default_notes_width(),
+            next_width: default_next_width(),
+            notes_on_right: false,
+            force_dark: false,
             filmstrip: false,
             swap_notes_half: false,
             notes: BTreeMap::new(),
             annotations: BTreeMap::new(),
+            whiteboards: Vec::new(),
             load_failed: false,
         }
     }
@@ -298,6 +366,8 @@ impl PresenterStore {
         store.notes_font_size = store.notes_font_size.clamp(13.0, 28.0);
         store.split_x = store.split_x.clamp(0.38, 0.78);
         store.split_y = store.split_y.clamp(0.22, 0.72);
+        store.notes_width = store.notes_width.clamp(0.16, 0.40);
+        store.next_width = store.next_width.clamp(0.14, 0.36);
         store
     }
 
@@ -318,10 +388,56 @@ impl PresenterStore {
 
     pub fn annotated_slide_count(&self) -> usize {
         self.annotations.values().filter(|v| !v.is_empty()).count()
+            + self
+                .whiteboards
+                .iter()
+                .filter(|w| !w.strokes.is_empty())
+                .count()
     }
 
     pub fn has_any_custom_notes(&self) -> bool {
         self.notes.values().any(|s| !s.trim().is_empty())
+    }
+
+    /// Builds the ordered logical deck of PDF pages interleaved with inserted whiteboard slides.
+    pub fn build_deck(&self, pdf_pages: usize) -> Vec<DeckItem> {
+        let mut out = Vec::with_capacity(pdf_pages + self.whiteboards.len());
+        for wb in &self.whiteboards {
+            if wb.after_pdf_page == 0 {
+                out.push(DeckItem::Whiteboard(wb.id));
+            }
+        }
+        for page_idx in 0..pdf_pages {
+            out.push(DeckItem::Pdf(page_idx));
+            let pdf_num = page_idx + 1;
+            for wb in &self.whiteboards {
+                if wb.after_pdf_page == pdf_num {
+                    out.push(DeckItem::Whiteboard(wb.id));
+                }
+            }
+        }
+        // Any whiteboard anchored past the current PDF page count (e.g. after deck shortened)
+        // stays reachable at the end rather than disappearing.
+        if pdf_pages > 0 {
+            for wb in &self.whiteboards {
+                if wb.after_pdf_page > pdf_pages {
+                    out.push(DeckItem::Whiteboard(wb.id));
+                }
+            }
+        }
+        out
+    }
+
+    pub fn whiteboard(&self, id: usize) -> Option<&WhiteboardSlide> {
+        self.whiteboards.iter().find(|w| w.id == id)
+    }
+
+    pub fn whiteboard_mut(&mut self, id: usize) -> Option<&mut WhiteboardSlide> {
+        self.whiteboards.iter_mut().find(|w| w.id == id)
+    }
+
+    pub fn next_whiteboard_id(&self) -> usize {
+        self.whiteboards.iter().map(|w| w.id).max().unwrap_or(0) + 1
     }
 }
 
@@ -576,6 +692,7 @@ mod tests {
             vec![StrokePath {
                 color: PenColor::Crimson,
                 width: 0.005,
+                highlighter: false,
                 points: vec![[0.1, 0.2], [0.4, 0.5]],
             }],
         );

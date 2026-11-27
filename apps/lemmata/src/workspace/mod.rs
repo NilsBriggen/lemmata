@@ -1775,7 +1775,7 @@ impl Workspace {
         self.file_dialogs(&ctx, p, backend, settings);
         self.sheets(&ctx, p, settings, &mut action);
         if let Some(show) = &mut self.presentation {
-            let keep = show.show(&ctx);
+            let keep = show.show(&ctx, p);
             let pres_actions = show.take_actions();
             let mut export_req = None;
             for pa in pres_actions {

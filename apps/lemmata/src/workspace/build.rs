@@ -906,6 +906,7 @@ impl Workspace {
                         &bytes,
                         &store.annotations,
                         &store.notes,
+                        &store.whiteboards,
                         include_notes,
                         store.swap_notes_half,
                     )

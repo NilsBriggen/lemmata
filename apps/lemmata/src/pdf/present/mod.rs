@@ -1,18 +1,20 @@
-//! Presenting a Beamer PDF: full-screen audience stage (`show`) and studio-dark presenter
-//! console (`presenter_ui`) in a second egui viewport, sharing live slide state, laser/spotlight
-//! pointer, freehand ink annotations, editable speaker notes, and annotated PDF export.
+//! Presenting a Beamer PDF: full-screen audience stage (`show`) and themed presenter console
+//! (`presenter_ui`) in a second egui viewport, sharing live slide state, laser/spotlight pointer,
+//! freehand ink annotations, customizable panels, editable speaker notes, and annotated PDF export.
 
 pub mod data;
 pub mod export;
 mod stage;
 
 pub use data::{
-    PenColor, PresenterStore, Region, ScreenMode, StageTool, StrokePath, Timer, clamp_page,
-    extract_tex_notes, fit_scale, from_norm, has_notes_page, region_size, regions_swapped, to_norm,
+    DeckItem, PenColor, PresenterStore, Region, ScreenMode, StageTool, StrokePath, Timer,
+    WhiteboardSlide, clamp_page, extract_tex_notes, fit_scale, from_norm, has_notes_page,
+    region_size, regions_swapped, to_norm,
 };
 pub use export::export_annotated_pdf;
 
 use super::engine::{Done, Engine, Job, OutlineNode, Target};
+use crate::theme::{self, Palette};
 use eframe::egui::{
     self, Color32, Pos2, Rect, TextureHandle, Ui, ViewportBuilder, ViewportCommand, ViewportId,
     pos2, vec2,
@@ -74,17 +76,23 @@ pub struct Presentation {
     pub(crate) target_menu_open: bool,
     /// Save-annotated-PDF popover open.
     pub(crate) export_menu_open: bool,
+    /// View layout customization popover open (Speaker notes, Next slide, Filmstrip).
+    pub(crate) view_menu_open: bool,
+    /// Section / appendix quick-jump popover open.
+    pub(crate) sections_menu_open: bool,
     /// Inline slide-number jump editor open in presenter header.
     pub(crate) editing_slide_jump: bool,
     pub(crate) slide_jump_text: String,
     /// Inline speaker-notes editor open in presenter Notes card.
     pub(crate) editing_notes: bool,
-    /// Active stage tool (`L` laser, `S` spotlight, `D` pen).
+    /// Active stage tool (`L` laser, `S` spotlight, `Z` zoom, `D` pen, `U` highlighter).
     pub tool: StageTool,
     pub pen_color: PenColor,
     /// Active stroke currently being drawn (not yet committed to `store.annotations`).
     pub(crate) active_stroke: Option<StrokePath>,
-    /// Live laser / spotlight position in normalized slide coordinates + recent trail.
+    /// Starting normalized UV of the active stroke (for `Shift`-straight line snapping).
+    pub(crate) stroke_anchor_uv: Option<[f32; 2]>,
+    /// Live laser / spotlight / zoom position in normalized slide coordinates + recent trail.
     pub(crate) pointer_uv: Option<[f32; 2]>,
     pub(crate) pointer_at: Option<Instant>,
     pub(crate) pointer_source: Option<&'static str>,
@@ -93,6 +101,12 @@ pub struct Presentation {
     pub(crate) jump_digits: String,
     pub(crate) jump_at: Option<Instant>,
     pub(crate) timer: Timer,
+    /// When the presenter entered the current slide (for per-slide duration readout).
+    pub(crate) slide_entered_at: Instant,
+    /// Cumulative rehearsal seconds spent on each 1-based slide while the timer was running.
+    pub(crate) slide_timings: BTreeMap<usize, f64>,
+    /// Set when `go()` navigates to a new slide so the horizontal filmstrip centers it once.
+    pub(crate) filmstrip_scroll_pending: bool,
     /// Persistent presenter settings, per-slide notes, and per-slide annotations.
     pub store: PresenterStore,
     /// Read-only `.tex` `\note{...}` / `% NOTE:` fallback notes (never persisted unless edited).
@@ -155,12 +169,15 @@ impl Presentation {
             shortcuts_open: false,
             target_menu_open: false,
             export_menu_open: false,
+            view_menu_open: false,
+            sections_menu_open: false,
             editing_slide_jump: false,
             slide_jump_text: String::new(),
             editing_notes: false,
             tool: StageTool::None,
             pen_color: PenColor::Crimson,
             active_stroke: None,
+            stroke_anchor_uv: None,
             pointer_uv: None,
             pointer_at: None,
             pointer_source: None,
@@ -168,6 +185,9 @@ impl Presentation {
             jump_digits: String::new(),
             jump_at: None,
             timer: Timer::default(),
+            slide_entered_at: Instant::now(),
+            slide_timings: BTreeMap::new(),
+            filmstrip_scroll_pending: false,
             store,
             tex_notes,
             store_dirty: false,
@@ -178,15 +198,19 @@ impl Presentation {
         }
     }
 
-    /// Returns the active speaker note for 1-based `slide`: user-edited note in `store.notes`
-    /// takes precedence over read-only `.tex` `\note{}` fallback.
+    /// Returns the active speaker note for 1-based deck `slide`: user-edited note in `store.notes`
+    /// takes precedence over read-only `.tex` `\note{}` fallback. Whiteboard slides carry no notes.
     pub(crate) fn effective_note(&self, slide: usize) -> Option<&str> {
-        if let Some(custom) = self.store.notes.get(&slide) {
+        let pdf_num = match self.deck_item(slide)? {
+            DeckItem::Pdf(idx) => idx + 1,
+            DeckItem::Whiteboard(_) => return None,
+        };
+        if let Some(custom) = self.store.notes.get(&pdf_num) {
             let trimmed = custom.trim();
             (!trimmed.is_empty()).then_some(trimmed)
         } else {
             self.tex_notes
-                .get(&slide)
+                .get(&pdf_num)
                 .map(String::as_str)
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
@@ -203,7 +227,294 @@ impl Presentation {
     }
 
     pub(crate) fn current_slide_has_beamer_notes(&self) -> bool {
-        self.total() > 0 && self.page_regions(self.page - 1).1.is_some()
+        matches!(self.deck_item(self.page), Some(DeckItem::Pdf(idx)) if self.page_regions(idx).1.is_some())
+    }
+
+    /// Returns `"Edited"` when the slide has a custom saved note, `"From .tex"` when showing an
+    /// extracted `.tex` `\note{}` / `% NOTE:` fallback, or `None` when empty.
+    pub(crate) fn note_origin(&self, slide: usize) -> Option<&'static str> {
+        let DeckItem::Pdf(idx) = self.deck_item(slide)? else {
+            return None;
+        };
+        let pdf_num = idx + 1;
+        if self
+            .store
+            .notes
+            .get(&pdf_num)
+            .is_some_and(|s| !s.trim().is_empty())
+        {
+            Some("Edited")
+        } else if self
+            .tex_notes
+            .get(&pdf_num)
+            .is_some_and(|s| !s.trim().is_empty())
+        {
+            Some("From .tex")
+        } else {
+            None
+        }
+    }
+
+    /// True if `slide` has both a user override in `store.notes` and a `.tex` fallback note to
+    /// revert back to.
+    pub(crate) fn can_reset_note_to_tex(&self, slide: usize) -> bool {
+        let Some(DeckItem::Pdf(idx)) = self.deck_item(slide) else {
+            return false;
+        };
+        let pdf_num = idx + 1;
+        self.store.notes.contains_key(&pdf_num)
+            && self
+                .tex_notes
+                .get(&pdf_num)
+                .is_some_and(|s| !s.trim().is_empty())
+    }
+
+    /// Ordered logical deck interleaving PDF pages and inserted blank whiteboard slides.
+    pub(crate) fn deck_items(&self) -> Vec<DeckItem> {
+        self.store.build_deck(self.sizes.len())
+    }
+
+    /// 1-based lookup into the logical deck.
+    pub(crate) fn deck_item(&self, slide_num: usize) -> Option<DeckItem> {
+        slide_num
+            .checked_sub(1)
+            .and_then(|idx| self.deck_items().into_iter().nth(idx))
+    }
+
+    pub(crate) fn current_pdf_page(&self) -> Option<usize> {
+        match self.deck_item(self.page)? {
+            DeckItem::Pdf(idx) => Some(idx + 1),
+            DeckItem::Whiteboard(_) => None,
+        }
+    }
+
+    pub(crate) fn current_whiteboard_id(&self) -> Option<usize> {
+        match self.deck_item(self.page)? {
+            DeckItem::Whiteboard(id) => Some(id),
+            DeckItem::Pdf(_) => None,
+        }
+    }
+
+    /// Maps a 1-based PDF page number to its 1-based position in the logical deck.
+    pub(crate) fn deck_index_for_pdf_page(&self, pdf_page_1based: usize) -> Option<usize> {
+        let target = pdf_page_1based.checked_sub(1)?;
+        self.deck_items()
+            .into_iter()
+            .position(|it| it == DeckItem::Pdf(target))
+            .map(|i| i + 1)
+    }
+
+    /// Inserts a fresh blank whiteboard slide immediately after the current slide, switches to it,
+    /// and arms the Pen tool so the presenter can start writing at once.
+    pub(crate) fn insert_whiteboard_after_current(&mut self) {
+        self.finish_active_stroke();
+        let after_pdf_page = match self.deck_item(self.page) {
+            Some(DeckItem::Pdf(idx)) => idx + 1,
+            Some(DeckItem::Whiteboard(id)) => self
+                .store
+                .whiteboard(id)
+                .map_or(self.sizes.len(), |w| w.after_pdf_page),
+            None => 0,
+        };
+        let id = self.store.next_whiteboard_id();
+        self.store.whiteboards.push(WhiteboardSlide {
+            id,
+            after_pdf_page,
+            grid: false,
+            strokes: Vec::new(),
+        });
+        let new_slide = self
+            .deck_items()
+            .into_iter()
+            .position(|it| it == DeckItem::Whiteboard(id))
+            .map_or(self.page, |i| i + 1);
+        self.store_dirty = true;
+        self.dirty_for_export = true;
+        self.overview = false;
+        self.view_menu_open = false;
+        self.go(new_slide as f64);
+        if !matches!(self.tool, StageTool::Pen | StageTool::Highlighter) {
+            self.tool = StageTool::Pen;
+        }
+        self.set_status("Added blank whiteboard slide");
+    }
+
+    /// Removes an inserted whiteboard slide cleanly and keeps the active page clamped.
+    pub(crate) fn remove_whiteboard(&mut self, id: usize) {
+        self.finish_active_stroke();
+        let before_len = self.store.whiteboards.len();
+        self.store.whiteboards.retain(|w| w.id != id);
+        if self.store.whiteboards.len() != before_len {
+            let new_total = self.total();
+            self.page = self.page.min(new_total.max(1));
+            if let Some(fp) = self.frozen_page {
+                self.frozen_page = Some(fp.min(new_total.max(1)));
+            }
+            self.store_dirty = true;
+            self.dirty_for_export = true;
+            self.set_status("Removed whiteboard slide");
+        }
+    }
+
+    pub(crate) fn toggle_whiteboard_grid(&mut self, id: usize) {
+        if let Some(wb) = self.store.whiteboard_mut(id) {
+            wb.grid = !wb.grid;
+            self.store_dirty = true;
+            self.dirty_for_export = true;
+        }
+    }
+
+    pub(crate) fn has_strokes_on_slide(&self, slide_num: usize) -> bool {
+        match self.deck_item(slide_num) {
+            Some(DeckItem::Pdf(idx)) => self
+                .store
+                .annotations
+                .get(&(idx + 1))
+                .is_some_and(|v| !v.is_empty()),
+            Some(DeckItem::Whiteboard(id)) => self
+                .store
+                .whiteboard(id)
+                .is_some_and(|w| !w.strokes.is_empty()),
+            None => false,
+        }
+    }
+
+    fn commit_stroke_on_slide(&mut self, slide_num: usize, stroke: StrokePath) {
+        if stroke.points.is_empty() {
+            return;
+        }
+        match self.deck_item(slide_num) {
+            Some(DeckItem::Pdf(idx)) => {
+                self.store
+                    .annotations
+                    .entry(idx + 1)
+                    .or_default()
+                    .push(stroke);
+            }
+            Some(DeckItem::Whiteboard(id)) => {
+                if let Some(wb) = self.store.whiteboard_mut(id) {
+                    wb.strokes.push(stroke);
+                }
+            }
+            None => return,
+        }
+        self.store_dirty = true;
+        self.dirty_for_export = true;
+    }
+
+    /// Returns `(1-based deck slide, section title)` for every PDF outline bookmark.
+    pub(crate) fn deck_sections(&self) -> Vec<(usize, &str)> {
+        self.sections
+            .iter()
+            .filter_map(|(&pdf_page, title)| {
+                self.deck_index_for_pdf_page(pdf_page)
+                    .map(|deck_slide| (deck_slide, title.as_str()))
+            })
+            .collect()
+    }
+
+    /// Active section title for any 1-based deck slide (including whiteboards inside a section).
+    pub(crate) fn section_for_deck(&self, slide_num: usize) -> Option<&str> {
+        let pdf_num = match self.deck_item(slide_num)? {
+            DeckItem::Pdf(idx) => idx + 1,
+            DeckItem::Whiteboard(id) => self.store.whiteboard(id)?.after_pdf_page,
+        };
+        if pdf_num == 0 {
+            return None;
+        }
+        self.section_for(pdf_num)
+    }
+
+    /// Jumps to the next (`dir > 0`) or previous (`dir < 0`) PDF outline section.
+    pub(crate) fn jump_section(&mut self, dir: isize) {
+        let secs = self.deck_sections();
+        if secs.is_empty() {
+            return;
+        }
+        let target = if dir > 0 {
+            secs.iter().find(|&&(s, _)| s > self.page).map(|&(s, _)| s)
+        } else {
+            secs.iter().rfind(|&&(s, _)| s < self.page).map(|&(s, _)| s)
+        };
+        if let Some(slide) = target {
+            self.go(slide as f64);
+        }
+    }
+
+    /// Flushes elapsed seconds on `self.page` into `slide_timings` while the timer is running.
+    pub(crate) fn record_current_slide_time(&mut self) {
+        if self.timer.running {
+            let dt = self.slide_entered_at.elapsed().as_secs_f64();
+            if dt > 0.0 {
+                *self.slide_timings.entry(self.page).or_insert(0.0) += dt;
+            }
+        }
+        self.slide_entered_at = Instant::now();
+    }
+
+    pub(crate) fn toggle_timer(&mut self) {
+        self.record_current_slide_time();
+        self.timer.toggle();
+        self.slide_entered_at = Instant::now();
+    }
+
+    pub(crate) fn reset_timer(&mut self) {
+        self.timer.reset();
+        self.slide_timings.clear();
+        self.slide_entered_at = Instant::now();
+    }
+
+    /// Total seconds spent on 1-based deck `slide_num` during this session.
+    pub(crate) fn slide_elapsed(&self, slide_num: usize) -> f64 {
+        let saved = self.slide_timings.get(&slide_num).copied().unwrap_or(0.0);
+        if slide_num == self.page && self.timer.running {
+            saved + self.slide_entered_at.elapsed().as_secs_f64()
+        } else {
+            saved
+        }
+    }
+
+    /// Top `limit` slides by cumulative rehearsal time (only includes slides with >= 1s).
+    pub(crate) fn slowest_slides(&self, limit: usize) -> Vec<(usize, f64)> {
+        let total = self.total();
+        let mut list: Vec<(usize, f64)> = (1..=total)
+            .filter_map(|s| {
+                let t = self.slide_elapsed(s);
+                (t >= 1.0).then_some((s, t))
+            })
+            .collect();
+        list.sort_by(|a, b| b.1.total_cmp(&a.1));
+        list.truncate(limit);
+        list
+    }
+
+    /// Resolves the presenter console palette: respects `store.force_dark` auditorium override,
+    /// otherwise follows Lemmata's active app theme.
+    pub(crate) fn effective_palette<'a>(&self, app_pal: &'a Palette) -> &'a Palette {
+        if self.store.force_dark {
+            &theme::DARK
+        } else {
+            app_pal
+        }
+    }
+
+    /// True if the Speaker notes panel should be shown right now: respects explicit user toggle
+    /// in `store.show_notes`, otherwise auto-shows only when the deck has notes or Beamer notes.
+    pub(crate) fn notes_visible(&self) -> bool {
+        self.store.show_notes.unwrap_or_else(|| {
+            self.has_any_notes
+                || self.store.has_any_custom_notes()
+                || self.tex_notes.values().any(|s| !s.trim().is_empty())
+        })
+    }
+
+    pub(crate) fn toggle_notes_panel(&mut self) {
+        let next = !self.notes_visible();
+        self.store.show_notes = Some(next);
+        if !next {
+            self.editing_notes = false;
+        }
+        self.store_dirty = true;
     }
 
     /// Closes the presenter console viewport and resets all presenter-only transient states.
@@ -214,6 +525,8 @@ impl Presentation {
         self.editing_slide_jump = false;
         self.target_menu_open = false;
         self.export_menu_open = false;
+        self.view_menu_open = false;
+        self.sections_menu_open = false;
         if self.pointer_source == Some("presenter-stage") {
             self.pointer_uv = None;
             self.pointer_at = None;
@@ -272,7 +585,7 @@ impl Presentation {
     }
 
     pub fn total(&self) -> usize {
-        self.sizes.len()
+        self.sizes.len() + self.store.whiteboards.len()
     }
 
     pub(crate) fn set_screen(&mut self, mode: ScreenMode) {
@@ -313,7 +626,10 @@ impl Presentation {
         } else {
             tool
         };
-        if !matches!(self.tool, StageTool::Laser | StageTool::Spotlight) {
+        if !matches!(
+            self.tool,
+            StageTool::Laser | StageTool::Spotlight | StageTool::Zoom
+        ) {
             self.pointer_uv = None;
             self.pointer_at = None;
             self.pointer_source = None;
@@ -322,36 +638,58 @@ impl Presentation {
     }
 
     pub(crate) fn undo_stroke(&mut self) {
-        let slide = self.page;
-        if let Some(list) = self.store.annotations.get_mut(&slide)
-            && list.pop().is_some()
-        {
-            if list.is_empty() {
-                self.store.annotations.remove(&slide);
+        match self.deck_item(self.page) {
+            Some(DeckItem::Pdf(idx)) => {
+                let slide = idx + 1;
+                if let Some(list) = self.store.annotations.get_mut(&slide)
+                    && list.pop().is_some()
+                {
+                    if list.is_empty() {
+                        self.store.annotations.remove(&slide);
+                    }
+                    self.store_dirty = true;
+                    self.dirty_for_export = true;
+                }
             }
-            self.store_dirty = true;
-            self.dirty_for_export = true;
+            Some(DeckItem::Whiteboard(id)) => {
+                if let Some(wb) = self.store.whiteboard_mut(id)
+                    && wb.strokes.pop().is_some()
+                {
+                    self.store_dirty = true;
+                    self.dirty_for_export = true;
+                }
+            }
+            None => {}
         }
     }
 
     pub(crate) fn clear_slide_strokes(&mut self) {
-        if self.store.annotations.remove(&self.page).is_some() {
-            self.store_dirty = true;
-            self.dirty_for_export = true;
+        match self.deck_item(self.page) {
+            Some(DeckItem::Pdf(idx)) => {
+                if self.store.annotations.remove(&(idx + 1)).is_some() {
+                    self.store_dirty = true;
+                    self.dirty_for_export = true;
+                }
+            }
+            Some(DeckItem::Whiteboard(id)) => {
+                if let Some(wb) = self.store.whiteboard_mut(id)
+                    && !wb.strokes.is_empty()
+                {
+                    wb.strokes.clear();
+                    self.store_dirty = true;
+                    self.dirty_for_export = true;
+                }
+            }
+            None => {}
         }
     }
 
     pub(crate) fn finish_active_stroke(&mut self) {
+        self.stroke_anchor_uv = None;
         if let Some(stroke) = self.active_stroke.take()
             && !stroke.points.is_empty()
         {
-            self.store
-                .annotations
-                .entry(self.page)
-                .or_default()
-                .push(stroke);
-            self.store_dirty = true;
-            self.dirty_for_export = true;
+            self.commit_stroke_on_slide(self.page, stroke);
         }
     }
 
@@ -364,12 +702,15 @@ impl Presentation {
         }
     }
 
-    /// Navigates to 1-based slide `to`, starting the timer on the first slide change.
+    /// Navigates to 1-based deck slide `to`, starting the timer on the first slide change.
     pub(crate) fn go(&mut self, to: f64) {
         self.finish_active_stroke();
         let target = clamp_page(to, self.total());
         if target != self.page {
+            self.record_current_slide_time();
             self.page = target;
+            self.slide_entered_at = Instant::now();
+            self.filmstrip_scroll_pending = true;
             self.editing_notes = false;
             self.editing_slide_jump = false;
             if self.timer.started.is_none() {
@@ -480,14 +821,20 @@ impl Presentation {
         });
         ui.painter().add(
             egui::Shadow {
-                offset: [0, 6],
-                blur: 22,
+                offset: [0, 3],
+                blur: 10,
                 spread: 0,
-                color: Color32::from_black_alpha(120),
+                color: Color32::from_black_alpha(44),
             }
             .as_shape(at, 2),
         );
         ui.painter().rect_filled(at, 2, Color32::WHITE);
+        ui.painter().rect_stroke(
+            at,
+            2,
+            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(16, 24, 32, 22)),
+            egui::StrokeKind::Inside,
+        );
         if let Some(t) = tex {
             let u0 = x / size.x;
             let u1 = (x + w) / size.x;
@@ -501,7 +848,83 @@ impl Presentation {
         Some(at)
     }
 
-    /// Updates laser/spotlight/pen interaction on a displayed slide rectangle.
+    /// Draws either a PDF slide or an inserted blank whiteboard slide for 1-based deck `slide_num`.
+    /// Returns `(slide_rect, slide_region)` on screen.
+    pub(crate) fn draw_deck_item(
+        &mut self,
+        ui: &Ui,
+        rect: Rect,
+        slide_num: usize,
+    ) -> Option<(Rect, Region)> {
+        match self.deck_item(slide_num)? {
+            DeckItem::Pdf(page_idx) => {
+                let (slide, _) = self.page_regions(page_idx);
+                self.draw(ui, rect, page_idx, slide).map(|sr| (sr, slide))
+            }
+            DeckItem::Whiteboard(id) => {
+                let grid = self.store.whiteboard(id).is_some_and(|w| w.grid);
+                self.draw_whiteboard(ui, rect, grid)
+                    .map(|sr| (sr, Region::Full))
+            }
+        }
+    }
+
+    /// Paints a blank drawable whiteboard slide matching the deck's aspect ratio, with optional
+    /// subtle coordinate grid lines for neat derivations and diagrams.
+    fn draw_whiteboard(&self, ui: &Ui, rect: Rect, grid: bool) -> Option<Rect> {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return None;
+        }
+        let (w, h) = self
+            .sizes
+            .first()
+            .map(|s| {
+                let (r, _) = regions_swapped(s.x, s.y, self.store.swap_notes_half);
+                let (rw, rh, _) = region_size(s.x, s.y, r);
+                (rw, rh)
+            })
+            .filter(|&(w, h)| w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0)
+            .unwrap_or((455.0, 256.0));
+        let k = fit_scale(w, h, rect.width(), rect.height());
+        if k <= 0.0 || !k.is_finite() {
+            return None;
+        }
+        let at = Rect::from_center_size(rect.center(), vec2(w * k, h * k));
+        ui.painter().add(
+            egui::Shadow {
+                offset: [0, 3],
+                blur: 10,
+                spread: 0,
+                color: Color32::from_black_alpha(44),
+            }
+            .as_shape(at, 2),
+        );
+        ui.painter().rect_filled(at, 2, Color32::WHITE);
+        if grid && at.width() >= 48.0 && at.height() >= 36.0 {
+            let p = ui.painter().with_clip_rect(at);
+            let step = (at.height() / 14.0).clamp(12.0, 34.0);
+            let stroke = egui::Stroke::new(0.8, Color32::from_rgba_unmultiplied(42, 113, 164, 34));
+            let mut x = at.left() + step;
+            while x < at.right() - 1.0 {
+                p.vline(x, at.y_range(), stroke);
+                x += step;
+            }
+            let mut y = at.top() + step;
+            while y < at.bottom() - 1.0 {
+                p.hline(at.x_range(), y, stroke);
+                y += step;
+            }
+        }
+        ui.painter().rect_stroke(
+            at,
+            2,
+            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(16, 24, 32, 22)),
+            egui::StrokeKind::Inside,
+        );
+        Some(at)
+    }
+
+    /// Updates laser/spotlight/zoom/pen/highlighter interaction on a displayed slide rectangle.
     /// Returns `true` if the pointer was consumed by a drawing/stage tool.
     pub(crate) fn interact_stage(
         &mut self,
@@ -515,13 +938,15 @@ impl Presentation {
             return false;
         }
         let sense = match self.tool {
-            StageTool::Laser | StageTool::Spotlight => egui::Sense::click_and_drag(),
-            StageTool::Pen if allow_draw => egui::Sense::click_and_drag(),
+            StageTool::Laser | StageTool::Spotlight | StageTool::Zoom => {
+                egui::Sense::click_and_drag()
+            }
+            StageTool::Pen | StageTool::Highlighter if allow_draw => egui::Sense::click_and_drag(),
             _ => egui::Sense::hover(),
         };
         let resp = ui.interact(slide_rect, ui.scope_id().with(id_salt), sense);
         match self.tool {
-            StageTool::Laser | StageTool::Spotlight => {
+            StageTool::Laser | StageTool::Spotlight | StageTool::Zoom => {
                 let active_pos = if resp.is_pointer_button_down_on() || resp.dragged() {
                     resp.interact_pointer_pos()
                         .or_else(|| ui.input(|i| i.pointer.latest_pos()))
@@ -550,24 +975,46 @@ impl Presentation {
                         self.pointer_source = None;
                     }
                     if resp.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                        ui.ctx().set_cursor_icon(if self.tool == StageTool::Zoom {
+                            egui::CursorIcon::ZoomIn
+                        } else {
+                            egui::CursorIcon::Crosshair
+                        });
                     }
                 }
                 true
             }
-            StageTool::Pen if allow_draw => {
+            StageTool::Pen | StageTool::Highlighter if allow_draw => {
+                let is_hl = self.tool == StageTool::Highlighter;
+                let width = if is_hl { 0.022 } else { 0.0055 };
+                let shift_held = ui.input(|i| i.modifiers.shift);
                 if resp.hovered() || resp.dragged() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                 }
                 if resp.drag_started() {
-                    if let Some(uv) = resp
+                    let origin = ui
+                        .input(|i| i.pointer.press_origin())
+                        .and_then(|p| to_norm(p, slide_rect));
+                    let cur = resp
                         .interact_pointer_pos()
-                        .and_then(|p| to_norm(p, slide_rect))
-                    {
+                        .and_then(|p| to_norm(p, slide_rect));
+                    if let Some(anchor) = origin.or(cur) {
+                        self.stroke_anchor_uv = Some(anchor);
+                        let mut pts = vec![anchor];
+                        if let Some(uv) = cur
+                            && uv != anchor
+                        {
+                            pts.push(if shift_held {
+                                snap_straight_line(anchor, uv, slide_rect)
+                            } else {
+                                uv
+                            });
+                        }
                         self.active_stroke = Some(StrokePath {
                             color: self.pen_color,
-                            width: 0.0055,
-                            points: vec![uv],
+                            width,
+                            highlighter: is_hl,
+                            points: pts,
                         });
                     }
                 } else if resp.dragged() {
@@ -575,48 +1022,50 @@ impl Presentation {
                         .interact_pointer_pos()
                         .and_then(|p| to_norm(p, slide_rect))
                     {
+                        let anchor = *self.stroke_anchor_uv.get_or_insert(uv);
                         let stroke = self.active_stroke.get_or_insert_with(|| StrokePath {
                             color: self.pen_color,
-                            width: 0.0055,
+                            width,
+                            highlighter: is_hl,
                             points: Vec::new(),
                         });
-                        let push = stroke.points.last().is_none_or(|last| {
-                            let dx = last[0] - uv[0];
-                            let dy = last[1] - uv[1];
-                            dx * dx + dy * dy > 0.000012
-                        });
-                        if push {
-                            stroke.points.push(uv);
+                        if shift_held {
+                            let snapped = snap_straight_line(anchor, uv, slide_rect);
+                            stroke.points.clear();
+                            stroke.points.push(anchor);
+                            stroke.points.push(snapped);
+                        } else {
+                            let push = stroke.points.last().is_none_or(|last| {
+                                let dx = last[0] - uv[0];
+                                let dy = last[1] - uv[1];
+                                dx * dx + dy * dy > 0.000012
+                            });
+                            if push {
+                                stroke.points.push(uv);
+                            }
                         }
                     }
                 } else if resp.drag_stopped() {
+                    self.stroke_anchor_uv = None;
                     if let Some(stroke) = self.active_stroke.take()
                         && !stroke.points.is_empty()
                     {
-                        self.store
-                            .annotations
-                            .entry(slide_num)
-                            .or_default()
-                            .push(stroke);
-                        self.store_dirty = true;
-                        self.dirty_for_export = true;
+                        self.commit_stroke_on_slide(slide_num, stroke);
                     }
                 } else if resp.clicked()
                     && let Some(uv) = resp
                         .interact_pointer_pos()
                         .and_then(|p| to_norm(p, slide_rect))
                 {
-                    self.store
-                        .annotations
-                        .entry(slide_num)
-                        .or_default()
-                        .push(StrokePath {
+                    self.commit_stroke_on_slide(
+                        slide_num,
+                        StrokePath {
                             color: self.pen_color,
-                            width: 0.0055,
+                            width,
+                            highlighter: is_hl,
                             points: vec![uv],
-                        });
-                    self.store_dirty = true;
-                    self.dirty_for_export = true;
+                        },
+                    );
                 }
                 true
             }
@@ -624,8 +1073,8 @@ impl Presentation {
         }
     }
 
-    /// Paints persisted strokes, active drawing stroke, and live laser/spotlight overlay onto
-    /// `slide_rect` for 1-based `slide_num`.
+    /// Paints persisted strokes, active drawing stroke, and live laser/spotlight/zoom overlay onto
+    /// `slide_rect` for 1-based deck `slide_num`.
     pub(crate) fn paint_overlays(
         &mut self,
         ui: &Ui,
@@ -634,11 +1083,24 @@ impl Presentation {
         show_live_pointer: bool,
     ) {
         let painter = ui.painter().with_clip_rect(slide_rect);
-        // 1. Committed strokes for this slide.
-        if let Some(strokes) = self.store.annotations.get(&slide_num) {
-            for s in strokes {
-                paint_stroke(&painter, slide_rect, s);
+        let item = self.deck_item(slide_num);
+        // 1. Committed strokes for this slide (PDF page or Whiteboard).
+        match item {
+            Some(DeckItem::Pdf(idx)) => {
+                if let Some(strokes) = self.store.annotations.get(&(idx + 1)) {
+                    for s in strokes {
+                        paint_stroke(&painter, slide_rect, s);
+                    }
+                }
             }
+            Some(DeckItem::Whiteboard(id)) => {
+                if let Some(wb) = self.store.whiteboard(id) {
+                    for s in &wb.strokes {
+                        paint_stroke(&painter, slide_rect, s);
+                    }
+                }
+            }
+            None => {}
         }
         // 2. Active stroke being drawn on this slide.
         if slide_num == self.page
@@ -672,7 +1134,7 @@ impl Presentation {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
-        // 3. Laser trail (fades smoothly right after button release) & active Laser / Spotlight.
+        // 3. Laser trail (fades smoothly right after button release) & active Laser / Spotlight / Zoom.
         if self.tool == StageTool::Laser && self.laser_trail.len() >= 2 {
             let pts: Vec<(Pos2, f32)> = self
                 .laser_trail
@@ -698,7 +1160,6 @@ impl Presentation {
             let center = from_norm(uv, slide_rect);
             match self.tool {
                 StageTool::Laser => {
-                    // Outer halo + crisp hot core.
                     let r = (slide_rect.height() * 0.014).clamp(6.0, 14.0);
                     painter.circle_filled(
                         center,
@@ -717,8 +1178,6 @@ impl Presentation {
                     );
                 }
                 StageTool::Spotlight => {
-                    // Focused circular spotlight cutout via exact triangle-strip annulus mesh
-                    // (immune to thick-stroke tessellation artifacts).
                     let radius = (slide_rect.height() * 0.085).clamp(24.0, 76.0);
                     let outer_r = slide_rect.width().hypot(slide_rect.height()) + 4.0;
                     let scrim = Color32::from_rgba_unmultiplied(5, 8, 12, 165);
@@ -759,24 +1218,135 @@ impl Presentation {
                         ),
                     );
                 }
+                StageTool::Zoom => {
+                    self.paint_zoom_lens(ui, slide_rect, item, uv);
+                }
                 _ => {}
             }
         }
     }
 
+    /// Paints a synced 2.4x magnifier lens centered on `uv` (clamped neatly inside `slide_rect`),
+    /// requesting a high-resolution PDF texture so magnified plots and equations stay sharp.
+    fn paint_zoom_lens(&mut self, ui: &Ui, slide_rect: Rect, item: Option<DeckItem>, uv: [f32; 2]) {
+        let zoom = 2.4_f32;
+        let lens_w = (slide_rect.width() * 0.36).clamp(110.0, 340.0);
+        let lens_h = (slide_rect.height() * 0.36).clamp(84.0, 240.0);
+        if slide_rect.width() < lens_w * 0.8 || slide_rect.height() < lens_h * 0.8 {
+            return;
+        }
+        let target = from_norm(uv, slide_rect);
+        let half = vec2(lens_w * 0.5, lens_h * 0.5);
+        let cx = target.x.clamp(
+            slide_rect.left() + half.x + 4.0,
+            (slide_rect.right() - half.x - 4.0).max(slide_rect.left() + half.x + 4.0),
+        );
+        let cy = target.y.clamp(
+            slide_rect.top() + half.y + 4.0,
+            (slide_rect.bottom() - half.y - 4.0).max(slide_rect.top() + half.y + 4.0),
+        );
+        let lens = Rect::from_center_size(pos2(cx, cy), vec2(lens_w, lens_h));
+        let rad = egui::CornerRadius::same(12);
+
+        // Request a sharper 2.4x render of the PDF page so fine print stays razor sharp.
+        let mut tex_and_region: Option<(egui::TextureId, f32, f32)> = None;
+        if let Some(DeckItem::Pdf(page_idx)) = item
+            && let Some(&size) = self.sizes.get(page_idx)
+            && size.x > 0.0
+            && size.y > 0.0
+        {
+            let (region, _) = self.page_regions(page_idx);
+            let (rw, rh, rx) = region_size(size.x, size.y, region);
+            let k = fit_scale(rw, rh, slide_rect.width(), slide_rect.height());
+            let hi_scale = (k * zoom * ui.ctx().pixels_per_point()).clamp(0.5, 6.0);
+            let key = (page_idx, scale_key(hi_scale));
+            if !self.tex.contains_key(&key) && self.asked.insert(key) {
+                self.engine.send(Job::Render {
+                    doc: self.doc,
+                    page: page_idx,
+                    scale: key.1 as f32 / 16.0,
+                    dark: false,
+                    epoch: None,
+                    thumb: false,
+                });
+            }
+            if let Some(t) = self.tex.get(&key).map(|(t, _)| t).or_else(|| {
+                self.tex
+                    .iter()
+                    .filter(|(k, _)| k.0 == page_idx)
+                    .max_by_key(|(k, _)| k.1)
+                    .map(|(_, (t, _))| t)
+            }) {
+                tex_and_region = Some((t.id(), rx / size.x, rw / size.x));
+            }
+        }
+
+        let painter = ui.painter().with_clip_rect(slide_rect);
+        painter.add(
+            egui::Shadow {
+                offset: [0, 8],
+                blur: 24,
+                spread: 0,
+                color: Color32::from_black_alpha(120),
+            }
+            .as_shape(lens, rad),
+        );
+        painter.rect_filled(lens, rad, Color32::WHITE);
+
+        // Compute virtual zoomed slide rectangle aligned so `uv` maps to `lens.center()`.
+        let z_size = slide_rect.size() * zoom;
+        let z_min = lens.center() - vec2(uv[0] * z_size.x, uv[1] * z_size.y);
+        let z_slide = Rect::from_min_size(z_min, z_size);
+        let lens_clip = ui.painter().with_clip_rect(lens.shrink(1.5));
+
+        if let Some((tex_id, u_start, u_span)) = tex_and_region {
+            lens_clip.image(
+                tex_id,
+                z_slide,
+                Rect::from_min_max(pos2(u_start, 0.0), pos2(u_start + u_span, 1.0)),
+                Color32::WHITE,
+            );
+        }
+        // Magnify committed annotations inside the lens too.
+        match item {
+            Some(DeckItem::Pdf(idx)) => {
+                if let Some(strokes) = self.store.annotations.get(&(idx + 1)) {
+                    for s in strokes {
+                        paint_stroke(&lens_clip, z_slide, s);
+                    }
+                }
+            }
+            Some(DeckItem::Whiteboard(id)) => {
+                if let Some(wb) = self.store.whiteboard(id) {
+                    for s in &wb.strokes {
+                        paint_stroke(&lens_clip, z_slide, s);
+                    }
+                }
+            }
+            None => {}
+        }
+
+        painter.rect_stroke(
+            lens,
+            rad,
+            egui::Stroke::new(2.0, Color32::from_rgb(0x2a, 0x71, 0xa4)),
+            egui::StrokeKind::Inside,
+        );
+    }
+
     /// One frame of the presentation (audience window + optional presenter viewport).
     /// Returns `false` when the presentation has ended.
-    pub fn show(&mut self, ctx: &egui::Context) -> bool {
+    pub fn show(&mut self, ctx: &egui::Context, pal: &Palette) -> bool {
         self.receive(ctx);
         if !self.entered {
             self.entered = true;
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
         }
         let mut keep = self.keys(ctx, false);
-        stage::audience_ui(self, ctx, &mut keep);
+        stage::audience_ui(self, ctx, pal, &mut keep);
 
         if self.presenter && keep {
-            keep = self.presenter_window(ctx);
+            keep = self.presenter_window(ctx, pal);
         }
         self.flush_store();
 
@@ -792,7 +1362,7 @@ impl Presentation {
     }
 
     /// The presenter's independent window. Returns `false` when the presentation should end.
-    fn presenter_window(&mut self, ctx: &egui::Context) -> bool {
+    fn presenter_window(&mut self, ctx: &egui::Context, pal: &Palette) -> bool {
         let mut keep = true;
         ctx.show_viewport_immediate(
             ViewportId::from_hash_of("presenter"),
@@ -808,13 +1378,15 @@ impl Presentation {
                     self.presenter_fullscreen_dirty = false;
                     ctx.send_viewport_cmd(ViewportCommand::Fullscreen(self.presenter_fullscreen));
                 }
+                let eff_pal = self.effective_palette(pal);
+                theme::apply(ctx, eff_pal);
                 if !self.keys(ctx, true) {
                     keep = false;
                 }
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::new().fill(stage::BG))
+                    .frame(egui::Frame::new().fill(eff_pal.app))
                     .show(ctx, |ui| {
-                        if !self.presenter_ui(ui) {
+                        if !self.presenter_ui(ui, pal) {
                             keep = false;
                         }
                     });
@@ -824,20 +1396,29 @@ impl Presentation {
     }
 
     /// Renders the presenter console inside `ui`. Returns `false` when the user ends the show.
-    pub(crate) fn presenter_ui(&mut self, ui: &mut Ui) -> bool {
-        stage::presenter_ui(self, ui)
+    pub(crate) fn presenter_ui(&mut self, ui: &mut Ui, pal: &Palette) -> bool {
+        stage::presenter_ui(self, ui, pal)
     }
 
     /// Shared keyboard handler for both audience and presenter windows.
     /// Returns `false` on `Esc` when no overlay or blanking state is active.
     pub(crate) fn keys(&mut self, ctx: &egui::Context, presenter: bool) -> bool {
-        // Clear hidden notes-editing mode if overview or Beamer second-screen notes replaced it.
-        if self.editing_notes && (self.overview || self.current_slide_has_beamer_notes()) {
+        // Clear hidden notes-editing mode if overview, hidden notes panel, or Beamer second-screen
+        // notes replaced it.
+        if self.editing_notes
+            && (self.overview || !self.notes_visible() || self.current_slide_has_beamer_notes())
+        {
             self.editing_notes = false;
         }
-        // When typing inside inline speaker notes or slide-jump text box, only Escape exits editing.
+        // When typing inside inline speaker notes or slide-jump text box, Escape or Cmd/Ctrl+Enter
+        // exits editing cleanly.
         if presenter && (self.editing_notes || self.editing_slide_jump) {
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            let exit = ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                    || (self.editing_notes
+                        && i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter))
+            });
+            if exit {
                 self.editing_notes = false;
                 self.editing_slide_jump = false;
             }
@@ -845,7 +1426,12 @@ impl Presentation {
         }
         // While shortcuts overlay or a popover menu is open, block all underlying stage shortcuts
         // so keys cannot mutate slides/tools/blanking behind the overlay.
-        if self.shortcuts_open || self.target_menu_open || self.export_menu_open {
+        if self.shortcuts_open
+            || self.target_menu_open
+            || self.export_menu_open
+            || self.view_menu_open
+            || self.sections_menu_open
+        {
             let (esc, toggle_help) = ctx.input_mut(|i| {
                 use egui::{Key, Modifiers};
                 let esc = i.consume_key(Modifiers::NONE, Key::Escape);
@@ -861,6 +1447,8 @@ impl Presentation {
                 } else {
                     self.target_menu_open = false;
                     self.export_menu_open = false;
+                    self.view_menu_open = false;
+                    self.sections_menu_open = false;
                 }
             }
             return true;
@@ -874,6 +1462,8 @@ impl Presentation {
         }
         let mut next = false;
         let mut back = false;
+        let mut next_section = false;
+        let mut prev_section = false;
         let mut keep = true;
         let mut enter = false;
         let mut digit: Option<char> = None;
@@ -883,10 +1473,14 @@ impl Presentation {
         let mut toggle_freeze = false;
         let mut toggle_overview = false;
         let mut toggle_filmstrip = false;
+        let mut toggle_notes = false;
         let mut toggle_shortcuts = false;
         let mut toggle_laser = false;
         let mut toggle_spotlight = false;
+        let mut toggle_zoom = false;
         let mut toggle_pen = false;
+        let mut toggle_highlighter = false;
+        let mut insert_whiteboard = false;
         let mut clear_strokes = false;
         let mut undo_stroke = false;
         let total = self.total();
@@ -912,6 +1506,12 @@ impl Presentation {
             if i.consume_key(Modifiers::COMMAND, Key::Z) {
                 undo_stroke = true;
             }
+            if i.consume_key(Modifiers::SHIFT, Key::ArrowRight) {
+                next_section = true;
+            }
+            if i.consume_key(Modifiers::SHIFT, Key::ArrowLeft) {
+                prev_section = true;
+            }
             if i.consume_key(Modifiers::NONE, Key::B) || i.consume_key(Modifiers::NONE, Key::Period)
             {
                 toggle_blackout = true;
@@ -928,14 +1528,26 @@ impl Presentation {
             if presenter && i.consume_key(Modifiers::NONE, Key::M) {
                 toggle_filmstrip = true;
             }
+            if presenter && i.consume_key(Modifiers::NONE, Key::N) {
+                toggle_notes = true;
+            }
+            if i.consume_key(Modifiers::NONE, Key::K) {
+                insert_whiteboard = true;
+            }
             if i.consume_key(Modifiers::NONE, Key::L) {
                 toggle_laser = true;
             }
             if i.consume_key(Modifiers::NONE, Key::S) {
                 toggle_spotlight = true;
             }
+            if i.consume_key(Modifiers::NONE, Key::Z) {
+                toggle_zoom = true;
+            }
             if i.consume_key(Modifiers::NONE, Key::D) {
                 toggle_pen = true;
+            }
+            if i.consume_key(Modifiers::NONE, Key::U) {
+                toggle_highlighter = true;
             }
             if i.consume_key(Modifiers::NONE, Key::C) {
                 clear_strokes = true;
@@ -964,9 +1576,15 @@ impl Presentation {
                     self.jump_at = None;
                 } else if self.shortcuts_open {
                     self.shortcuts_open = false;
-                } else if self.target_menu_open || self.export_menu_open {
+                } else if self.target_menu_open
+                    || self.export_menu_open
+                    || self.view_menu_open
+                    || self.sections_menu_open
+                {
                     self.target_menu_open = false;
                     self.export_menu_open = false;
+                    self.view_menu_open = false;
+                    self.sections_menu_open = false;
                 } else if self.overview {
                     self.overview = false;
                 } else if self.screen != ScreenMode::Normal {
@@ -995,7 +1613,9 @@ impl Presentation {
                 }
                 self.jump_digits.clear();
                 self.jump_at = None;
-            } else if !self.overview && !self.shortcuts_open {
+            } else if self.overview {
+                self.overview = false;
+            } else if !self.shortcuts_open {
                 next = true;
             }
         } else if backspace {
@@ -1026,11 +1646,19 @@ impl Presentation {
             self.store.filmstrip = !self.store.filmstrip;
             self.store_dirty = true;
         }
+        if toggle_notes {
+            self.toggle_notes_panel();
+        }
+        if insert_whiteboard {
+            self.insert_whiteboard_after_current();
+        }
         if toggle_shortcuts {
             self.shortcuts_open = !self.shortcuts_open;
             if self.shortcuts_open {
                 self.target_menu_open = false;
                 self.export_menu_open = false;
+                self.view_menu_open = false;
+                self.sections_menu_open = false;
             }
         }
         if toggle_laser {
@@ -1039,16 +1667,25 @@ impl Presentation {
         if toggle_spotlight {
             self.toggle_tool(StageTool::Spotlight);
         }
+        if toggle_zoom {
+            self.toggle_tool(StageTool::Zoom);
+        }
         if toggle_pen {
             self.toggle_tool(StageTool::Pen);
+        }
+        if toggle_highlighter {
+            self.toggle_tool(StageTool::Highlighter);
         }
         if clear_strokes {
             self.clear_slide_strokes();
         }
-        if next {
+        if next_section {
+            self.jump_section(1);
+        } else if prev_section {
+            self.jump_section(-1);
+        } else if next {
             self.go(self.page as f64 + 1.0);
-        }
-        if back {
+        } else if back {
             self.go(self.page as f64 - 1.0);
         }
         let (home, end, p, t, r) = ctx.input_mut(|i| {
@@ -1071,12 +1708,25 @@ impl Presentation {
             self.presenter = true;
         }
         if t {
-            self.timer.toggle();
+            self.toggle_timer();
         }
         if r {
-            self.timer.reset();
+            self.reset_timer();
         }
         keep
+    }
+}
+
+/// Snaps `end` cleanly to an exact horizontal or vertical line from `anchor` when within ~4 deg.
+fn snap_straight_line(anchor: [f32; 2], end: [f32; 2], slide_rect: Rect) -> [f32; 2] {
+    let dx = (end[0] - anchor[0]) * slide_rect.width();
+    let dy = (end[1] - anchor[1]) * slide_rect.height();
+    if dy.abs() < dx.abs() * 0.07 {
+        [end[0], anchor[1]]
+    } else if dx.abs() < dy.abs() * 0.07 {
+        [anchor[0], end[1]]
+    } else {
+        end
     }
 }
 
@@ -1084,8 +1734,17 @@ fn paint_stroke(painter: &egui::Painter, slide_rect: Rect, s: &StrokePath) {
     if s.points.is_empty() {
         return;
     }
-    let width = (s.width * slide_rect.height()).clamp(1.8, 12.0);
-    let color = s.color.color32();
+    let width = if s.highlighter {
+        (s.width * slide_rect.height()).clamp(6.0, 28.0)
+    } else {
+        (s.width * slide_rect.height()).clamp(1.8, 12.0)
+    };
+    let base = s.color.color32();
+    let color = if s.highlighter {
+        Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 92)
+    } else {
+        base
+    };
     if s.points.len() == 1 {
         painter.circle_filled(from_norm(s.points[0], slide_rect), width * 0.5, color);
         return;
@@ -1148,7 +1807,7 @@ mod tests {
             .build_ui_state(
                 |ui, state: &mut (Option<Presentation>, bool)| {
                     let p = state.0.get_or_insert_with(|| test_presentation(ui.ctx()));
-                    stage::audience_ui(p, ui.ctx(), &mut state.1);
+                    stage::audience_ui(p, ui.ctx(), &crate::theme::DARK, &mut state.1);
                 },
                 (None, true),
             );
@@ -1278,33 +1937,61 @@ mod tests {
 
         let mut h = crate::testing::cpu_harness_state(
             [1180.0, 740.0],
-            crate::theme::DARK,
+            crate::theme::LIGHT,
             |ui, state: &mut (Option<Presentation>, bool)| {
                 let p = state.0.get_or_insert_with(|| test_presentation(ui.ctx()));
-                state.1 = p.presenter_ui(ui);
+                state.1 = p.presenter_ui(ui, &crate::theme::LIGHT);
             },
             (None, true),
         );
         h.step();
 
-        // Open Save PDF popover, verify clicking directly over the underlying Filmstrip button
-        // dismisses the popover via the foreground scrim WITHOUT toggling Filmstrip (PRES-08).
-        let film_pos = h.get_by_label("Filmstrip").rect().center();
+        // Speaker notes auto-hide when the deck has no notes; View popover toggles them on/off
+        // and updates panel visibility cleanly.
+        assert!(
+            !h.state().0.as_ref().unwrap().notes_visible(),
+            "notes panel should auto-hide on decks with no speaker notes"
+        );
+        h.get_by_label("View").click();
+        h.run_steps(2);
+        assert!(h.state().0.as_ref().unwrap().view_menu_open);
+        h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Speaker notes")
+            .click();
+        h.run_steps(2);
+        assert!(
+            h.state().0.as_ref().unwrap().notes_visible(),
+            "View switch should show Speaker notes panel"
+        );
+        h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Next slide")
+            .click();
+        h.run_steps(2);
+        assert!(
+            !h.state().0.as_ref().unwrap().store.show_next,
+            "View switch should hide Next slide panel"
+        );
+        // Dismiss View popover by clicking outside.
+        h.state_mut().0.as_mut().unwrap().view_menu_open = false;
+        h.state_mut().0.as_mut().unwrap().store.show_next = true;
+        h.run_steps(2);
+
+        // Open Save PDF popover, verify clicking directly over the underlying Overview button
+        // dismisses the popover via the foreground scrim WITHOUT toggling Overview (PRES-08).
+        let overview_pos = h.get_by_label("Overview").rect().center();
         h.get_by_label("Save PDF").click();
         h.run_steps(2);
         assert!(h.state().0.as_ref().unwrap().export_menu_open);
         h.input_mut()
             .events
-            .push(egui::Event::PointerMoved(film_pos));
+            .push(egui::Event::PointerMoved(overview_pos));
         h.input_mut().events.push(egui::Event::PointerButton {
-            pos: film_pos,
+            pos: overview_pos,
             button: egui::PointerButton::Primary,
             pressed: true,
             modifiers: egui::Modifiers::NONE,
         });
         h.step();
         h.input_mut().events.push(egui::Event::PointerButton {
-            pos: film_pos,
+            pos: overview_pos,
             button: egui::PointerButton::Primary,
             pressed: false,
             modifiers: egui::Modifiers::NONE,
@@ -1314,8 +2001,8 @@ mod tests {
             let p = h.state().0.as_ref().unwrap();
             assert!(!p.export_menu_open, "outside click should close popover");
             assert!(
-                !p.store.filmstrip,
-                "outside click on popover scrim must not leak release to Filmstrip"
+                !p.overview,
+                "outside click on popover scrim must not leak release to Overview"
             );
         }
 
@@ -1352,42 +2039,283 @@ mod tests {
         h.state_mut().0.as_mut().unwrap().close_presenter_console();
         {
             let p = h.state().0.as_ref().unwrap();
-            assert!(!p.presenter && !p.shortcuts_open && !p.editing_notes && !p.target_menu_open);
+            assert!(
+                !p.presenter
+                    && !p.shortcuts_open
+                    && !p.editing_notes
+                    && !p.target_menu_open
+                    && !p.view_menu_open
+            );
         }
 
-        // Sweep every viewport size from 1400x900 down to 35x35 across overlays & modes
-        // (catches PRES-03, PRES-04, PRES-09, PRES-10, PRES-17, PRES-18).
-        for &size in crate::testing::VIEWPORT_MATRIX {
-            for mode in 0..5u8 {
-                let mut mh = crate::testing::cpu_harness_state(
-                    size,
-                    crate::theme::DARK,
-                    move |ui, state: &mut Option<Presentation>| {
-                        let p = state.get_or_insert_with(|| {
-                            let mut pr = test_presentation(ui.ctx());
-                            pr.store.target_minutes = Some(15);
-                            pr.store.filmstrip = mode == 1;
-                            pr.target_menu_open = mode == 2;
-                            pr.export_menu_open = mode == 3;
-                            pr.shortcuts_open = mode == 4;
-                            pr
-                        });
-                        p.presenter_ui(ui);
-                    },
-                    None,
-                );
-                mh.run_steps(2);
-                crate::testing::assert_ui_geometry(
-                    &mh,
-                    &format!("presenter_ui size={size:?} mode={mode}"),
-                );
+        // Sweep every viewport size from 1400x900 down to 35x35 across overlays, modes, and BOTH
+        // light and dark themes (catches PRES-03, PRES-04, PRES-09, PRES-10, PRES-17, PRES-18).
+        for (theme_name, pal) in [("light", crate::theme::LIGHT), ("dark", crate::theme::DARK)] {
+            for &size in crate::testing::VIEWPORT_MATRIX {
+                for mode in 0..8u8 {
+                    let mut mh = crate::testing::cpu_harness_state(
+                        size,
+                        pal,
+                        move |ui, state: &mut Option<Presentation>| {
+                            let p = state.get_or_insert_with(|| {
+                                let mut pr = test_presentation(ui.ctx());
+                                pr.store.target_minutes = Some(15);
+                                pr.store.show_notes = Some(mode != 5);
+                                pr.store.notes_on_right = mode == 6;
+                                pr.store.force_dark = mode == 6;
+                                pr.store.filmstrip = mode == 1;
+                                pr.target_menu_open = mode == 2;
+                                pr.export_menu_open = mode == 3;
+                                pr.shortcuts_open = mode == 4;
+                                pr.view_menu_open = mode == 5;
+                                pr.overview = mode == 7;
+                                if mode == 6 {
+                                    pr.frozen_page = Some(2);
+                                    pr.tool = StageTool::Laser;
+                                    pr.tex_notes.insert(1, "# Intro\n- Key point".into());
+                                    pr.tex_notes.insert(2, "Transition to results".into());
+                                }
+                                pr
+                            });
+                            p.presenter_ui(ui, &pal);
+                        },
+                        None,
+                    );
+                    mh.run_steps(2);
+                    crate::testing::assert_ui_geometry(
+                        &mh,
+                        &format!("presenter_ui theme={theme_name} size={size:?} mode={mode}"),
+                    );
+                }
             }
         }
     }
 
     #[test]
+    fn presenter_customization_notes_swap_dark_stage_and_frozen_push() {
+        let mut h = crate::testing::cpu_harness_state(
+            [1180.0, 740.0],
+            crate::theme::LIGHT,
+            |ui, state: &mut Option<Presentation>| {
+                let p = state.get_or_insert_with(|| {
+                    let mut pr = test_presentation(ui.ctx());
+                    pr.tex_notes.insert(1, "# Opening\n- Welcome".into());
+                    pr.tex_notes
+                        .insert(2, "Highlight the convergence proof".into());
+                    pr
+                });
+                p.presenter_ui(ui, &crate::theme::LIGHT);
+            },
+            None,
+        );
+        h.run_steps(2);
+
+        // Deck with .tex notes auto-shows Speaker notes and reports "From .tex" origin.
+        {
+            let p = h.state().as_ref().unwrap();
+            assert!(p.notes_visible());
+            assert_eq!(p.note_origin(1), Some("From .tex"));
+            assert!(!p.can_reset_note_to_tex(1));
+        }
+
+        // Open View popover and toggle Notes on right + Dark stage.
+        h.get_by_label("View").click();
+        h.run_steps(2);
+        h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Notes on right")
+            .click();
+        h.run_steps(2);
+        h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Dark stage")
+            .click();
+        h.run_steps(2);
+        {
+            let p = h.state().as_ref().unwrap();
+            assert!(p.store.notes_on_right);
+            assert!(p.store.force_dark);
+            assert!(p.effective_palette(&crate::theme::LIGHT).dark);
+            assert_eq!(PenColor::ALL.len(), 4);
+        }
+        // Close View popover, freeze audience on slide 1, browse to slide 2, and push slide 2.
+        h.state_mut().as_mut().unwrap().view_menu_open = false;
+        h.state_mut().as_mut().unwrap().toggle_freeze();
+        h.state_mut().as_mut().unwrap().go(2.0);
+        h.run_steps(2);
+        assert_eq!(h.state().as_ref().unwrap().frozen_page, Some(1));
+        assert!(h.state().as_ref().unwrap().filmstrip_scroll_pending);
+        h.get_by_label("Show this slide to the audience while staying frozen")
+            .click();
+        h.run_steps(2);
+        assert_eq!(h.state().as_ref().unwrap().frozen_page, Some(2));
+
+        // Overview + Enter closes overview cleanly onto the selected slide.
+        let mut h_ov = crate::testing::cpu_harness_state(
+            [1180.0, 740.0],
+            crate::theme::LIGHT,
+            |ui, state: &mut (Option<Presentation>, bool)| {
+                let p = state.0.get_or_insert_with(|| {
+                    let mut pr = test_presentation(ui.ctx());
+                    pr.overview = true;
+                    pr
+                });
+                state.1 = p.keys(ui.ctx(), true);
+                p.presenter_ui(ui, &crate::theme::LIGHT);
+            },
+            (None, true),
+        );
+        h_ov.step();
+        h_ov.key_press(egui::Key::ArrowRight);
+        h_ov.step();
+        assert_eq!(h_ov.state().0.as_ref().unwrap().page, 2);
+        assert!(h_ov.state().0.as_ref().unwrap().overview);
+        h_ov.key_press(egui::Key::Enter);
+        h_ov.step();
+        assert!(h_ov.state().1);
+        assert!(!h_ov.state().0.as_ref().unwrap().overview);
+        assert_eq!(h_ov.state().0.as_ref().unwrap().page, 2);
+    }
+
+    #[test]
+    fn whiteboards_sections_highlighter_shift_lines_and_rehearsal_timings() {
+        let mut h = crate::testing::cpu_harness_state(
+            [1200.0, 740.0],
+            crate::theme::LIGHT,
+            |ui, state: &mut Option<Presentation>| {
+                let p = state.get_or_insert_with(|| {
+                    let mut pr = test_presentation(ui.ctx());
+                    pr.sections.insert(1, "Introduction".into());
+                    pr.sections.insert(3, "Appendix".into());
+                    pr
+                });
+                p.keys(ui.ctx(), true);
+                p.presenter_ui(ui, &crate::theme::LIGHT);
+            },
+            None,
+        );
+        h.run_steps(2);
+
+        // Section quick-jump via Shift+ArrowRight / Shift+ArrowLeft and header popover.
+        assert_eq!(h.state().as_ref().unwrap().page, 1);
+        h.state_mut().as_mut().unwrap().jump_section(1);
+        assert_eq!(h.state().as_ref().unwrap().page, 3);
+        h.state_mut().as_mut().unwrap().jump_section(-1);
+        assert_eq!(h.state().as_ref().unwrap().page, 1);
+        h.run_steps(2);
+        h.get_by_label("Introduction").click();
+        h.run_steps(2);
+        assert!(h.state().as_ref().unwrap().sections_menu_open);
+        h.get_by_label("Appendix").click();
+        h.run_steps(2);
+        assert_eq!(h.state().as_ref().unwrap().page, 3);
+        assert!(!h.state().as_ref().unwrap().sections_menu_open);
+
+        // Insert a blank whiteboard slide after slide 3: switches to it and arms Pen automatically.
+        h.get_by_label("Add blank whiteboard slide (K)").click();
+        h.run_steps(2);
+        let wb_id = {
+            let p = h.state().as_ref().unwrap();
+            assert_eq!(p.total(), 4);
+            assert_eq!(p.page, 4);
+            assert_eq!(p.tool, StageTool::Pen);
+            p.current_whiteboard_id().expect("should be on whiteboard")
+        };
+
+        // Toggle Grid on whiteboard and switch to translucent Highlighter, drawing a Shift-snapped line.
+        h.get_by_label("Grid").click();
+        h.run_steps(2);
+        assert!(
+            h.state()
+                .as_ref()
+                .unwrap()
+                .store
+                .whiteboard(wb_id)
+                .unwrap()
+                .grid
+        );
+
+        h.state_mut()
+            .as_mut()
+            .unwrap()
+            .toggle_tool(StageTool::Highlighter);
+        h.run_steps(2);
+        let p0 = pos2(420.0, 320.0);
+        let p1 = pos2(660.0, 324.0);
+        h.input_mut()
+            .events
+            .push(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+        h.input_mut().events.push(egui::Event::PointerMoved(p0));
+        h.step();
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: p0,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::SHIFT,
+        });
+        h.step();
+        h.input_mut().events.push(egui::Event::PointerMoved(p1));
+        h.step();
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: p1,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::SHIFT,
+        });
+        h.input_mut()
+            .events
+            .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        h.run_steps(2);
+        {
+            let p = h.state().as_ref().unwrap();
+            let wb = p.store.whiteboard(wb_id).unwrap();
+            assert_eq!(wb.strokes.len(), 1);
+            assert!(wb.strokes[0].highlighter);
+            assert_eq!(
+                wb.strokes[0].points.len(),
+                2,
+                "Shift-drag should produce a crisp 2-point straight line"
+            );
+            assert!(
+                (wb.strokes[0].points[0][1] - wb.strokes[0].points[1][1]).abs() < 1e-5,
+                "nearly horizontal Shift-line should snap cleanly to exact horizontal: {:?}",
+                wb.strokes[0].points
+            );
+            assert_eq!(p.store.annotated_slide_count(), 1);
+
+            // Direct geometry check for H/V snap and unconstrained diagonals.
+            let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 450.0));
+            let h_snap = snap_straight_line([0.2, 0.5], [0.7, 0.51], r);
+            assert!((h_snap[1] - 0.5).abs() < 1e-6);
+            let v_snap = snap_straight_line([0.5, 0.2], [0.505, 0.8], r);
+            assert!((v_snap[0] - 0.5).abs() < 1e-6);
+            let diag = snap_straight_line([0.2, 0.2], [0.6, 0.6], r);
+            assert_eq!(diag, [0.6, 0.6]);
+        }
+
+        // Rehearsal per-slide timings track cumulative time and slowest_slides ranks them.
+        {
+            let p = h.state_mut().as_mut().unwrap();
+            p.slide_timings.insert(1, 14.0);
+            p.slide_timings.insert(3, 42.0);
+            let top = p.slowest_slides(2);
+            assert_eq!(top[0].0, 3);
+            assert_eq!(top[1].0, 1);
+            p.reset_timer();
+            assert!(p.slide_timings.is_empty());
+        }
+
+        // Remove whiteboard cleanly restores deck size and clamps page.
+        h.get_by_label("Remove whiteboard slide").click();
+        h.run_steps(2);
+        {
+            let p = h.state().as_ref().unwrap();
+            assert_eq!(p.total(), 3);
+            assert_eq!(p.page, 3);
+            assert!(p.current_whiteboard_id().is_none());
+        }
+        crate::testing::assert_ui_geometry(&h, "presenter post-whiteboard removal");
+    }
+
+    #[test]
     fn laser_and_spotlight_only_light_while_pressed() {
-        for tool in [StageTool::Laser, StageTool::Spotlight] {
+        for tool in [StageTool::Laser, StageTool::Spotlight, StageTool::Zoom] {
             let mut h = crate::testing::cpu_harness_state(
                 [1200.0, 740.0],
                 crate::theme::DARK,
@@ -1397,7 +2325,7 @@ mod tests {
                         pr.tool = tool;
                         pr
                     });
-                    stage::audience_ui(p, ui.ctx(), &mut state.1);
+                    stage::audience_ui(p, ui.ctx(), &crate::theme::DARK, &mut state.1);
                 },
                 (None, true),
             );

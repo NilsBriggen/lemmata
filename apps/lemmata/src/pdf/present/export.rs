@@ -2,7 +2,7 @@
 //! vector ink strokes drawn during the presentation, and (optionally) speaker notes below each
 //! slide — without ever modifying the original `.tex` source.
 
-use super::data::{StrokePath, region_size, regions_swapped};
+use super::data::{StrokePath, WhiteboardSlide, region_size, regions_swapped};
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::Pdf;
 use hayro::vello_cpu::color::palette::css::WHITE;
@@ -25,6 +25,7 @@ pub fn export_annotated_pdf(
     pdf_bytes: &[u8],
     annotations: &BTreeMap<usize, Vec<StrokePath>>,
     notes: &BTreeMap<usize, String>,
+    whiteboards: &[WhiteboardSlide],
     include_notes: bool,
     swap_notes_half: bool,
 ) -> Result<Vec<u8>, String> {
@@ -35,7 +36,8 @@ pub fn export_annotated_pdf(
         return Err("The PDF has no pages to export.".to_owned());
     }
 
-    let total = pages.len();
+    let pdf_total = pages.len();
+    let total = pdf_total + whiteboards.len();
     let cache = RenderCache::new();
     let mut writer = PdfWriter::new();
     let font_id = writer.add_object(
@@ -46,13 +48,60 @@ pub fn export_annotated_pdf(
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
             .to_vec(),
     );
+    let gs_opaque_id = writer.add_object(b"<< /Type /ExtGState /CA 1.0 /ca 1.0 >>".to_vec());
+    let gs_highlight_id = writer.add_object(b"<< /Type /ExtGState /CA 0.35 /ca 0.35 >>".to_vec());
 
     let mut page_ids = Vec::with_capacity(total);
     // Reserve the /Pages tree object id up front so every page can reference `/Parent`.
     let pages_root_id = writer.reserve_id();
 
+    let (default_sw, default_sh) = {
+        let (pw, ph) = pages[0].render_dimensions();
+        let (sr, _) = regions_swapped(pw, ph, swap_notes_half);
+        let (sw, sh, _) = region_size(pw, ph, sr);
+        if sw.is_finite() && sh.is_finite() && sw > 1.0 && sh > 1.0 {
+            (sw, sh)
+        } else {
+            (455.0, 256.0)
+        }
+    };
+
+    let mut display_num = 0usize;
+    let push_whiteboards = |after_pdf_page: usize,
+                            or_past_end: bool,
+                            display_num: &mut usize,
+                            writer: &mut PdfWriter,
+                            page_ids: &mut Vec<usize>| {
+        for wb in whiteboards {
+            let matches = wb.after_pdf_page == after_pdf_page
+                || (or_past_end && wb.after_pdf_page > pdf_total);
+            if !matches {
+                continue;
+            }
+            *display_num += 1;
+            let pid = emit_whiteboard_page(
+                writer,
+                pages_root_id,
+                font_id,
+                font_bold_id,
+                gs_opaque_id,
+                gs_highlight_id,
+                wb,
+                default_sw,
+                default_sh,
+                *display_num,
+                total,
+                include_notes,
+            );
+            page_ids.push(pid);
+        }
+    };
+
+    push_whiteboards(0, false, &mut display_num, &mut writer, &mut page_ids);
+
     for (idx, page) in pages.iter().enumerate() {
         let slide_num = idx + 1;
+        display_num += 1;
         let (pw, ph) = page.render_dimensions();
         if !pw.is_finite() || !ph.is_finite() || pw <= 0.0 || ph <= 0.0 {
             return Err(format!("Slide {slide_num} has invalid PDF dimensions."));
@@ -146,7 +195,7 @@ pub fn export_annotated_pdf(
             let _ = writeln!(
                 content,
                 "q 0.36 0.41 0.47 rg BT /F2 9.5 Tf {slide_x:.2} {header_y:.2} Td ({}) Tj ET Q",
-                pdf_escape_winansi(&format!("Slide {slide_num} / {total}"))
+                pdf_escape_winansi(&format!("Slide {display_num} / {total}"))
             );
 
             // Notes card below slide.
@@ -226,36 +275,8 @@ pub fn export_annotated_pdf(
             );
         }
 
-        // Overlay every freehand annotation stroke as crisp native PDF vector paths.
-        if !strokes.is_empty() {
-            let _ = writeln!(
-                content,
-                "q {sx_pdf:.2} {sy_pdf:.2} {sw_pdf:.2} {sh_pdf:.2} re W n 1 J 1 j"
-            );
-            for stroke in strokes {
-                if stroke.points.is_empty() {
-                    continue;
-                }
-                let (r, g, b) = stroke.color.rgb_f32();
-                let line_w = (stroke.width * sh_pdf).clamp(0.8, 18.0);
-                let _ = writeln!(content, "{r:.3} {g:.3} {b:.3} RG {line_w:.2} w");
-                let p0 = stroke.points[0];
-                let x0 = sx_pdf + p0[0].clamp(0.0, 1.0) * sw_pdf;
-                let y0 = sy_pdf + (1.0 - p0[1].clamp(0.0, 1.0)) * sh_pdf;
-                if stroke.points.len() == 1 {
-                    let _ = writeln!(content, "{x0:.2} {y0:.2} m {:.2} {y0:.2} l S", x0 + 0.2);
-                } else {
-                    let _ = write!(content, "{x0:.2} {y0:.2} m");
-                    for pt in &stroke.points[1..] {
-                        let x = sx_pdf + pt[0].clamp(0.0, 1.0) * sw_pdf;
-                        let y = sy_pdf + (1.0 - pt[1].clamp(0.0, 1.0)) * sh_pdf;
-                        let _ = write!(content, " {x:.2} {y:.2} l");
-                    }
-                    let _ = writeln!(content, " S");
-                }
-            }
-            let _ = writeln!(content, "Q");
-        }
+        // Overlay every freehand/highlighter annotation stroke as crisp native PDF vector paths.
+        write_pdf_strokes(&mut content, strokes, sx_pdf, sy_pdf, sw_pdf, sh_pdf);
 
         let stream_id = writer.add_stream(content.as_bytes());
         let mut xobjects = format!("/ImS {slide_img_id} 0 R");
@@ -264,10 +285,20 @@ pub fn export_annotated_pdf(
         }
         let page_dict = format!(
             "<< /Type /Page /Parent {pages_root_id} 0 R /MediaBox [0 0 {out_w:.2} {out_h:.2}] \
-             /Resources << /Font << /F1 {font_id} 0 R /F2 {font_bold_id} 0 R >> /XObject << {xobjects} >> >> \
+             /Resources << /Font << /F1 {font_id} 0 R /F2 {font_bold_id} 0 R >> \
+             /ExtGState << /GSOp {gs_opaque_id} 0 R /GSHl {gs_highlight_id} 0 R >> \
+             /XObject << {xobjects} >> >> \
              /Contents {stream_id} 0 R >>"
         );
         page_ids.push(writer.add_object(page_dict.into_bytes()));
+
+        push_whiteboards(
+            slide_num,
+            slide_num == pdf_total,
+            &mut display_num,
+            &mut writer,
+            &mut page_ids,
+        );
     }
 
     let kids: String = page_ids
@@ -285,6 +316,130 @@ pub fn export_annotated_pdf(
         writer.add_object(format!("<< /Type /Catalog /Pages {pages_root_id} 0 R >>").into_bytes());
 
     Ok(writer.finish(catalog_id))
+}
+
+fn write_pdf_strokes(
+    content: &mut String,
+    strokes: &[StrokePath],
+    sx_pdf: f32,
+    sy_pdf: f32,
+    sw_pdf: f32,
+    sh_pdf: f32,
+) {
+    if strokes.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        content,
+        "q {sx_pdf:.2} {sy_pdf:.2} {sw_pdf:.2} {sh_pdf:.2} re W n 1 J 1 j"
+    );
+    for stroke in strokes {
+        if stroke.points.is_empty() {
+            continue;
+        }
+        let (r, g, b) = stroke.color.rgb_f32();
+        let line_w = (stroke.width * sh_pdf).clamp(0.8, 28.0);
+        let gs = if stroke.highlighter { "/GSHl" } else { "/GSOp" };
+        let _ = writeln!(content, "{gs} gs {r:.3} {g:.3} {b:.3} RG {line_w:.2} w");
+        let p0 = stroke.points[0];
+        let x0 = sx_pdf + p0[0].clamp(0.0, 1.0) * sw_pdf;
+        let y0 = sy_pdf + (1.0 - p0[1].clamp(0.0, 1.0)) * sh_pdf;
+        if stroke.points.len() == 1 {
+            let _ = writeln!(content, "{x0:.2} {y0:.2} m {:.2} {y0:.2} l S", x0 + 0.2);
+        } else {
+            let _ = write!(content, "{x0:.2} {y0:.2} m");
+            for pt in &stroke.points[1..] {
+                let x = sx_pdf + pt[0].clamp(0.0, 1.0) * sw_pdf;
+                let y = sy_pdf + (1.0 - pt[1].clamp(0.0, 1.0)) * sh_pdf;
+                let _ = write!(content, " {x:.2} {y:.2} l");
+            }
+            let _ = writeln!(content, " S");
+        }
+    }
+    let _ = writeln!(content, "Q");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_whiteboard_page(
+    writer: &mut PdfWriter,
+    pages_root_id: usize,
+    font_id: usize,
+    font_bold_id: usize,
+    gs_opaque_id: usize,
+    gs_highlight_id: usize,
+    wb: &WhiteboardSlide,
+    sw: f32,
+    sh: f32,
+    display_num: usize,
+    total: usize,
+    include_notes: bool,
+) -> usize {
+    let mut content = String::with_capacity(1024);
+    let (out_w, out_h, sx_pdf, sy_pdf) = if !include_notes {
+        (sw, sh, 0.0f32, 0.0f32)
+    } else {
+        let margin = (sw * 0.055).clamp(18.0, 36.0);
+        let header_h = 20.0f32;
+        let out_w = sw + margin * 2.0;
+        let out_h = margin + sh + header_h + margin;
+        let _ = writeln!(
+            content,
+            "q 0.965 0.969 0.965 rg 0 0 {out_w:.2} {out_h:.2} re f Q"
+        );
+        let header_y = out_h - margin - 12.0;
+        let _ = writeln!(
+            content,
+            "q 0.36 0.41 0.47 rg BT /F2 9.5 Tf {margin:.2} {header_y:.2} Td ({}) Tj ET Q",
+            pdf_escape_winansi(&format!("Slide {display_num} / {total} · Whiteboard"))
+        );
+        (out_w, out_h, margin, margin)
+    };
+
+    // White paper board.
+    let _ = writeln!(
+        content,
+        "q 1 1 1 rg {sx_pdf:.2} {sy_pdf:.2} {sw:.2} {sh:.2} re f Q"
+    );
+    if wb.grid {
+        let step = (sh / 14.0).clamp(12.0, 28.0);
+        let _ = writeln!(content, "q 0.87 0.90 0.93 RG 0.4 w");
+        let mut gx = sx_pdf + step;
+        while gx < sx_pdf + sw - 1.0 {
+            let _ = writeln!(
+                content,
+                "{gx:.2} {sy_pdf:.2} m {gx:.2} {:.2} l S",
+                sy_pdf + sh
+            );
+            gx += step;
+        }
+        let mut gy = sy_pdf + step;
+        while gy < sy_pdf + sh - 1.0 {
+            let _ = writeln!(
+                content,
+                "{sx_pdf:.2} {gy:.2} m {:.2} {gy:.2} l S",
+                sx_pdf + sw
+            );
+            gy += step;
+        }
+        let _ = writeln!(content, "Q");
+    }
+    if include_notes {
+        let _ = writeln!(
+            content,
+            "q 0.80 0.83 0.86 RG 0.6 w {sx_pdf:.2} {sy_pdf:.2} {sw:.2} {sh:.2} re S Q"
+        );
+    }
+
+    write_pdf_strokes(&mut content, &wb.strokes, sx_pdf, sy_pdf, sw, sh);
+
+    let stream_id = writer.add_stream(content.as_bytes());
+    let page_dict = format!(
+        "<< /Type /Page /Parent {pages_root_id} 0 R /MediaBox [0 0 {out_w:.2} {out_h:.2}] \
+         /Resources << /Font << /F1 {font_id} 0 R /F2 {font_bold_id} 0 R >> \
+         /ExtGState << /GSOp {gs_opaque_id} 0 R /GSHl {gs_highlight_id} 0 R >> >> \
+         /Contents {stream_id} 0 R >>"
+    );
+    writer.add_object(page_dict.into_bytes())
 }
 
 fn crop_to_jpeg(
@@ -505,26 +660,48 @@ mod tests {
         let mut ann = BTreeMap::new();
         ann.insert(
             1,
-            vec![StrokePath {
-                color: PenColor::Crimson,
-                width: 0.006,
-                points: vec![[0.1, 0.2], [0.5, 0.5], [0.8, 0.3]],
-            }],
+            vec![
+                StrokePath {
+                    color: PenColor::Crimson,
+                    width: 0.006,
+                    highlighter: false,
+                    points: vec![[0.1, 0.2], [0.5, 0.5], [0.8, 0.3]],
+                },
+                StrokePath {
+                    color: PenColor::Amber,
+                    width: 0.022,
+                    highlighter: true,
+                    points: vec![[0.2, 0.6], [0.7, 0.6]],
+                },
+            ],
         );
         let mut notes = BTreeMap::new();
         notes.insert(1, "Key proof idea — emphasize convergence rate!".into());
+        let whiteboards = vec![WhiteboardSlide {
+            id: 1,
+            after_pdf_page: 1,
+            grid: true,
+            strokes: vec![StrokePath {
+                color: PenColor::Emerald,
+                width: 0.006,
+                highlighter: false,
+                points: vec![[0.2, 0.2], [0.8, 0.8]],
+            }],
+        }];
 
-        // 1. Slides only
-        let slides_only = export_annotated_pdf(&src_pdf, &ann, &notes, false, false).unwrap();
+        // 1. Slides only (1 PDF page + 1 inserted whiteboard = 2 pages)
+        let slides_only =
+            export_annotated_pdf(&src_pdf, &ann, &notes, &whiteboards, false, false).unwrap();
         let parsed_a = Pdf::new(Arc::new(slides_only)).unwrap();
-        assert_eq!(parsed_a.pages().len(), 1);
+        assert_eq!(parsed_a.pages().len(), 2);
         let (wa, ha) = parsed_a.pages()[0].render_dimensions();
         assert!((wa - 362.0).abs() < 1.0 && (ha - 272.0).abs() < 1.0);
 
         // 2. Slides + speaker notes handout
-        let with_notes = export_annotated_pdf(&src_pdf, &ann, &notes, true, false).unwrap();
+        let with_notes =
+            export_annotated_pdf(&src_pdf, &ann, &notes, &whiteboards, true, false).unwrap();
         let parsed_b = Pdf::new(Arc::new(with_notes)).unwrap();
-        assert_eq!(parsed_b.pages().len(), 1);
+        assert_eq!(parsed_b.pages().len(), 2);
         let (wb, hb) = parsed_b.pages()[0].render_dimensions();
         assert!(
             wb > 362.0 && hb > 272.0,
@@ -562,7 +739,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         notes.insert(1, long_note);
-        let out = export_annotated_pdf(&src_pdf, &BTreeMap::new(), &notes, true, false).unwrap();
+        let out =
+            export_annotated_pdf(&src_pdf, &BTreeMap::new(), &notes, &[], true, false).unwrap();
         let text = String::from_utf8_lossy(&out);
         assert!(
             text.contains("...) Tj"),
