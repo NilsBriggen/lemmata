@@ -2,6 +2,26 @@
 
 All notable changes to Lemmata.
 
+## 4.1.0 (2026-11-27)
+
+A major overhaul of Presenter View and presentation mode—built for live lectures and academic talks—alongside a 4.0 polish pass across all remaining dialogs and viewers.
+
+### Added
+- **Studio-dark Presenter Console overhaul:** Layered obsidian stage design, crisp Lucide icon controls, live audience status badges (`LIVE ON STAGE`, `BLACKOUT`, `WHITEOUT`, `FROZEN`), draggable splitters between Current Slide / Right Column and Next Slide / Speaker Notes, presenter fullscreen toggle, and a collapsible bottom **Slide Filmstrip** (`M`).
+- **Smart timer, target countdown & dual-track pacing bar:** Set a target talk duration (`5m`–`60m` or `−1m`/`+1m`), click the timer to toggle Elapsed vs. Remaining/Overtime, view estimated finish time next to the wall clock, and track slide progress against time pace on the header pacing bar.
+- **Synced stage tools (Laser, Spotlight, Freehand Pen):** Point on the presenter preview or audience slide with a live red **Laser** (`L`) + fading trail, focus attention with **Spotlight** (`S`), or annotate slides in Red, Blue, or Amber **Pen** ink (`D`) with per-slide persistence, **Undo** (`Ctrl+Z`), and **Clear** (`C`).
+- **Audience screen controls & shortcuts overlay:** Added **Whiteout** (`W`), **Freeze** (`F` — hold the audience on the current slide while browsing ahead or reading notes), an auto-hiding interactive floating HUD on the audience window, PDF bookmark section headings in the header and **Overview Grid** (`G`), and a translucent **`?` Presenter Shortcuts** overlay.
+- **Editable speaker notes & annotated PDF export (during or after presentation):**
+  - Supports Beamer second-screen PDF notes (with **Swap L/R** for `second screen=left`) *and* native per-slide speaker notes stored in `.lemmata/presenter.json` (auto-seeded from `\note{...}` and `% NOTE:` comments) with podium-readable `A−`/`A+` font sizing.
+  - Export **Slides + speaker notes (handout)** or **Annotated slides only** as a crisp PDF (with native PDF vector paths for all drawn ink strokes) right during the talk (**Save PDF**), from the post-presentation **Save annotated PDF?** prompt, or anytime from the command palette (*Export annotated slides with notes…*) without modifying your `.tex` source files.
+
+### Changed
+- **Image & PDF viewer tabs:** Replaced the misplaced LaTeX formatting bar on viewer tabs with a dedicated compact image viewer toolbar (`filename`, dimensions, `Fit` / `100%`) and dark-mode-aware transparency checkerboard.
+- **Keyboard shortcuts sheet:** Added a **Presenting** shortcuts section, sculpted keycap pills with accent recording rings, Lucide clear/reset icon buttons, and a **Reset all** action.
+- **Word count dialog:** Upgraded to rounded stat tiles, estimated reading and speaking times, and proportional per-file bars.
+- **Dialogs, History diff & Update toast:** Added **Copy details** + system summary chips to *Report a problem*, version pills and tinted icon badges to *What's new*, an elevated header and `−`/`+` gutter markers to History diff, and an inline download progress bar to the update toast.
+- **Documentation:** Replaced superseded v1–v3 planning docs with [docs/architecture.md](docs/architecture.md) and updated [docs/guide.md](docs/guide.md), [docs/website-handoff.md](docs/website-handoff.md), [docs/release-checklist.md](docs/release-checklist.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## 4.0.0 (2026-11-26)
 
 A major visual refresh paired with a comprehensive performance, security, and install-size overhaul—with zero features removed.
