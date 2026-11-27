@@ -280,7 +280,13 @@ impl Problems {
     }
 
     /// Virtualized raw TeX log view with search & copy, rendered inside the PDF card.
-    pub fn show_raw_log(&mut self, ui: &mut Ui, p: &Palette, b: &Build) -> Vec<Action> {
+    pub fn show_raw_log(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        b: &Build,
+        allow_shortcuts: bool,
+    ) -> Vec<Action> {
         let mut out = Vec::new();
         let body = ui.max_rect();
         ui.painter().rect_filled(body, 0, p.surface);
@@ -291,10 +297,11 @@ impl Problems {
             self.asked = Some(b.id);
             out.push(Action::ReadLog);
         }
-        if crate::shortcuts::consume(ui.ctx(), "pdf-search")
-            || ui
-                .ctx()
-                .input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F))
+        if allow_shortcuts
+            && (crate::shortcuts::consume(ui.ctx(), "pdf-search")
+                || ui
+                    .ctx()
+                    .input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)))
         {
             self.log_focus_search = true;
         }

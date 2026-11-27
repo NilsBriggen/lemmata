@@ -459,9 +459,19 @@ impl PdfView {
         let cols = if self.two_up() { 2.0 } else { 1.0 };
         let avail_w = ((self.client.x - 48.0 - GAP * (cols - 1.0)) / cols).max(160.0);
         let avail_h = (self.client.y - 40.0).max(160.0);
+        let sx = if size.x.is_finite() && size.x > 0.0 {
+            size.x
+        } else {
+            1.0
+        };
+        let sy = if size.y.is_finite() && size.y > 0.0 {
+            size.y
+        } else {
+            1.0
+        };
         match self.fit {
-            Fit::Width => avail_w / size.x,
-            Fit::Page => (avail_w / size.x).min(avail_h / size.y),
+            Fit::Width => avail_w / sx,
+            Fit::Page => (avail_w / sx).min(avail_h / sy),
             Fit::Zoom(z) => z * PT,
         }
     }

@@ -334,6 +334,8 @@ fn run(jobs: Receiver<Job>, routes: Routes, announce: bool) {
             .iter()
             .map(|p| {
                 let (w, h) = p.render_dimensions();
+                let w = if w.is_finite() && w > 0.0 { w } else { 1.0 };
+                let h = if h.is_finite() && h > 0.0 { h } else { 1.0 };
                 vec2(w, h)
             })
             .collect();

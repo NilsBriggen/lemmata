@@ -45,7 +45,7 @@ pub fn show(ctx: &egui::Context, p: &Palette, t: &Toast, bottom_offset: f32) -> 
                 .show(ui, |ui| {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 8.0;
-                        ui.horizontal(|ui| {
+                        ui.horizontal_top(|ui| {
                             ui.spacing_mut().item_spacing.x = 10.0;
                             icons::show(
                                 ui,
@@ -68,30 +68,35 @@ pub fn show(ctx: &egui::Context, p: &Palette, t: &Toast, bottom_offset: f32) -> 
                                 (None, None) => format!("Lemmata {v} is available."),
                             };
                             ui.add(egui::Label::new(egui::RichText::new(text).color(p.ink)).wrap());
-                            if t.progress.is_none() {
-                                if Button::new("Later")
-                                    .kind(Kind::Ghost)
-                                    .size(Size::Sm)
-                                    .show(ui, p)
-                                    .clicked()
-                                {
-                                    out = Some(Out::Later);
-                                }
-                                if Button::new("Install and restart")
-                                    .kind(Kind::Primary)
-                                    .size(Size::Sm)
-                                    .show(ui, p)
-                                    .clicked()
-                                {
-                                    out = Some(Out::Install);
-                                }
-                            }
                         });
-                        if let Some(frac) = t.progress {
-                            let (bar_r, _) = ui.allocate_exact_size(
-                                egui::vec2(ui.available_width().max(200.0), 5.0),
-                                egui::Sense::hover(),
+                        if t.progress.is_none() {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    if Button::new("Install and restart")
+                                        .kind(Kind::Primary)
+                                        .size(Size::Sm)
+                                        .show(ui, p)
+                                        .clicked()
+                                    {
+                                        out = Some(Out::Install);
+                                    }
+                                    if Button::new("Later")
+                                        .kind(Kind::Ghost)
+                                        .size(Size::Sm)
+                                        .show(ui, p)
+                                        .clicked()
+                                    {
+                                        out = Some(Out::Later);
+                                    }
+                                },
                             );
+                        }
+                        if let Some(frac) = t.progress {
+                            let bar_w = ui.available_width().clamp(40.0, 480.0);
+                            let (bar_r, _) = ui
+                                .allocate_exact_size(egui::vec2(bar_w, 5.0), egui::Sense::hover());
                             ui.painter().rect_filled(
                                 bar_r,
                                 egui::CornerRadius::same(3),
@@ -108,4 +113,53 @@ pub fn show(ctx: &egui::Context, p: &Palette, t: &Toast, bottom_offset: f32) -> 
                 });
         });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn update_toast_keeps_action_buttons_inside_viewport_on_long_errors() {
+        let toast = Toast {
+            update: Update {
+                version: "4.2.0".into(),
+                url: "https://example.org/lemmata".into(),
+                signature: String::new(),
+            },
+            progress: None,
+            error: Some("Network error while downloading installer package: ".repeat(5)),
+        };
+        for &size in &[
+            [1400.0, 900.0],
+            [760.0, 600.0],
+            [420.0, 400.0],
+            [320.0, 320.0],
+        ] {
+            let mut h = crate::testing::cpu_harness_state(
+                size,
+                theme::LIGHT,
+                |ui, t: &mut Toast| {
+                    show(ui.ctx(), &theme::LIGHT, t, 0.0);
+                },
+                Toast {
+                    update: toast.update.clone(),
+                    progress: toast.progress,
+                    error: toast.error.clone(),
+                },
+            );
+            h.run_steps(2);
+            crate::testing::assert_settles(&mut h, &format!("update toast {size:?}"));
+            crate::testing::assert_ui_geometry(&h, &format!("update toast {size:?}"));
+            let screen = h.ctx.content_rect();
+            for lbl in ["Later", "Install and restart"] {
+                let rect = h.get_by_label(lbl).rect();
+                assert!(
+                    rect.left() >= screen.left() - 1.0 && rect.right() <= screen.right() + 1.0,
+                    "button {lbl:?} ({rect:?}) overflowed viewport {screen:?}"
+                );
+            }
+        }
+    }
 }

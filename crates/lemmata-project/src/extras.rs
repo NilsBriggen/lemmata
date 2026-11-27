@@ -286,7 +286,12 @@ impl Counter {
             return;
         };
         let name = rel.to_string_lossy().replace('\\', "/");
-        let mut in_body = !is_main || !text.contains("\\begin{document}");
+        let has_begin_document = is_main && {
+            let mut probe = CodeScanner::default();
+            text.lines()
+                .any(|raw| probe.mask_line(raw).as_ref().contains("\\begin{document}"))
+        };
+        let mut in_body = !has_begin_document;
         let mut words = 0u32;
         let index = self.out.files.len();
         self.out.files.push(FileCount {
@@ -297,15 +302,23 @@ impl Counter {
         for raw in text.lines() {
             let masked = scanner.mask_line(raw);
             let code = masked.as_ref();
-            if !in_body {
-                in_body = code.contains("\\begin{document}");
-                continue;
-            }
-            let n = prose::words(raw, &mut self.prose).len() as u32;
+            let (raw_body, code_body) = if !in_body {
+                if let Some(pos) = code.find("\\begin{document}") {
+                    in_body = true;
+                    let after = pos + "\\begin{document}".len();
+                    let raw_after = raw.get(after..).unwrap_or("");
+                    (raw_after, &code[after..])
+                } else {
+                    continue;
+                }
+            } else {
+                (raw, code)
+            };
+            let n = prose::words(raw_body, &mut self.prose).len() as u32;
             words += n;
             self.out.total_words += n;
-            self.stats(code);
-            for child in includes(code) {
+            self.stats(code_body);
+            for child in includes(code_body) {
                 self.out.files[index].words = words;
                 let mut child = PathBuf::from(child.trim());
                 if child.extension().is_none() {
@@ -369,10 +382,17 @@ impl Counter {
                     None => break,
                 }
             }
-            if m.0 > 0
-                && code.as_bytes()[m.0 - 1] != b'\\'
-                && !code[..m.0].ends_with(|ch: char| ch.is_ascii_alphabetic())
-            {
+            // Require `cite` to belong to a real LaTeX command (`\cite`, `\textcite`, etc.), not
+            // prose words like `excite{foo}` or line-start `cite{foo}`.
+            let cmd_start = code[..m.0]
+                .trim_end_matches(|ch: char| ch.is_ascii_alphabetic())
+                .len();
+            let backslashes = code.as_bytes()[..cmd_start]
+                .iter()
+                .rev()
+                .take_while(|&&b| b == b'\\')
+                .count();
+            if backslashes % 2 == 0 {
                 continue;
             }
             if let Some(keys) = braced(rest) {
@@ -505,5 +525,29 @@ mod tests {
         let c = counts(&Project::open(d.path()).unwrap());
         assert_eq!(c.display_math, 2);
         assert_eq!(c.total_words, 2);
+    }
+
+    #[test]
+    fn counter_ignores_commented_begin_document_inline_prose_and_non_command_cite() {
+        let d = tempfile::tempdir().unwrap();
+        // 1. Commented `% \begin{document}` must not blank out a body-less file.
+        write(
+            d.path(),
+            "main.tex",
+            "\\documentclass{article}\n% \\begin{document}\nOne two three.\n",
+        );
+        let c1 = counts(&Project::open(d.path()).unwrap());
+        assert_eq!(c1.total_words, 3);
+
+        // 2. Prose and commands on the same line as `\begin{document}` are counted, while
+        //    non-command `excite{foo}` / bare `cite{bar}` are NOT counted as citations.
+        write(
+            d.path(),
+            "main.tex",
+            "\\documentclass{article}\n\\begin{document} Hello world \\cite{real}.\nexcite{fake} and cite{alsofake}.\n\\end{document}\n",
+        );
+        let c2 = counts(&Project::open(d.path()).unwrap());
+        assert_eq!(c2.citations, 1);
+        assert!(c2.total_words >= 4, "got {} words", c2.total_words);
     }
 }

@@ -155,7 +155,8 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) -> Option<Stri
                 )
             });
             // Compact 4.0 image viewer toolbar (replaces the hidden LaTeX formatting bar).
-            let bar = Rect::from_min_size(area.min, vec2(area.width(), 40.0));
+            let bar_h = 40.0_f32.min(area.height().max(0.0));
+            let bar = Rect::from_min_size(area.min, vec2(area.width().max(0.0), bar_h));
             ui.painter().rect_filled(bar, 0, p.surface);
             ui.painter().hline(
                 bar.x_range(),
@@ -163,61 +164,84 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) -> Option<Stri
                 Stroke::new(1.0, p.border),
             );
             let name = path.rsplit('/').next().unwrap_or(path);
-            {
+            if bar.width() >= 28.0 && bar.height() >= 20.0 {
+                let inner = bar.shrink2(vec2(12.0_f32.min(bar.width() * 0.25), 0.0));
                 let mut tb = ui.new_child(
                     egui::UiBuilder::new()
-                        .max_rect(bar.shrink2(vec2(12.0, 0.0)))
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        .max_rect(inner)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 );
-                tb.spacing_mut().item_spacing.x = 8.0;
-                crate::icons::show(&mut tb, crate::icons::IMAGE, 14.5, p.muted);
-                tb.label(
-                    egui::RichText::new(name)
-                        .font(FontId::new(13.0, crate::theme::font::sans_500()))
-                        .color(p.ink),
-                );
-                tb.label(
-                    egui::RichText::new(format!("{} × {} px", size[0], size[1]))
-                        .font(FontId::monospace(11.5))
-                        .color(p.muted),
-                );
-                tb.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    if crate::widgets::Button::new("100%")
-                        .size(crate::widgets::Size::Sm)
-                        .kind(if *actual {
-                            crate::widgets::Kind::Primary
-                        } else {
-                            crate::widgets::Kind::Ghost
-                        })
-                        .show(ui, p)
-                        .clicked()
-                    {
-                        *actual = true;
-                    }
-                    if crate::widgets::Button::new("Fit")
-                        .size(crate::widgets::Size::Sm)
-                        .kind(if !*actual {
-                            crate::widgets::Kind::Primary
-                        } else {
-                            crate::widgets::Kind::Ghost
-                        })
-                        .show(ui, p)
-                        .clicked()
-                    {
-                        *actual = false;
+                tb.set_clip_rect(inner);
+                tb.spacing_mut().item_spacing.x = 6.0;
+                if crate::widgets::Button::new("100%")
+                    .size(crate::widgets::Size::Sm)
+                    .kind(if *actual {
+                        crate::widgets::Kind::Primary
+                    } else {
+                        crate::widgets::Kind::Ghost
+                    })
+                    .show(&mut tb, p)
+                    .clicked()
+                {
+                    *actual = true;
+                }
+                if crate::widgets::Button::new("Fit")
+                    .size(crate::widgets::Size::Sm)
+                    .kind(if !*actual {
+                        crate::widgets::Kind::Primary
+                    } else {
+                        crate::widgets::Kind::Ghost
+                    })
+                    .show(&mut tb, p)
+                    .clicked()
+                {
+                    *actual = false;
+                }
+                tb.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    crate::icons::show(ui, crate::icons::IMAGE, 14.5, p.muted);
+                    if ui.available_width() > 140.0 {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(name)
+                                    .font(FontId::new(13.0, crate::theme::font::sans_500()))
+                                    .color(p.ink),
+                            )
+                            .truncate(),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("{} × {} px", size[0], size[1]))
+                                    .font(FontId::monospace(11.5))
+                                    .color(p.muted),
+                            )
+                            .truncate(),
+                        );
+                    } else {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(name)
+                                    .font(FontId::new(13.0, crate::theme::font::sans_500()))
+                                    .color(p.ink),
+                            )
+                            .truncate(),
+                        );
                     }
                 });
             }
 
             let canvas = Rect::from_min_max(pos2(area.left(), bar.bottom()), area.max);
-            let natural = vec2(size[0] as f32, size[1] as f32) / ui.ctx().pixels_per_point();
-            let stage = canvas.shrink(24.0);
-            let fitted = {
+            let natural =
+                vec2(size[0].max(1) as f32, size[1].max(1) as f32) / ui.ctx().pixels_per_point();
+            let pad = 24.0_f32.min(canvas.width().min(canvas.height()).max(0.0) * 0.25);
+            let stage = canvas.shrink(pad);
+            let fitted = if stage.width() > 0.0 && stage.height() > 0.0 {
                 let k = (stage.width() / natural.x)
                     .min(stage.height() / natural.y)
-                    .min(1.0);
+                    .clamp(0.0, 1.0);
                 natural * k
+            } else {
+                vec2(0.0, 0.0)
             };
             let dark_mode = p.dark;
             let mut clicked = false;
@@ -261,49 +285,65 @@ pub fn show(ui: &mut Ui, p: &Palette, path: &str, v: &mut Viewer) -> Option<Stri
                 }
             };
             if *actual {
-                let mut c = ui.new_child(egui::UiBuilder::new().max_rect(canvas));
-                egui::ScrollArea::both()
-                    .id_salt(("viewer", path))
-                    .auto_shrink([false, false])
-                    .show(&mut c, |ui| {
-                        let (rect, _) =
-                            ui.allocate_exact_size(natural + vec2(48.0, 48.0), Sense::hover());
-                        draw(
-                            ui,
-                            Rect::from_min_size(rect.min + vec2(24.0, 24.0), natural),
-                        );
-                    });
-            } else {
+                if canvas.width() > 0.0 && canvas.height() > 0.0 {
+                    let mut c = ui.new_child(egui::UiBuilder::new().max_rect(canvas));
+                    egui::ScrollArea::both()
+                        .id_salt(("viewer", path))
+                        .auto_shrink([false, false])
+                        .show(&mut c, |ui| {
+                            let (rect, _) =
+                                ui.allocate_exact_size(natural + vec2(48.0, 48.0), Sense::hover());
+                            draw(
+                                ui,
+                                Rect::from_min_size(rect.min + vec2(24.0, 24.0), natural),
+                            );
+                        });
+                }
+            } else if fitted.x > 0.0 && fitted.y > 0.0 {
                 draw(ui, Rect::from_center_size(stage.center(), fitted));
             }
             if clicked {
                 *actual = !*actual;
             }
-            // Quiet status pill at bottom-left.
-            let text = format!(
-                "{name} · {} × {} px · click to {}",
-                size[0],
-                size[1],
-                if *actual { "fit" } else { "view at 100%" }
-            );
-            let g = ui
-                .painter()
-                .layout_no_wrap(text, FontId::proportional(12.0), p.muted);
-            let r = Rect::from_min_size(
-                pos2(
-                    canvas.left() + 12.0,
-                    canvas.bottom() - 10.0 - g.size().y - 6.0,
-                ),
-                g.size() + vec2(18.0, 6.0),
-            );
-            ui.painter().rect(
-                r,
-                crate::theme::R_SM,
-                p.surface,
-                Stroke::new(1.0, p.border),
-                egui::StrokeKind::Inside,
-            );
-            ui.painter().galley(r.min + vec2(9.0, 3.0), g, p.muted);
+            // Quiet status pill at bottom-left, truncated to fit inside `canvas`.
+            if canvas.width() >= 64.0 && canvas.height() >= 36.0 {
+                let text = format!(
+                    "{name} · {} × {} px · click to {}",
+                    size[0],
+                    size[1],
+                    if *actual { "fit" } else { "view at 100%" }
+                );
+                let mut job = egui::text::LayoutJob::simple_singleline(
+                    text,
+                    FontId::proportional(12.0),
+                    p.muted,
+                );
+                job.wrap.max_width = (canvas.width() - 42.0).max(20.0);
+                job.wrap.max_rows = 1;
+                job.wrap.overflow_character = Some('…');
+                let g = ui.fonts_mut(|f| f.layout_job(job));
+                let r = Rect::from_min_size(
+                    pos2(
+                        canvas.left() + 12.0,
+                        (canvas.bottom() - 10.0 - g.size().y - 6.0).max(canvas.top() + 4.0),
+                    ),
+                    vec2(
+                        (g.size().x + 18.0).min(canvas.width() - 24.0),
+                        g.size().y + 6.0,
+                    ),
+                );
+                let pill_painter = ui.painter().with_clip_rect(canvas);
+                pill_painter.rect(
+                    r,
+                    crate::theme::R_SM,
+                    p.surface,
+                    Stroke::new(1.0, p.border),
+                    egui::StrokeKind::Inside,
+                );
+                pill_painter
+                    .with_clip_rect(r.shrink2(vec2(4.0, 0.0)))
+                    .galley(r.min + vec2(9.0, 3.0), g, p.muted);
+            }
         }
     }
     url
@@ -441,5 +481,38 @@ mod tests {
         assert!(decode("broken.svg", b"<svg><path></svg>").is_err());
         let huge = br#"<svg xmlns="http://www.w3.org/2000/svg" width="1000000000" height="1000000000"><path d="M0 0h1v1H0z"/></svg>"#;
         assert!(decode("huge.svg", huge).is_err());
+    }
+
+    #[test]
+    fn image_viewer_geometry_stays_valid_across_viewport_matrix() {
+        for &size in crate::testing::VIEWPORT_MATRIX {
+            let mut h = crate::testing::cpu_harness_state(
+                size,
+                crate::theme::LIGHT,
+                |ui, v: &mut Option<Viewer>| {
+                    let viewer = v.get_or_insert_with(|| {
+                        let img = egui::ColorImage::filled([8, 8], Color32::RED);
+                        let tex =
+                            ui.ctx()
+                                .load_texture("test-img", img, egui::TextureOptions::LINEAR);
+                        Viewer::Image {
+                            image: None,
+                            tex: Some(tex),
+                            size: [0, 0],
+                            actual: false,
+                        }
+                    });
+                    show(
+                        ui,
+                        &crate::theme::LIGHT,
+                        "figures/very_long_diagram_filename_for_overlap_check.png",
+                        viewer,
+                    );
+                },
+                None,
+            );
+            h.run_steps(2);
+            crate::testing::assert_ui_geometry(&h, &format!("image viewer size={size:?}"));
+        }
     }
 }

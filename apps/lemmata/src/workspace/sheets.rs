@@ -101,8 +101,16 @@ impl Workspace {
                         egui::Event::Key { key, modifiers, .. } => Some((key, modifiers)),
                         _ => None,
                     };
-                    // Nor does it type into the search box.
-                    i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+                    // Nor does it type, paste, copy, or cut inside the search box.
+                    i.events.retain(|e| {
+                        !matches!(
+                            e,
+                            egui::Event::Text(_)
+                                | egui::Event::Paste(_)
+                                | egui::Event::Copy
+                                | egui::Event::Cut
+                        )
+                    });
                     press
                 });
                 if let Some((key, mods)) = press {
@@ -355,7 +363,9 @@ fn assign(settings: &mut Settings, id: &str, spec: &str) -> Result<Option<String
     let clash = |other: &&shortcuts::Shortcut| {
         other.id != id
             && overlap(other.group, me.group)
-            && shortcuts::specs(other).iter().any(|keys| keys == spec)
+            && shortcuts::specs(other)
+                .iter()
+                .any(|keys| shortcuts::specs_clash(keys, spec))
     };
     if let Some(fixed) = SHORTCUTS
         .iter()
@@ -449,25 +459,21 @@ fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String, settings: &mut S
                                     .inner_margin(Margin::symmetric(0, 4))
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
+                                        let editable = shortcuts::editable(s);
+                                        let k = if recording == Some(s.id) {
+                                            "Press keys…".to_owned()
+                                        } else {
+                                            match shortcuts::key_label(s) {
+                                                k if k.is_empty() && editable => "None".into(),
+                                                k => k,
+                                            }
+                                        };
                                         ui.horizontal(|ui| {
-                                            ui.label(
-                                                RichText::new(s.label).size(13.0).color(p.ink),
-                                            );
-                                            let editable = shortcuts::editable(s);
-                                            let k = if recording == Some(s.id) {
-                                                "Press keys…".to_owned()
-                                            } else {
-                                                match shortcuts::key_label(s) {
-                                                    k if k.is_empty() && editable => "None".into(),
-                                                    k => k,
-                                                }
-                                            };
-                                            if !k.is_empty() {
-                                                ui.with_layout(
-                                                    egui::Layout::right_to_left(
-                                                        egui::Align::Center,
-                                                    ),
-                                                    |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if !k.is_empty() {
                                                         let is_rec = recording == Some(s.id);
                                                         let chip = egui::Frame::new()
                                                             .fill(if is_rec {
@@ -560,9 +566,24 @@ fn shortcut_sheet(ui: &mut Ui, p: &Palette, query: &mut String, settings: &mut S
                                                             );
                                                             changed = true;
                                                         }
-                                                    },
-                                                );
-                                            }
+                                                    }
+                                                    ui.with_layout(
+                                                        egui::Layout::left_to_right(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            ui.add(
+                                                                egui::Label::new(
+                                                                    RichText::new(s.label)
+                                                                        .size(13.0)
+                                                                        .color(p.ink),
+                                                                )
+                                                                .truncate(),
+                                                            );
+                                                        },
+                                                    );
+                                                },
+                                            );
                                         });
                                     });
                                 let b = r.response.rect;

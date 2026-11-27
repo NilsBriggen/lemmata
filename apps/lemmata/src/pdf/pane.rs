@@ -89,6 +89,8 @@ pub struct Pane {
     menu: Option<Menu>,
     /// The page whose thumbnail was last scrolled into view.
     thumb_page: usize,
+    /// Set by `Workspace` to `false` when a modal, sheet, or menu is open above the pane.
+    pub allow_shortcuts: bool,
 }
 
 impl Pane {
@@ -107,6 +109,7 @@ impl Pane {
             outline_closed: HashSet::new(),
             menu: None,
             thumb_page: 0,
+            allow_shortcuts: true,
         }
     }
 
@@ -134,13 +137,18 @@ impl Pane {
         let has_pdf = self.has_pdf();
 
         // Ctrl+F while the PDF (or its search bar) has focus searches the PDF, not the editor.
-        if (self.view_focused(&ctx) || self.search_focused)
+        if self.allow_shortcuts
+            && (self.view_focused(&ctx) || self.search_focused)
             && crate::shortcuts::consume(&ctx, "pdf-search")
         {
             out.push(Action::RawLog(false));
             self.open_search();
         }
-        if self.search_open && !b.raw_log_open && (self.view_focused(&ctx) || self.search_focused) {
+        if self.allow_shortcuts
+            && self.search_open
+            && !b.raw_log_open
+            && (self.view_focused(&ctx) || self.search_focused)
+        {
             let f3 = ctx.input_mut(|i| {
                 if i.consume_key(egui::Modifiers::SHIFT, egui::Key::F3) {
                     Some(-1)
@@ -292,7 +300,10 @@ impl Pane {
         if b.raw_log_open {
             // Not drawn, so it can't tell that it lost focus: Ctrl+F is the raw log's own meanwhile.
             self.view.focused = false;
-            out.extend(self.problems.show_raw_log(&mut c, p, b));
+            out.extend(
+                self.problems
+                    .show_raw_log(&mut c, p, b, self.allow_shortcuts),
+            );
         } else if has_pdf {
             match self.view.show(&mut c, p) {
                 Some(super::view::Event::SourceClick(n, x, y)) => {

@@ -55,10 +55,12 @@ pub fn region_size(width: f32, height: f32, region: Region) -> (f32, f32, f32) {
 
 /// The scale that fits a region into a box without cutting it off.
 pub fn fit_scale(w: f32, h: f32, box_w: f32, box_h: f32) -> f32 {
-    if w <= 0.0 || h <= 0.0 {
+    if w <= 0.0 || h <= 0.0 || !w.is_finite() || !h.is_finite() {
         1.0
+    } else if !box_w.is_finite() || !box_h.is_finite() {
+        0.0
     } else {
-        (box_w / w).min(box_h / h)
+        (box_w.max(0.0) / w).min(box_h.max(0.0) / h)
     }
 }
 
@@ -74,9 +76,9 @@ pub fn format_elapsed(seconds: f64) -> String {
 }
 
 /// Formats remaining time when a target talk duration is set:
-/// positive -> "14:20", zero -> "0:00", negative (overtime) -> "+1:05".
+/// positive -> "14:20", zero -> "0:00", overtime (`<= -1.0s`) -> "+0:01", "+1:05".
 pub fn format_remaining(remaining_seconds: f64) -> String {
-    if remaining_seconds < -0.5 {
+    if remaining_seconds <= -1.0 {
         format!("+{}", format_elapsed(-remaining_seconds))
     } else {
         format_elapsed(remaining_seconds.max(0.0))
@@ -164,7 +166,7 @@ impl Timer {
             return PaceState::Idle;
         }
         let rem = target - elapsed;
-        if rem < 0.0 {
+        if rem <= -1.0 {
             PaceState::Overtime
         } else if rem <= (target * 0.15).max(120.0).min(target * 0.5) {
             PaceState::Warning
@@ -256,6 +258,9 @@ pub struct PresenterStore {
     pub notes: BTreeMap<usize, String>,
     /// 1-based slide number -> drawn ink strokes.
     pub annotations: BTreeMap<usize, Vec<StrokePath>>,
+    /// True if an existing `.lemmata/presenter.json` failed to parse; prevents silent overwrite.
+    #[serde(skip)]
+    pub load_failed: bool,
 }
 
 impl Default for PresenterStore {
@@ -270,6 +275,7 @@ impl Default for PresenterStore {
             swap_notes_half: false,
             notes: BTreeMap::new(),
             annotations: BTreeMap::new(),
+            load_failed: false,
         }
     }
 }
@@ -280,7 +286,15 @@ impl PresenterStore {
         let Ok(raw) = std::fs::read_to_string(path) else {
             return Self::default();
         };
-        let mut store: Self = serde_json::from_str(&raw).unwrap_or_default();
+        let mut store: Self = match serde_json::from_str(&raw) {
+            Ok(s) => s,
+            Err(_) => {
+                return Self {
+                    load_failed: !raw.trim().is_empty(),
+                    ..Self::default()
+                };
+            }
+        };
         store.notes_font_size = store.notes_font_size.clamp(13.0, 28.0);
         store.split_x = store.split_x.clamp(0.38, 0.78);
         store.split_y = store.split_y.clamp(0.22, 0.72);
@@ -288,6 +302,12 @@ impl PresenterStore {
     }
 
     pub fn save(&self, project_root: &Path) -> Result<(), String> {
+        if self.load_failed {
+            return Err(
+                "Skipped overwriting malformed .lemmata/presenter.json to preserve existing data."
+                    .into(),
+            );
+        }
         let path = project_root.join(PRESENTER_FILE);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -346,27 +366,33 @@ pub fn extract_tex_notes(source: &str) -> BTreeMap<usize, String> {
             pos += "\\end{frame}".len();
             continue;
         }
-        if rest.starts_with("\\note") {
+        if rest.starts_with("\\note")
+            && !bytes
+                .get(pos + "\\note".len())
+                .is_some_and(u8::is_ascii_alphabetic)
+        {
             let after_cmd = pos + "\\note".len();
             let mut cursor = after_cmd;
-            // Skip optional overlay spec `<...>` or `[...]`
-            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-                cursor += 1;
-            }
-            if cursor < bytes.len()
-                && bytes[cursor] == b'<'
-                && let Some(end) = source[cursor..].find('>')
-            {
-                cursor += end + 1;
-            }
-            if cursor < bytes.len()
-                && bytes[cursor] == b'['
-                && let Some(end) = source[cursor..].find(']')
-            {
-                cursor += end + 1;
-            }
-            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-                cursor += 1;
+            // Skip optional overlay spec `<...>` and/or `[...]` in any order.
+            loop {
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                if cursor < bytes.len()
+                    && bytes[cursor] == b'<'
+                    && let Some(end) = source[cursor..].find('>')
+                {
+                    cursor += end + 1;
+                    continue;
+                }
+                if cursor < bytes.len()
+                    && bytes[cursor] == b'['
+                    && let Some(end) = source[cursor..].find(']')
+                {
+                    cursor += end + 1;
+                    continue;
+                }
+                break;
             }
             if cursor < bytes.len() && bytes[cursor] == b'{' {
                 let start = cursor + 1;
@@ -374,7 +400,12 @@ pub fn extract_tex_notes(source: &str) -> BTreeMap<usize, String> {
                 let mut i = start;
                 while i < bytes.len() && depth > 0 {
                     match bytes[i] {
-                        b'\\' => i += 2,
+                        b'\\' => {
+                            i += 1;
+                            if i < bytes.len() {
+                                i += source[i..].chars().next().map_or(1, char::len_utf8);
+                            }
+                        }
                         b'{' => {
                             depth += 1;
                             i += 1;
@@ -383,7 +414,7 @@ pub fn extract_tex_notes(source: &str) -> BTreeMap<usize, String> {
                             depth -= 1;
                             i += 1;
                         }
-                        _ => i += 1,
+                        _ => i += source[i..].chars().next().map_or(1, char::len_utf8),
                     }
                 }
                 if depth == 0 {
@@ -406,6 +437,14 @@ pub fn extract_tex_notes(source: &str) -> BTreeMap<usize, String> {
                     continue;
                 }
             }
+        }
+        // Skip escaped characters (such as `\%`, `\\`) so `\%` is not mistaken for a comment.
+        if bytes[pos] == b'\\' {
+            pos += 1;
+            if pos < bytes.len() {
+                pos += source[pos..].chars().next().map_or(1, char::len_utf8);
+            }
+            continue;
         }
         if bytes[pos] == b'%' {
             let line_end = source[pos..].find('\n').map_or(bytes.len(), |n| pos + n);
@@ -544,5 +583,44 @@ mod tests {
         let loaded = PresenterStore::load(tmp.path());
         assert_eq!(loaded, s);
         assert_eq!(loaded.annotated_slide_count(), 1);
+    }
+
+    #[test]
+    fn corrupt_presenter_json_is_not_silently_overwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".lemmata");
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = "{ broken json";
+        std::fs::write(dir.join("presenter.json"), bad).unwrap();
+        let loaded = PresenterStore::load(tmp.path());
+        assert!(loaded.load_failed);
+        assert!(loaded.save(tmp.path()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("presenter.json")).unwrap(),
+            bad
+        );
+    }
+
+    #[test]
+    fn extract_tex_notes_handles_escapes_utf8_and_overlay_orders() {
+        let tex = r"\begin{frame}
+100\% complete! \note[item]<1-2>{Ümlaut \ö and \{braces\}}
+\end{frame}";
+        let notes = extract_tex_notes(tex);
+        assert_eq!(
+            notes.get(&1).map(String::as_str),
+            Some(r"Ümlaut \ö and \{braces\}")
+        );
+    }
+
+    #[test]
+    fn remaining_time_never_flashes_plus_zero_and_fit_scale_clamps_negative_boxes() {
+        for step in -200..=200 {
+            let rem = step as f64 * 0.05;
+            let text = format_remaining(rem);
+            assert_ne!(text, "+0:00", "rem={rem} produced +0:00");
+        }
+        assert_eq!(fit_scale(400.0, 200.0, -10.0, 200.0), 0.0);
+        assert_eq!(fit_scale(400.0, 200.0, f32::NAN, 200.0), 0.0);
     }
 }

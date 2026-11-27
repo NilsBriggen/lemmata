@@ -1228,8 +1228,42 @@ pub fn text_area(
     out
 }
 
+#[derive(Clone, Default)]
+struct ModalFocusState {
+    pending: Vec<(u8, egui::Id)>,
+    /// Active modals keyed by their `entered_id`: `(seen_this_pass, previous_focus)`.
+    /// If a modal closes via a footer button (not rendered on the next pass), `seen_this_pass`
+    /// stays `false` in `output_hook` and focus is restored automatically.
+    active: std::collections::HashMap<egui::Id, (bool, Option<egui::Id>)>,
+}
+
+fn modal_focus_id() -> egui::Id {
+    egui::Id::unique("modal-focus-state")
+}
+
+fn with_modal_focus(ctx: &egui::Context, f: impl FnOnce(&mut ModalFocusState)) {
+    let reg_id = egui::Id::unique("modal-focus-registered");
+    let already = ctx.data_mut(|d| {
+        let registered = d.get_temp::<bool>(reg_id).unwrap_or(false);
+        if !registered {
+            d.insert_temp(reg_id, true);
+        }
+        registered
+    });
+    if !already {
+        ctx.add_plugin(ModalFocus);
+    }
+    ctx.data_mut(|d| {
+        let mut st = d
+            .get_temp::<ModalFocusState>(modal_focus_id())
+            .unwrap_or_default();
+        f(&mut st);
+        d.insert_temp(modal_focus_id(), st);
+    });
+}
+
 #[derive(Default)]
-struct ModalFocus(Vec<(u8, egui::Id)>);
+struct ModalFocus;
 
 impl egui::Plugin for ModalFocus {
     fn debug_name(&self) -> &'static str {
@@ -1237,12 +1271,41 @@ impl egui::Plugin for ModalFocus {
     }
 
     fn output_hook(&mut self, ctx: &egui::Context, _output: &mut egui::FullOutput) {
-        for (delay, id) in std::mem::take(&mut self.0) {
-            if delay == 0 {
-                ctx.memory_mut(|m| m.request_focus(id));
-            } else {
-                self.0.push((delay - 1, id));
+        let (vanished, ready) = ctx.data_mut(|d| {
+            let mut st = d
+                .get_temp::<ModalFocusState>(modal_focus_id())
+                .unwrap_or_default();
+            let mut vanished = Vec::new();
+            st.active.retain(|&entered_id, &mut (ref mut seen, prev)| {
+                if *seen {
+                    *seen = false;
+                    true
+                } else {
+                    vanished.push((entered_id, prev));
+                    false
+                }
+            });
+            let mut ready = Vec::new();
+            for (delay, id) in std::mem::take(&mut st.pending) {
+                if delay == 0 {
+                    ready.push(id);
+                } else {
+                    st.pending.push((delay - 1, id));
+                }
             }
+            d.insert_temp(modal_focus_id(), st);
+            (vanished, ready)
+        });
+        for (entered_id, prev) in vanished {
+            ctx.data_mut(|d| d.insert_temp(entered_id, false));
+            if let Some(id) = prev
+                && ctx.memory(|m| m.focused().is_none())
+            {
+                ctx.memory_mut(|m| m.request_focus(id));
+            }
+        }
+        for id in ready {
+            ctx.memory_mut(|m| m.request_focus(id));
         }
     }
 }
@@ -1312,8 +1375,10 @@ pub fn modal_focus_restore(ctx: &egui::Context, id_salt: &str, previous: Option<
     let entered_id = egui::Id::unique(("modal-entered", id_salt));
     ctx.data_mut(|d| d.insert_temp(entered_id, false));
     if let Some(id) = previous {
-        ctx.add_plugin(ModalFocus::default());
-        ctx.with_plugin(|plugin: &mut ModalFocus| plugin.0.push((1, id)));
+        with_modal_focus(ctx, |st| {
+            st.active.remove(&entered_id);
+            st.pending.push((1, id));
+        });
     }
 }
 
@@ -1587,10 +1652,16 @@ fn modal_full<R>(
     }
     if closed {
         ctx.data_mut(|d| d.insert_temp(entered_id, false));
-        if let Some(id) = previous_focus {
-            ctx.add_plugin(ModalFocus::default());
-            ctx.with_plugin(|plugin: &mut ModalFocus| plugin.0.push((1, id)));
-        }
+        with_modal_focus(ctx, |st| {
+            st.active.remove(&entered_id);
+            if let Some(id) = previous_focus {
+                st.pending.push((1, id));
+            }
+        });
+    } else {
+        with_modal_focus(ctx, |st| {
+            st.active.insert(entered_id, (true, previous_focus));
+        });
     }
     ModalResponse { closed }
 }
@@ -2276,6 +2347,56 @@ mod tests {
             );
         }
         h.key_press(egui::Key::Escape);
+        h.run();
+        h.run();
+        assert_eq!(h.ctx.memory(|m| m.focused()), expected_focus);
+    }
+
+    #[test]
+    fn modal_closed_via_footer_button_also_restores_focus() {
+        let p = theme::LIGHT;
+        let mut open = false;
+        let mut initially_focused = false;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([640.0, 480.0])
+            .with_context_setup(move |ctx| {
+                theme::install_fonts(ctx);
+                theme::apply(ctx, &p);
+            })
+            .build_ui(move |ui| {
+                let background = Button::new("Background").show(ui, &p);
+                if !initially_focused {
+                    background.request_focus();
+                    initially_focused = true;
+                }
+                if background.clicked() {
+                    open = true;
+                }
+                if open {
+                    let mut done = false;
+                    let response = modal(
+                        ui.ctx(),
+                        &p,
+                        "Footer close dialog",
+                        400.0,
+                        |ui| {
+                            ui.label("Body");
+                        },
+                        Some(&mut |ui| {
+                            if Button::new("Done").show(ui, &p).clicked() {
+                                done = true;
+                            }
+                        }),
+                    );
+                    if response.closed || done {
+                        open = false;
+                    }
+                }
+            });
+        let expected_focus = h.ctx.memory(|m| m.focused());
+        h.get_by_label("Background").click();
+        h.run();
+        h.get_by_label("Done").click();
         h.run();
         h.run();
         assert_eq!(h.ctx.memory(|m| m.focused()), expected_focus);

@@ -366,12 +366,24 @@ impl Workspace {
 
     /// Reads a file again from disk after a restore, a replace or a rename changed it. Edits made
     /// since stay unsaved, so the disk text then asks which version to keep instead of replacing them.
+    /// If the restored snapshot removed the file from disk, closes its open tab cleanly instead of
+    /// emitting a spurious read-error toast; open image/PDF viewer tabs are refreshed too.
     pub(crate) fn reload(&mut self, backend: &Backend, path: &str) {
+        if !self.info.root.join(path).exists() {
+            if self.editors.contains_key(path) || self.viewers.contains_key(path) {
+                self.reloading.remove(path);
+                self.deleted_conflicts.remove(path);
+                self.drop_tab(backend, path);
+            }
+            return;
+        }
         if self.editors.contains_key(path) {
             let p = path.to_owned();
             self.spawn(backend, move |shell| {
                 Msg::DiskText(p.clone(), shell.read_text(p))
             });
+        } else if self.viewers.contains_key(path) {
+            self.read_viewer(backend, path);
         }
     }
 
@@ -1329,7 +1341,12 @@ impl Workspace {
             |ws, b, r| match r {
                 Ok(_) => {
                     ws.history.confirm_all = None;
-                    let open: Vec<String> = ws.editors.keys().cloned().collect();
+                    let open: Vec<String> = ws
+                        .editors
+                        .keys()
+                        .chain(ws.viewers.keys())
+                        .cloned()
+                        .collect();
                     for p in open {
                         ws.reload(b, &p);
                     }

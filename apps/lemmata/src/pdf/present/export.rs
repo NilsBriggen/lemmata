@@ -54,6 +54,9 @@ pub fn export_annotated_pdf(
     for (idx, page) in pages.iter().enumerate() {
         let slide_num = idx + 1;
         let (pw, ph) = page.render_dimensions();
+        if !pw.is_finite() || !ph.is_finite() || pw <= 0.0 || ph <= 0.0 {
+            return Err(format!("Slide {slide_num} has invalid PDF dimensions."));
+        }
         let (slide_region, notes_region) = regions_swapped(pw, ph, swap_notes_half);
         let (sw, sh, sx) = region_size(pw, ph, slide_region);
 
@@ -117,12 +120,14 @@ pub fn export_annotated_pdf(
             let inner_w = sw;
             let out_w = inner_w + margin * 2.0;
 
+            let wrapped_notes =
+                custom_note.map(|text| wrap_pdf_lines(text, (inner_w - 24.0).max(24.0), 10.5));
             let notes_h = if let Some((_, nw, nh)) = beamer_notes_img {
                 let aspect = if nw > 0.0 { nh / nw } else { 0.75 };
                 (inner_w * aspect).min(sh * 0.95)
-            } else if let Some(text) = custom_note {
-                let wrapped = wrap_pdf_lines(text, inner_w - 20.0, 10.5);
-                ((wrapped.len().max(2) as f32) * 14.5 + 34.0).clamp(96.0, sh * 1.1)
+            } else if let Some(ref wrapped) = wrapped_notes {
+                let max_h = (sh * 1.1).max(96.0);
+                ((wrapped.len().max(2) as f32) * 14.5 + 34.0).clamp(96.0, max_h)
             } else {
                 72.0
             };
@@ -169,13 +174,22 @@ pub fn export_annotated_pdf(
                     "q 0.18 0.50 0.72 rg BT /F2 8.5 Tf {:.2} {title_y:.2} Td (SPEAKER NOTES) Tj ET Q",
                     notes_x + 12.0
                 );
-                if let Some(text) = custom_note {
-                    let wrapped = wrap_pdf_lines(text, inner_w - 24.0, 10.5);
+                if let Some(wrapped) = wrapped_notes {
                     let mut ty = title_y - 16.0;
+                    let max_lines = (((ty - (notes_y + 10.0)) / 14.5).floor() as usize) + 1;
+                    let truncated = wrapped.len() > max_lines;
+                    let visible = wrapped.len().min(max_lines);
                     let _ = writeln!(content, "q 0.10 0.13 0.17 rg BT /F1 10.5 Tf");
-                    for line in wrapped {
+                    for (line_idx, mut line) in wrapped.into_iter().take(visible).enumerate() {
                         if ty < notes_y + 10.0 {
                             break;
+                        }
+                        if truncated && line_idx + 1 == visible {
+                            let chars: Vec<char> = line.chars().collect();
+                            if chars.len() > 3 {
+                                line = chars[..chars.len() - 3].iter().collect();
+                            }
+                            line.push_str("...");
                         }
                         let _ = writeln!(
                             content,
@@ -304,8 +318,10 @@ fn crop_to_jpeg(
 }
 
 /// Simple word wrapper for Type1 Helvetica (avg glyph width ~0.52 * font_size).
+/// Splits single unbreakable tokens longer than `max_chars` (such as URLs) so text never
+/// overflows the notes card or PDF MediaBox.
 fn wrap_pdf_lines(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
-    let max_chars = ((max_width / (font_size * 0.52)).floor() as usize).max(16);
+    let max_chars = ((max_width.max(0.0) / (font_size * 0.52)).floor() as usize).max(8);
     let mut out = Vec::new();
     for para in text.lines() {
         let trimmed = para.trim_end();
@@ -315,9 +331,26 @@ fn wrap_pdf_lines(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
         }
         let mut line = String::new();
         for word in trimmed.split_whitespace() {
+            let word_len = word.chars().count();
+            if word_len > max_chars {
+                if !line.is_empty() {
+                    out.push(std::mem::take(&mut line));
+                }
+                let mut chunk = String::new();
+                for ch in word.chars() {
+                    chunk.push(ch);
+                    if chunk.chars().count() >= max_chars {
+                        out.push(std::mem::take(&mut chunk));
+                    }
+                }
+                if !chunk.is_empty() {
+                    line = chunk;
+                }
+                continue;
+            }
             if line.is_empty() {
                 line.push_str(word);
-            } else if line.chars().count() + 1 + word.chars().count() <= max_chars {
+            } else if line.chars().count() + 1 + word_len <= max_chars {
                 line.push(' ');
                 line.push_str(word);
             } else {
@@ -497,5 +530,44 @@ mod tests {
             wb > 362.0 && hb > 272.0,
             "handout page should expand for notes"
         );
+    }
+
+    #[test]
+    fn wrap_pdf_lines_splits_long_urls_and_export_truncates_overflow_with_ellipsis() {
+        let url = "https://example.org/".to_owned() + &"segment".repeat(25);
+        let lines = wrap_pdf_lines(&url, 180.0, 10.5);
+        assert!(lines.len() >= 4, "long unbreakable URL must be split");
+        assert!(lines.iter().all(|l| l.chars().count() <= 36));
+
+        // Build a 1-page PDF and pass 80 lines of notes so the notes card hits max height.
+        let mut w = PdfWriter::new();
+        let pages_id = w.reserve_id();
+        let content_id = w.add_stream(b"q 1 1 1 rg 0 0 362 272 re f Q");
+        let page_id = w.add_object(
+            format!(
+                "<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 362 272] /Contents {content_id} 0 R >>"
+            )
+            .into_bytes(),
+        );
+        w.set_reserved(
+            pages_id,
+            format!("<< /Type /Pages /Count 1 /Kids [{page_id} 0 R] >>").into_bytes(),
+        );
+        let cat = w.add_object(format!("<< /Type /Catalog /Pages {pages_id} 0 R >>").into_bytes());
+        let src_pdf = w.finish(cat);
+
+        let mut notes = BTreeMap::new();
+        let long_note = (1..=80)
+            .map(|i| format!("Line {i}: talking point details"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        notes.insert(1, long_note);
+        let out = export_annotated_pdf(&src_pdf, &BTreeMap::new(), &notes, true, false).unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("...) Tj"),
+            "truncated handout notes should end with an ellipsis"
+        );
+        assert!(Pdf::new(Arc::new(out)).is_ok());
     }
 }

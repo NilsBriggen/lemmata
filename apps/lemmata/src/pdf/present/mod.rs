@@ -34,6 +34,10 @@ fn scale_key(scale: f32) -> u32 {
     (scale * 16.0).round().max(1.0) as u32
 }
 
+/// Maximum rendered texture sizes kept per page: covers audience stage, presenter stage,
+/// next-slide card, Beamer second-screen notes card, and filmstrip/overview thumbnails at once.
+pub(crate) const MAX_RENDERED_SIZES_PER_PAGE: usize = 5;
+
 pub struct Presentation {
     engine: Engine,
     doc: u64,
@@ -90,6 +94,8 @@ pub struct Presentation {
     pub(crate) timer: Timer,
     /// Persistent presenter settings, per-slide notes, and per-slide annotations.
     pub store: PresenterStore,
+    /// Read-only `.tex` `\note{...}` / `% NOTE:` fallback notes (never persisted unless edited).
+    pub(crate) tex_notes: BTreeMap<usize, String>,
     pub(crate) store_dirty: bool,
     /// True if annotations or notes were modified during this presentation since last PDF export.
     pub dirty_for_export: bool,
@@ -119,16 +125,11 @@ impl Presentation {
             doc,
             bytes: bytes.clone(),
         });
-        let mut store = project_root
+        let store = project_root
             .as_deref()
             .map(PresenterStore::load)
             .unwrap_or_default();
-        // Seed speaker notes from `.tex` \note{...} / % NOTE: comments for slides without custom notes.
-        if let Some(extracted) = tex_source_notes {
-            for (slide, text) in extracted {
-                store.notes.entry(slide).or_insert(text);
-            }
-        }
+        let tex_notes = tex_source_notes.unwrap_or_default();
         Presentation {
             engine,
             doc,
@@ -166,12 +167,52 @@ impl Presentation {
             jump_at: None,
             timer: Timer::default(),
             store,
+            tex_notes,
             store_dirty: false,
             dirty_for_export: false,
             status_toast: None,
             pending_actions: Vec::new(),
             entered: false,
         }
+    }
+
+    /// Returns the active speaker note for 1-based `slide`: user-edited note in `store.notes`
+    /// takes precedence over read-only `.tex` `\note{}` fallback.
+    pub(crate) fn effective_note(&self, slide: usize) -> Option<&str> {
+        if let Some(custom) = self.store.notes.get(&slide) {
+            let trimmed = custom.trim();
+            (!trimmed.is_empty()).then_some(trimmed)
+        } else {
+            self.tex_notes
+                .get(&slide)
+                .map(String::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        }
+    }
+
+    /// Clones `store` merged with `.tex` fallback notes for annotated PDF export.
+    pub fn export_store(&self) -> PresenterStore {
+        let mut out = self.store.clone();
+        for (&slide, text) in &self.tex_notes {
+            out.notes.entry(slide).or_insert_with(|| text.clone());
+        }
+        out
+    }
+
+    pub(crate) fn current_slide_has_beamer_notes(&self) -> bool {
+        self.total() > 0 && self.page_regions(self.page - 1).1.is_some()
+    }
+
+    /// Closes the presenter console viewport and resets all presenter-only transient states.
+    pub(crate) fn close_presenter_console(&mut self) {
+        self.presenter = false;
+        self.shortcuts_open = false;
+        self.editing_notes = false;
+        self.editing_slide_jump = false;
+        self.target_menu_open = false;
+        self.export_menu_open = false;
+        self.finish_active_stroke();
     }
 
     /// Drains any pending workspace actions (such as exporting an annotated PDF).
@@ -320,6 +361,8 @@ impl Presentation {
         let target = clamp_page(to, self.total());
         if target != self.page {
             self.page = target;
+            self.editing_notes = false;
+            self.editing_slide_jump = false;
             if self.timer.started.is_none() {
                 self.timer.toggle();
             }
@@ -361,7 +404,8 @@ impl Presentation {
                         self.tex.retain(|k, _| keep(k.0));
                         self.asked.retain(|k| keep(k.0));
                     }
-                    // Keep up to 3 rendered sizes per page (audience, presenter, next/notes/thumb).
+                    // Keep up to MAX_RENDERED_SIZES_PER_PAGE sizes per page (audience, presenter,
+                    // next card, Beamer notes card, filmstrip/overview) to avoid eviction thrash.
                     let mut sizes: Vec<_> = self
                         .tex
                         .iter()
@@ -369,7 +413,7 @@ impl Presentation {
                         .map(|(k, (_, used))| (*used, *k))
                         .collect();
                     sizes.sort_unstable_by_key(|s| std::cmp::Reverse(*s));
-                    for (_, k) in sizes.into_iter().skip(3) {
+                    for (_, k) in sizes.into_iter().skip(MAX_RENDERED_SIZES_PER_PAGE) {
                         self.tex.remove(&k);
                         self.asked.remove(&k);
                     }
@@ -388,9 +432,18 @@ impl Presentation {
         page: usize,
         region: Region,
     ) -> Option<Rect> {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return None;
+        }
         let size = *self.sizes.get(page)?;
+        if !size.x.is_finite() || !size.y.is_finite() || size.x <= 0.0 || size.y <= 0.0 {
+            return None;
+        }
         let (w, h, x) = region_size(size.x, size.y, region);
         let k = fit_scale(w, h, rect.width(), rect.height());
+        if k <= 0.0 || !k.is_finite() {
+            return None;
+        }
         let shown = vec2(w * k, h * k);
         let at = Rect::from_center_size(rect.center(), shown);
         let scale = k * ui.ctx().pixels_per_point();
@@ -584,6 +637,12 @@ impl Presentation {
             .is_some_and(|t| now.duration_since(t).as_secs_f32() < 3.0);
         if !fresh_pointer {
             self.pointer_uv = None;
+        } else if !self.laser_trail.is_empty() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(33));
+        } else if self.pointer_uv.is_some() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
         }
         // 3. Laser or Spotlight overlay.
         if let Some(uv) = self.pointer_uv {
@@ -690,7 +749,7 @@ impl Presentation {
                 .with_inner_size([1240.0, 780.0]),
             |ctx, _| {
                 if ctx.input(|i| i.viewport().close_requested()) {
-                    self.presenter = false;
+                    self.close_presenter_console();
                     return;
                 }
                 if self.presenter_fullscreen_dirty {
@@ -720,11 +779,37 @@ impl Presentation {
     /// Shared keyboard handler for both audience and presenter windows.
     /// Returns `false` on `Esc` when no overlay or blanking state is active.
     pub(crate) fn keys(&mut self, ctx: &egui::Context, presenter: bool) -> bool {
+        // Clear hidden notes-editing mode if overview or Beamer second-screen notes replaced it.
+        if self.editing_notes && (self.overview || self.current_slide_has_beamer_notes()) {
+            self.editing_notes = false;
+        }
         // When typing inside inline speaker notes or slide-jump text box, only Escape exits editing.
         if presenter && (self.editing_notes || self.editing_slide_jump) {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.editing_notes = false;
                 self.editing_slide_jump = false;
+            }
+            return true;
+        }
+        // While shortcuts overlay or a popover menu is open, block all underlying stage shortcuts
+        // so keys cannot mutate slides/tools/blanking behind the overlay.
+        if self.shortcuts_open || self.target_menu_open || self.export_menu_open {
+            let (esc, toggle_help) = ctx.input_mut(|i| {
+                use egui::{Key, Modifiers};
+                let esc = i.consume_key(Modifiers::NONE, Key::Escape);
+                let help = self.shortcuts_open
+                    && (i.consume_key(Modifiers::NONE, Key::Questionmark)
+                        || i.consume_key(Modifiers::SHIFT, Key::Slash)
+                        || i.consume_key(Modifiers::NONE, Key::H));
+                (esc, help)
+            });
+            if esc || toggle_help {
+                if self.shortcuts_open {
+                    self.shortcuts_open = false;
+                } else {
+                    self.target_menu_open = false;
+                    self.export_menu_open = false;
+                }
             }
             return true;
         }
@@ -880,6 +965,10 @@ impl Presentation {
         }
         if toggle_overview {
             self.overview = !self.overview;
+            if self.overview {
+                self.editing_notes = false;
+                self.editing_slide_jump = false;
+            }
         }
         if toggle_filmstrip {
             self.store.filmstrip = !self.store.filmstrip;
@@ -887,6 +976,10 @@ impl Presentation {
         }
         if toggle_shortcuts {
             self.shortcuts_open = !self.shortcuts_open;
+            if self.shortcuts_open {
+                self.target_menu_open = false;
+                self.export_menu_open = false;
+            }
         }
         if toggle_laser {
             self.toggle_tool(StageTool::Laser);
@@ -973,4 +1066,270 @@ fn index_outline(nodes: &[OutlineNode]) -> BTreeMap<usize, String> {
     }
     walk(nodes, &mut map);
     map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+
+    fn test_presentation(ctx: &egui::Context) -> Presentation {
+        let mut p = Presentation::new(ctx, Arc::new(Vec::new()), 1);
+        p.sizes = vec![
+            vec2(362.83, 272.13),
+            vec2(362.83, 272.13),
+            vec2(362.83, 272.13),
+        ];
+        p
+    }
+
+    fn setup_fonts(ctx: &egui::Context) {
+        crate::theme::install_fonts(ctx);
+        crate::theme::apply(ctx, &crate::theme::DARK);
+    }
+
+    #[test]
+    fn audience_hud_stays_stable_and_clickable_on_hover() {
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([1200.0, 740.0])
+            .with_context_setup(setup_fonts)
+            .build_ui_state(
+                |ui, state: &mut (Option<Presentation>, bool)| {
+                    let p = state.0.get_or_insert_with(|| test_presentation(ui.ctx()));
+                    stage::audience_ui(p, ui.ctx(), &mut state.1);
+                },
+                (None, true),
+            );
+        h.step();
+
+        // Move pointer into the bottom HUD bar region.
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(pos2(600.0, 740.0 - 32.0)));
+        h.step();
+
+        let presenter_rect = h
+            .query_by_label("Presenter")
+            .expect("HUD should appear when pointer enters bottom bar")
+            .rect();
+        // Move pointer directly onto the Presenter button and hold steady PAST the 2.2s idle
+        // auto-hide window (via simulated time), verifying zero oscillation and no premature hide.
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(presenter_rect.center()));
+        for frame in 0..12 {
+            crate::testing::advance_time_and_step(&mut h, 0.3);
+            assert!(
+                h.query_by_label("Presenter").is_some(),
+                "audience bottom HUD flickered or hid while hovered on frame {frame}"
+            );
+        }
+        crate::testing::assert_settles(&mut h, "audience HUD hovered");
+        crate::testing::assert_ui_geometry(&h, "audience HUD hovered");
+
+        // Clicking a non-button gap inside the HUD pill must be blocked and NOT advance the slide.
+        let hud_gap = pos2(presenter_rect.left() - 4.0, presenter_rect.center().y);
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(hud_gap));
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: hud_gap,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: hud_gap,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        assert_eq!(
+            h.state().0.as_ref().unwrap().page,
+            1,
+            "clicking HUD pill padding should not advance slide"
+        );
+
+        // Clicking Presenter activates presenter mode without advancing the slide.
+        h.get_by_label("Presenter").click();
+        h.step();
+        {
+            let p = h.state().0.as_ref().unwrap();
+            assert!(
+                p.presenter,
+                "clicking Presenter should enable presenter mode"
+            );
+            assert_eq!(
+                p.page, 1,
+                "clicking Presenter should not fall through to advance slide"
+            );
+        }
+
+        // Clicking Next slide advances from slide 1 to slide 2.
+        h.get_by_label("Next slide").click();
+        h.step();
+        assert_eq!(h.state().0.as_ref().unwrap().page, 2);
+
+        // Clicking Annotate toggles Pen on AND keeps the HUD usable while hovered so Pen can be
+        // toggled back off cleanly.
+        h.get_by_label("Annotate slide (D)").click();
+        h.step();
+        assert_eq!(h.state().0.as_ref().unwrap().tool, StageTool::Pen);
+        assert!(
+            h.query_by_label("Annotate slide (D)").is_some(),
+            "HUD should remain interactive while hovered even with Pen active"
+        );
+        // While Pen is active + slide frozen, clicking the stage must NOT advance slides behind
+        // the frozen audience screen (PRES-14).
+        h.state_mut().0.as_mut().unwrap().frozen_page = Some(2);
+        let stage_pt = pos2(900.0, 300.0);
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(stage_pt));
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: stage_pt,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: stage_pt,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        assert_eq!(
+            h.state().0.as_ref().unwrap().page,
+            2,
+            "stage click with frozen+Pen should not advance slide"
+        );
+
+        // Move back to HUD and toggle Pen off.
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(presenter_rect.center()));
+        h.step();
+        h.get_by_label("Annotate slide (D)").click();
+        h.step();
+        assert_eq!(h.state().0.as_ref().unwrap().tool, StageTool::None);
+    }
+
+    #[test]
+    fn presenter_footer_popovers_isolation_and_viewport_matrix() {
+        // Contract: per-page texture cache holds at least 4 sizes (audience + presenter + Beamer
+        // notes + filmstrip) so Presenter View never enters an eviction/re-render loop (PRES-02).
+        const { assert!(MAX_RENDERED_SIZES_PER_PAGE >= 4) };
+
+        let mut h = crate::testing::cpu_harness_state(
+            [1180.0, 740.0],
+            crate::theme::DARK,
+            |ui, state: &mut (Option<Presentation>, bool)| {
+                let p = state.0.get_or_insert_with(|| test_presentation(ui.ctx()));
+                state.1 = p.presenter_ui(ui);
+            },
+            (None, true),
+        );
+        h.step();
+
+        // Open Save PDF popover, verify clicking directly over the underlying Filmstrip button
+        // dismisses the popover via the foreground scrim WITHOUT toggling Filmstrip (PRES-08).
+        let film_pos = h.get_by_label("Filmstrip").rect().center();
+        h.get_by_label("Save PDF").click();
+        h.run_steps(2);
+        assert!(h.state().0.as_ref().unwrap().export_menu_open);
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(film_pos));
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: film_pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: film_pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(2);
+        {
+            let p = h.state().0.as_ref().unwrap();
+            assert!(!p.export_menu_open, "outside click should close popover");
+            assert!(
+                !p.store.filmstrip,
+                "outside click on popover scrim must not leak release to Filmstrip"
+            );
+        }
+
+        // Open Save PDF popover again and trigger annotated handout export.
+        h.get_by_label("Save PDF").click();
+        h.run_steps(2);
+        h.get_by_label("Slides + speaker notes (handout)…").click();
+        h.run_steps(2);
+        let p = h.state_mut().0.as_mut().unwrap();
+        assert!(!p.export_menu_open);
+        let actions = p.take_actions();
+        assert!(matches!(
+            actions.as_slice(),
+            [PresentAction::ExportPdf {
+                include_notes: true
+            }]
+        ));
+
+        // Keys behind overlays/popovers must not mutate slides/blanking (PRES-05),
+        // overview/go clears editing_notes (PRES-07), and close_presenter_console resets flags (PRES-06).
+        p.editing_notes = true;
+        p.go(2.0);
+        assert!(!p.editing_notes, "go() should clear editing_notes");
+        p.shortcuts_open = true;
+        h.key_press(egui::Key::ArrowRight);
+        let ctx = h.ctx.clone();
+        let keep = h.state_mut().0.as_mut().unwrap().keys(&ctx, true);
+        assert!(keep);
+        assert_eq!(
+            h.state().0.as_ref().unwrap().page,
+            2,
+            "ArrowRight behind shortcuts_open must not advance slide"
+        );
+        h.state_mut().0.as_mut().unwrap().close_presenter_console();
+        {
+            let p = h.state().0.as_ref().unwrap();
+            assert!(!p.presenter && !p.shortcuts_open && !p.editing_notes && !p.target_menu_open);
+        }
+
+        // Sweep every viewport size from 1400x900 down to 35x35 across overlays & modes
+        // (catches PRES-03, PRES-04, PRES-09, PRES-10, PRES-17, PRES-18).
+        for &size in crate::testing::VIEWPORT_MATRIX {
+            for mode in 0..5u8 {
+                let mut mh = crate::testing::cpu_harness_state(
+                    size,
+                    crate::theme::DARK,
+                    move |ui, state: &mut Option<Presentation>| {
+                        let p = state.get_or_insert_with(|| {
+                            let mut pr = test_presentation(ui.ctx());
+                            pr.store.target_minutes = Some(15);
+                            pr.store.filmstrip = mode == 1;
+                            pr.target_menu_open = mode == 2;
+                            pr.export_menu_open = mode == 3;
+                            pr.shortcuts_open = mode == 4;
+                            pr
+                        });
+                        p.presenter_ui(ui);
+                    },
+                    None,
+                );
+                mh.run_steps(2);
+                crate::testing::assert_ui_geometry(
+                    &mh,
+                    &format!("presenter_ui size={size:?} mode={mode}"),
+                );
+            }
+        }
+    }
 }

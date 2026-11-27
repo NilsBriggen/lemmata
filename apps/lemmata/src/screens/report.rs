@@ -101,6 +101,12 @@ pub fn show(ctx: &egui::Context, p: &Palette, system: &str, log: &str) -> Option
     let copied_at = ctx.data(|d| d.get_temp::<f64>(copied_id));
     let now = ctx.input(|i| i.time);
     let recently_copied = copied_at.is_some_and(|t| now - t < 2.0);
+    if let Some(t) = copied_at
+        && now - t < 2.0
+    {
+        let wait = (2.05 - (now - t)).clamp(0.05, 2.05);
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+    }
     let full_text = if log.is_empty() {
         system.to_owned()
     } else {
@@ -186,6 +192,8 @@ pub fn show(ctx: &egui::Context, p: &Palette, system: &str, log: &str) -> Option
             {
                 ui.ctx().copy_text(copy_text.clone());
                 ui.ctx().data_mut(|d| d.insert_temp(copied_id, now));
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs(2));
             }
             if Button::new("Cancel").show(ui, p).clicked() {
                 cancel = true;
@@ -259,5 +267,28 @@ mod tests {
         let q: std::collections::HashMap<_, _> = u.query_pairs().into_owned().collect();
         assert_eq!(q["template"], "bug.yml");
         assert_eq!(q["system"], "Lemmata 0.1.0");
+    }
+
+    #[test]
+    fn copied_label_schedules_repaint_and_reverts_after_timeout() {
+        use egui_kittest::kittest::Queryable;
+        let mut h = crate::testing::cpu_harness_state(
+            [900.0, 600.0],
+            crate::theme::LIGHT,
+            |ui, (): &mut ()| {
+                show(ui.ctx(), &crate::theme::LIGHT, "Lemmata 4.1.1\nLinux", "");
+            },
+            (),
+        );
+        h.run_steps(2);
+        h.get_by_label("Copy details").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Copied").is_some());
+        crate::testing::assert_timer_schedules_repaint(&h, "report Copied label reset");
+        crate::testing::advance_time_and_step(&mut h, 2.2);
+        assert!(
+            h.query_by_label("Copy details").is_some(),
+            "Copied label should revert after 2s"
+        );
     }
 }

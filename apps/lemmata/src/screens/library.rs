@@ -180,7 +180,7 @@ fn home(path: &str) -> String {
         }
     }
     let b = path.as_bytes();
-    if b.len() > 9 && b[0].is_ascii_uppercase() && &path[1..9] == ":\\Users\\" {
+    if b.len() > 9 && b[0].is_ascii_uppercase() && &b[1..9] == b":\\Users\\" {
         let rest = &path[9..];
         return match rest.find('\\') {
             Some(i) => format!("~{}", &rest[i..]),
@@ -2470,6 +2470,29 @@ mod snapshots {
         for (p, scheme) in [(theme::LIGHT, "light"), (theme::DARK, "dark")] {
             results.add(render(p, "list", &format!("library-list-{scheme}")));
             results.add(render(p, "grid", &format!("library-grid-{scheme}")));
+        }
+    }
+
+    #[test]
+    fn home_never_panics_on_non_ascii_windows_or_unix_paths() {
+        // Direct regression for WS-01 plus systematic multi-byte UTF-8 boundary sweep.
+        assert_eq!(home(r"D:\Work\Übung"), r"D:\Work\Übung");
+        assert_eq!(home(r"C:\Users\Üser\paper"), r"~\paper");
+        let prefixes = [
+            "C:\\", "D:\\", "Z:\\", "c:\\", "/home/", "/Users/", "Ü:\\", "",
+        ];
+        let segments = ["Work", "Users", "Übung", "café", "日本語", "🦀", "a", ""];
+        for pfx in prefixes {
+            for &s1 in &segments {
+                for &s2 in &segments {
+                    let candidate = format!("{pfx}{s1}\\{s2}");
+                    let _ = home(&candidate);
+                    let _ = folder_of(&candidate);
+                    let unix = format!("{pfx}{s1}/{s2}");
+                    let _ = home(&unix);
+                    let _ = folder_of(&unix);
+                }
+            }
         }
     }
 }

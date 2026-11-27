@@ -335,7 +335,9 @@ pub fn trust_key(path: &str) -> String {
 fn valid_indent(v: &Value) -> Value {
     match v {
         Value::String(s) if s == "tab" => v.clone(),
-        Value::Number(n) if matches!(n.as_f64(), Some(2.0 | 4.0 | 8.0)) => v.clone(),
+        Value::Number(n) if matches!(n.as_f64(), Some(2.0 | 4.0 | 8.0)) => {
+            Value::from(n.as_f64().unwrap() as u64)
+        }
         _ => Value::from(4),
     }
 }
@@ -902,5 +904,15 @@ mod tests {
             Some("Mod-b")
         );
         assert!(!s.keybindings.contains_key("broken"));
+    }
+
+    #[test]
+    fn float_indent_json_normalizes_to_integer() {
+        for (raw, expected) in [(2.0, 2u64), (4.0, 4u64), (8.0, 8u64)] {
+            let saved: Map<String, Value> =
+                serde_json::from_value(json!({ "indent": raw })).unwrap();
+            let s = Settings::from_saved(&saved);
+            assert_eq!(s.indent.as_u64(), Some(expected));
+        }
     }
 }

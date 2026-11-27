@@ -1106,7 +1106,11 @@ fn show_app_section(
             );
             let mut indent = match &s.indent {
                 serde_json::Value::String(t) if t == "tab" => "tab".to_owned(),
-                v => v.as_u64().unwrap_or(2).to_string(),
+                v => v
+                    .as_u64()
+                    .or_else(|| v.as_f64().map(|f| f.round() as u64))
+                    .unwrap_or(2)
+                    .to_string(),
             };
             if setting_select(
                 ui,

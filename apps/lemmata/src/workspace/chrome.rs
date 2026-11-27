@@ -2346,6 +2346,7 @@ pub fn menus(
                 .is_none_or(|f| frame > f + 1);
             ctx.data_mut(|d| d.insert_temp(seen_id, frame));
             let mut close = !ws.modal_open()
+                && !ws.app_modal_open
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
             let mut clear = false;
             let area = egui::Area::new(egui::Id::unique("notices-drawer"))

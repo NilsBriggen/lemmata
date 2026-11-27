@@ -54,6 +54,20 @@ pub(super) fn audience_ui(p: &mut Presentation, ctx: &egui::Context, keep: &mut 
             };
             ui.painter().rect_filled(rect, 0, bg);
 
+            let hud_rect = audience_hud_rect(rect);
+            let ptr_pos = ui.input(|i| i.pointer.hover_pos().or_else(|| i.pointer.interact_pos()));
+            let pointer_in_window = ptr_pos.is_some_and(|pos| rect.contains(pos));
+            let pointer_in_hud = ptr_pos.is_some_and(|pos| hud_rect.contains(pos));
+            let since_move = ui.input(|i| i.pointer.time_since_last_movement());
+            let recently_moved = pointer_in_window && since_move <= 2.2;
+            let show_hud = !p.overview
+                && !p.shortcuts_open
+                && if p.tool == StageTool::None {
+                    pointer_in_hud || recently_moved
+                } else {
+                    p.active_stroke.is_none() && pointer_in_hud
+                };
+
             let mut consumed_by_tool = false;
             if p.overview && p.total() > 0 {
                 overview_grid(p, ui, rect);
@@ -72,8 +86,15 @@ pub(super) fn audience_ui(p: &mut Presentation, ctx: &egui::Context, keep: &mut 
                 let (slide, _) = p.page_regions(page_idx);
                 if let Some(slide_rect) = p.draw(ui, rect, page_idx, slide) {
                     let allow_draw = p.frozen_page.is_none();
-                    consumed_by_tool =
-                        p.interact_stage(ui, slide_rect, aud_page, "audience-stage", allow_draw);
+                    if !(show_hud && pointer_in_hud) {
+                        consumed_by_tool = p.interact_stage(
+                            ui,
+                            slide_rect,
+                            aud_page,
+                            "audience-stage",
+                            allow_draw,
+                        );
+                    }
                     p.paint_overlays(ui, slide_rect, aud_page, p.frozen_page.is_none());
                 }
             }
@@ -102,12 +123,15 @@ pub(super) fn audience_ui(p: &mut Presentation, ctx: &egui::Context, keep: &mut 
             }
 
             // Auto-hiding interactive floating HUD when pointer moves on the audience window.
-            let recent = r.hovered() && ui.input(|i| i.pointer.time_since_last_movement() <= 2.2);
-            let mut hud_hovered = false;
-            if recent && !p.overview && p.tool == StageTool::None {
-                hud_hovered = audience_hud(p, ui, rect, keep);
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(2300));
+            // Visibility is checked geometrically against `rect` / `hud_rect` (never `r.hovered()`),
+            // so hovering HUD buttons does not drop `r.hovered()` and oscillate the HUD on/off.
+            if show_hud && hud_rect.width() >= 24.0 && hud_rect.height() >= 24.0 {
+                audience_hud(p, ui, hud_rect, keep);
+                if recently_moved && !pointer_in_hud {
+                    let wait = (2.25 - since_move).clamp(0.05, 2.3);
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_secs_f32(wait));
+                }
             }
 
             if p.shortcuts_open && !p.presenter {
@@ -118,7 +142,8 @@ pub(super) fn audience_ui(p: &mut Presentation, ctx: &egui::Context, keep: &mut 
             if !p.overview
                 && !p.shortcuts_open
                 && !consumed_by_tool
-                && !hud_hovered
+                && p.tool == StageTool::None
+                && !(show_hud && pointer_in_hud)
                 && r.clicked()
                 && let Some(pos) = r.interact_pointer_pos()
             {
@@ -130,20 +155,29 @@ pub(super) fn audience_ui(p: &mut Presentation, ctx: &egui::Context, keep: &mut 
                 p.go(p.page as f64 + step);
             }
 
-            if !recent && !p.overview && p.tool == StageTool::None {
+            if !show_hud && !p.overview && !p.shortcuts_open && p.tool == StageTool::None {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::None);
             }
         });
 }
 
-/// Sleek floating bottom-center HUD pill on the audience screen on pointer hover.
-fn audience_hud(p: &mut Presentation, ui: &mut Ui, rect: Rect, keep: &mut bool) -> bool {
-    let hud_h = 38.0;
-    let hud_w = (rect.width() - 40.0).min(460.0);
-    let hud = Rect::from_center_size(
-        pos2(rect.center().x, rect.bottom() - 32.0),
+fn audience_hud_rect(rect: Rect) -> Rect {
+    let hud_h = 40.0_f32.min(rect.height().max(0.0));
+    let hud_w = (rect.width() - 40.0).clamp(0.0, 460.0);
+    Rect::from_center_size(
+        pos2(
+            rect.center().x,
+            (rect.bottom() - 32.0).max(rect.top() + hud_h * 0.5),
+        ),
         vec2(hud_w, hud_h),
-    );
+    )
+}
+
+/// Sleek floating bottom-center HUD pill on the audience screen on pointer hover.
+fn audience_hud(p: &mut Presentation, ui: &mut Ui, hud: Rect, keep: &mut bool) {
+    // Capture clicks on the pill surface before placing child buttons so gaps inside the HUD
+    // never fall through to the slide-advance click handler underneath.
+    let _pill_blocker = ui.interact(hud, ui.scope_id().with("audience-hud-bg"), Sense::click());
     ui.painter().add(
         egui::Shadow {
             offset: [0, 6],
@@ -160,9 +194,6 @@ fn audience_hud(p: &mut Presentation, ui: &mut Ui, rect: Rect, keep: &mut bool) 
         Stroke::new(1.0, LINE),
         StrokeKind::Inside,
     );
-    let hovered = ui
-        .input(|i| i.pointer.hover_pos())
-        .is_some_and(|pos| hud.contains(pos));
 
     let mut c = ui.new_child(
         egui::UiBuilder::new()
@@ -210,7 +241,11 @@ fn audience_hud(p: &mut Presentation, ui: &mut Ui, rect: Rect, keep: &mut bool) 
     .on_hover_text("Open presenter view (P)")
     .clicked()
     {
-        p.presenter = !p.presenter;
+        if p.presenter {
+            p.close_presenter_console();
+        } else {
+            p.presenter = true;
+        }
     }
     if icon_btn(
         &mut c,
@@ -239,7 +274,6 @@ fn audience_hud(p: &mut Presentation, ui: &mut Ui, rect: Rect, keep: &mut bool) 
             *keep = false;
         }
     });
-    hovered
 }
 
 /// Scrollable slide overview grid (`G`) with section titles and annotated-slide dots.
@@ -424,19 +458,25 @@ pub(super) fn presenter_ui(p: &mut Presentation, ui: &mut Ui) -> bool {
     // Footer controls.
     let export_anchor = presenter_footer(p, ui, foot, &mut keep);
 
-    // Popovers & overlays.
-    if p.target_menu_open
+    // Popovers & overlays (mutually exclusive foreground Areas with click-absorbing scrims).
+    if p.shortcuts_open {
+        p.target_menu_open = false;
+        p.export_menu_open = false;
+        egui::Area::new(egui::Id::unique("presenter-shortcuts"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(full.min)
+            .show(ui.ctx(), |ui| {
+                let (rect, _) = ui.allocate_exact_size(full.size(), Sense::hover());
+                shortcuts_overlay(p, ui, rect);
+            });
+    } else if p.target_menu_open
         && let Some(anchor) = target_anchor
     {
-        target_duration_popover(p, ui, anchor);
-    }
-    if p.export_menu_open
+        target_duration_popover(p, ui.ctx(), full, anchor);
+    } else if p.export_menu_open
         && let Some(anchor) = export_anchor
     {
-        export_pdf_popover(p, ui, anchor);
-    }
-    if p.shortcuts_open {
-        shortcuts_overlay(p, ui, full);
+        export_pdf_popover(p, ui.ctx(), full, anchor);
     }
 
     // Transient status toast (bottom-right above footer).
@@ -498,22 +538,26 @@ fn paint_pacing_bar(p: &Presentation, ui: &Ui, rect: Rect) {
 fn presenter_header(p: &mut Presentation, ui: &mut Ui, head: Rect) -> Option<Rect> {
     let mut target_anchor = None;
     let total = p.total();
+    if head.width() < 48.0 || head.height() < 16.0 {
+        return None;
+    }
     let compact = head.width() < 760.0;
-    let inner = head.shrink2(vec2(16.0, 0.0));
+    let inner = head.shrink2(vec2(16.0_f32.min(head.width() * 0.2), 0.0));
 
-    // Right side: Wall clock (+ optional ETA) & Fullscreen toggle.
+    // Right side: Wall clock (+ optional ETA when wide enough) & Fullscreen toggle.
     let now = chrono::Local::now();
     let clock = now.format("%H:%M").to_string();
-    let eta = p.store.target_minutes.filter(|&m| m > 0).map(|mins| {
-        let rem = (mins as f64 * 60.0 - p.timer.elapsed()).max(0.0) as i64;
-        let end = now + chrono::Duration::seconds(rem);
-        format!("Ends {}", end.format("%H:%M"))
-    });
-    let right_w = if eta.is_some() && !compact {
-        172.0
-    } else {
-        104.0
-    };
+    let show_eta = head.width() >= 860.0;
+    let eta = show_eta
+        .then(|| {
+            p.store.target_minutes.filter(|&m| m > 0).map(|mins| {
+                let rem = (mins as f64 * 60.0 - p.timer.elapsed()).max(0.0) as i64;
+                let end = now + chrono::Duration::seconds(rem);
+                format!("Ends {}", end.format("%H:%M"))
+            })
+        })
+        .flatten();
+    let right_w = (if eta.is_some() { 172.0 } else { 104.0_f32 }).min(inner.width());
     let right_rect = Rect::from_min_max(pos2(inner.right() - right_w, inner.top()), inner.max);
     let mut r_ui = ui.new_child(
         egui::UiBuilder::new()
@@ -529,9 +573,7 @@ fn presenter_header(p: &mut Presentation, ui: &mut Ui, head: Rect) -> Option<Rec
             ))
             .color(INK),
     );
-    if let Some(eta_text) = eta
-        && !compact
-    {
+    if let Some(eta_text) = eta {
         r_ui.label(
             RichText::new(eta_text)
                 .font(FontId::monospace(11.5))
@@ -551,97 +593,117 @@ fn presenter_header(p: &mut Presentation, ui: &mut Ui, head: Rect) -> Option<Rec
         p.presenter_fullscreen_dirty = true;
     }
 
-    // Left side: Slide counter (click to jump) + active section + audience status badge.
-    let left_max_x = (inner.center().x - 190.0).max(inner.left() + 180.0);
-    let left_rect = Rect::from_min_max(
-        inner.min,
-        pos2(left_max_x.min(right_rect.left() - 12.0), inner.bottom()),
-    );
-    let mut l_ui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(left_rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    l_ui.spacing_mut().item_spacing.x = 8.0;
-    if p.editing_slide_jump {
-        let resp = l_ui.add(
-            egui::TextEdit::singleline(&mut p.slide_jump_text)
-                .desired_width(54.0)
-                .font(FontId::new(14.0, theme::font::mono_500()))
-                .hint_text("1.."),
-        );
-        resp.request_focus();
-        let commit = l_ui.input(|i| i.key_pressed(egui::Key::Enter)) || resp.lost_focus();
-        if commit {
-            if let Ok(n) = p.slide_jump_text.trim().parse::<usize>() {
-                p.go(n as f64);
-            }
-            p.editing_slide_jump = false;
-        }
+    // Center & Left geometry: mathematically disjoint at every viewport width.
+    let center_w = if compact { 256.0 } else { 360.0 };
+    let left_min_w = 112.0;
+    let gap = 8.0;
+    let center_min_x = inner.left() + left_min_w + gap;
+    let center_max_x = right_rect.left() - gap;
+    let center_rect = if center_max_x - center_min_x >= center_w {
+        let ideal_left = head.center().x - center_w * 0.5;
+        let left = ideal_left.clamp(center_min_x, center_max_x - center_w);
+        Some(Rect::from_min_size(
+            pos2(left, inner.top()),
+            vec2(center_w, inner.height()),
+        ))
     } else {
-        let slide_lbl = format!(
-            "Slide {} / {}",
-            p.page,
-            if total > 0 {
-                total.to_string()
-            } else {
-                "…".into()
-            }
-        );
-        if pill_btn(&mut l_ui, None, &slide_lbl, false, total == 0)
-            .on_hover_text("Click or type slide number + Enter to jump")
-            .clicked()
-        {
-            p.editing_slide_jump = true;
-            p.slide_jump_text = p.page.to_string();
-        }
-    }
+        None
+    };
 
-    // Audience state alert badges (Blackout / Whiteout / Frozen).
-    match p.screen {
-        ScreenMode::Blackout => {
-            if status_badge(&mut l_ui, "BLACKOUT", DANGER, DANGER_BG)
-                .on_hover_text("Audience screen is black · click or press B to resume")
+    // Left side: Slide counter (click to jump) + active section + audience status badge.
+    let left_right = center_rect
+        .map(|c| c.left() - gap)
+        .unwrap_or(right_rect.left() - gap)
+        .max(inner.left());
+    let left_rect = Rect::from_min_max(inner.min, pos2(left_right, inner.bottom()));
+    if left_rect.width() >= 40.0 {
+        let mut l_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(left_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        l_ui.set_clip_rect(left_rect);
+        l_ui.spacing_mut().item_spacing.x = 8.0;
+        if p.editing_slide_jump {
+            let resp = l_ui.add(
+                egui::TextEdit::singleline(&mut p.slide_jump_text)
+                    .desired_width(54.0)
+                    .font(FontId::new(14.0, theme::font::mono_500()))
+                    .hint_text("1.."),
+            );
+            resp.request_focus();
+            let commit = l_ui.input(|i| i.key_pressed(egui::Key::Enter)) || resp.lost_focus();
+            if commit {
+                if let Ok(n) = p.slide_jump_text.trim().parse::<usize>() {
+                    p.go(n as f64);
+                }
+                p.editing_slide_jump = false;
+            }
+        } else {
+            let slide_lbl = format!(
+                "Slide {} / {}",
+                p.page,
+                if total > 0 {
+                    total.to_string()
+                } else {
+                    "…".into()
+                }
+            );
+            if pill_btn(&mut l_ui, None, &slide_lbl, false, total == 0)
+                .on_hover_text("Click or type slide number + Enter to jump")
                 .clicked()
             {
-                p.set_screen(ScreenMode::Normal);
+                p.editing_slide_jump = true;
+                p.slide_jump_text = p.page.to_string();
             }
         }
-        ScreenMode::Whiteout => {
-            if status_badge(
-                &mut l_ui,
-                "WHITEOUT",
-                WARN,
-                Color32::from_rgb(0x3a, 0x2e, 0x16),
-            )
-            .on_hover_text("Audience screen is white · click or press W to resume")
-            .clicked()
-            {
-                p.set_screen(ScreenMode::Normal);
+
+        // Audience state alert badges (Blackout / Whiteout / Frozen).
+        if left_rect.width() >= 180.0 {
+            match p.screen {
+                ScreenMode::Blackout => {
+                    if status_badge(&mut l_ui, "BLACKOUT", DANGER, DANGER_BG)
+                        .on_hover_text("Audience screen is black · click or press B to resume")
+                        .clicked()
+                    {
+                        p.set_screen(ScreenMode::Normal);
+                    }
+                }
+                ScreenMode::Whiteout => {
+                    if status_badge(
+                        &mut l_ui,
+                        "WHITEOUT",
+                        WARN,
+                        Color32::from_rgb(0x3a, 0x2e, 0x16),
+                    )
+                    .on_hover_text("Audience screen is white · click or press W to resume")
+                    .clicked()
+                    {
+                        p.set_screen(ScreenMode::Normal);
+                    }
+                }
+                ScreenMode::Normal => {}
+            }
+            if let Some(fp) = p.frozen_page {
+                if status_badge(
+                    &mut l_ui,
+                    &format!("FROZEN · Slide {fp}"),
+                    WARN,
+                    Color32::from_rgb(0x3a, 0x2e, 0x16),
+                )
+                .on_hover_text("Audience is locked on this slide · click or press F to unfreeze")
+                .clicked()
+                {
+                    p.frozen_page = None;
+                }
+            } else if !compact && let Some(sec) = p.section_for(p.page) {
+                l_ui.add(egui::Label::new(RichText::new(sec).size(12.5).color(MUTED)).truncate());
             }
         }
-        ScreenMode::Normal => {}
-    }
-    if let Some(fp) = p.frozen_page {
-        if status_badge(
-            &mut l_ui,
-            &format!("FROZEN · Slide {fp}"),
-            WARN,
-            Color32::from_rgb(0x3a, 0x2e, 0x16),
-        )
-        .on_hover_text("Audience is locked on this slide · click or press F to unfreeze")
-        .clicked()
-        {
-            p.frozen_page = None;
-        }
-    } else if !compact && let Some(sec) = p.section_for(p.page) {
-        l_ui.add(egui::Label::new(RichText::new(sec).size(12.5).color(MUTED)).truncate());
     }
 
     // Center: Timer (click to toggle Elapsed/Remaining), Start/Pause, Reset, Target duration.
-    let center_w = if compact { 280.0 } else { 390.0 };
-    let center_rect = Rect::from_center_size(head.center(), vec2(center_w, head.height()));
-    if center_rect.left() > left_rect.left() + 100.0 && center_rect.right() < right_rect.left() {
+    if let Some(center_rect) = center_rect {
         let mut m = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(center_rect)
@@ -724,6 +786,9 @@ fn presenter_header(p: &mut Presentation, ui: &mut Ui, head: Rect) -> Option<Rec
 }
 
 fn presenter_stage(p: &mut Presentation, ui: &mut Ui, main: Rect) {
+    if main.width() < 24.0 || main.height() < 24.0 {
+        return;
+    }
     if let Some(e) = &p.error {
         ui.painter().text(
             main.left_top() + vec2(20.0, 20.0),
@@ -735,9 +800,11 @@ fn presenter_stage(p: &mut Presentation, ui: &mut Ui, main: Rect) {
         return;
     }
 
-    let split_gap = 12.0;
-    let cur_w = ((main.width() - split_gap) * p.store.split_x)
-        .clamp(240.0, (main.width() - 220.0).max(240.0));
+    let split_gap = 12.0_f32.min(main.width() * 0.1);
+    let avail_w = (main.width() - split_gap).max(0.0);
+    let min_cur_w = 240.0_f32.min(avail_w * 0.5);
+    let max_cur_w = (avail_w - 220.0_f32.min(avail_w * 0.45)).max(min_cur_w);
+    let cur_w = (avail_w * p.store.split_x).clamp(min_cur_w, max_cur_w);
     let cur = Rect::from_min_size(main.min, vec2(cur_w, main.height()));
     let vsplit = Rect::from_min_size(
         pos2(cur.right(), main.top()),
@@ -755,7 +822,8 @@ fn presenter_stage(p: &mut Presentation, ui: &mut Ui, main: Rect) {
         p.store_dirty = true;
     }
     if vresp.hovered() || vresp.dragged() {
-        let grip = Rect::from_center_size(vsplit.center(), vec2(3.0, 44.0));
+        let grip =
+            Rect::from_center_size(vsplit.center(), vec2(3.0, 44.0_f32.min(vsplit.height())));
         ui.painter()
             .rect_filled(grip, CornerRadius::same(2), ACCENT);
     }
@@ -768,10 +836,16 @@ fn presenter_stage(p: &mut Presentation, ui: &mut Ui, main: Rect) {
         Stroke::new(1.0, LINE_SUBTLE),
         StrokeKind::Inside,
     );
-    let stage_top = Rect::from_min_size(cur.min, vec2(cur.width(), 38.0));
+    let stage_top_h = 38.0_f32.min(cur.height());
+    let stage_top = Rect::from_min_size(cur.min, vec2(cur.width(), stage_top_h));
+    let pad_x = 12.0_f32.min(cur.width() * 0.25);
+    let pad_y = 12.0_f32.min((cur.height() - stage_top_h).max(0.0) * 0.25);
     let slide_box = Rect::from_min_max(
-        pos2(cur.left() + 12.0, stage_top.bottom()),
-        cur.max - vec2(12.0, 12.0),
+        pos2(cur.left() + pad_x, stage_top.bottom()),
+        pos2(
+            cur.right() - pad_x,
+            (cur.bottom() - pad_y).max(stage_top.bottom()),
+        ),
     );
 
     // Top-of-stage status & live annotation tool strip.
@@ -877,9 +951,14 @@ fn presenter_stage(p: &mut Presentation, ui: &mut Ui, main: Rect) {
     }
 
     // ── Right Column: Next Slide (top) + Resizable Splitter + Speaker Notes (bottom) ──
-    let hsplit_h = 12.0;
-    let next_h = ((side.height() - hsplit_h) * p.store.split_y)
-        .clamp(120.0, (side.height() - 140.0).max(120.0));
+    if side.width() < 24.0 || side.height() < 24.0 {
+        return;
+    }
+    let hsplit_h = 12.0_f32.min(side.height() * 0.1);
+    let avail_h = (side.height() - hsplit_h).max(0.0);
+    let min_next_h = 120.0_f32.min(avail_h * 0.45);
+    let max_next_h = (avail_h - 140.0_f32.min(avail_h * 0.5)).max(min_next_h);
+    let next_h = (avail_h * p.store.split_y).clamp(min_next_h, max_next_h);
     let next_card = Rect::from_min_size(side.min, vec2(side.width(), next_h));
     let hsplit = Rect::from_min_size(
         pos2(side.left(), next_card.bottom()),
@@ -896,7 +975,7 @@ fn presenter_stage(p: &mut Presentation, ui: &mut Ui, main: Rect) {
         p.store_dirty = true;
     }
     if hresp.hovered() || hresp.dragged() {
-        let grip = Rect::from_center_size(hsplit.center(), vec2(44.0, 3.0));
+        let grip = Rect::from_center_size(hsplit.center(), vec2(44.0_f32.min(hsplit.width()), 3.0));
         ui.painter()
             .rect_filled(grip, CornerRadius::same(2), ACCENT);
     }
@@ -909,48 +988,59 @@ fn presenter_stage(p: &mut Presentation, ui: &mut Ui, main: Rect) {
         Stroke::new(1.0, LINE_SUBTLE),
         StrokeKind::Inside,
     );
-    let next_head = Rect::from_min_size(next_card.min, vec2(next_card.width(), 30.0));
-    ui.painter().text(
-        pos2(next_head.left() + 12.0, next_head.center().y),
-        Align2::LEFT_CENTER,
-        if p.page < total {
-            format!("NEXT · SLIDE {}", p.page + 1)
-        } else {
-            "NEXT".into()
-        },
-        FontId::new(10.5, theme::font::sans_600()),
-        MUTED,
-    );
-    let next_well = Rect::from_min_max(
-        pos2(next_card.left() + 8.0, next_head.bottom()),
-        next_card.max - vec2(8.0, 8.0),
-    );
-    ui.painter()
-        .rect_filled(next_well, CornerRadius::same(6), WELL);
-    if p.page < total {
-        let (next_slide, _) = p.page_regions(p.page);
-        if let Some(nr) = p.draw(ui, next_well.shrink(6.0), p.page, next_slide) {
-            p.paint_overlays(ui, nr, p.page + 1, false);
-        }
-        let nresp = ui
-            .interact(
-                next_well,
-                ui.scope_id().with("next-slide-click"),
-                Sense::click(),
-            )
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text("Click to advance to next slide");
-        if nresp.clicked() {
-            p.go(p.page as f64 + 1.0);
-        }
-    } else if total > 0 {
+    let next_head_h = 30.0_f32.min(next_card.height());
+    let next_head = Rect::from_min_size(next_card.min, vec2(next_card.width(), next_head_h));
+    if next_head_h >= 16.0 {
         ui.painter().text(
-            next_well.center(),
-            Align2::CENTER_CENTER,
-            "End of slides",
-            FontId::proportional(13.5),
-            FAINT,
+            pos2(next_head.left() + 12.0, next_head.center().y),
+            Align2::LEFT_CENTER,
+            if p.page < total {
+                format!("NEXT · SLIDE {}", p.page + 1)
+            } else {
+                "NEXT".into()
+            },
+            FontId::new(10.5, theme::font::sans_600()),
+            MUTED,
         );
+    }
+    let well_pad = 8.0_f32.min(next_card.width() * 0.25);
+    let next_well = Rect::from_min_max(
+        pos2(next_card.left() + well_pad, next_head.bottom()),
+        pos2(
+            next_card.right() - well_pad,
+            (next_card.bottom() - well_pad).max(next_head.bottom()),
+        ),
+    );
+    if next_well.width() >= 12.0 && next_well.height() >= 12.0 {
+        ui.painter()
+            .rect_filled(next_well, CornerRadius::same(6), WELL);
+        if p.page < total {
+            let (next_slide, _) = p.page_regions(p.page);
+            let inner_well =
+                next_well.shrink(6.0_f32.min(next_well.width().min(next_well.height()) * 0.25));
+            if let Some(nr) = p.draw(ui, inner_well, p.page, next_slide) {
+                p.paint_overlays(ui, nr, p.page + 1, false);
+            }
+            let nresp = ui
+                .interact(
+                    next_well,
+                    ui.scope_id().with("next-slide-click"),
+                    Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Click to advance to next slide");
+            if nresp.clicked() {
+                p.go(p.page as f64 + 1.0);
+            }
+        } else if total > 0 {
+            ui.painter().text(
+                next_well.center(),
+                Align2::CENTER_CENTER,
+                "End of slides",
+                FontId::proportional(13.5),
+                FAINT,
+            );
+        }
     }
 
     // Speaker Notes Card.
@@ -964,6 +1054,12 @@ fn presenter_notes_card(
     cur_notes: Option<Region>,
     total: usize,
 ) {
+    if card.width() < 24.0 || card.height() < 24.0 {
+        return;
+    }
+    if cur_notes.is_some() {
+        p.editing_notes = false;
+    }
     ui.painter().rect(
         card,
         CornerRadius::same(10),
@@ -971,86 +1067,101 @@ fn presenter_notes_card(
         Stroke::new(1.0, LINE_SUBTLE),
         StrokeKind::Inside,
     );
-    let head = Rect::from_min_size(card.min, vec2(card.width(), 34.0));
+    let head_h = 34.0_f32.min(card.height());
+    let head = Rect::from_min_size(card.min, vec2(card.width(), head_h));
     ui.painter().hline(
         head.x_range(),
         head.bottom() - 0.5,
         Stroke::new(1.0, LINE_SUBTLE),
     );
 
-    let mut h = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(head.shrink2(vec2(12.0, 2.0)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    h.label(
-        RichText::new("SPEAKER NOTES")
-            .font(FontId::new(10.5, theme::font::sans_600()))
-            .color(MUTED),
-    );
-    h.with_layout(egui::Layout::right_to_left(egui::Align::Center), |h| {
-        h.spacing_mut().item_spacing.x = 4.0;
-        if cur_notes.is_some() {
-            if small_tool_btn(h, icons::ARROW_UP_DOWN, "Swap L/R", p.store.swap_notes_half)
-                .on_hover_text("Swap slide and Beamer notes halves (for second screen=left)")
+    if head.width() > 28.0 && head.height() >= 20.0 {
+        let mut h = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(head.shrink2(vec2(12.0_f32.min(head.width() * 0.2), 2.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        h.label(
+            RichText::new("SPEAKER NOTES")
+                .font(FontId::new(10.5, theme::font::sans_600()))
+                .color(MUTED),
+        );
+        h.with_layout(egui::Layout::right_to_left(egui::Align::Center), |h| {
+            h.spacing_mut().item_spacing.x = 4.0;
+            if cur_notes.is_some() {
+                if small_tool_btn(h, icons::ARROW_UP_DOWN, "Swap L/R", p.store.swap_notes_half)
+                    .on_hover_text("Swap slide and Beamer notes halves (for second screen=left)")
+                    .clicked()
+                {
+                    p.store.swap_notes_half = !p.store.swap_notes_half;
+                    p.store_dirty = true;
+                }
+            } else {
+                if small_tool_btn(
+                    h,
+                    if p.editing_notes {
+                        icons::CHECK
+                    } else {
+                        icons::PENCIL
+                    },
+                    if p.editing_notes { "Done" } else { "Edit" },
+                    p.editing_notes,
+                )
+                .on_hover_text(
+                    "Edit speaker notes for this slide (saved in .lemmata/presenter.json)",
+                )
                 .clicked()
-            {
-                p.store.swap_notes_half = !p.store.swap_notes_half;
-                p.store_dirty = true;
+                {
+                    p.editing_notes = !p.editing_notes;
+                    if p.editing_notes {
+                        let fallback = p.tex_notes.get(&p.page).cloned().unwrap_or_default();
+                        p.store.notes.entry(p.page).or_insert(fallback);
+                    }
+                }
+                if tiny_text_btn(h, "A+")
+                    .on_hover_text("Larger notes text")
+                    .clicked()
+                {
+                    p.store.notes_font_size = (p.store.notes_font_size + 2.0).min(28.0);
+                    p.store_dirty = true;
+                }
+                if tiny_text_btn(h, "A−")
+                    .on_hover_text("Smaller notes text")
+                    .clicked()
+                {
+                    p.store.notes_font_size = (p.store.notes_font_size - 2.0).max(13.0);
+                    p.store_dirty = true;
+                }
             }
-        } else {
-            if small_tool_btn(
-                h,
-                if p.editing_notes {
-                    icons::CHECK
-                } else {
-                    icons::PENCIL
-                },
-                if p.editing_notes { "Done" } else { "Edit" },
-                p.editing_notes,
-            )
-            .on_hover_text("Edit speaker notes for this slide (saved in .lemmata/presenter.json)")
-            .clicked()
-            {
-                p.editing_notes = !p.editing_notes;
-            }
-            if tiny_text_btn(h, "A+")
-                .on_hover_text("Larger notes text")
-                .clicked()
-            {
-                p.store.notes_font_size = (p.store.notes_font_size + 2.0).min(28.0);
-                p.store_dirty = true;
-            }
-            if tiny_text_btn(h, "A−")
-                .on_hover_text("Smaller notes text")
-                .clicked()
-            {
-                p.store.notes_font_size = (p.store.notes_font_size - 2.0).max(13.0);
-                p.store_dirty = true;
-            }
-        }
-    });
+        });
+    }
 
     let body = Rect::from_min_max(pos2(card.left(), head.bottom()), card.max);
+    if body.width() < 24.0 || body.height() < 20.0 {
+        return;
+    }
     if let Some(region) = cur_notes
         && total > 0
     {
-        let well = body.shrink(8.0);
+        let well = body.shrink(8.0_f32.min(body.width().min(body.height()) * 0.25));
         ui.painter().rect_filled(well, CornerRadius::same(6), WELL);
-        p.draw(ui, well.shrink(4.0), p.page - 1, region);
+        let inner = well.shrink(4.0_f32.min(well.width().min(well.height()) * 0.25));
+        p.draw(ui, inner, p.page - 1, region);
         return;
     }
 
-    let mut c = ui.new_child(egui::UiBuilder::new().max_rect(body.shrink(12.0)));
+    let pad = 12.0_f32.min(body.width().min(body.height()) * 0.25);
+    let mut c = ui.new_child(egui::UiBuilder::new().max_rect(body.shrink(pad)));
     let font_size = p.store.notes_font_size;
     if p.editing_notes {
-        let entry = p.store.notes.entry(p.page).or_default();
+        let fallback = p.tex_notes.get(&p.page).cloned().unwrap_or_default();
+        let entry = p.store.notes.entry(p.page).or_insert(fallback);
         let avail = c.available_size();
         egui::ScrollArea::vertical()
             .id_salt(("notes-edit", p.page))
             .show(&mut c, |ui| {
                 let r = ui.add_sized(
-                    vec2(avail.x, (avail.y - 4.0).max(80.0)),
+                    vec2(avail.x.max(1.0), (avail.y - 4.0).max(40.0)),
                     egui::TextEdit::multiline(entry)
                         .font(FontId::proportional(font_size.min(18.0)))
                         .text_color(INK)
@@ -1062,13 +1173,7 @@ fn presenter_notes_card(
                 }
             });
     } else {
-        let note = p
-            .store
-            .notes
-            .get(&p.page)
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(ToOwned::to_owned);
+        let note = p.effective_note(p.page).map(ToOwned::to_owned);
         egui::ScrollArea::vertical()
             .id_salt(("notes-read", p.page))
             .auto_shrink([false, false])
@@ -1214,7 +1319,7 @@ fn presenter_footer(
 ) -> Option<Rect> {
     let mut export_anchor = None;
     let total = p.total();
-    let compact = foot.width() < 920.0;
+    let compact = foot.width() < 1060.0;
     let mut f = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(foot.shrink2(vec2(16.0, 0.0)))
@@ -1316,6 +1421,10 @@ fn presenter_footer(
     .clicked()
     {
         p.overview = !p.overview;
+        if p.overview {
+            p.editing_notes = false;
+            p.editing_slide_jump = false;
+        }
     }
 
     f.with_layout(egui::Layout::right_to_left(egui::Align::Center), |f| {
@@ -1333,6 +1442,10 @@ fn presenter_footer(
         .clicked()
         {
             p.shortcuts_open = !p.shortcuts_open;
+            if p.shortcuts_open {
+                p.target_menu_open = false;
+                p.export_menu_open = false;
+            }
         }
         let ann_count = p.store.annotated_slide_count();
         let save_lbl = if ann_count > 0 {
@@ -1358,153 +1471,204 @@ fn presenter_footer(
     export_anchor
 }
 
-fn target_duration_popover(p: &mut Presentation, ui: &mut Ui, anchor: Rect) {
-    let pop_w = 248.0;
-    let pop_h = 128.0;
+fn target_duration_popover(p: &mut Presentation, ctx: &egui::Context, bounds: Rect, anchor: Rect) {
+    let margin = 12.0_f32.min(bounds.width().min(bounds.height()) * 0.25);
+    let pop_w = 248.0_f32.min((bounds.width() - margin * 2.0).max(1.0));
+    let pop_h = 152.0_f32.min((bounds.height() - margin * 2.0).max(1.0));
+    let min_x = bounds.left() + margin;
+    let max_x = (bounds.right() - pop_w - margin).max(min_x);
+    let min_y = bounds.top() + margin;
+    let max_y = (bounds.bottom() - pop_h - margin).max(min_y);
     let pop = Rect::from_min_size(
         pos2(
-            (anchor.center().x - pop_w * 0.5).clamp(12.0, ui.max_rect().right() - pop_w - 12.0),
-            anchor.bottom() + 8.0,
+            (anchor.center().x - pop_w * 0.5).clamp(min_x, max_x),
+            (anchor.bottom() + 8.0).clamp(min_y, max_y),
         ),
         vec2(pop_w, pop_h),
     );
-    ui.painter().add(
-        egui::Shadow {
-            offset: [0, 8],
-            blur: 24,
-            spread: 0,
-            color: Color32::from_black_alpha(160),
-        }
-        .as_shape(pop, CornerRadius::same(10)),
-    );
-    ui.painter().rect(
-        pop,
-        CornerRadius::same(10),
-        CARD,
-        Stroke::new(1.0, LINE),
-        StrokeKind::Inside,
-    );
-    let mut c = ui.new_child(egui::UiBuilder::new().max_rect(pop.shrink(12.0)));
-    c.spacing_mut().item_spacing.y = 8.0;
-    c.label(
-        RichText::new("TARGET TALK DURATION")
-            .font(FontId::new(10.5, theme::font::sans_600()))
-            .color(MUTED),
-    );
-    c.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(5.0, 5.0);
-        for (lbl, val) in [
-            ("Off", None),
-            ("5m", Some(5)),
-            ("10m", Some(10)),
-            ("15m", Some(15)),
-            ("20m", Some(20)),
-            ("30m", Some(30)),
-            ("45m", Some(45)),
-            ("60m", Some(60)),
-        ] {
-            let active = p.store.target_minutes == val;
-            if pill_btn(ui, None, lbl, active, false).clicked() {
-                p.store.target_minutes = val;
-                if val.is_some() {
-                    p.store.countdown = true;
+    egui::Area::new(egui::Id::unique("presenter-target-popover"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(bounds.min)
+        .show(ctx, |ui| {
+            let (_, scrim) = ui.allocate_exact_size(bounds.size(), Sense::click());
+            let _card_blocker =
+                ui.interact(pop, ui.scope_id().with("target-pop-card"), Sense::click());
+            ui.painter().add(
+                egui::Shadow {
+                    offset: [0, 8],
+                    blur: 24,
+                    spread: 0,
+                    color: Color32::from_black_alpha(160),
                 }
-                p.store_dirty = true;
+                .as_shape(pop, CornerRadius::same(10)),
+            );
+            ui.painter().rect(
+                pop,
+                CornerRadius::same(10),
+                CARD,
+                Stroke::new(1.0, LINE),
+                StrokeKind::Inside,
+            );
+            if pop.width() > 28.0 && pop.height() > 28.0 {
+                let inner = pop.shrink(12.0);
+                let mut c = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+                c.set_clip_rect(inner);
+                c.spacing_mut().item_spacing.y = 8.0;
+                c.label(
+                    RichText::new("TARGET TALK DURATION")
+                        .font(FontId::new(10.5, theme::font::sans_600()))
+                        .color(MUTED),
+                );
+                c.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(5.0, 5.0);
+                    for (lbl, val) in [
+                        ("Off", None),
+                        ("5m", Some(5)),
+                        ("10m", Some(10)),
+                        ("15m", Some(15)),
+                        ("20m", Some(20)),
+                        ("30m", Some(30)),
+                        ("45m", Some(45)),
+                        ("60m", Some(60)),
+                    ] {
+                        let active = p.store.target_minutes == val;
+                        if pill_btn(ui, None, lbl, active, false).clicked() {
+                            p.store.target_minutes = val;
+                            if val.is_some() {
+                                p.store.countdown = true;
+                            }
+                            p.store_dirty = true;
+                            p.target_menu_open = false;
+                        }
+                    }
+                });
+                c.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let cur = p.store.target_minutes.unwrap_or(15);
+                    if tiny_text_btn(ui, "−1m").clicked() {
+                        p.store.target_minutes = Some(cur.saturating_sub(1).max(1));
+                        p.store.countdown = true;
+                        p.store_dirty = true;
+                    }
+                    if tiny_text_btn(ui, "+1m").clicked() {
+                        p.store.target_minutes = Some((cur + 1).min(240));
+                        p.store.countdown = true;
+                        p.store_dirty = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mode_lbl = if p.store.countdown {
+                            "Showing remaining"
+                        } else {
+                            "Showing elapsed"
+                        };
+                        if tiny_text_btn(ui, mode_lbl).clicked() {
+                            p.store.countdown = !p.store.countdown;
+                            p.store_dirty = true;
+                        }
+                    });
+                });
+            }
+            if scrim.clicked() {
                 p.target_menu_open = false;
             }
-        }
-    });
-    c.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        let cur = p.store.target_minutes.unwrap_or(15);
-        if tiny_text_btn(ui, "−1m").clicked() {
-            p.store.target_minutes = Some(cur.saturating_sub(1).max(1));
-            p.store.countdown = true;
-            p.store_dirty = true;
-        }
-        if tiny_text_btn(ui, "+1m").clicked() {
-            p.store.target_minutes = Some((cur + 1).min(240));
-            p.store.countdown = true;
-            p.store_dirty = true;
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mode_lbl = if p.store.countdown {
-                "Showing remaining"
-            } else {
-                "Showing elapsed"
-            };
-            if tiny_text_btn(ui, mode_lbl).clicked() {
-                p.store.countdown = !p.store.countdown;
-                p.store_dirty = true;
-            }
         });
-    });
 }
 
-fn export_pdf_popover(p: &mut Presentation, ui: &mut Ui, anchor: Rect) {
-    let pop_w = 270.0;
-    let pop_h = 118.0;
+fn export_pdf_popover(p: &mut Presentation, ctx: &egui::Context, bounds: Rect, anchor: Rect) {
+    let margin = 12.0_f32.min(bounds.width().min(bounds.height()) * 0.25);
+    let pop_w = 270.0_f32.min((bounds.width() - margin * 2.0).max(1.0));
+    let pop_h = 122.0_f32.min((bounds.height() - margin * 2.0).max(1.0));
+    let min_x = bounds.left() + margin;
+    let max_x = (bounds.right() - pop_w - margin).max(min_x);
+    let min_y = bounds.top() + margin;
+    let max_y = (bounds.bottom() - pop_h - margin).max(min_y);
     let pop = Rect::from_min_size(
         pos2(
-            (anchor.right() - pop_w).clamp(12.0, ui.max_rect().right() - pop_w - 12.0),
-            anchor.top() - pop_h - 8.0,
+            (anchor.right() - pop_w).clamp(min_x, max_x),
+            (anchor.top() - pop_h - 8.0).clamp(min_y, max_y),
         ),
         vec2(pop_w, pop_h),
     );
-    ui.painter().add(
-        egui::Shadow {
-            offset: [0, 8],
-            blur: 24,
-            spread: 0,
-            color: Color32::from_black_alpha(160),
-        }
-        .as_shape(pop, CornerRadius::same(10)),
-    );
-    ui.painter().rect(
-        pop,
-        CornerRadius::same(10),
-        CARD,
-        Stroke::new(1.0, LINE),
-        StrokeKind::Inside,
-    );
-    let mut c = ui.new_child(egui::UiBuilder::new().max_rect(pop.shrink(12.0)));
-    c.spacing_mut().item_spacing.y = 8.0;
-    c.label(
-        RichText::new("EXPORT ANNOTATED PDF")
-            .font(FontId::new(10.5, theme::font::sans_600()))
-            .color(MUTED),
-    );
-    if menu_row(
-        &mut c,
-        icons::FILE_TEXT,
-        "Slides + speaker notes (handout)…",
-        true,
-    )
-    .clicked()
-    {
-        p.finish_active_stroke();
-        p.flush_store();
-        p.export_menu_open = false;
-        p.push_action(PresentAction::ExportPdf {
-            include_notes: true,
+    egui::Area::new(egui::Id::unique("presenter-export-popover"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(bounds.min)
+        .show(ctx, |ui| {
+            let (_, scrim) = ui.allocate_exact_size(bounds.size(), Sense::click());
+            let _card_blocker =
+                ui.interact(pop, ui.scope_id().with("export-pop-card"), Sense::click());
+            ui.painter().add(
+                egui::Shadow {
+                    offset: [0, 8],
+                    blur: 24,
+                    spread: 0,
+                    color: Color32::from_black_alpha(160),
+                }
+                .as_shape(pop, CornerRadius::same(10)),
+            );
+            ui.painter().rect(
+                pop,
+                CornerRadius::same(10),
+                CARD,
+                Stroke::new(1.0, LINE),
+                StrokeKind::Inside,
+            );
+            if pop.width() > 28.0 && pop.height() > 28.0 {
+                let inner = pop.shrink(12.0);
+                let mut c = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+                c.set_clip_rect(inner);
+                c.spacing_mut().item_spacing.y = 8.0;
+                c.label(
+                    RichText::new("EXPORT ANNOTATED PDF")
+                        .font(FontId::new(10.5, theme::font::sans_600()))
+                        .color(MUTED),
+                );
+                if menu_row(
+                    &mut c,
+                    icons::FILE_TEXT,
+                    "Slides + speaker notes (handout)…",
+                    true,
+                )
+                .clicked()
+                {
+                    p.finish_active_stroke();
+                    p.flush_store();
+                    p.export_menu_open = false;
+                    p.push_action(PresentAction::ExportPdf {
+                        include_notes: true,
+                    });
+                }
+                if menu_row(&mut c, icons::PRESENTATION, "Annotated slides only…", false).clicked()
+                {
+                    p.finish_active_stroke();
+                    p.flush_store();
+                    p.export_menu_open = false;
+                    p.push_action(PresentAction::ExportPdf {
+                        include_notes: false,
+                    });
+                }
+            }
+            if scrim.clicked() {
+                p.export_menu_open = false;
+            }
         });
-    }
-    if menu_row(&mut c, icons::PRESENTATION, "Annotated slides only…", false).clicked() {
-        p.finish_active_stroke();
-        p.flush_store();
-        p.export_menu_open = false;
-        p.push_action(PresentAction::ExportPdf {
-            include_notes: false,
-        });
-    }
 }
 
 fn shortcuts_overlay(p: &mut Presentation, ui: &mut Ui, full: Rect) {
+    let scrim = ui.interact(
+        full,
+        ui.scope_id().with("presenter-shortcuts-scrim"),
+        Sense::click(),
+    );
     ui.painter()
         .rect_filled(full, 0, Color32::from_rgba_unmultiplied(6, 9, 13, 185));
-    let w = (full.width() - 48.0).min(540.0);
-    let h = (full.height() - 48.0).min(410.0);
+    let w = (full.width() - 48.0).clamp(0.0, 560.0);
+    let h = (full.height() - 48.0).clamp(0.0, 520.0);
     let card = Rect::from_center_size(full.center(), vec2(w, h));
+    let _card_blocker = ui.interact(
+        card,
+        ui.scope_id().with("presenter-shortcuts-card"),
+        Sense::click(),
+    );
     ui.painter().rect(
         card,
         CornerRadius::same(14),
@@ -1512,7 +1676,15 @@ fn shortcuts_overlay(p: &mut Presentation, ui: &mut Ui, full: Rect) {
         Stroke::new(1.0, LINE),
         StrokeKind::Inside,
     );
-    let mut c = ui.new_child(egui::UiBuilder::new().max_rect(card.shrink(22.0)));
+    if scrim.clicked() {
+        p.shortcuts_open = false;
+    }
+    if w < 64.0 || h < 64.0 {
+        return;
+    }
+    let inner = card.shrink(22.0);
+    let mut c = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+    c.set_clip_rect(inner);
     c.spacing_mut().item_spacing.y = 12.0;
     c.horizontal(|ui| {
         ui.label(
@@ -1543,26 +1715,31 @@ fn shortcuts_overlay(p: &mut Presentation, ui: &mut Ui, full: Rect) {
         ("T / R", "Start-pause / Reset timer"),
         ("? or Esc", "This sheet / Exit presentation"),
     ];
-    egui::Grid::new("presenter-shortcuts-grid")
-        .num_columns(2)
-        .spacing(vec2(18.0, 8.0))
+    egui::ScrollArea::vertical()
+        .id_salt("presenter-shortcuts-scroll")
+        .auto_shrink([false, false])
         .show(&mut c, |ui| {
-            for (keys, desc) in items {
-                egui::Frame::new()
-                    .fill(BTN)
-                    .stroke(Stroke::new(1.0, LINE))
-                    .corner_radius(CornerRadius::same(5))
-                    .inner_margin(Margin::symmetric(8, 3))
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(keys)
-                                .font(FontId::new(11.5, theme::font::mono_500()))
-                                .color(ACCENT),
-                        );
-                    });
-                ui.label(RichText::new(desc).size(13.0).color(INK));
-                ui.end_row();
-            }
+            egui::Grid::new("presenter-shortcuts-grid")
+                .num_columns(2)
+                .spacing(vec2(18.0, 8.0))
+                .show(ui, |ui| {
+                    for (keys, desc) in items {
+                        egui::Frame::new()
+                            .fill(BTN)
+                            .stroke(Stroke::new(1.0, LINE))
+                            .corner_radius(CornerRadius::same(5))
+                            .inner_margin(Margin::symmetric(8, 3))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(keys)
+                                        .font(FontId::new(11.5, theme::font::mono_500()))
+                                        .color(ACCENT),
+                                );
+                            });
+                        ui.label(RichText::new(desc).size(13.0).color(INK));
+                        ui.end_row();
+                    }
+                });
         });
 }
 

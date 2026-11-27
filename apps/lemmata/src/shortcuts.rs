@@ -383,15 +383,45 @@ pub fn spec_of(mods: Modifiers, key: Key) -> Option<String> {
     if mods.shift {
         parts.push("Shift");
     }
-    let name = key.name();
-    let name = if name.chars().count() == 1 {
-        name.to_lowercase()
-    } else {
-        name.to_owned()
+    let name = match key {
+        Key::Slash => "/".to_owned(),
+        Key::Questionmark if mods.shift => "/".to_owned(),
+        Key::OpenBracket => "[".to_owned(),
+        Key::OpenCurlyBracket if mods.shift => "[".to_owned(),
+        Key::CloseBracket => "]".to_owned(),
+        Key::CloseCurlyBracket if mods.shift => "]".to_owned(),
+        Key::Backslash => "\\".to_owned(),
+        Key::Minus => "-".to_owned(),
+        Key::Equals => "=".to_owned(),
+        Key::Comma => ",".to_owned(),
+        Key::Period => ".".to_owned(),
+        other => {
+            let n = other.name();
+            if n.chars().count() == 1 {
+                n.to_lowercase()
+            } else {
+                n.to_owned()
+            }
+        }
     };
     parts.push(&name);
     let spec = parts.join("-");
     parse(&spec).is_some().then_some(spec)
+}
+
+/// True when two shortcut specs would match the same key press (accounting for aliases such as
+/// `Mod-Shift-?` vs `Mod-Shift-/` or `Shift-[` vs `{`).
+pub fn specs_clash(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let Some((ma, ka)) = parse(a) else {
+        return false;
+    };
+    let Some((mb, kb)) = parse(b) else {
+        return false;
+    };
+    matches_spec(a, mb, kb) || matches_spec(b, ma, ka)
 }
 
 const MAC: bool = cfg!(target_os = "macos");
@@ -696,5 +726,24 @@ mod tests {
             assert_eq!(display("F11"), "F11");
             assert_eq!(display("Alt-ArrowUp"), "Alt+ArrowUp");
         }
+    }
+
+    #[test]
+    fn spec_canonicalization_and_clash_symmetry() {
+        let mod_shift = Modifiers {
+            command: true,
+            ctrl: !MAC,
+            mac_cmd: MAC,
+            shift: true,
+            ..Modifiers::NONE
+        };
+        assert_eq!(
+            spec_of(mod_shift, Key::Questionmark).as_deref(),
+            Some("Mod-Shift-/")
+        );
+        assert!(specs_clash("Mod-Shift-?", "Mod-Shift-/"));
+        assert!(specs_clash("Mod-Shift-/", "Mod-Shift-?"));
+        assert!(specs_clash("Mod-Shift-[", "Mod-Shift-{"));
+        assert!(!specs_clash("Mod-s", "Mod-b"));
     }
 }

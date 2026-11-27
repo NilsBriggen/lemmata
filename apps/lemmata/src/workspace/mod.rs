@@ -1360,6 +1360,11 @@ impl Workspace {
                 .search
                 .as_ref()
                 .is_some_and(|s| s.confirm_replace.is_some())
+            || self
+                .buffers
+                .conflicts
+                .iter()
+                .any(|c| !self.conflict_deferred.contains(c))
     }
 
     fn shortcuts(
@@ -1498,8 +1503,8 @@ impl Workspace {
             action = Some(Action::Settings);
         }
 
-        // The app's own keys come before the editor's; an open dialog keeps them.
-        if !self.modal_open() && !self.app_modal_open {
+        // The app's own keys come before the editor's; an open dialog or menu keeps them.
+        if !self.modal_open() && !self.app_modal_open && self.menu.is_none() {
             self.tree_keys(&ctx, backend, settings);
             self.shortcuts(&ctx, backend, settings, &mut action);
         }
@@ -1776,7 +1781,7 @@ impl Workspace {
             for pa in pres_actions {
                 match pa {
                     crate::pdf::present::PresentAction::ExportPdf { include_notes } => {
-                        export_req = Some((include_notes, show.bytes(), show.store.clone()));
+                        export_req = Some((include_notes, show.bytes(), show.export_store()));
                     }
                 }
             }
@@ -1789,12 +1794,17 @@ impl Workspace {
                     let include_notes = ended.store.has_any_custom_notes() || ended.has_any_notes;
                     self.post_present_export = Some(PostPresentExport {
                         bytes: ended.bytes(),
-                        store: ended.store,
+                        store: ended.export_store(),
                         include_notes,
                     });
                 }
             }
             if let Some((include_notes, bytes, store)) = export_req {
+                // In single-screen mode, leave fullscreen so the OS Save dialog isn't hidden behind
+                // the fullscreen audience viewport.
+                if self.presentation.as_ref().is_some_and(|p| !p.presenter) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                }
                 self.pending_annotated_export = Some((bytes, store));
                 let what = crate::backend::Save::AnnotatedPdf { include_notes };
                 let name = if include_notes {
@@ -1989,7 +1999,11 @@ impl Workspace {
             if let Some((path, line, col)) = go {
                 self.goto_col(backend, &path, line, col);
             }
-            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            if !self.modal_open()
+                && !self.app_modal_open
+                && self.menu.is_none()
+                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+            {
                 self.references = None;
             }
         }
@@ -2525,13 +2539,10 @@ impl Workspace {
             Some(bytes) => {
                 let page = self.pane.view.current_page.max(1);
                 let root = std::path::PathBuf::from(&self.info.root);
-                // Seed speaker notes from `\note{...}` / `% NOTE:` in the main `.tex` file if any.
-                let main_src = self
-                    .editors
-                    .get(&self.info.main)
-                    .map(|e| e.doc.text())
-                    .or_else(|| std::fs::read_to_string(root.join(&self.info.main)).ok());
-                let tex_notes = main_src
+                // Seed speaker notes from `\note{...}` / `% NOTE:` across the main `.tex` file and
+                // its `\input` / `\include` children (read-only fallback, never overwrites edits).
+                let combined_src = self.gather_tex_sources(&root, &self.info.main);
+                let tex_notes = combined_src
                     .as_deref()
                     .map(crate::pdf::present::extract_tex_notes)
                     .filter(|m| !m.is_empty());
@@ -2548,6 +2559,60 @@ impl Workspace {
                 Tone::Info,
             ),
         }
+    }
+
+    /// Expands `\input{...}` / `\include{...}` recursively (cycle-safe) so Beamer decks split
+    /// across multiple `.tex` files still pick up `\note{...}` / `% NOTE:` speaker notes.
+    fn gather_tex_sources(&self, root: &std::path::Path, main_rel: &str) -> Option<String> {
+        fn walk(
+            ws: &Workspace,
+            root: &std::path::Path,
+            rel: &str,
+            depth: usize,
+            seen: &mut std::collections::HashSet<String>,
+            out: &mut String,
+        ) {
+            if depth > 12 || !seen.insert(rel.to_owned()) {
+                return;
+            }
+            let Some(src) = ws
+                .editors
+                .get(rel)
+                .map(|e| e.doc.text())
+                .or_else(|| std::fs::read_to_string(root.join(rel)).ok())
+            else {
+                return;
+            };
+            for line in src.lines() {
+                out.push_str(line);
+                out.push('\n');
+                let code = line.split('%').next().unwrap_or("");
+                for cmd in ["\\input{", "\\include{"] {
+                    let mut rest = code;
+                    while let Some(idx) = rest.find(cmd) {
+                        rest = &rest[idx + cmd.len()..];
+                        if let Some(end) = rest.find('}') {
+                            let target = rest[..end].trim();
+                            if !target.is_empty() {
+                                let child = if target.ends_with(".tex") {
+                                    target.to_owned()
+                                } else {
+                                    format!("{target}.tex")
+                                };
+                                walk(ws, root, &child, depth + 1, seen, out);
+                            }
+                            rest = &rest[end + 1..];
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut out = String::new();
+        walk(self, root, main_rel, 0, &mut seen, &mut out);
+        (!out.is_empty()).then_some(out)
     }
 
     /// Exports the built PDF together with any saved presenter annotations and speaker notes.

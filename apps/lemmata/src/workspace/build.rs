@@ -618,6 +618,8 @@ impl Workspace {
             raw_log_open: self.build.raw_log_open,
             source: &source,
         };
+        self.pane.allow_shortcuts =
+            !self.modal_open() && !self.app_modal_open && self.menu.is_none();
         let actions = self.pane.show(ui, p, &b);
         self.handle_pane_actions(ui.ctx(), actions, backend, settings)
     }
