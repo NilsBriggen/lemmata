@@ -2,6 +2,14 @@
 
 All notable changes to Lemmata.
 
+## 4.2.1 (2026-11-27)
+
+### Added
+- **3-step Pen & Highlighter size controls (`Fine` · `Medium` · `Bold`):** Added a three-dot thickness selector right beside the ink color swatches whenever **Pen** (`D`) or **Highlight** (`U`) is active (also adjustable on the fly with `[` / `]`), persisted independently per tool in `.lemmata/presenter.json` and matched in annotated PDF export.
+
+### Fixed
+- **Uniform anti-aliased Highlighter rendering:** Replaced `epaint` polyline tessellation on translucent highlighter strokes with pixel-aligned, native-resolution `tiny-skia` alpha masks cached per slide view size—eliminating darker half-circles at start/end caps, darker overlapping shards on tight bends and loops, and blurry or snapping strokes while dragging across simultaneous stage and filmstrip views.
+
 ## 4.2.0 (2026-11-27)
 
 A complete redesign of Presenter View matching Lemmata's active light and dark themes, paired with customizable stage panels and five new live-presentation tools.
