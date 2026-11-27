@@ -97,18 +97,21 @@ jobs:
       # clearly names the culprit in the log.
       - name: Run unit and UI tests
         timeout-minutes: 15
-        run: cargo test --locked -p lemmata-app -- --skip app::tests:: --skip app::scenarios:: --test-threads=4
+        run: |
+          cargo test --locked -p lemmata-app -- --skip app::tests:: --skip app::scenarios:: --test-threads=4
       - name: Run app integration tests
         timeout-minutes: 20
         # Required: without it a broken latexmk or Perl makes the build tests return early, green.
         env:
           LEMMATA_REQUIRE_TEX: "1"
-        run: cargo test --locked -p lemmata-app app::tests:: -- --test-threads=2
+        run: |
+          cargo test --locked -p lemmata-app app::tests:: -- --test-threads=2
       - name: Run MiKTeX scenarios
         timeout-minutes: 20
         env:
           LEMMATA_REQUIRE_TEX: "1"
-        run: cargo test --locked -p lemmata-app app::scenarios:: -- --test-threads=1
+        run: |
+          cargo test --locked -p lemmata-app app::scenarios:: -- --test-threads=1
       - name: Upload the snapshots that differ
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
