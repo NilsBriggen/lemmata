@@ -2,6 +2,14 @@
 
 All notable changes to Lemmata.
 
+## 4.1.2 (2026-11-27)
+
+### Changed
+- **Progressive PDF toolbar layout:** Replaced the single `660 px` collapse cliff in the PDF toolbar with progressive width thresholds so **Present full screen**, **Document outline**, **Page thumbnails**, and **Open in external viewer** stay visible directly on the bar whenever there is room (zoom `−`/`+` hide below `580 px`, outline/thumbnails/external move to `⋯` below `520 px`, Present moves below `450 px`, and page arrows below `405 px`).
+- **Click-to-light Laser & Spotlight:** Laser pointer (`L`) and Spotlight (`S`) now only light while pressing and holding the mouse button on the slide (synced live across Presenter and Audience windows), so you can keep either tool armed without leaving a persistent dot or dimmed slide on screen.
+- **Focused Spotlight size:** Replaced the oversized Spotlight circle stroke with an exact compact annulus cutout (`8.5%` of slide height, capped at `76 px` radius) so Spotlight cleanly highlights a single formula or bullet instead of the whole slide.
+- **Faster Windows CI:** Split the Windows workflow into parallel unit/UI tests (`--test-threads=4`), 2-thread app integration tests, and 1-thread MiKTeX scenarios.
+
 ## 4.1.1 (2026-11-27)
 
 Bug-fix and stability release hardening Presenter View, modals, History restore, Word Count, viewers, and Windows path handling—paired with proactive UI geometry, modal isolation, and boundary tests.
