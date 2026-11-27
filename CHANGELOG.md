@@ -2,6 +2,21 @@
 
 All notable changes to Lemmata.
 
+## 4.2.0 (2026-11-27)
+
+A complete redesign of Presenter View matching Lemmata's active light and dark themes, paired with customizable stage panels and five new live-presentation tools.
+
+### Added
+- **Customizable Presenter Console & `View` popover:** Rebuilt Presenter View around Lemmata's active Light/Dark palette and shared card/toolbar components, with a **View** popover to toggle **Speaker notes**, **Next slide**, **Filmstrip**, **Notes on right**, and **Dark stage**, plus smart auto-hide when slides have no speaker notes and one-click panel width reset.
+- **Insertable drawable whiteboard slides (`K`):** Insert blank drawable whiteboard pages anywhere in the deck via the footer **+ Blank** button, the **View** popover, or `K` (keeping **Whiteout** (`W`) as a clean whiteout screen). Automatically arms the Pen, supports an optional **Grid** background and **Remove** button, persists per-slide strokes in `.lemmata/presenter.json`, and exports cleanly in interleaved order in annotated PDFs.
+- **Section & appendix quick-jump:** Click the current section label in the header to open a quick-jump popover across PDF outline bookmarks, browse sections along a horizontal strip in **Overview** (`G`), or step between sections directly with `Shift+←` / `Shift+→`.
+- **Translucent Highlighter (`U`) & `Shift`-straight lines:** Added a semi-transparent **Highlighter** (`U`) alongside the 4-color **Pen** (`Crimson`, `Sky`, `Amber`, `Emerald`), exported as true translucent PDF graphics states (`/ExtGState`) in annotated PDFs. Hold `Shift` while dragging with Pen or Highlighter to draw crisp straight lines with automatic horizontal/vertical snapping.
+- **Synced Slide Magnifier (`Z`):** Click and hold with the **Zoom** lens (`Z`) to inspect fine equations, plots, or tables at 2.4× magnification—synced live across both Presenter and Audience screens with high-resolution PDF rendering.
+- **Rehearsal per-slide timing breakdown:** Tracks cumulative time spent on each slide while the timer runs, showing live per-slide time in the **CURRENT SLIDE** header, duration badges on **Overview** thumbnails, and a **LONGEST SLIDES** top-3 breakdown in the final-slide **TALK SUMMARY**.
+
+### Changed
+- **Richer presenter workflows:** Added an audience-freeze alert outline with one-click **Push slide** when browsing ahead while frozen, an **UP NEXT NOTES** preview teaser, double-click speaker note editing with `# Heading` styling and `From .tex` / `Edited` / `Reset` origin controls, automatic filmstrip centering on the active slide, an audience floating-HUD laser toggle, and a grouped **Shortcuts** overlay.
+
 ## 4.1.2 (2026-11-27)
 
 ### Changed
